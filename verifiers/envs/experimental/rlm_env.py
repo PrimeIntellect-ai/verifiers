@@ -2610,8 +2610,10 @@ class RLMEnv(vf.StatefulToolEnv):
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
                    When True, sub-LLM turns are added to the trajectory as TrajectoryStep
                    objects with tokens, enabling training on sub-LLM calls. Interleaved
-                   rollouts are not supported in this mode. When False (default), sub-LLM
-                   calls happen but are not stored.
+                   rollouts are supported in this mode; the environment ensures that
+                   get_prompt_messages, get_model_response, and stop conditions always
+                   reference the last main-model step rather than a sub-LLM step.
+                   When False (default), sub-LLM calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
@@ -3768,11 +3770,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # =========================================================================
 
     def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        if interleaved_rollouts and self.include_sub_llm_in_trajectory:
-            raise ValueError(
-                "RLMEnv does not support interleaved rollouts when "
-                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
-            )
         super().set_interleaved_rollouts(interleaved_rollouts)
 
     def update_tool_args(
@@ -3836,12 +3833,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state.setdefault("rlm_fs_root_remote", f"/tmp/rlm_{rollout_id}/rlm_fs")
             state.setdefault(
                 "rlm_control_dir_remote", f"/tmp/rlm_{rollout_id}/rlm_control"
-            )
-
-        if self.include_sub_llm_in_trajectory and self.interleaved_rollouts:
-            raise ValueError(
-                "RLMEnv does not support interleaved rollouts when "
-                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
             )
 
         try:
@@ -4202,6 +4193,14 @@ class RLMEnv(vf.StatefulToolEnv):
             append_execution_time=True,
         )
 
+    def _last_main_trajectory_step(self, state: State) -> TrajectoryStep | None:
+        """Find the last trajectory step belonging to the main (root) model."""
+        main_id = state.get("trajectory_id")
+        for step in reversed(state.get("trajectory", [])):
+            if step.get("trajectory_id") == main_id:
+                return step
+        return None
+
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
         await super().add_trajectory_step(state, trajectory_step)
@@ -4282,8 +4281,15 @@ class RLMEnv(vf.StatefulToolEnv):
 
             return cast(Messages, messages)
         else:
-            # Subsequent turns: use parent implementation
-            return await super().get_prompt_messages(state)
+            # Subsequent turns: use last main trajectory step (skip sub-LLM steps)
+            last_main = self._last_main_trajectory_step(state)
+            if last_main is None:
+                return state["prompt"]
+            prev_turn_prompt = last_main["prompt"]
+            prev_turn_completion = last_main["completion"]
+            messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+            env_response = await self.env_response(messages, state)
+            return concat_messages([messages, env_response])
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
@@ -4293,6 +4299,46 @@ class RLMEnv(vf.StatefulToolEnv):
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
         return tool_messages
+
+    async def get_model_response(  # type: ignore[override]
+        self, state: State, prompt: Messages, **kwargs: Any
+    ) -> ModelResponse:
+        """Ensure get_prompt_ids sees the last main trajectory step, not a sub-LLM step.
+
+        In interleaved mode, get_prompt_ids (called from super) reads
+        state["trajectory"][-1] to build token-level prompts.  After
+        env_response adds sub-LLM steps, trajectory[-1] may be a sub-LLM
+        step with incompatible tokens.  We temporarily move trailing sub-LLM
+        steps out of the trajectory for the duration of the super call.
+        """
+        if not (self.include_sub_llm_in_trajectory and self.interleaved_rollouts):
+            return await super().get_model_response(state, prompt, **kwargs)
+
+        trajectory = state.get("trajectory", [])
+        if not trajectory:
+            return await super().get_model_response(state, prompt, **kwargs)
+
+        main_id = state["trajectory_id"]
+        if trajectory[-1].get("trajectory_id") == main_id:
+            return await super().get_model_response(state, prompt, **kwargs)
+
+        # Find last main step and temporarily move trailing sub-LLM steps aside
+        last_main_idx = None
+        for i in range(len(trajectory) - 1, -1, -1):
+            if trajectory[i].get("trajectory_id") == main_id:
+                last_main_idx = i
+                break
+
+        if last_main_idx is None:
+            return await super().get_model_response(state, prompt, **kwargs)
+
+        trailing = trajectory[last_main_idx + 1 :]
+        del trajectory[last_main_idx + 1 :]
+        try:
+            result = await super().get_model_response(state, prompt, **kwargs)
+        finally:
+            trajectory.extend(trailing)
+        return result
 
     # =========================================================================
     # Stop Conditions
@@ -4308,6 +4354,30 @@ class RLMEnv(vf.StatefulToolEnv):
     async def answer_ready(self, state: State) -> bool:
         """Stop when model sets answer['ready'] = True."""
         return "final_answer" in state
+
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        """Count only main-model trajectory steps, not sub-LLM steps."""
+        if self.max_turns <= 0:
+            return False
+        main_id = state.get("trajectory_id")
+        count = sum(
+            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
+        )
+        return count >= self.max_turns
+
+    @vf.stop
+    async def no_tools_called(self, state: State) -> bool:
+        """Check last main-model completion for tool calls, ignoring sub-LLM steps."""
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is None:
+            return False
+        last_message = cast(dict[str, Any], last_main["completion"][-1])
+        is_assistant = last_message.get("role") == "assistant"
+        no_tool_calls = (
+            "tool_calls" not in last_message or last_message["tool_calls"] is None
+        )
+        return is_assistant and no_tool_calls
 
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:

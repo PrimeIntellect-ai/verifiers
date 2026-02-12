@@ -1338,14 +1338,15 @@ class TestSubLLMTrajectorySteps:
     async def test_include_sub_llm_in_trajectory_default(self, rlm_env):
         assert rlm_env.include_sub_llm_in_trajectory is False
 
-    def test_interleaved_disallowed_when_sub_llm_in_trajectory(self):
+    def test_interleaved_allowed_when_sub_llm_in_trajectory(self):
         dataset = make_dataset({})
-        with pytest.raises(ValueError, match="include_sub_llm_in_trajectory=True"):
-            build_env(
-                dataset,
-                include_sub_llm_in_trajectory=True,
-                interleaved_rollouts=True,
-            )
+        env = build_env(
+            dataset,
+            include_sub_llm_in_trajectory=True,
+            interleaved_rollouts=True,
+        )
+        assert env.include_sub_llm_in_trajectory is True
+        assert env.interleaved_rollouts is True
 
     @pytest.mark.asyncio
     async def test_sub_llm_steps_added_to_trajectory(self, rlm_env):
