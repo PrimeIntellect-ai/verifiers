@@ -195,6 +195,18 @@ def main():
         ),
     )
     parser.add_argument(
+        "--top-logprobs",
+        "-L",
+        type=int,
+        default=None,
+        metavar="K",
+        help=(
+            "Save top-K logprobs per token in the output JSONL "
+            "(sets logprobs=true and top_logprobs=K in sampling args). "
+            "Requires a vLLM or OpenAI-compatible endpoint."
+        ),
+    )
+    parser.add_argument(
         "--verbose", "-v", default=False, action="store_true", help="Verbose output"
     )
     parser.add_argument(
@@ -431,6 +443,11 @@ def main():
         raw_temp = raw.get("temperature")
         if raw_temp is not None and "temperature" not in merged_sampling_args:
             merged_sampling_args["temperature"] = raw_temp
+        # --top-logprobs: inject logprobs + top_logprobs into sampling args
+        top_logprobs_k = raw.get("top_logprobs")
+        if top_logprobs_k is not None:
+            merged_sampling_args.setdefault("logprobs", True)
+            merged_sampling_args.setdefault("top_logprobs", top_logprobs_k)
         # Build headers
         merged_headers: dict[str, str] = {}
         for h in raw.get("header") or []:
@@ -507,6 +524,18 @@ def main():
         else:
             raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
+        # Auto-include logprobs fields in state_columns when --top-logprobs is set
+        state_columns = list(raw.get("state_columns", []))
+        if top_logprobs_k is not None:
+            for col in ("completion_top_logprobs", "completion_top_tokens"):
+                if col not in state_columns:
+                    state_columns.append(col)
+
+        save_results = raw.get("save_results", False)
+        if top_logprobs_k is not None and not save_results:
+            save_results = True
+            logger.info("--top-logprobs implies --save-results; enabling save_results")
+
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
@@ -522,8 +551,8 @@ def main():
             max_retries=raw.get("max_retries", 0),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
-            state_columns=raw.get("state_columns", []),
-            save_results=raw.get("save_results", False),
+            state_columns=state_columns,
+            save_results=save_results,
             resume_path=resume_path,
             independent_scoring=raw.get("independent_scoring", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),

@@ -16,6 +16,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
+    extract_top_logprobs,
     parse_is_truncated,
     parse_response_messages,
     parse_response_tokens,
@@ -125,6 +126,18 @@ class MultiTurnEnv(vf.Environment):
             extras={},
         )
         await self.add_trajectory_step(state, trajectory_step)
+
+        # Extract top-k logprobs if requested and accumulate on state.
+        # extract_top_logprobs raises ValueError with a specific message
+        # if the response is missing expected data.
+        sampling_args = state.get("sampling_args") or {}
+        if sampling_args.get("top_logprobs") is not None:
+            top_lp = await extract_top_logprobs(response, self.message_type)
+            if "completion_top_logprobs" not in state:
+                state["completion_top_logprobs"] = []
+                state["completion_top_tokens"] = []
+            state["completion_top_logprobs"].extend(top_lp.logprobs)
+            state["completion_top_tokens"].extend(top_lp.tokens)
 
     @final
     async def rollout(

@@ -17,9 +17,15 @@ async def parse_response_tokens(
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         assert len(response.choices) == 1, "Response should always have one choice"
-        if not hasattr(response.choices[0], "token_ids"):
+        if (
+            not hasattr(response.choices[0], "token_ids")
+            or response.choices[0].token_ids is None
+        ):
             return None
-        if not hasattr(response, "prompt_token_ids"):
+        if (
+            not hasattr(response, "prompt_token_ids")
+            or response.prompt_token_ids is None
+        ):
             return None
         if not hasattr(response.choices[0], "logprobs"):
             return None
@@ -125,6 +131,126 @@ async def parse_response_messages(
             response_text = response.choices[0].text or ""
         completion_messages = str(response_text)
     return completion_messages
+
+
+class TopLogprobs:
+    """Compact top-k logprobs: two parallel lists coupled by index.
+
+    ``tokens[i][j]`` is the j-th most likely token at completion position i.
+    ``logprobs[i][j]`` is the corresponding log-probability.
+    """
+
+    __slots__ = ("tokens", "logprobs")
+
+    def __init__(self, tokens: list[list[str]], logprobs: list[list[float]]) -> None:
+        self.tokens = tokens
+        self.logprobs = logprobs
+
+
+async def extract_top_logprobs(
+    response: ModelResponse, message_type: MessageType
+) -> TopLogprobs:
+    """Extract top-k logprobs from a standard OpenAI/vLLM response.
+
+    Returns a ``TopLogprobs`` with two parallel ``list[list[...]]``
+    (tokens and logprobs), coupled by index.
+
+    Raises ``ValueError`` with a specific message when the response does
+    not contain the expected logprobs data.
+    """
+    if response is None:
+        raise ValueError("Response is None; cannot extract top_logprobs.")
+
+    if message_type == "chat":
+        if not isinstance(response, ChatCompletion):
+            raise ValueError(
+                f"Expected ChatCompletion response, got {type(response).__name__}."
+            )
+        if not response.choices:
+            raise ValueError("Response has no choices.")
+        choice = response.choices[0]
+        if not hasattr(choice, "logprobs") or choice.logprobs is None:
+            raise ValueError(
+                "Response choice has no logprobs. "
+                "Ensure logprobs=true is set in sampling args."
+            )
+        logprobs_obj = choice.logprobs
+
+        # logprobs_obj may be an object or a dict (depends on provider)
+        if hasattr(logprobs_obj, "content") and logprobs_obj.content is not None:
+            content = logprobs_obj.content
+        elif isinstance(logprobs_obj, dict) and logprobs_obj.get("content") is not None:
+            content = logprobs_obj["content"]
+        else:
+            raise ValueError(
+                "Response logprobs has no content. "
+                "The endpoint may not support top_logprobs."
+            )
+
+        all_tokens: list[list[str]] = []
+        all_logprobs: list[list[float]] = []
+        for token_info in content:
+            if hasattr(token_info, "top_logprobs") and token_info.top_logprobs:
+                toks = [t.token for t in token_info.top_logprobs]
+                lps = [t.logprob for t in token_info.top_logprobs]
+            elif isinstance(token_info, dict) and token_info.get("top_logprobs"):
+                toks = [t["token"] for t in token_info["top_logprobs"]]
+                lps = [t["logprob"] for t in token_info["top_logprobs"]]
+            else:
+                # top_logprobs missing on this token but logprobs present —
+                # fall back to the chosen token's logprob
+                if hasattr(token_info, "token"):
+                    toks = [token_info.token]
+                    lps = [token_info.logprob]
+                elif isinstance(token_info, dict):
+                    toks = [token_info["token"]]
+                    lps = [token_info["logprob"]]
+                else:
+                    raise ValueError(
+                        f"Unexpected token_info format: {type(token_info).__name__}."
+                    )
+            all_tokens.append(toks)
+            all_logprobs.append(lps)
+        if not all_tokens:
+            raise ValueError("Response logprobs content is empty.")
+        return TopLogprobs(all_tokens, all_logprobs)
+
+    elif message_type == "completion":
+        if not isinstance(response, Completion):
+            raise ValueError(
+                f"Expected Completion response, got {type(response).__name__}."
+            )
+        if not response.choices:
+            raise ValueError("Response has no choices.")
+        choice = response.choices[0]
+        if not hasattr(choice, "logprobs") or choice.logprobs is None:
+            raise ValueError(
+                "Response choice has no logprobs. "
+                "Ensure logprobs=true is set in sampling args."
+            )
+        top_logprobs_list = getattr(choice.logprobs, "top_logprobs", None)
+        if not top_logprobs_list:
+            raise ValueError(
+                "Response logprobs has no top_logprobs. "
+                "The endpoint may not support the top_logprobs parameter."
+            )
+        all_tokens: list[list[str]] = []
+        all_logprobs: list[list[float]] = []
+        for position_dict in top_logprobs_list:
+            if isinstance(position_dict, dict):
+                toks = list(position_dict.keys())
+                lps = list(position_dict.values())
+            else:
+                raise ValueError(
+                    f"Unexpected top_logprobs entry format: {type(position_dict).__name__}."
+                )
+            all_tokens.append(toks)
+            all_logprobs.append(lps)
+        if not all_tokens:
+            raise ValueError("Response top_logprobs is empty.")
+        return TopLogprobs(all_tokens, all_logprobs)
+
+    raise ValueError(f"Unsupported message_type: {message_type!r}.")
 
 
 async def parse_is_truncated(
