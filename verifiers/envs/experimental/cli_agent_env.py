@@ -26,7 +26,7 @@ from verifiers.utils.interception_utils import (
     InterceptionServer,
     create_empty_completion,
     deliver_response,
-    get_streaming_model_response,
+    synthesize_stream,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,34 +306,26 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         error: BaseException | None = None
 
         try:
-            # Handle streaming requests
-            if intercept and intercept.get("stream"):
-                response = await get_streaming_model_response(
-                    state=state,
-                    prompt=prompt,
-                    intercept=intercept,
-                    client=client,
-                    model=model,
-                    oai_tools=oai_tools,
-                    sampling_args=sampling_args,
-                )
-            else:
-                response = await super().get_model_response(
-                    state=state,
-                    prompt=prompt,
-                    client=client,
-                    model=model,
-                    oai_tools=oai_tools,
-                    sampling_args=sampling_args,
-                    message_type=message_type,
-                )
+            # Always use base class path (non-streaming, supports TITO)
+            response = await super().get_model_response(
+                state=state,
+                prompt=prompt,
+                client=client,
+                model=model,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
         except BaseException as e:
             error = e
             raise
         finally:
             # Always unblock HTTP handler, even on exception
             if intercept:
-                deliver_response(intercept, response, error)
+                if intercept.get("stream"):
+                    await synthesize_stream(intercept, response, error)
+                else:
+                    deliver_response(intercept, response, error)
                 state["current_request_id"] = None
 
         return response
@@ -359,7 +351,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
-                    await self._tunnel.stop()
+                    self._tunnel.sync_stop()
                     logger.debug("Prime Tunnel stopped")
                 except Exception as e:
                     logger.warning(f"Error stopping Prime Tunnel: {e}")

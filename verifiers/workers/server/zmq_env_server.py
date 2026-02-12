@@ -30,7 +30,7 @@ class ZMQEnvServer(EnvServer):
         self.socket.bind(self.address)
 
     async def run(self, stop_event: asyncio.Event | None = None):
-        self.logger.debug(f"{self.__class__.__name__} started on {self.address}")
+        self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
         # Create a task to wait for stop signal
         stop_task = asyncio.create_task(stop_event.wait()) if stop_event else None
@@ -39,7 +39,7 @@ class ZMQEnvServer(EnvServer):
             while True:
                 # exit gracefully on stop signal
                 if stop_event and stop_event.is_set():
-                    self.logger.debug("Stop event received, shutting down gracefully")
+                    self.logger.info("Stop event received, shutting down gracefully")
                     break
 
                 try:
@@ -77,7 +77,7 @@ class ZMQEnvServer(EnvServer):
     async def close(self):
         # cancel and await all pending tasks
         if self.pending_tasks:
-            self.logger.debug(f"Cancelling {len(self.pending_tasks)} pending tasks")
+            self.logger.info(f"Cancelling {len(self.pending_tasks)} pending tasks")
             for task in self.pending_tasks:
                 task.cancel()
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
@@ -87,7 +87,7 @@ class ZMQEnvServer(EnvServer):
 
         self.socket.close()
         self.ctx.term()
-        self.logger.debug("Environment server shut down")
+        self.logger.info("Environment server shut down")
 
     async def _process_request(
         self,
@@ -103,7 +103,6 @@ class ZMQEnvServer(EnvServer):
             raw = msgpack.unpackb(payload_bytes, raw=False)
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
-            self.logger.debug(f"Got {request_type} request (request_id={request_id})")
 
             # validate and route to handler
             if request_type == "health":
@@ -122,14 +121,15 @@ class ZMQEnvServer(EnvServer):
                 )
 
         except asyncio.CancelledError:
-            self.logger.debug(f"Request {request_id} cancelled during shutdown")
             return
 
         except Exception as e:
-            self.logger.error(f"Error processing request: {e}", exc_info=True)
+            self.logger.error(
+                f"Error processing request {request_id}: {e}", exc_info=True
+            )
             response = BaseResponse(
                 success=False,
-                error=str(e),
+                error=repr(e),
             )
 
         # serialize response using Pydantic
@@ -145,8 +145,4 @@ class ZMQEnvServer(EnvServer):
         # send response: [client_id, request_id, response]
         await self.socket.send_multipart(
             [client_id, request_id.encode(), response_bytes]
-        )
-
-        self.logger.debug(
-            f"Sent {response.__class__.__name__} (request_id={request_id}, {len(response_bytes)} bytes)"
         )

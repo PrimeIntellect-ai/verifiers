@@ -1,4 +1,4 @@
-__version__ = "0.1.10.dev2"
+__version__ = "0.1.10"
 
 import importlib
 import os
@@ -49,7 +49,7 @@ from .utils.logging_utils import (
 )
 
 # Setup default logging configuration
-setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
+setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
     "DatasetBuilder",

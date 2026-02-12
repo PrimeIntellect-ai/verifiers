@@ -66,27 +66,10 @@ prime eval run my-env -x '{"max_turns": 20}'
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to endpoints registry (`.toml` preferred, `.py` supported) |
+| `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
-For convenience, define model endpoints in `./configs/endpoints.toml` (or `./configs/endpoints.py`) to avoid repeating URL and key flags.
-
-```python
-ENDPOINTS = {
-    "gpt-4.1-mini": {
-        "model": "gpt-4.1-mini",
-        "url": "https://api.openai.com/v1",
-        "key": "OPENAI_API_KEY",
-    },
-    "qwen3-235b-i": {
-        "model": "qwen/qwen3-235b-a22b-instruct-2507",
-        "url": "https://api.pinference.ai/api/v1",
-        "key": "PRIME_API_KEY",
-    },
-}
-```
-
-Equivalent TOML format:
+For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
 ```toml
 [[endpoint]]
@@ -94,6 +77,12 @@ endpoint_id = "gpt-4.1-mini"
 model = "gpt-4.1-mini"
 url = "https://api.openai.com/v1"
 key = "OPENAI_API_KEY"
+
+[[endpoint]]
+endpoint_id = "qwen3-235b-i"
+model = "qwen/qwen3-235b-a22b-instruct-2507"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
 ```
 
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.

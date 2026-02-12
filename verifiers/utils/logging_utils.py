@@ -16,7 +16,7 @@ LOGGER_NAME = "verifiers"
 
 
 def setup_logging(
-    level: str = "INFO",
+    level: str | None = "INFO",
     log_format: str | None = None,
     date_format: str | None = None,
     log_file: str | None = None,
@@ -26,11 +26,10 @@ def setup_logging(
     Setup basic logging configuration for the verifiers package.
 
     Args:
-        level: The logging level to use for console output. Defaults to "INFO".
+        level: The logging level to use. If None, logging is disabled. Defaults to "INFO".
         log_format: Custom log format string. If None, uses default format.
         date_format: Custom date format string. If None, uses default format.
         log_file: Optional path to a log file. If specified, logs will be written to this file.
-        log_file_level: The logging level for the file handler. If None, uses the same level as console.
     """
     if log_format is None:
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -43,6 +42,10 @@ def setup_logging(
 
     # remove any existing handlers to avoid duplicates
     logger.handlers.clear()
+
+    if level is None:
+        logger.propagate = False
+        return
 
     # set logger level to the minimum of console and file levels
     # so messages can reach the more permissive handler

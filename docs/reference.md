@@ -9,6 +9,7 @@
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Configuration Types](#configuration-types)
+- [Prime CLI Plugin](#prime-cli-plugin)
 - [Decorators](#decorators)
 - [Utility Functions](#utility-functions)
 
@@ -196,6 +197,12 @@ Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects
 ### GenerateMetadata
 
 ```python
+class VersionInfo(TypedDict):
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
 class GenerateMetadata(TypedDict):
     env_id: str
     env_args: dict
@@ -208,12 +215,15 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None
 ```
 
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
+`version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
 
 ### RolloutScore / RolloutScores
 
@@ -572,7 +582,7 @@ class ClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
-    endpoint_configs: list[ClientConfig] = []
+    endpoint_configs: list[EndpointClientConfig] = []
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
@@ -587,6 +597,22 @@ When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded wi
 - **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
 
 This allows seamless use after running `prime login`.
+
+### EndpointClientConfig
+
+```python
+class EndpointClientConfig(BaseModel):
+    client_idx: int = 0
+    api_key_var: str = "PRIME_API_KEY"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    timeout: float = 3600.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
+    extra_headers: dict[str, str] = {}
+```
+
+Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the same fields as `ClientConfig` except `endpoint_configs` itself, preventing recursive nesting.
 
 ### EvalConfig
 
@@ -621,6 +647,50 @@ Endpoints = dict[str, list[Endpoint]]
 ```
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+
+---
+
+## Prime CLI Plugin
+
+Verifiers exposes a plugin contract consumed by `prime` for command execution.
+
+### PRIME_PLUGIN_API_VERSION
+
+```python
+PRIME_PLUGIN_API_VERSION = 1
+```
+
+API version for compatibility checks between `prime` and `verifiers`.
+
+### PrimeCLIPlugin
+
+```python
+@dataclass(frozen=True)
+class PrimeCLIPlugin:
+    api_version: int = PRIME_PLUGIN_API_VERSION
+    eval_module: str = "verifiers.cli.commands.eval"
+    gepa_module: str = "verifiers.cli.commands.gepa"
+    install_module: str = "verifiers.cli.commands.install"
+    init_module: str = "verifiers.cli.commands.init"
+    setup_module: str = "verifiers.cli.commands.setup"
+    build_module: str = "verifiers.cli.commands.build"
+
+    def build_module_command(
+        self, module_name: str, args: Sequence[str] | None = None
+    ) -> list[str]:
+        ...
+```
+
+`build_module_command` returns a subprocess command list for `python -m <module> ...`.
+
+### get_plugin
+
+```python
+def get_plugin() -> PrimeCLIPlugin:
+    ...
+```
+
+Returns the plugin instance consumed by `prime`.
 
 ---
 

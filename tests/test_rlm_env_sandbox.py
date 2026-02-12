@@ -207,15 +207,13 @@ class TestSandboxFilesystemProvisioning:
         (fs_root / "data.txt").write_text("hi", encoding="utf-8")
 
         executor = env._executor
-        executor._create_sandbox = AsyncMock(return_value=MagicMock(id="sbx_1"))
-        executor._wait_for_sandbox_ready = AsyncMock()
+        executor.create_sandbox = AsyncMock(return_value="sbx_1")
         executor._execute_sandbox_command = AsyncMock()
         executor._upload_directory = AsyncMock()
 
         await executor.prepare_filesystem(state)
 
-        executor._create_sandbox.assert_awaited_once()
-        executor._wait_for_sandbox_ready.assert_awaited_once_with("sbx_1")
+        executor.create_sandbox.assert_awaited_once()
         executor._upload_directory.assert_awaited_once()
 
         assert state["rlm_fs_staging_root"] == str(fs_root)
@@ -251,8 +249,8 @@ class TestSandboxFilesystemProvisioning:
         session.sandbox_fs_root = "/tmp/rlm_rlm_test/rlm_fs"
         session.paths = rlm_module._build_worker_paths(session.sandbox_control_dir)
 
-        executor._sandbox_client.upload_file = AsyncMock()
+        executor.sandbox_client.upload_file = AsyncMock()
 
         await executor._write_sandbox_files(session, state)
 
-        assert executor._sandbox_client.upload_file.await_count == 3
+        assert executor.sandbox_client.upload_file.await_count == 3

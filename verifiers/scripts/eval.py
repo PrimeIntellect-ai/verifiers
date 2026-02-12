@@ -17,8 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from verifiers import setup_logging
-from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
+from verifiers.types import (
+    ClientConfig,
+    EndpointClientConfig,
+    EvalConfig,
+    EvalRunConfig,
+)
 from verifiers.utils.eval_utils import (
+    get_log_level,
     load_endpoints,
     load_toml_config,
     resolve_endpoints_file,
@@ -274,7 +280,8 @@ def main():
     )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    if args.debug:  # only set up console logging in debug mode
+        setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
@@ -441,14 +448,14 @@ def main():
         assert api_key_var is not None
         resolved_api_key_var = api_key_var
 
-        endpoint_configs: list[ClientConfig] = []
+        endpoint_configs: list[EndpointClientConfig] = []
         if (
             endpoint_group is not None
             and not api_base_url_override
             and len(endpoint_group) > 1
         ):
             endpoint_configs = [
-                ClientConfig(
+                EndpointClientConfig(
                     api_key_var=(
                         resolved_api_key_var if api_key_override else endpoint["key"]
                     ),
@@ -514,6 +521,7 @@ def main():
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
             verbose=raw.get("verbose", False),
+            debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,

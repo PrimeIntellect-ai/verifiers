@@ -29,6 +29,7 @@ from verifiers.utils.usage_utils import (
     StateUsageTracker,
     extract_usage_tokens as extract_usage_tokens_from_response,
 )
+from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,7 @@ class GenerateOutputsBuilder:
         self.results_path = results_path or get_results_path(env_id, model)
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
+        self.version_info = get_version_info(env_id=env_id)
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
@@ -352,6 +354,7 @@ class GenerateOutputsBuilder:
             avg_metrics=avg_metrics,
             avg_error=avg_error,
             usage=usage,
+            version_info=self.version_info,
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,

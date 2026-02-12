@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING, Mapping, final
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
+from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -262,6 +263,46 @@ class EnvGroup(vf.Environment):
             "Task column should be set during concatenation in __init__"
         )
         return dataset
+
+    @final
+    async def run_rollout(  # type: ignore[override]
+        self,
+        input: RolloutInput,
+        client: AsyncOpenAI | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
+    ) -> vf.RolloutOutput:
+        env = self.get_env_for_task(input["task"])
+        env_client = env_client or env.env_client or self.env_client
+        return await env.run_rollout(
+            input, client, model, sampling_args, max_retries, state_columns, env_client
+        )
+
+    @final
+    async def run_group(  # type: ignore[override]
+        self,
+        group_inputs: list[RolloutInput],
+        client: AsyncOpenAI | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
+    ) -> list[vf.RolloutOutput]:
+        env = self.get_env_for_task(group_inputs[0]["task"])
+        env_client = env_client or env.env_client or self.env_client
+        return await env.run_group(
+            group_inputs,
+            client,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+            env_client,
+        )
 
     @final
     async def rollout(

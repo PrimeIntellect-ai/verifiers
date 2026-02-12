@@ -33,7 +33,7 @@ Use the `prime lab setup` script to download example configuration files for Hos
 prime lab setup
 ```
 
-This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `endpoints.toml` and GEPA starter configs in `configs/gepa/`:
+This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `configs/endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
 ```
 configs/
@@ -99,7 +99,7 @@ This will clone and install the `prime-rl` trainer and its dependencies, and set
 
 Then, you can start training with:
 ```bash
-uv run prime-rl @ configs/prime-rl/wiki-search.toml
+uv run prime-rl configs/prime-rl/wiki-search.toml
 ```
 
 This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 

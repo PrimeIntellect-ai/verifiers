@@ -1,10 +1,20 @@
+import asyncio
+import logging
 import socket
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import numpy as np
+
+from verifiers.utils.logging_utils import print_time
+
+if TYPE_CHECKING:
+    from verifiers.workers.client.env_client import EnvClient
+
+logger = logging.getLogger(__name__)
 
 
 def msgpack_encoder(obj):
@@ -38,3 +48,30 @@ def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("localhost", 0))
         return s.getsockname()[1]
+
+
+async def wait_for_env_server(
+    env_client: "EnvClient",
+    interval: float = 1,
+    log_interval: float = 10,
+    timeout: float = 3600,  # 1h
+) -> None:
+    wait_time = 0
+    logger.debug(f"Starting pinging environment server at {env_client.address}")
+    while wait_time < timeout:
+        try:
+            await env_client.health(timeout=1)  # quick timeout
+            logger.debug(
+                f"Environment server at {env_client.address} is ready after {print_time(wait_time)}"
+            )
+            return
+        except Exception as e:
+            if wait_time % log_interval == 0 and wait_time > 0:
+                logger.warning(
+                    f"Environment server at {env_client.address} was not reached after {print_time(wait_time)} (Error: {e})"
+                )
+            await asyncio.sleep(interval)
+            wait_time += interval
+    msg = f"Environment server at {env_client.address} is not ready after {print_time(wait_time)} (>{print_time(timeout)}). Aborting..."
+    logger.error(msg)
+    raise TimeoutError(msg)
