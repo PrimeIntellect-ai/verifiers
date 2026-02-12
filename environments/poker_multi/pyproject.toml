@@ -1,0 +1,25 @@
+[project]
+name = "poker_multi"
+description = "Multi-player No-Limit Texas Hold'em Poker (2-9 players)"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["poker_multi.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
+num_players = 6
+num_hands = 3
+max_actions_per_hand = 50
+starting_chips = 1000
+small_blind = 5
+big_blind = 10
