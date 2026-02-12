@@ -29,10 +29,10 @@ from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
-    ProgressCallback,
+    TaskDoneCallback,
     RolloutInput,
     RolloutOutput,
-    RolloutStartCallback,
+    TaskStartCallback,
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -538,9 +538,9 @@ async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
     on_log_file: Callable[[Path], None] | None = None,
-    on_progress: ProgressCallback | None = None,
+    on_task_done: TaskDoneCallback | None = None,
     on_log: LogCallback | None = None,
-    on_rollout_start: RolloutStartCallback | None = None,
+    on_task_start: TaskStartCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -606,9 +606,9 @@ async def run_evaluation(
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
             on_start=on_start,
-            on_progress=on_progress,
+            on_task_done=on_task_done,
             on_log=on_log,
-            on_rollout_start=on_rollout_start,
+            on_task_start=on_task_start,
         )
     finally:
         await vf_env.stop_server()
@@ -690,7 +690,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        def on_progress(
+        def on_task_done(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
@@ -707,7 +707,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
-        def on_rollout_start(num_rollouts: int) -> None:
+        def on_task_start(num_rollouts: int) -> None:
             nonlocal started_count
             started_count += num_rollouts
             display.update_env_state(env_idx, started=started_count)
@@ -720,10 +720,10 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             result = await run_evaluation(
                 env_config,
                 on_start=on_start,
-                on_progress=on_progress,
+                on_task_done=on_task_done,
                 on_log=on_log,
                 on_log_file=register_log_file,
-                on_rollout_start=on_rollout_start,
+                on_task_start=on_task_start,
             )
 
             # get save path if results were saved
