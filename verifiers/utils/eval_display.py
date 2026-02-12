@@ -15,15 +15,111 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Group
+from rich.console import Console, ConsoleOptions, Group, Measurement, RenderResult
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, ProgressColumn, SpinnerColumn, Task, TextColumn
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
+
+
+# Colors for the dual-segment progress bar
+COMPLETED_STYLE = Style(color="rgb(0,215,135)")  # medium spring green
+IN_PROGRESS_STYLE = Style(color="rgb(240,198,116)")  # warm amber
+REMAINING_STYLE = Style(color="rgb(58,58,58)")  # dark gray
+
+BAR_CHAR = "━"
+
+
+class _DualBar:
+    """Renderable that draws a three-segment bar: completed, in-progress, remaining.
+
+    Supports responsive width when width=None (expands to fill available space).
+    """
+
+    def __init__(
+        self,
+        total: float,
+        completed: float,
+        in_progress: float,
+        width: int | None = None,
+    ) -> None:
+        self.total = total
+        self.completed = completed
+        self.in_progress = in_progress
+        self.width = width
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        bar_width = min(self.width or options.max_width, options.max_width)
+
+        if self.total <= 0:
+            yield Text(BAR_CHAR * bar_width, style=REMAINING_STYLE)
+            return
+
+        # Calculate widths for each segment
+        completed_ratio = self.completed / self.total
+        in_progress_ratio = self.in_progress / self.total
+
+        completed_width = int(completed_ratio * bar_width)
+        in_progress_width = int(in_progress_ratio * bar_width)
+
+        # Ensure at least 1 char for non-zero segments
+        if self.completed > 0 and completed_width == 0:
+            completed_width = 1
+        if self.in_progress > 0 and in_progress_width == 0:
+            in_progress_width = 1
+
+        # Clamp so we don't exceed bar_width
+        if completed_width + in_progress_width > bar_width:
+            in_progress_width = bar_width - completed_width
+
+        remaining_width = bar_width - completed_width - in_progress_width
+
+        bar = Text()
+        if completed_width > 0:
+            bar.append(BAR_CHAR * completed_width, style=COMPLETED_STYLE)
+        if in_progress_width > 0:
+            bar.append(BAR_CHAR * in_progress_width, style=IN_PROGRESS_STYLE)
+        if remaining_width > 0:
+            bar.append(BAR_CHAR * remaining_width, style=REMAINING_STYLE)
+
+        yield bar
+
+    def __rich_measure__(
+        self, console: Console, options: ConsoleOptions
+    ) -> Measurement:
+        if self.width is not None:
+            return Measurement(self.width, self.width)
+        return Measurement(4, options.max_width)
+
+
+class DualBarColumn(ProgressColumn):
+    """A progress bar column that shows two segments: completed and in-progress.
+
+    Renders a bar with three visual regions:
+    - Completed (green): rollouts that have finished
+    - In-progress (amber): rollouts currently executing
+    - Remaining (dark gray): rollouts not yet started
+    """
+
+    def __init__(self, bar_width: int | None = None) -> None:
+        super().__init__()
+        self.bar_width = bar_width
+
+    def render(self, task: Task) -> _DualBar:
+        """Render the dual-segment bar."""
+        return _DualBar(
+            total=max(0, task.total) if task.total is not None else 0,
+            completed=max(0, task.completed),
+            in_progress=max(0, task.fields.get("in_progress", 0)),
+            width=None if self.bar_width is None else max(1, self.bar_width),
+        )
 
 
 @dataclass
@@ -35,8 +131,11 @@ class EnvEvalState:
     start_time: float | None = None
     end_time: float | None = None
 
-    # updated by on_progress callback
+    # updated by on_progress / on_rollout_start callbacks
     progress: int = 0  # completed rollouts
+    started: int = (
+        0  # rollouts that have acquired the semaphore (in-progress + completed)
+    )
     total: int = 0  # total rollouts
     num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
     rollouts_per_example: int = 1  # rollouts per example (from config)
@@ -204,6 +303,7 @@ class EvalDisplay(BaseDisplay):
         env_idx: int,
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
+        started: int | None = None,
         total: int | None = None,
         num_examples: int | None = None,
         reward: float | None = None,
@@ -228,6 +328,9 @@ class EvalDisplay(BaseDisplay):
 
         if progress is not None:
             env_state.progress = progress
+
+        if started is not None:
+            env_state.started = started
 
         if total is not None:
             env_state.total = total
@@ -402,6 +505,7 @@ class EvalDisplay(BaseDisplay):
         # use env_state.total which gets updated by on_start callback
         total_rollouts = env_state.total
         completed_rollouts = env_state.progress  # always rollout-based
+        in_progress_rollouts = max(0, env_state.started - env_state.progress)
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
         # format elapsed time
@@ -411,17 +515,27 @@ class EvalDisplay(BaseDisplay):
 
         # show "..." for total if not yet known
         total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
+
+        # build rollout count text with in-progress indicator
+        rollout_count_text = f"({completed_rollouts}/{total_str} rollouts"
+        if in_progress_rollouts > 0:
+            rollout_count_text += f", {in_progress_rollouts} active"
+        rollout_count_text += ")"
+
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
-            BarColumn(bar_width=None),
+            DualBarColumn(bar_width=None),
             TextColumn(f"[bold]{pct:.0f}%"),
-            TextColumn(f"({completed_rollouts}/{total_str} rollouts)"),
+            TextColumn(rollout_count_text),
             TextColumn(f"| {time_str}"),
             console=self.console,
             expand=True,
         )
         task = progress.add_task(
-            "env", total=total_rollouts, completed=completed_rollouts
+            "env",
+            total=total_rollouts,
+            completed=completed_rollouts,
+            in_progress=in_progress_rollouts,
         )
         progress.update(task, completed=completed_rollouts)
 

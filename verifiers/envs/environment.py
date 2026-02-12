@@ -63,6 +63,7 @@ from verifiers.types import (
     ModelResponse,
     ProgressCallback,
     RolloutInput,
+    RolloutStartCallback,
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
@@ -977,6 +978,7 @@ class Environment(ABC):
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_log: LogCallback | None = None,
+        on_rollout_start: RolloutStartCallback | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -1142,6 +1144,15 @@ class Environment(ABC):
                 on_log(f"Saving results to {builder.results_path}")
 
             tasks: dict[asyncio.Task, int] = {}
+            started_count = 0
+
+            def _on_sem_acquire() -> None:
+                """Called when a rollout acquires the semaphore and starts executing."""
+                nonlocal started_count
+                started_count += 1
+                if on_rollout_start is not None:
+                    on_rollout_start(started_count)
+
             try:
                 # create tasks based on mode
                 if independent_scoring:
@@ -1158,6 +1169,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
+                                on_acquire=_on_sem_acquire,
                             ),
                         )
                         tasks[task] = i
@@ -1186,6 +1198,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
+                                on_acquire=_on_sem_acquire,
                             ),
                         )
                         tasks[task] = i
@@ -1301,6 +1314,7 @@ class Environment(ABC):
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_log: LogCallback | None = None,
+        on_rollout_start: RolloutStartCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1323,6 +1337,7 @@ class Environment(ABC):
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
+            on_rollout_start=on_rollout_start,
             **kwargs,
         )
 

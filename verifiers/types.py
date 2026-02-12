@@ -209,6 +209,9 @@ ProgressCallback = Callable[
     [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
 ]  # all_outputs, new_outputs, new_metadata
 LogCallback = Callable[[str], None]  # log messages
+RolloutStartCallback = Callable[
+    [int], None
+]  # called with rollout count when a rollout starts executing
 
 
 class GenerateMetadata(TypedDict):

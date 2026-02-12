@@ -32,6 +32,7 @@ from verifiers.types import (
     ProgressCallback,
     RolloutInput,
     RolloutOutput,
+    RolloutStartCallback,
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -539,6 +540,7 @@ async def run_evaluation(
     on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    on_rollout_start: RolloutStartCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -606,6 +608,7 @@ async def run_evaluation(
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
+            on_rollout_start=on_rollout_start,
         )
     finally:
         await vf_env.stop_server()
@@ -697,6 +700,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
+        def on_rollout_start(started_count: int) -> None:
+            display.update_env_state(env_idx, started=started_count)
+
         def register_log_file(log_file: Path) -> None:
             display.add_log_file_for_env(env_idx, log_file)
 
@@ -708,6 +714,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_progress=on_progress,
                 on_log=on_log,
                 on_log_file=register_log_file,
+                on_rollout_start=on_rollout_start,
             )
 
             # get save path if results were saved

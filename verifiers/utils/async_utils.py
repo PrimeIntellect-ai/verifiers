@@ -16,10 +16,23 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-async def with_sem(sem: AsyncContextManager, coro: Coroutine[Any, Any, T]) -> T:
-    """Wrap a coroutine with a context manager (typically a semaphore)."""
+async def with_sem(
+    sem: AsyncContextManager,
+    coro: Coroutine[Any, Any, T],
+    on_acquire: Optional[Callable[[], None]] = None,
+) -> T:
+    """Wrap a coroutine with a context manager (typically a semaphore).
+
+    Args:
+        sem: Context manager (typically an asyncio.Semaphore) to acquire before running.
+        coro: The coroutine to run once the semaphore is acquired.
+        on_acquire: Optional callback invoked immediately after the semaphore is acquired,
+            before the wrapped coroutine starts executing. Useful for tracking in-flight work.
+    """
     try:
         async with sem:
+            if on_acquire is not None:
+                on_acquire()
             return await coro
     finally:
         # closes the coroutine if it was never awaited (e.g. cancelled while acquiring sem)
