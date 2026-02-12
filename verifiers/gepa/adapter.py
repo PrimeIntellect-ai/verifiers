@@ -100,7 +100,7 @@ class VerifiersGEPAAdapter:
                 max_concurrent=self.max_concurrent,
                 state_columns=self.state_columns,
                 on_start=do_nothing,
-                on_progress=do_nothing,
+                on_task_done=do_nothing,
             )
         )
 

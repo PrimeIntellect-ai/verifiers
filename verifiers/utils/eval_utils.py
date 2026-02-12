@@ -29,9 +29,10 @@ from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
-    ProgressCallback,
+    TaskDoneCallback,
     RolloutInput,
     RolloutOutput,
+    TaskStartCallback,
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -537,8 +538,9 @@ async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
     on_log_file: Callable[[Path], None] | None = None,
-    on_progress: ProgressCallback | None = None,
+    on_task_done: TaskDoneCallback | None = None,
     on_log: LogCallback | None = None,
+    on_task_start: TaskStartCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -604,8 +606,9 @@ async def run_evaluation(
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
             on_start=on_start,
-            on_progress=on_progress,
+            on_task_done=on_task_done,
             on_log=on_log,
+            on_task_start=on_task_start,
         )
     finally:
         await vf_env.stop_server()
@@ -664,7 +667,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 
+        # Track cumulative started rollouts for the dual progress bar.
+        # Initialized to the resumed count in on_start so that
+        # in_progress (= started - progress) is correct after resume.
+        started_count = 0
+
         def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
+            nonlocal started_count
             total = len(raw_inputs)
             if (
                 isinstance(filtered_inputs, list)
@@ -675,12 +684,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             else:
                 remaining = len(filtered_inputs) if filtered_inputs else 0
             resumed = total - remaining
+            started_count = resumed
             num_examples = total // env_config.rollouts_per_example
             display.update_env_state(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        def on_progress(
+        def on_task_done(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
@@ -697,6 +707,11 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
+        def on_task_start(num_rollouts: int) -> None:
+            nonlocal started_count
+            started_count += num_rollouts
+            display.update_env_state(env_idx, started=started_count)
+
         def register_log_file(log_file: Path) -> None:
             display.add_log_file_for_env(env_idx, log_file)
 
@@ -705,9 +720,10 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             result = await run_evaluation(
                 env_config,
                 on_start=on_start,
-                on_progress=on_progress,
+                on_task_done=on_task_done,
                 on_log=on_log,
                 on_log_file=register_log_file,
+                on_task_start=on_task_start,
             )
 
             # get save path if results were saved

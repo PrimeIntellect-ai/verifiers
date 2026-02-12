@@ -61,8 +61,9 @@ from verifiers.types import (
     Messages,
     MessageType,
     ModelResponse,
-    ProgressCallback,
+    TaskDoneCallback,
     RolloutInput,
+    TaskStartCallback,
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
@@ -975,8 +976,9 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_task_done: TaskDoneCallback | None = None,
         on_log: LogCallback | None = None,
+        on_task_start: TaskStartCallback | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -1029,7 +1031,7 @@ class Environment(ABC):
                     postfix=dict(reward="?"),
                 )
 
-        def default_on_progress(
+        def default_on_task_done(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             new_metadata: GenerateMetadata,
@@ -1045,7 +1047,7 @@ class Environment(ABC):
             self.logger.info(message)
 
         on_start = on_start or cast(StartCallback, default_on_start)
-        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        on_task_done = on_task_done or cast(TaskDoneCallback, default_on_task_done)
         on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
@@ -1142,6 +1144,20 @@ class Environment(ABC):
                 on_log(f"Saving results to {builder.results_path}")
 
             tasks: dict[asyncio.Task, int] = {}
+
+            def make_on_acquire(num_rollouts: int):
+                """Create an on_acquire callback for a task.
+
+                Calls on_task_start with the number of rollouts that just
+                began executing (1 for independent scoring, len(group) for grouped).
+                """
+
+                def on_acquire() -> None:
+                    if on_task_start is not None:
+                        on_task_start(num_rollouts)
+
+                return on_acquire
+
             try:
                 # create tasks based on mode
                 if independent_scoring:
@@ -1158,6 +1174,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
+                                on_acquire=make_on_acquire(1),
                             ),
                         )
                         tasks[task] = i
@@ -1186,6 +1203,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
+                                on_acquire=make_on_acquire(len(group_input)),
                             ),
                         )
                         tasks[task] = i
@@ -1198,7 +1216,7 @@ class Environment(ABC):
                     builder.add_outputs(new_outputs)
                     metadata = builder.build_metadata()
 
-                    on_progress(builder.outputs, new_outputs, metadata)
+                    on_task_done(builder.outputs, new_outputs, metadata)
 
                     # incrementally save outputs
                     if save_results:
@@ -1299,8 +1317,9 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_task_done: TaskDoneCallback | None = None,
         on_log: LogCallback | None = None,
+        on_task_start: TaskStartCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1321,8 +1340,9 @@ class Environment(ABC):
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_start=on_start,
-            on_progress=on_progress,
+            on_task_done=on_task_done,
             on_log=on_log,
+            on_task_start=on_task_start,
             **kwargs,
         )
 

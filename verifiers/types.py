@@ -205,10 +205,13 @@ JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "obje
 StartCallback = Callable[
     [list[RolloutInput], list[RolloutInput] | list[list[RolloutInput]]], None
 ]
-ProgressCallback = Callable[
+TaskDoneCallback = Callable[
     [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
 ]  # all_outputs, new_outputs, new_metadata
 LogCallback = Callable[[str], None]  # log messages
+TaskStartCallback = Callable[
+    [int], None
+]  # called with number of rollouts that just began executing
 
 
 class GenerateMetadata(TypedDict):

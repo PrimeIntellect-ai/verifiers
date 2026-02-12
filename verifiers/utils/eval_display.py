@@ -15,15 +15,141 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-from rich.table import Table
+from rich.progress import Progress, ProgressColumn, SpinnerColumn, Task, TextColumn
+from rich.progress_bar import ProgressBar
+from rich.segment import Segment
+from rich.style import StyleType
+from rich.table import Column, Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
+
+# Status colors — used for panel borders and progress bar segments
+COLOR_PENDING = "dim"
+COLOR_RUNNING = "yellow"
+COLOR_COMPLETED = "green"
+COLOR_FAILED = "red"
+
+
+class _DualBar(ProgressBar):
+    """Three-segment progress bar extending Rich's ProgressBar.
+
+    Adds an in-progress segment between the completed and remaining regions.
+    Inherits responsive width (__rich_measure__) and pulse animation from ProgressBar.
+    """
+
+    def __init__(
+        self,
+        in_progress: float = 0,
+        in_progress_style: StyleType = COLOR_RUNNING,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.in_progress = in_progress
+        self.in_progress_style = in_progress_style
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        width = min(self.width or options.max_width, options.max_width)
+        ascii = options.legacy_windows or options.ascii_only
+
+        if self.pulse or self.total is None:
+            yield from self._render_pulse(console, width, ascii=ascii)
+            return
+
+        bar = "-" if ascii else "━"
+        half_bar_right = " " if ascii else "╸"
+
+        total = self.total or 0
+        if total <= 0:
+            yield Segment(bar * width, console.get_style(self.style))
+            return
+
+        completed = min(total, max(0, self.completed))
+        in_prog = max(0, self.in_progress)
+
+        # Half-char precision (2x resolution), matching ProgressBar's approach
+        c_halves = int(width * 2 * completed / total)
+        p_halves = int(width * 2 * in_prog / total)
+
+        # Ensure at least 1 half-char for non-zero segments
+        if completed > 0 and c_halves == 0:
+            c_halves = 1
+        if in_prog > 0 and p_halves == 0:
+            p_halves = 1
+
+        # Clamp to total bar width
+        total_halves = width * 2
+        if c_halves + p_halves > total_halves:
+            p_halves = total_halves - c_halves
+
+        c_full, c_half = divmod(c_halves, 2)
+        p_full, p_half = divmod(p_halves, 2)
+
+        c_style = console.get_style(self.complete_style)
+        p_style = console.get_style(self.in_progress_style)
+        r_style = console.get_style(self.style)
+
+        # Completed segment
+        if c_full:
+            yield Segment(bar * c_full, c_style)
+        if c_half:
+            yield Segment(half_bar_right, c_style)
+
+        # In-progress segment
+        if p_full:
+            yield Segment(bar * p_full, p_style)
+        if p_half:
+            yield Segment(half_bar_right, p_style)
+
+        # Remaining segment
+        used = c_full + c_half + p_full + p_half
+        remaining = width - used
+        if remaining > 0 and not console.no_color and console.color_system is not None:
+            yield Segment(bar * remaining, r_style)
+
+
+class DualBarColumn(ProgressColumn):
+    """Progress column showing completed, in-progress, and remaining segments.
+
+    Follows the same constructor pattern as Rich's BarColumn, with an additional
+    in_progress_style for the active-work segment.
+    """
+
+    def __init__(
+        self,
+        bar_width: int | None = None,
+        style: StyleType = "bar.back",
+        complete_style: StyleType = COLOR_COMPLETED,
+        in_progress_style: StyleType = COLOR_RUNNING,
+        table_column: Column | None = None,
+    ) -> None:
+        if table_column is None:
+            table_column = Column(no_wrap=True, ratio=2)
+        super().__init__(table_column=table_column)
+        self.bar_width = bar_width
+        self.style = style
+        self.complete_style = complete_style
+        self.in_progress_style = in_progress_style
+
+    def render(self, task: Task) -> _DualBar:
+        """Render the dual-segment bar."""
+        return _DualBar(
+            total=max(0, task.total) if task.total is not None else None,
+            completed=max(0, task.completed),
+            in_progress=max(0, task.fields.get("in_progress", 0)),
+            width=None if self.bar_width is None else max(1, self.bar_width),
+            pulse=not task.started,
+            animation_time=task.get_time(),
+            style=self.style,
+            complete_style=self.complete_style,
+            in_progress_style=self.in_progress_style,
+        )
 
 
 @dataclass
@@ -35,8 +161,11 @@ class EnvEvalState:
     start_time: float | None = None
     end_time: float | None = None
 
-    # updated by on_progress callback
+    # updated by on_progress / on_rollout_start callbacks
     progress: int = 0  # completed rollouts
+    started: int = (
+        0  # rollouts that have acquired the semaphore (in-progress + completed)
+    )
     total: int = 0  # total rollouts
     num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
     rollouts_per_example: int = 1  # rollouts per example (from config)
@@ -204,6 +333,7 @@ class EvalDisplay(BaseDisplay):
         env_idx: int,
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
+        started: int | None = None,
         total: int | None = None,
         num_examples: int | None = None,
         reward: float | None = None,
@@ -228,6 +358,9 @@ class EvalDisplay(BaseDisplay):
 
         if progress is not None:
             env_state.progress = progress
+
+        if started is not None:
+            env_state.started = started
 
         if total is not None:
             env_state.total = total
@@ -402,6 +535,7 @@ class EvalDisplay(BaseDisplay):
         # use env_state.total which gets updated by on_start callback
         total_rollouts = env_state.total
         completed_rollouts = env_state.progress  # always rollout-based
+        in_progress_rollouts = max(0, env_state.started - env_state.progress)
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
         # format elapsed time
@@ -411,17 +545,23 @@ class EvalDisplay(BaseDisplay):
 
         # show "..." for total if not yet known
         total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
+
+        rollout_count_text = f"({completed_rollouts}/{total_str} rollouts)"
+
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
-            BarColumn(bar_width=None),
+            DualBarColumn(bar_width=None),
             TextColumn(f"[bold]{pct:.0f}%"),
-            TextColumn(f"({completed_rollouts}/{total_str} rollouts)"),
+            TextColumn(rollout_count_text),
             TextColumn(f"| {time_str}"),
             console=self.console,
             expand=True,
         )
         task = progress.add_task(
-            "env", total=total_rollouts, completed=completed_rollouts
+            "env",
+            total=total_rollouts,
+            completed=completed_rollouts,
+            in_progress=in_progress_rollouts,
         )
         progress.update(task, completed=completed_rollouts)
 
@@ -467,12 +607,12 @@ class EvalDisplay(BaseDisplay):
 
         # border style based on status
         border_styles = {
-            "pending": "dim",
-            "running": "yellow",
-            "completed": "green",
-            "failed": "red",
+            "pending": COLOR_PENDING,
+            "running": COLOR_RUNNING,
+            "completed": COLOR_COMPLETED,
+            "failed": COLOR_FAILED,
         }
-        border_style = border_styles.get(env_state.status, "dim")
+        border_style = border_styles.get(env_state.status, COLOR_PENDING)
 
         # build title with env name only
         title = Text()
