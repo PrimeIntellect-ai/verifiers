@@ -1144,22 +1144,17 @@ class Environment(ABC):
                 on_log(f"Saving results to {builder.results_path}")
 
             tasks: dict[asyncio.Task, int] = {}
-            # Initialize to already-completed count so that in_progress
-            # (= started - progress) is correct when resuming evaluations.
-            started_count = len(builder.outputs)
 
             def _make_on_acquire(num_rollouts: int):
-                """Create an on_acquire callback that counts the right number of rollouts.
+                """Create an on_acquire callback for a task.
 
-                For independent scoring each task is 1 rollout; for grouped scoring
-                each task covers len(group_input) rollouts.
+                Calls on_rollout_start with the number of rollouts that just
+                began executing (1 for independent scoring, len(group) for grouped).
                 """
 
                 def _on_acquire() -> None:
-                    nonlocal started_count
-                    started_count += num_rollouts
                     if on_rollout_start is not None:
-                        on_rollout_start(started_count)
+                        on_rollout_start(num_rollouts)
 
                 return _on_acquire
 

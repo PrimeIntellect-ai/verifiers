@@ -667,7 +667,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 
+        # Track cumulative started rollouts for the dual progress bar.
+        # Initialized to the resumed count in on_start so that
+        # in_progress (= started - progress) is correct after resume.
+        started_count = 0
+
         def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
+            nonlocal started_count
             total = len(raw_inputs)
             if (
                 isinstance(filtered_inputs, list)
@@ -678,6 +684,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             else:
                 remaining = len(filtered_inputs) if filtered_inputs else 0
             resumed = total - remaining
+            started_count = resumed
             num_examples = total // env_config.rollouts_per_example
             display.update_env_state(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
@@ -700,7 +707,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
-        def on_rollout_start(started_count: int) -> None:
+        def on_rollout_start(num_rollouts: int) -> None:
+            nonlocal started_count
+            started_count += num_rollouts
             display.update_env_state(env_idx, started=started_count)
 
         def register_log_file(log_file: Path) -> None:
