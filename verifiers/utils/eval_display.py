@@ -35,6 +35,7 @@ COLOR_COMPLETED = "green"
 COLOR_FAILED = "red"
 
 
+
 class _DualBar(ProgressBar):
     """Three-segment progress bar extending Rich's ProgressBar.
 
@@ -124,7 +125,7 @@ class DualBarColumn(ProgressColumn):
     def __init__(
         self,
         bar_width: int | None = None,
-        style: StyleType = COLOR_PENDING,
+        style: StyleType = "bar.back",
         complete_style: StyleType = COLOR_COMPLETED,
         in_progress_style: StyleType = COLOR_RUNNING,
         table_column: Column | None = None,
