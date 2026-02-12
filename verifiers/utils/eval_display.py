@@ -516,11 +516,7 @@ class EvalDisplay(BaseDisplay):
         # show "..." for total if not yet known
         total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
 
-        # build rollout count text with in-progress indicator
-        rollout_count_text = f"({completed_rollouts}/{total_str} rollouts"
-        if in_progress_rollouts > 0:
-            rollout_count_text += f", {in_progress_rollouts} active"
-        rollout_count_text += ")"
+        rollout_count_text = f"({completed_rollouts}/{total_str} rollouts)"
 
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),

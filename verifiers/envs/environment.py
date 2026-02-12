@@ -1146,12 +1146,20 @@ class Environment(ABC):
             tasks: dict[asyncio.Task, int] = {}
             started_count = 0
 
-            def _on_sem_acquire() -> None:
-                """Called when a rollout acquires the semaphore and starts executing."""
-                nonlocal started_count
-                started_count += 1
-                if on_rollout_start is not None:
-                    on_rollout_start(started_count)
+            def _make_on_acquire(num_rollouts: int):
+                """Create an on_acquire callback that counts the right number of rollouts.
+
+                For independent scoring each task is 1 rollout; for grouped scoring
+                each task covers len(group_input) rollouts.
+                """
+
+                def _on_acquire() -> None:
+                    nonlocal started_count
+                    started_count += num_rollouts
+                    if on_rollout_start is not None:
+                        on_rollout_start(started_count)
+
+                return _on_acquire
 
             try:
                 # create tasks based on mode
@@ -1169,7 +1177,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
-                                on_acquire=_on_sem_acquire,
+                                on_acquire=_make_on_acquire(1),
                             ),
                         )
                         tasks[task] = i
@@ -1198,7 +1206,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
-                                on_acquire=_on_sem_acquire,
+                                on_acquire=_make_on_acquire(len(group_input)),
                             ),
                         )
                         tasks[task] = i
