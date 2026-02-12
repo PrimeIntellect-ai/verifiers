@@ -35,7 +35,6 @@ COLOR_COMPLETED = "green"
 COLOR_FAILED = "red"
 
 
-
 class _DualBar(ProgressBar):
     """Three-segment progress bar extending Rich's ProgressBar.
 
