@@ -316,19 +316,27 @@ class CliAgentEnv(SandboxMixin, vf.Environment):
         state["gateway_url"] = self._resolve_gateway_url(state)
 
         rollout_registered = False
+        failure_stage = "register_rollout"
+        error_stage: str | None = None
         try:
+            failure_stage = "register_rollout"
             await self.register_rollout(state)
             rollout_registered = True
 
+            failure_stage = "resolve_tunnel_local_addr"
             tunnel_local_addr = self._resolve_tunnel_local_addr(state)
             state["tunnel_local_addr"] = tunnel_local_addr
+
+            failure_stage = "start_tunnel"
             tunnel_url = await self.get_tunnel_url(local_addr=tunnel_local_addr)
             state["tunnel_url"] = tunnel_url
             state["rollout_base_url"] = (
                 f"{tunnel_url.rstrip('/')}/v1/rollouts/{state['rollout_id']}"
             )
 
+            failure_stage = "build_env_vars"
             env_vars = await self.build_env_vars(state)
+            failure_stage = "get_docker_image"
             docker_image = await self.get_docker_image(state)
             sandbox_request = CreateSandboxRequest(
                 name=cast(str, state["rollout_id"]),
@@ -348,36 +356,61 @@ class CliAgentEnv(SandboxMixin, vf.Environment):
                 f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
                 f"docker_image={docker_image}"
             )
+            failure_stage = "create_sandbox"
             await self.create_sandbox(state, sandbox_request)
 
+            failure_stage = "start_agent"
             await self.start_agent(state)
+            failure_stage = "wait_for_agent_completion"
             await self.wait_for_agent_completion(state)
+            failure_stage = "fetch_trajectory"
             await self.fetch_trajectory(state)
         except vf.Error as e:
+            error_stage = failure_stage
             state["error"] = e
         except Exception as e:
+            error_stage = failure_stage
             state["error"] = vf.InfraError(str(e))
         finally:
             if rollout_registered:
                 try:
+                    failure_stage = "unregister_rollout"
                     await self.unregister_rollout(state)
                 except Exception as e:
                     logger.warning(
                         f"Failed to unregister rollout {state['rollout_id']}: {e}"
                     )
+                    if error_stage is None:
+                        error_stage = failure_stage
                     if state.get("error") is None:
                         state["error"] = vf.InfraError(str(e))
 
             if state.get("sandbox_id"):
                 try:
+                    failure_stage = "destroy_sandbox"
                     await self.destroy_sandbox(state)
                 except Exception as e:
                     logger.warning(
                         f"Failed to destroy sandbox {state.get('sandbox_id')}: {e}"
                     )
+                    if error_stage is None:
+                        error_stage = failure_stage
                     if state.get("error") is None:
                         state["error"] = vf.InfraError(str(e))
 
+            if state.get("completion") is None:
+                state["completion"] = []
+            if state.get("error") is not None:
+                if state.get("stop_condition") is None:
+                    state["stop_condition"] = (
+                        f"{error_stage}_error" if error_stage else "has_error"
+                    )
+            elif state.get("agent_timed_out", False):
+                if state.get("stop_condition") is None:
+                    state["stop_condition"] = "agent_timeout"
+            else:
+                if state.get("stop_condition") is None:
+                    state["stop_condition"] = "completed"
             state["is_completed"] = True
             self._render_timing(state)
 
