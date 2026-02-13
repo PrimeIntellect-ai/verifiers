@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 import aiohttp
@@ -25,5 +24,4 @@ class Heartbeat:
                     pass
         except Exception as e:
             logger.warning(f"Heartbeat failed: {e}")
-        finally:
-            self._in_flight = False
+        self._in_flight = False

@@ -711,7 +711,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
             )
-            if heart is not None:
+            if heart:
                 asyncio.create_task(heart.beat())
 
         def on_log(message: str) -> None:
