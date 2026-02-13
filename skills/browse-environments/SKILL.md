@@ -54,7 +54,7 @@ For each candidate, collect:
 2. Use install + smoke eval to validate real usability:
 ```bash
 prime env install owner/name
-prime eval run name -m gpt-4.1-mini -n 5
+prime eval run name -m openai/gpt-4.1-mini -n 5
 ```
 3. For examples in the verifiers repository, use repo install path when available:
 ```bash

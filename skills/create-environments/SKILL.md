@@ -14,7 +14,7 @@ Build production-quality verifiers environments that work immediately in the Pri
 ```bash
 prime env init my-env
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
 ```
 3. Prefer an existing environment as a starting point when possible:
 ```bash
@@ -75,12 +75,12 @@ prime env pull owner/name -t ./tmp-env
 Run these before claiming completion:
 ```bash
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 5
-prime eval run my-env -m gpt-4.1-mini -n 50 -r 1 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
 ```
 If multi-turn or tool-heavy, also run with higher rollouts:
 ```bash
-prime eval run my-env -m gpt-4.1-mini -n 30 -r 3 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
 ```
 
 ## Publish Gate Before Large Evals Or Training
@@ -96,7 +96,7 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted or large-scale workflows, prefer running with the Hub slug after push:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 
 ## Synthetic Data
