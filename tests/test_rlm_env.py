@@ -68,6 +68,7 @@ def rlm_env() -> RLMEnv:
         max_iterations=10,
         max_output_length=1000,
         repl_language="python",
+        interception_url="http://test.invalid",
     )
 
 
@@ -87,6 +88,7 @@ def rlm_env_with_sub_tools() -> RLMEnv:
         sub_tools=[sample_tool, another_tool],
         sub_tool_max_turns=3,
         repl_language="python",
+        interception_url="http://test.invalid",
     )
 
 
@@ -98,6 +100,7 @@ def rlm_env_bash() -> RLMEnv:
         max_iterations=10,
         max_output_length=1000,
         repl_language="bash",
+        interception_url="http://test.invalid",
     )
 
 
@@ -221,7 +224,7 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_copies_context_dir(self, context_dir: Path):
         dataset = make_dataset({"context_dir": str(context_dir)})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -251,7 +254,7 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_json(self):
         dataset = make_dataset({"context": {"a": 1}})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -270,7 +273,7 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_text(self):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -297,7 +300,7 @@ class TestContextFilesystemSetup:
             pytest.skip("symlinks not supported on this platform")
 
         dataset = make_dataset({"context_dir": str(src)})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -313,7 +316,9 @@ class TestContextFilesystemSetup:
         (src / "big.txt").write_bytes(b"0123456789")
 
         dataset = make_dataset({"context_dir": str(src)})
-        env = build_env(dataset, filesystem_copy_max_bytes=5)
+        env = build_env(
+            dataset, filesystem_copy_max_bytes=5, interception_url="http://test.invalid"
+        )
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -325,7 +330,7 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_no_context_creates_empty_dir(self):
         dataset = make_dataset({})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -343,7 +348,7 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_system_prompt_mentions_working_dir_and_empty_context(self):
         dataset = make_dataset({})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -363,7 +368,7 @@ class TestFilesystemCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_removes_filesystem_by_default(self, tmp_path: Path):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -379,7 +384,11 @@ class TestFilesystemCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_keeps_filesystem_when_configured(self):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset, retain_filesystem_after_rollout=True)
+        env = build_env(
+            dataset,
+            retain_filesystem_after_rollout=True,
+            interception_url="http://test.invalid",
+        )
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -455,7 +464,10 @@ class TestPromptVerbosity:
     ):
         dataset = make_dataset({})
         env = build_env(
-            dataset, repl_language="python", root_prompt_verbosity=verbosity
+            dataset,
+            repl_language="python",
+            root_prompt_verbosity=verbosity,
+            interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
@@ -899,7 +911,11 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         env = build_env(
-            dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
+            dataset,
+            tools=[shared_tool],
+            root_tools=[root_tool],
+            sub_tools=[sub_tool],
+            interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
