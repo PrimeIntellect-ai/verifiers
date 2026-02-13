@@ -623,7 +623,9 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         from verifiers.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
-        on_progress = lambda *_args, **_kwargs: asyncio.create_task(heart.beat())
+
+        def on_progress(*_args, **_kwargs):
+            asyncio.create_task(heart.beat())
 
     start_time = time.time()
     all_results = await asyncio.gather(
