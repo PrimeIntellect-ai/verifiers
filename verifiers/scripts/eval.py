@@ -553,7 +553,9 @@ def main():
     for config in eval_configs:
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
-    eval_run_config = EvalRunConfig(evals=eval_configs, heartbeat_url=args.heartbeat_url)
+    eval_run_config = EvalRunConfig(
+        evals=eval_configs, heartbeat_url=args.heartbeat_url
+    )
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:
