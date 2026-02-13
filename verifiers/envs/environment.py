@@ -101,6 +101,48 @@ if TYPE_CHECKING:
     pass
 
 
+def _normalize_sampling_args(
+    sampling_args: SamplingArgs, message_type: MessageType
+) -> SamplingArgs:
+    """Normalize sampling arguments for the target API.
+
+    - For chat completions, rename ``max_tokens`` to ``max_completion_tokens``.
+    - For the completions API, translate ``logprobs`` / ``top_logprobs`` from
+      chat-completions semantics (boolean + integer) to the single integer
+      ``logprobs`` that the completions endpoint expects.
+    - Drop any ``None``-valued entries to avoid sending them to the client.
+    """
+    if "max_tokens" in sampling_args:
+        if sampling_args["max_tokens"] is None:
+            sampling_args.pop("max_tokens")
+        elif message_type == "chat":
+            sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
+    if (
+        "max_completion_tokens" in sampling_args
+        and sampling_args["max_completion_tokens"] is None
+    ):
+        sampling_args.pop("max_completion_tokens")
+    # The completions API accepts ``logprobs`` as an integer (number of top
+    # log-probabilities per token) rather than a boolean, and does not
+    # recognise ``top_logprobs``.  Translate chat-style parameters so
+    # completions-mode users get the correct count.
+    if message_type == "completion":
+        top_k = sampling_args.get("top_logprobs")
+        logprobs_val = sampling_args.get("logprobs")
+        if isinstance(logprobs_val, bool):
+            if logprobs_val:
+                sampling_args["logprobs"] = top_k if top_k is not None else 1
+            else:
+                sampling_args.pop("logprobs", None)
+        elif top_k is not None and logprobs_val is None:
+            sampling_args["logprobs"] = top_k
+    return {
+        k: v
+        for k, v in sampling_args.items()
+        if v is not None and not (message_type == "completion" and k == "top_logprobs")
+    }
+
+
 class Environment(ABC):
     """
     Base class for all environments.
@@ -529,24 +571,8 @@ class Environment(ABC):
             return client, model, oai_tools, sampling_args, message_type
 
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
-            """
-            Normalize sampling arguments. Mainly does 2 things:
-            - if max_tokens is provided for chat, rename to max_completion_tokens
-            - drop any None-valued entries to avoid sending to the client
-            """
-            if "max_tokens" in sampling_args:
-                if sampling_args["max_tokens"] is None:
-                    sampling_args.pop("max_tokens")
-                elif message_type == "chat":
-                    sampling_args["max_completion_tokens"] = sampling_args.pop(
-                        "max_tokens"
-                    )
-            if (
-                "max_completion_tokens" in sampling_args
-                and sampling_args["max_completion_tokens"] is None
-            ):
-                sampling_args.pop("max_completion_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
+            assert message_type is not None
+            return _normalize_sampling_args(sampling_args, message_type)
 
         def handle_overlong_prompt(func):
             """Decorator to handle overlong prompt errors from the model API."""
