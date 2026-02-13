@@ -162,7 +162,9 @@ async def extract_top_logprobs(
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         choice = response.choices[0]
-        content = choice.logprobs.content  # list[ChatCompletionTokenLogprob]
+        assert choice.logprobs is not None
+        content = choice.logprobs.content
+        assert content is not None
 
         all_tokens: list[list[str]] = []
         all_logprobs: list[list[float]] = []
@@ -176,7 +178,9 @@ async def extract_top_logprobs(
     elif message_type == "completion":
         assert isinstance(response, Completion)
         choice = response.choices[0]
-        top_logprobs_list = choice.logprobs.top_logprobs  # list[dict[str, float]]
+        assert choice.logprobs is not None
+        top_logprobs_list = choice.logprobs.top_logprobs
+        assert top_logprobs_list is not None
 
         all_tokens: list[list[str]] = []
         all_logprobs: list[list[float]] = []

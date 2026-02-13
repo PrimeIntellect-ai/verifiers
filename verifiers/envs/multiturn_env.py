@@ -132,6 +132,7 @@ class MultiTurnEnv(vf.Environment):
         # if the response is missing expected data.
         sampling_args = state.get("sampling_args") or {}
         if sampling_args.get("top_logprobs") is not None:
+            assert response is not None
             top_lp = await extract_top_logprobs(response, self.message_type)
             if "completion_top_logprobs" not in state:
                 state["completion_top_logprobs"] = []
