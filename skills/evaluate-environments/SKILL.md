@@ -85,7 +85,12 @@ prime eval run my-env -s -C "judge_response,parsed_answer"
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Run multi-environment TOML suites:
+5. Collect synthetic data with top-k logprobs:
+```bash
+prime eval run my-env -m my-model -b http://localhost:8000/v1 --top-logprobs 5 -n 100
+```
+This saves `completion_top_logprobs` (floats) and `completion_top_tokens` (strings) as parallel `list[list[...]]` fields in the output JSONL, coupled by index. Implies `--save-results`. Requires a vLLM or OpenAI-compatible endpoint that supports the `logprobs`/`top_logprobs` parameters.
+6. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```

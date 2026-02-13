@@ -106,6 +106,7 @@ When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections t
 | `--max-tokens` | `-t` | model default | Maximum tokens to generate |
 | `--temperature` | `-T` | model default | Sampling temperature |
 | `--sampling-args` | `-S` | — | JSON object for additional sampling parameters |
+| `--top-logprobs` | `-L` | — | Save top-K logprobs per token (implies `--save-results`) |
 
 The `--sampling-args` flag accepts any parameters supported by the model's API:
 
@@ -279,6 +280,7 @@ Each `[[eval]]` section must contain an `env_id` field. All other fields are opt
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `top_logprobs` | integer | Save top-K logprobs per token (implies `save_results`) |
 
 Example with `env_args`:
 

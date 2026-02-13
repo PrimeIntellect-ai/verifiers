@@ -287,6 +287,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "sampling_args",
         "max_tokens",
         "temperature",
+        "top_logprobs",
         # evaluation
         "num_examples",
         "rollouts_per_example",
@@ -623,6 +624,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         *[run_evaluation(eval_config) for eval_config in config.evals]
     )
     end_time = time.time()
+
     event_loop_lags = event_loop_lag_monitor.get_lags()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
