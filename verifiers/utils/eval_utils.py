@@ -629,7 +629,10 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config, on_progress=on_progress) for eval_config in config.evals]
+        *[
+            run_evaluation(eval_config, on_progress=on_progress)
+            for eval_config in config.evals
+        ]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()

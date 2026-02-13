@@ -1052,7 +1052,8 @@ class Environment(ABC):
             extra_on_progress = on_progress
         elif on_progress is not None:
             extra_on_progress = [on_progress]
-            default_on_progress = lambda *a, **kw: None
+
+            def default_on_progress(*a, **kw): None
         else:
             extra_on_progress = []
         on_log = on_log or cast(LogCallback, default_on_log)
