@@ -278,6 +278,12 @@ def main():
         default=0,
         help="Max retries for transient infrastructure errors (default: 0)",
     )
+    parser.add_argument(
+        "--heartbeat-url",
+        type=str,
+        default=None,
+        help="Heartbeat URL for uptime monitoring",
+    )
     args = parser.parse_args()
 
     if args.debug:  # only set up console logging in debug mode
@@ -547,7 +553,8 @@ def main():
     for config in eval_configs:
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
-    eval_run_config = EvalRunConfig(evals=eval_configs)
+    heartbeat_url = raw_eval_configs[0].get("heartbeat_url") or getattr(args, "heartbeat_url", None)
+    eval_run_config = EvalRunConfig(evals=eval_configs, heartbeat_url=heartbeat_url)
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:

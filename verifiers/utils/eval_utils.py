@@ -618,11 +618,21 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
+    heart = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+        heart.start()
+
     start_time = time.time()
     all_results = await asyncio.gather(
         *[run_evaluation(eval_config) for eval_config in config.evals]
     )
     end_time = time.time()
+
+    if heart is not None:
+        heart.stop()
     event_loop_lags = event_loop_lag_monitor.get_lags()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
@@ -656,6 +666,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         logger.debug("Not a TTY, falling back to standard output")
         await run_evaluations(config)
         return
+
+    heart = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+        heart.start()
 
     display = EvalDisplay(config.evals, screen=tui_mode)
 
@@ -754,6 +771,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
+    finally:
+        if heart is not None:
+            heart.stop()
 
     # print final summary after exit
     display.print_final_summary()

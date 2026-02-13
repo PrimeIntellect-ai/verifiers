@@ -362,3 +362,4 @@ class EvalRunConfig(BaseModel):
     """Pydantic model for evaluation run configuration."""
 
     evals: list[EvalConfig]
+    heartbeat_url: str | None = None
