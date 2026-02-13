@@ -93,6 +93,7 @@ def setup_client(config: ClientConfig) -> AsyncOpenAI:
         api_key=api_key or "EMPTY",
         max_retries=resolved_config.max_retries,
         http_client=http_client,
+        default_headers=config.extra_headers,
     )
 
     return client
