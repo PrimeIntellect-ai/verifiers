@@ -1048,14 +1048,14 @@ class Environment(ABC):
             self.logger.info(message)
 
         on_start = on_start or cast(StartCallback, default_on_start)
+        extra_on_progress: list[ProgressCallback] = []
         if isinstance(on_progress, list):
-            extra_on_progress = on_progress
+            extra_on_progress = cast(list[ProgressCallback], on_progress)
         elif on_progress is not None:
             extra_on_progress = [on_progress]
 
-            def default_on_progress(*a, **kw): None
-        else:
-            extra_on_progress = []
+            def default_on_progress(*a, **kw):
+                None
         on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
