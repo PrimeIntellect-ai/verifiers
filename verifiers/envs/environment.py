@@ -975,7 +975,7 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
     ) -> GenerateOutputs:
         """
@@ -983,6 +983,9 @@ class Environment(ABC):
 
         Args:
             client: Can be a single AsyncOpenAI client or a ClientConfig.
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
         """
         from datasets import Dataset
         from tqdm import tqdm
@@ -1045,7 +1048,13 @@ class Environment(ABC):
             self.logger.info(message)
 
         on_start = on_start or cast(StartCallback, default_on_start)
-        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        if isinstance(on_progress, list):
+            extra_on_progress = on_progress
+        elif on_progress is not None:
+            extra_on_progress = [on_progress]
+            default_on_progress = lambda *a, **kw: None
+        else:
+            extra_on_progress = []
         on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
@@ -1198,7 +1207,9 @@ class Environment(ABC):
                     builder.add_outputs(new_outputs)
                     metadata = builder.build_metadata()
 
-                    on_progress(builder.outputs, new_outputs, metadata)
+                    default_on_progress(builder.outputs, new_outputs, metadata)
+                    for cb in extra_on_progress:
+                        cb(builder.outputs, new_outputs, metadata)
 
                     # incrementally save outputs
                     if save_results:
@@ -1299,12 +1310,17 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset.
+
+        Args:
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
         """
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return await self.generate(

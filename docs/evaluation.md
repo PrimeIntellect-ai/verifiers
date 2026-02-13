@@ -149,6 +149,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
+| `--heartbeat-url` | — | — | Heartbeat URL for uptime monitoring |
 
 Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
 

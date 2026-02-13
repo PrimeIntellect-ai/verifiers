@@ -537,7 +537,7 @@ async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
     on_log_file: Callable[[Path], None] | None = None,
-    on_progress: ProgressCallback | None = None,
+    on_progress: ProgressCallback | list[ProgressCallback] | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
@@ -629,10 +629,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[
-            run_evaluation(eval_config, on_progress=on_progress)
-            for eval_config in config.evals
-        ]
+        *[run_evaluation(eval_config, on_progress=on_progress) for eval_config in config.evals]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()
@@ -698,7 +695,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        def on_progress(
+        def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
@@ -711,8 +708,10 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
             )
-            if heart:
-                asyncio.create_task(heart.beat())
+
+        on_progress: list[ProgressCallback] = [on_display_progress]
+        if heart is not None:
+            on_progress.append(lambda *_a, **_kw: asyncio.create_task(heart.beat()))
 
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)

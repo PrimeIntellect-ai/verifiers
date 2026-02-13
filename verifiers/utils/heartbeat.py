@@ -11,17 +11,18 @@ class Heartbeat:
     def __init__(self, url: str):
         self.url = url
         self._in_flight = False
+        self._session = aiohttp.ClientSession()
 
     async def beat(self):
         if self._in_flight:
             return
         self._in_flight = True
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.url, timeout=aiohttp.ClientTimeout(total=5)
-                ):
-                    pass
+            async with self._session.get(
+                self.url, timeout=aiohttp.ClientTimeout(total=5)
+            ):
+                pass
         except Exception as e:
             logger.warning(f"Heartbeat failed: {e}")
-        self._in_flight = False
+        finally:
+            self._in_flight = False
