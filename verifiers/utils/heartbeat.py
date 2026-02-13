@@ -26,3 +26,6 @@ class Heartbeat:
             logger.warning(f"Heartbeat failed: {e}")
         finally:
             self._in_flight = False
+
+    async def close(self):
+        await self._session.close()

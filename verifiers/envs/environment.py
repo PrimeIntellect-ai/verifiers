@@ -1056,6 +1056,7 @@ class Environment(ABC):
 
             def default_on_progress(*a, **kw):
                 None
+
         on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
