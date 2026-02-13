@@ -618,21 +618,18 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
-    heart = None
+    on_progress = None
     if config.heartbeat_url is not None:
         from verifiers.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
-        heart.start()
+        on_progress = lambda *_args, **_kwargs: asyncio.create_task(heart.beat())
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.evals]
+        *[run_evaluation(eval_config, on_progress=on_progress) for eval_config in config.evals]
     )
     end_time = time.time()
-
-    if heart is not None:
-        heart.stop()
     event_loop_lags = event_loop_lag_monitor.get_lags()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
@@ -672,7 +669,6 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         from verifiers.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
-        heart.start()
 
     display = EvalDisplay(config.evals, screen=tui_mode)
 
@@ -710,6 +706,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
             )
+            if heart is not None:
+                asyncio.create_task(heart.beat())
 
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
@@ -771,9 +769,6 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
-    finally:
-        if heart is not None:
-            heart.stop()
 
     # print final summary after exit
     display.print_final_summary()
