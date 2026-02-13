@@ -1950,7 +1950,7 @@ class RLMEnv(vf.StatefulToolEnv):
         repl_language: REPL language to use: "bash" or "python" (default: "bash")
         execution_backend: Deprecated, has no effect. Sandbox execution is always used.
         interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
-        interception_port: Port for interception server (default: 8766)
+        interception_port: Port for interception server (default: 0, i.e. ephemeral)
         interception_url: Optional base URL for interception (sandbox only). If set,
                    tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
@@ -2011,7 +2011,7 @@ class RLMEnv(vf.StatefulToolEnv):
         repl_language: Literal["bash", "python"] = "bash",
         execution_backend: Literal["local", "sandbox"] | None = None,
         interception_host: str | None = None,
-        interception_port: int = 8766,
+        interception_port: int = 0,
         interception_url: str | None = None,
         pip_install_packages: str = "",
         include_sub_llm_in_trajectory: bool = False,
