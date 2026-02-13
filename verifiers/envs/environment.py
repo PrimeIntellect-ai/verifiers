@@ -571,6 +571,11 @@ class Environment(ABC):
             return client, model, oai_tools, sampling_args, message_type
 
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
+            """Normalize sampling arguments for the target API.
+
+            Handles max_tokens renaming, completions-mode logprobs
+            translation, and drops None-valued entries.
+            """
             assert message_type is not None
             return _normalize_sampling_args(sampling_args, message_type)
 
