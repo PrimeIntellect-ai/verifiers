@@ -19,7 +19,9 @@ class Heartbeat:
         self._in_flight = True
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.url, timeout=aiohttp.ClientTimeout(total=5)):
+                async with session.get(
+                    self.url, timeout=aiohttp.ClientTimeout(total=5)
+                ):
                     pass
         except Exception as e:
             logger.warning(f"Heartbeat failed: {e}")
