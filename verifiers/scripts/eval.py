@@ -196,7 +196,6 @@ def main():
     )
     parser.add_argument(
         "--top-logprobs",
-        "-L",
         type=int,
         default=None,
         metavar="K",
