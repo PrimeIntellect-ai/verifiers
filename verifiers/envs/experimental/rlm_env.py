@@ -8,7 +8,7 @@ Based on: https://www.alexzhang.dev/blog/recursive-language-models
 
 Architecture:
 - REPL loop runs in the framework (MultiTurnEnv pattern)
-- Code execution runs locally in a persistent Python worker
+- Code execution runs in a sandbox via a persistent worker
 - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
 Key features:
@@ -158,7 +158,7 @@ class RLMWorkerRecoveryError(RLMWorkerError):
 
 
 class RLMSessionError(vf.SandboxError):
-    """Raised when the RLM session, sandbox, or venv is not initialized."""
+    """Raised when the RLM session or sandbox is not initialized."""
 
 
 class RLMSetupError(vf.SandboxError):
@@ -3114,7 +3114,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
     @vf.teardown
     async def teardown_executor(self):
-        """Cleanup executor-level resources (e.g., local venv)."""
+        """Cleanup executor-level resources (e.g., sandbox sessions)."""
         await self._executor.teardown()
 
     # =========================================================================
