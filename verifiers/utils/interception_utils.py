@@ -15,10 +15,12 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
-    Choice as ChunkChoice,
     ChoiceDelta,
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
+)
+from openai.types.chat.chat_completion_chunk import (
+    Choice as ChunkChoice,
 )
 
 from verifiers.types import ModelResponse
@@ -256,6 +258,9 @@ async def synthesize_stream(
     """
     chunk_queue = intercept.get("chunk_queue")
     future = intercept.get("response_future")
+
+    assert isinstance(response, ChatCompletion)
+    assert isinstance(chunk_queue, asyncio.Queue)
 
     # Error / no-response: unblock queue reader, fail/resolve future
     if error is not None or response is None:
