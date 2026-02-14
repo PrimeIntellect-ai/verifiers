@@ -108,7 +108,6 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
-        interleaved_rollouts: bool = False,
         score_rollouts: bool = True,
         **kwargs,
     ):
@@ -144,7 +143,6 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
-        self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_score_rollouts(score_rollouts)
 
         self.env_client: EnvClient | None = None
@@ -1228,7 +1226,7 @@ class Environment(ABC):
 
         For each kwarg, checks if a `set_{key}` method exists and calls it,
         otherwise falls back to setattr. This ensures proper propagation for
-        attributes like `interleaved_rollouts` in EnvGroup.
+        attributes like `score_rollouts` in EnvGroup.
         """
         for key, value in kwargs.items():
             setter_name = f"set_{key}"
@@ -1250,13 +1248,9 @@ class Environment(ABC):
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
 
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved rollouts flag for this environment."""
-        self.interleaved_rollouts = interleaved_rollouts
-        if self.interleaved_rollouts:
-            self.logger.warning(
-                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
-            )
+    def set_score_rollouts(self, score_rollouts: bool) -> None:
+        """Set the score rollouts flag for this environment."""
+        self.score_rollouts = score_rollouts
 
     async def start_server(
         self,
@@ -1308,10 +1302,6 @@ class Environment(ABC):
                 self.env_server_process.kill()
                 self.env_server_process.join(timeout=5)
             self.env_server_process = None
-
-    def set_score_rollouts(self, score_rollouts: bool) -> None:
-        """Set the score rollouts flag for this environment."""
-        self.score_rollouts = score_rollouts
 
     make_dataset = staticmethod(make_dataset)
 
