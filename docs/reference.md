@@ -308,7 +308,6 @@ Abstract base class for all environments.
 | `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
 | `add_rubric(rubric)` | Add or merge rubric |
 | `set_max_seq_len(max_seq_len)` | Set maximum sequence length |
-| `set_interleaved_rollouts(bool)` | Enable/disable interleaved rollouts |
 | `set_score_rollouts(bool)` | Enable/disable scoring |
 
 #### SingleTurnEnv
