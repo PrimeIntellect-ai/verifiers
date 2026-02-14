@@ -14,19 +14,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
+
+import verifiers as vf
 from verifiers.envs.experimental import rlm_env as rlm_module
 from verifiers.envs.experimental.rlm_env import (
-    RLMEnv,
-    RLMWorkerPaths,
     RLMCodeExecutionTimeout,
+    RLMEnv,
     RLMSessionError,
     RLMSetupError,
     RLMWorkerError,
+    RLMWorkerPaths,
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
 )
-import verifiers as vf
-
 
 # =============================================================================
 # Helpers
@@ -1198,7 +1198,6 @@ class TestSubLLMRequestPaths:
             )
         )
 
-        rlm_env.interleaved_rollouts = True
         messages = [{"role": "user", "content": "hi"}]
         state = {"sampling_args": {"max_tokens": 7}}
 
@@ -1381,10 +1380,8 @@ class TestSubLLMTrajectorySteps:
         env = build_env(
             dataset,
             include_sub_llm_in_trajectory=True,
-            interleaved_rollouts=True,
         )
         assert env.include_sub_llm_in_trajectory is True
-        assert env.interleaved_rollouts is True
 
     @pytest.mark.asyncio
     async def test_sub_llm_steps_added_to_trajectory(self, rlm_env):

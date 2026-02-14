@@ -3147,9 +3147,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # State Management
     # =========================================================================
 
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        super().set_interleaved_rollouts(interleaved_rollouts)
-
     def update_tool_args(
         self,
         tool_name: str,
@@ -3684,7 +3681,8 @@ class RLMEnv(vf.StatefulToolEnv):
         step with incompatible tokens.  We temporarily move trailing sub-LLM
         steps out of the trajectory for the duration of the super call.
         """
-        if not (self.include_sub_llm_in_trajectory and self.interleaved_rollouts):
+
+        if not self.include_sub_llm_in_trajectory:
             return await super().get_model_response(state, prompt, **kwargs)
 
         trajectory = state.get("trajectory", [])
