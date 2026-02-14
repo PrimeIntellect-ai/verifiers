@@ -211,7 +211,7 @@ class OpenAIChatCompletionsClient(
                 name=tool.name,
                 description=tool.description,
                 parameters=tool.parameters,
-                strict=tool.strict if tool.strict is not None else True,
+                strict=tool.strict,
             ),
         )
 
