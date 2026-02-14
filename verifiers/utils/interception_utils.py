@@ -15,10 +15,12 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
-    Choice as ChunkChoice,
     ChoiceDelta,
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
+)
+from openai.types.chat.chat_completion_chunk import (
+    Choice as ChunkChoice,
 )
 
 from verifiers.types import ModelResponse
@@ -270,6 +272,9 @@ async def synthesize_stream(
             else:
                 future.set_result(None)
         return
+
+    assert isinstance(response, ChatCompletion)
+    assert isinstance(chunk_queue, asyncio.Queue)
 
     choice = response.choices[0]
     message = choice.message
