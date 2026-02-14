@@ -246,6 +246,33 @@ def test_cli_model_flag_resolves_endpoint_alias_when_registry_present(
     assert config.client_config.api_base_url == "https://alias.example/v1"
 
 
+def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "haiku",
+            "api_key_var": None,
+            "api_base_url": None,
+        },
+        endpoints={
+            "haiku": [
+                {
+                    "model": "claude-haiku-4-5",
+                    "url": "https://api.anthropic.com",
+                    "key": "ANTHROPIC_API_KEY",
+                    "api_client_type": "anthropic_messages",
+                }
+            ]
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.endpoint_id == "haiku"
+    assert config.client_config.client_type == "anthropic_messages"
+    assert config.client_config.api_key_var == "ANTHROPIC_API_KEY"
+    assert config.client_config.api_base_url == "https://api.anthropic.com"
+
+
 def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,

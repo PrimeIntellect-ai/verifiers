@@ -15,11 +15,11 @@ from gepa.api import optimize
 
 import verifiers as vf
 from verifiers import setup_logging
+from verifiers.clients import resolve_client
 from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
 from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
 from verifiers.types import ClientConfig
-from verifiers.utils.client_utils import setup_client
 from verifiers.utils.eval_utils import load_endpoints
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.path_utils import get_gepa_results_path
@@ -464,14 +464,9 @@ def run_gepa_optimization(
         initial_prompt = env.system_prompt or ""
         if not initial_prompt:
             logger.warning("No system prompt attached to environment.")
-            if env.message_type == "chat":
-                logger.warning(
-                    "Will add a system message block to the start of chat messages."
-                )
-            else:
-                logger.warning(
-                    "Will prepend system prompt to the start of completion prompts."
-                )
+            logger.warning(
+                "Will add a system message block to the start of chat messages."
+            )
 
         # Get datasets
         logger.debug(f"Loading trainset ({num_train} examples)")
@@ -490,7 +485,7 @@ def run_gepa_optimization(
         display.num_val = len(valset)
 
         # Set up client
-        client = setup_client(client_config)
+        client = resolve_client(client_config)
 
         logger.debug(f"Results will be saved to: {run_dir}")
 

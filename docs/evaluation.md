@@ -17,7 +17,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [TOML Configuration](#toml-configuration)
   - [Configuration Precedence](#configuration-precedence)
 
-Use `prime eval` to execute rollouts against any OpenAI-compatible model and report aggregate metrics.
+Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
 
 ## Basic Usage
 
@@ -66,6 +66,7 @@ prime eval run my-env -x '{"max_turns": 20}'
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `openai_chat_completions_token`, or `anthropic_messages` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
@@ -83,7 +84,16 @@ endpoint_id = "qwen3-235b-i"
 model = "qwen/qwen3-235b-a22b-instruct-2507"
 url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
+
+[[endpoint]]
+endpoint_id = "claude-sonnet"
+model = "claude-sonnet-4-5-20250929"
+url = "https://api.anthropic.com"
+key = "ANTHROPIC_API_KEY"
+api_client_type = "anthropic_messages"
 ```
+
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
 
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
 

@@ -10,18 +10,15 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.utils.import_utils import load_toml
-
-if TYPE_CHECKING:
-    pass
 from verifiers.types import (
+    ClientType,
     Endpoint,
     Endpoints,
     EvalConfig,
@@ -35,6 +32,7 @@ from verifiers.types import (
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -67,7 +65,41 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    return Endpoint(model=model, url=url, key=key)
+    endpoint = Endpoint(model=model, url=url, key=key)
+
+    if "client_type" in raw_endpoint_dict:
+        raise ValueError(
+            f"Field 'client_type' is no longer supported in {source}. "
+            "Use 'type' or 'api_client_type'."
+        )
+
+    short_client_type = raw_endpoint_dict.get("type")
+    long_client_type = raw_endpoint_dict.get("api_client_type")
+    if (
+        short_client_type is not None
+        and long_client_type is not None
+        and short_client_type != long_client_type
+    ):
+        raise ValueError(
+            f"Conflicting values for 'type' and 'api_client_type' in {source}"
+        )
+
+    client_type = (
+        short_client_type if short_client_type is not None else long_client_type
+    )
+    if client_type is not None:
+        if client_type not in (
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ):
+            raise ValueError(
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+            )
+        endpoint["api_client_type"] = cast(ClientType, client_type)
+
+    return endpoint
 
 
 def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
@@ -280,6 +312,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # model/client
         "endpoint_id",
         "model",
+        "api_client_type",
         "api_key_var",
         "api_base_url",
         "header",
