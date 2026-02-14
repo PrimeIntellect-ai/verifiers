@@ -17,6 +17,7 @@ from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
 
 # main imports
@@ -65,6 +66,7 @@ __all__ = [
     "OpenEnvEnv",
     "Environment",
     "MultiTurnEnv",
+    "MultiAgentEnv",
     "SingleTurnEnv",
     "PythonEnv",
     "SandboxEnv",
