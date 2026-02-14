@@ -27,9 +27,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
     @property
     def token_client(self) -> AsyncOpenAI:
-        """Strips the /v1 route from the OpenAI client's route."""
-        base_url_without_v1 = str(self.client.base_url).replace("/v1", "").rstrip("/")
-        return self.client.with_options(base_url=base_url_without_v1)
+        """Strips trailing /v1 from the OpenAI client."""
+        base_url = str(self.client.base_url).rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        return self.client.with_options(base_url=base_url)
 
     @handle_openai_overlong_prompt
     async def get_native_response(
