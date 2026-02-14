@@ -205,14 +205,22 @@ class OpenAIChatCompletionsClient(
         return [from_chat_message(message) for message in messages], {}
 
     async def to_native_tool(self, tool: Tool) -> OpenAITool:
-        return OpenAITool(
-            type="function",
-            function=FunctionDefinition(
+        if tool.strict is None:
+            function = FunctionDefinition(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+            )
+        else:
+            function = FunctionDefinition(
                 name=tool.name,
                 description=tool.description,
                 parameters=tool.parameters,
                 strict=tool.strict,
-            ),
+            )
+        return OpenAITool(
+            type="function",
+            function=function,
         )
 
     @handle_openai_overlong_prompt
