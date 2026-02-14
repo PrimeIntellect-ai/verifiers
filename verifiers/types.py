@@ -254,7 +254,16 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+class _EndpointRequired(TypedDict):
+    key: str
+    url: str
+    model: str
+
+
+class Endpoint(_EndpointRequired, total=False):
+    max_concurrent: int
+
+
 Endpoints = dict[str, list[Endpoint]]
 
 
@@ -324,6 +333,7 @@ class EndpointClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    max_concurrent: int | None = None
 
 
 ClientConfig.model_rebuild()

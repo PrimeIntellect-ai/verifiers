@@ -164,6 +164,81 @@ def test_load_endpoints_directory_prefers_toml_then_python(tmp_path: Path):
     assert set(endpoints.keys()) == {"from-py"}
 
 
+def test_load_endpoints_toml_parses_max_concurrent(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "my-model"\n'
+        'model = "my/model"\n'
+        'url = "https://a.example/v1"\n'
+        'key = "A_KEY"\n'
+        "max_concurrent = 16\n"
+        "\n"
+        "[[endpoint]]\n"
+        'endpoint_id = "my-model"\n'
+        'model = "my/model"\n'
+        'url = "https://b.example/v1"\n'
+        'key = "A_KEY"\n'
+        "max_concurrent = 32\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["my-model"][0]["max_concurrent"] == 16
+    assert endpoints["my-model"][1]["max_concurrent"] == 32
+
+
+def test_load_endpoints_toml_max_concurrent_optional(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "my-model"\n'
+        'model = "my/model"\n'
+        'url = "https://a.example/v1"\n'
+        'key = "A_KEY"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert "max_concurrent" not in endpoints["my-model"][0]
+
+
+def test_load_endpoints_python_parses_max_concurrent(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "my-model": [\n'
+        '        {"model": "m", "url": "https://a.example/v1", "key": "K", "max_concurrent": 8},\n'
+        "    ]\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["my-model"][0]["max_concurrent"] == 8
+
+
+def test_load_endpoints_rejects_invalid_max_concurrent(tmp_path: Path):
+    for bad_value in [0, -1, '"not_an_int"']:
+        registry_path = tmp_path / "endpoints.toml"
+        registry_path.write_text(
+            "[[endpoint]]\n"
+            'endpoint_id = "my-model"\n'
+            'model = "my/model"\n'
+            'url = "https://a.example/v1"\n'
+            'key = "A_KEY"\n'
+            f"max_concurrent = {bad_value}\n",
+            encoding="utf-8",
+        )
+
+        endpoints = load_endpoints(str(registry_path))
+        # Invalid values cause load to fail and return empty
+        assert endpoints == {}
+
+
 def test_qwen3_vl_endpoint_ids_map_to_vl_models():
     endpoints = load_endpoints("./configs/endpoints.toml")
 
