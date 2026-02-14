@@ -1,7 +1,8 @@
-from typing import Any, cast
+from typing import Any
 
 import verifiers as vf
-from verifiers.types import ChatMessages
+from verifiers.types import Messages, UserMessage
+from verifiers.utils.message_utils import normalize_messages
 
 
 def render_echo_prompt(
@@ -9,7 +10,7 @@ def render_echo_prompt(
     *,
     action_schema: dict[str, Any] | None = None,
     context: str = "reset",
-) -> ChatMessages:
+) -> Messages:
     if not isinstance(observation, dict):
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
@@ -17,26 +18,27 @@ def render_echo_prompt(
 
     messages = observation.get("messages")
     if isinstance(messages, list) and messages:
-        return cast(ChatMessages, messages)
+        try:
+            return normalize_messages(
+                messages, field_name="openenv-echo observation messages"
+            )
+        except TypeError as e:
+            raise RuntimeError(str(e)) from e
 
     prompt = observation.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
-        return cast(ChatMessages, [{"role": "user", "content": prompt}])
+        return [UserMessage(content=prompt)]
 
     if context == "reset" and isinstance(action_schema, dict):
-        return cast(
-            ChatMessages,
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "You are connected to an OpenEnv MCP environment. "
-                        "Call at least one tool before your final response. "
-                        "Action contract: call_tool(tool_name: str, arguments: object)."
-                    ),
-                }
-            ],
-        )
+        return [
+            UserMessage(
+                content=(
+                    "You are connected to an OpenEnv MCP environment. "
+                    "Call at least one tool before your final response. "
+                    "Action contract: call_tool(tool_name: str, arguments: object)."
+                )
+            )
+        ]
 
     raise RuntimeError("openenv-echo observation did not include a renderable prompt.")
 

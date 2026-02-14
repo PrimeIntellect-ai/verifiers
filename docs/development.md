@@ -146,13 +146,12 @@ class TestFeature:
 
 ### Using Mocks
 
-The test suite provides mock OpenAI clients:
+The test suite provides a `MockClient` in `conftest.py` that implements the `Client` interface:
 
 ```python
-from tests.mock_openai_client import MockOpenAIClient
-
 def test_with_mock(mock_client):
-    env = vf.SingleTurnEnv(client=mock_client)
+    mock_client.set_default_responses(chat_response="test answer")
+    env = vf.SingleTurnEnv(client=mock_client, model="test", ...)
     # Test without real API calls
 ```
 

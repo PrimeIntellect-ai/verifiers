@@ -93,7 +93,7 @@ class DOMMode:
         browserbase_params = browserbase_params or None
 
         sessions = cast(Any, self.stagehand_client.sessions)
-        session = await sessions.create(
+        session = await sessions.start(
             model_name=self.stagehand_model,
             browserbase_session_create_params=browserbase_params,
         )
