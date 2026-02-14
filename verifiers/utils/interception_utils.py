@@ -15,10 +15,12 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
-    Choice as ChunkChoice,
     ChoiceDelta,
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
+)
+from openai.types.chat.chat_completion_chunk import (
+    Choice as ChunkChoice,
 )
 
 from verifiers.types import Response
