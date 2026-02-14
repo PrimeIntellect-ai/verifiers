@@ -259,9 +259,6 @@ async def synthesize_stream(
     chunk_queue = intercept.get("chunk_queue")
     future = intercept.get("response_future")
 
-    assert isinstance(response, ChatCompletion)
-    assert isinstance(chunk_queue, asyncio.Queue)
-
     # Error / no-response: unblock queue reader, fail/resolve future
     if error is not None or response is None:
         if chunk_queue is not None:
@@ -275,6 +272,9 @@ async def synthesize_stream(
             else:
                 future.set_result(None)
         return
+
+    assert isinstance(response, ChatCompletion)
+    assert isinstance(chunk_queue, asyncio.Queue)
 
     choice = response.choices[0]
     message = choice.message
