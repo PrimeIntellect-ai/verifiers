@@ -8,84 +8,48 @@ from verifiers.utils.message_utils import concat_messages
 
 
 def other_player_id(player_one_id: str, player_two_id: str, current_id: str) -> str:
-    if current_id == player_one_id:
-        return player_two_id
-    if current_id == player_two_id:
-        return player_one_id
-    raise ValueError(f"Unknown player id: {current_id}")
+    return player_two_id if current_id == player_one_id else player_one_id
 
 
 class MultiAgentEnv(vf.MultiTurnEnv):
     """
-    Multi-turn environment that supports interleaved trajectories per actor.
-
-    The active actor is tracked in state["actor_id"]. For rollout compatibility, this
-    is mirrored to state["trajectory_id"] before model calls. Prompt construction
-    selects the latest trajectory step with the active actor id, then appends
-    env_response(state).
+    Multi-turn environment that supports interleaved trajectories per actor id.
+    trajectory_id is the actor id for the current model call.
     """
 
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
-        actor_id = state.get("actor_id", state["trajectory_id"])
-        self.set_actor_id(state, actor_id)
+        state["trajectory_id"] = self.get_initial_actor_id(state)
         return state
 
-    def get_actor_id(self, state: State) -> str:
-        actor_id = state.get("actor_id")
-        trajectory_id = state.get("trajectory_id")
-        if actor_id is None:
-            actor_id = trajectory_id
-        elif trajectory_id is not None and trajectory_id != actor_id:
-            # Backward compatibility for callers that still mutate trajectory_id.
-            actor_id = trajectory_id
-        if actor_id is None:
-            raise ValueError("actor_id is missing from state")
-        self.set_actor_id(state, actor_id)
-        return actor_id
+    @abstractmethod
+    def get_initial_actor_id(self, state: State) -> str:
+        pass
 
-    def set_actor_id(self, state: State, actor_id: str) -> None:
-        state["actor_id"] = actor_id
-        state["trajectory_id"] = actor_id
+    @abstractmethod
+    def flip_trajectory_id(self, state: State) -> None:
+        pass
 
-    def last_step_for_actor_id(
-        self, state: State, actor_id: str
+    def last_step_for_trajectory_id(
+        self, state: State, trajectory_id: str
     ) -> TrajectoryStep | None:
-        for step in reversed(state.get("trajectory", [])):
-            if step.get("trajectory_id") == actor_id:
+        for step in reversed(state["trajectory"]):
+            if step["trajectory_id"] == trajectory_id:
                 return step
         return None
 
-    def messages_for_actor_id(self, state: State, actor_id: str) -> Messages:
-        step = self.last_step_for_actor_id(state, actor_id)
+    def messages_for_trajectory_id(self, state: State, trajectory_id: str) -> Messages:
+        step = self.last_step_for_trajectory_id(state, trajectory_id)
         if step is None:
             return state["prompt"]
         return concat_messages([step["prompt"], step["completion"]])
 
-    @abstractmethod
-    async def env_response(self, state: State, **kwargs) -> Messages:
-        """
-        Generate the next environment message(s) for the active actor.
-
-        Implementations can update state["actor_id"] via set_actor_id(...) to switch
-        active actors.
-        """
-        pass
-
     async def get_prompt_messages(self, state: State) -> Messages:
         if len(state["trajectory"]) == 0:
-            self.get_actor_id(state)
             return state["prompt"]
-
-        current_actor_id = self.get_actor_id(state)
-        messages = self.messages_for_actor_id(state, current_actor_id)
-        env_response = await self.env_response(state)
-
-        # env_response can switch actors for the next model call.
-        updated_actor_id = self.get_actor_id(state)
-        if updated_actor_id != current_actor_id:
-            messages = self.messages_for_actor_id(state, updated_actor_id)
-
+        self.flip_trajectory_id(state)
+        messages = self.messages_for_trajectory_id(state, state["trajectory_id"])
+        env_response = await self.env_response(messages, state)
         return concat_messages([messages, env_response])
 
 
@@ -105,20 +69,28 @@ class AlternatingTwoAgentEnv(MultiAgentEnv):
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
         state["turn_count"] = state.get("turn_count", 0)
-        self.set_actor_id(state, self.player_one_id)
         return state
 
-    async def env_response(self, state: State, **kwargs) -> Messages:
-        current_id = self.get_actor_id(state)
-        next_id = other_player_id(self.player_one_id, self.player_two_id, current_id)
+    def get_initial_actor_id(self, state: State) -> str:
+        return self.player_one_id
+
+    def flip_trajectory_id(self, state: State) -> None:
+        current_id = state["trajectory_id"]
+        state["trajectory_id"] = other_player_id(
+            self.player_one_id, self.player_two_id, current_id
+        )
+
+    async def env_response(
+        self, messages: Messages, state: State, **kwargs
+    ) -> Messages:
         state["turn_count"] += 1
-        self.set_actor_id(state, next_id)
+        actor_id = state["trajectory_id"]
         return [
             cast(
                 ChatMessage,
                 {
                     "role": "user",
-                    "content": f"Turn {state['turn_count']}: {next_id}, respond.",
+                    "content": f"Turn {state['turn_count']}: {actor_id}, respond.",
                 },
             )
         ]
@@ -130,7 +102,7 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
 
     Game: players alternate taking 1 or 2 tokens. The player taking the last token
     wins (+1) and the opponent loses (-1). All game state transitions happen in
-    env_response, which also flips state["actor_id"] between players.
+    env_response, which also flips state["trajectory_id"] between players.
     """
 
     def __init__(
@@ -140,8 +112,6 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
         player_two_id: str = "player_b",
         **kwargs,
     ):
-        if starting_tokens < 1:
-            raise ValueError("starting_tokens must be >= 1")
         super().__init__(**kwargs)
         self.starting_tokens = starting_tokens
         self.player_one_id = player_one_id
@@ -154,19 +124,22 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
             "scores",
             {self.player_one_id: 0.0, self.player_two_id: 0.0},
         )
-        self.set_actor_id(state, self.player_one_id)
         return state
+
+    def get_initial_actor_id(self, state: State) -> str:
+        return self.player_one_id
+
+    def flip_trajectory_id(self, state: State) -> None:
+        current_id = state["trajectory_id"]
+        state["trajectory_id"] = other_player_id(
+            self.player_one_id, self.player_two_id, current_id
+        )
 
     @staticmethod
     def completion_text(completion: Messages) -> str:
         if isinstance(completion, str):
             return completion
-        if len(completion) == 0:
-            return ""
-        content = completion[-1].get("content", "")
-        if isinstance(content, str):
-            return content
-        return str(content)
+        return str(completion[-1]["content"])
 
     def extract_take_action(self, step: TrajectoryStep) -> int | None:
         text = self.completion_text(step["completion"])
@@ -196,10 +169,15 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
         state["final_env_response"] = [final_message]
         return state["final_env_response"]
 
-    async def env_response(self, state: State, **kwargs) -> Messages:
-        actor_id = self.get_actor_id(state)
-        actor_step = self.last_step_for_actor_id(state, actor_id)
-        if actor_step is None:
+    async def env_response(
+        self, messages: Messages, state: State, **kwargs
+    ) -> Messages:
+        actor_id = state["trajectory_id"]
+        previous_actor_id = other_player_id(
+            self.player_one_id, self.player_two_id, actor_id
+        )
+        previous_actor_step = self.last_step_for_trajectory_id(state, previous_actor_id)
+        if previous_actor_step is None:
             return [
                 self.user_message(
                     f"{actor_id}, take 1 or 2 tokens. "
@@ -207,24 +185,23 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
                 )
             ]
 
-        opponent_id = other_player_id(self.player_one_id, self.player_two_id, actor_id)
-        action = self.extract_take_action(actor_step)
+        action = self.extract_take_action(previous_actor_step)
         if action is None:
             return self.finalize_game(
                 state=state,
-                winner_id=opponent_id,
-                loser_id=actor_id,
-                reason=f"{actor_id} made an invalid move.",
+                winner_id=actor_id,
+                loser_id=previous_actor_id,
+                reason=f"{previous_actor_id} made an invalid move.",
             )
 
         tokens_remaining = state["tokens_remaining"]
         if action > tokens_remaining:
             return self.finalize_game(
                 state=state,
-                winner_id=opponent_id,
-                loser_id=actor_id,
+                winner_id=actor_id,
+                loser_id=previous_actor_id,
                 reason=(
-                    f"{actor_id} tried to take {action} token(s) with only "
+                    f"{previous_actor_id} tried to take {action} token(s) with only "
                     f"{tokens_remaining} remaining."
                 ),
             )
@@ -234,16 +211,15 @@ class TwoPlayerZeroSumGameEnv(MultiAgentEnv):
         if tokens_remaining == 0:
             return self.finalize_game(
                 state=state,
-                winner_id=actor_id,
-                loser_id=opponent_id,
-                reason=f"{actor_id} took the last token.",
+                winner_id=previous_actor_id,
+                loser_id=actor_id,
+                reason=f"{previous_actor_id} took the last token.",
             )
 
-        self.set_actor_id(state, opponent_id)
         return [
             self.user_message(
-                f"{actor_id} took {action} token(s). "
+                f"{previous_actor_id} took {action} token(s). "
                 f"Tokens remaining: {tokens_remaining}. "
-                f"{opponent_id}, take 1 or 2 tokens."
+                f"{actor_id}, take 1 or 2 tokens."
             )
         ]
