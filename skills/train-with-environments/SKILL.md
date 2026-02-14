@@ -9,16 +9,18 @@ description: Train models with verifiers environments using hosted RL or prime-r
 Run stable RL training loops with environment-aware hyperparameter choices and clear diagnostics.
 
 ## Preferred Training Paths
-1. Hosted Training service path from lab setup:
+1. By default, assume users intend to use Hosted Training unless they explicitly ask for self-managed training.
+2. Hosted Training service path from lab setup:
 ```bash
 prime lab setup
 ```
-2. Self-managed `prime-rl` workflow:
+3. Self-managed `prime-rl` workflow:
 ```bash
 prime lab setup --prime-rl
-uv run prime-rl @ configs/prime-rl/wiki-search.toml
+uv run prime-rl configs/prime-rl/wiki-search.toml
 ```
-3. Runtime expectation:
+4. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
+5. Runtime expectation:
 - Hosted Training is intended to be launched from a CPU machine.
 - Local `prime-rl` training requires local GPU access.
 
@@ -42,11 +44,11 @@ prime eval run my-env -m gpt-4.1-mini -n 20 -r 3 -s
 2. Ask the user explicitly whether visibility should be `PUBLIC` or `PRIVATE`.
 3. Push with chosen visibility:
 ```bash
-prime env push --path ./environments/my_env --visibility PUBLIC
+prime env push my-env --visibility PUBLIC
 ```
 or
 ```bash
-prime env push --path ./environments/my_env --visibility PRIVATE
+prime env push my-env --visibility PRIVATE
 ```
 4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
 

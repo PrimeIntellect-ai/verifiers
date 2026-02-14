@@ -57,6 +57,7 @@ def run_cli(make_metadata, make_state, make_input):
             "max_retries": 0,
             "tui": False,
             "debug": False,
+            "heartbeat_url": None,
         }
         base_args.update(overrides)
         args_namespace = SimpleNamespace(**base_args)

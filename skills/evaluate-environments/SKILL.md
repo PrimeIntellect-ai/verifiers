@@ -49,11 +49,11 @@ key = "PRIME_API_KEY"
 2. Ask the user explicitly: should visibility be `PUBLIC` or `PRIVATE`?
 3. Push with chosen visibility:
 ```bash
-prime env push --path ./environments/my_env --visibility PUBLIC
+prime env push my-env --visibility PUBLIC
 ```
 or
 ```bash
-prime env push --path ./environments/my_env --visibility PRIVATE
+prime env push my-env --visibility PRIVATE
 ```
 4. For hosted eval workflows, prefer running large jobs against the Hub slug:
 ```bash
