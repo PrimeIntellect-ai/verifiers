@@ -769,12 +769,17 @@ class CUAMode:
         if self.keep_recent_screenshots is None:
             return messages
 
+        def _get_item_type(item):
+            if isinstance(item, dict):
+                return item.get("type")
+            return getattr(item, "type", None)
+
         screenshot_positions: list[tuple[int, int]] = []
         for msg_idx, msg in enumerate(messages):
             content = msg.get("content")
             if isinstance(content, list):
                 for content_idx, item in enumerate(content):
-                    if isinstance(item, dict) and item.get("type") == "image_url":
+                    if _get_item_type(item) == "image_url":
                         screenshot_positions.append((msg_idx, content_idx))
 
         if len(screenshot_positions) <= self.keep_recent_screenshots:
@@ -788,7 +793,12 @@ class CUAMode:
         filtered_messages = copy.deepcopy(messages)
 
         for msg_idx, content_idx in positions_to_replace:
-            content_list = filtered_messages[msg_idx]["content"]
+            msg = filtered_messages[msg_idx]
+            content_list = (
+                msg["content"]
+                if isinstance(msg, dict)
+                else getattr(msg, "content", None)
+            )
             if isinstance(content_list, list) and content_idx < len(content_list):
                 content_list[content_idx] = {
                     "type": "text",

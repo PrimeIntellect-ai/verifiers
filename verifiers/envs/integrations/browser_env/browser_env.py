@@ -184,6 +184,65 @@ class BrowserEnv(vf.StatefulToolEnv):
             tool_name, tool_args, messages, state, **kwargs
         )
 
+    async def env_response(
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
+        if self.mode == "cua":
+            # Bug 1 fix: sanitize empty arguments for zero-parameter tools (e.g. screenshot).
+            # json.loads("") raises JSONDecodeError, so default to "{}".
+            last_msg = messages[-1]
+            if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                for tc in last_msg.tool_calls:
+                    if not tc.arguments or not tc.arguments.strip():
+                        tc.arguments = "{}"
+
+        result = await super().env_response(messages, state, **kwargs)
+
+        if self.mode == "cua":
+            # Bug 2 fix: move screenshots from tool messages to a trailing user message.
+            # Clients strip image_url parts from ToolMessage content but preserve them
+            # in UserMessage content, so we relocate the images.
+            # Content parts may be plain dicts or Pydantic ContentPart objects.
+            def _get_part_type(part):
+                if isinstance(part, dict):
+                    return part.get("type")
+                return getattr(part, "type", None)
+
+            def _part_to_dict(part):
+                if isinstance(part, dict):
+                    return part
+                if hasattr(part, "model_dump"):
+                    return part.model_dump()
+                return dict(part)
+
+            screenshots = []
+            for msg in result:
+                if hasattr(msg, "content") and isinstance(msg.content, list):
+                    text_parts = []
+                    for part in msg.content:
+                        if _get_part_type(part) == "image_url":
+                            screenshots.append(_part_to_dict(part))
+                        else:
+                            text_parts.append(part)
+                    if len(text_parts) < len(msg.content):  # we extracted images
+                        texts = []
+                        for p in text_parts:
+                            if _get_part_type(p) == "text":
+                                t = (
+                                    p.get("text", "")
+                                    if isinstance(p, dict)
+                                    else getattr(p, "text", "")
+                                )
+                                texts.append(t)
+                        msg.content = "\n".join(texts) if texts else ""
+
+            if screenshots:
+                result = list(result) + [
+                    vf.UserMessage(role="user", content=screenshots)
+                ]
+
+        return result
+
     async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
         """Get prompt messages, filtering screenshots in CUA mode."""
         messages = await super().get_prompt_messages(state)
