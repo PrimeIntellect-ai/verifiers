@@ -48,6 +48,8 @@ class ZMQEnvClient(EnvClient):
         self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
         self._start_lock = asyncio.Lock()
+        self._send_count = 0
+        self._recv_count = 0
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -89,6 +91,7 @@ class ZMQEnvClient(EnvClient):
 
                 request_id_bytes, response_data = msg[0], msg[1]
                 request_id = request_id_bytes.decode()
+                self._recv_count += 1
 
                 if request_id in self.pending:
                     future = self.pending.pop(request_id)
@@ -96,6 +99,10 @@ class ZMQEnvClient(EnvClient):
                         try:
                             response = msgpack.unpackb(response_data, raw=False)
                             future.set_result(response)
+                            self.logger.debug(
+                                f"[recv] request_id={request_id[:8]} delivered "
+                                f"(recv_total={self._recv_count}, pending={len(self.pending)})"
+                            )
                         except Exception as unpack_error:
                             # Unpacking failed - fail the specific future
                             self.logger.error(
@@ -106,12 +113,22 @@ class ZMQEnvClient(EnvClient):
                                     f"Failed to deserialize response: {unpack_error}"
                                 )
                             )
+                    else:
+                        self.logger.debug(
+                            f"[recv] request_id={request_id[:8]} already done "
+                            f"(cancelled={future.cancelled()}, recv_total={self._recv_count}, "
+                            f"pending={len(self.pending)})"
+                        )
                 else:
                     self.logger.warning(
-                        f"Received response for unknown request_id={request_id} (pending={len(self.pending)})"
+                        f"[recv] unknown request_id={request_id[:8]} "
+                        f"(recv_total={self._recv_count}, pending={len(self.pending)})"
                     )
 
             except asyncio.CancelledError:
+                self.logger.debug(
+                    f"[recv] receive loop cancelled (pending={len(self.pending)})"
+                )
                 break
             except zmq.ZMQError as e:
                 # Socket-level error - fail all pending futures and exit
@@ -159,17 +176,32 @@ class ZMQEnvClient(EnvClient):
         future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
+        self._send_count += 1
+        self.logger.debug(
+            f"[send] request_id={request_id[:8]} type={request.request_type} "
+            f"(send_total={self._send_count}, pending={len(self.pending)})"
+        )
 
         try:
             raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
             self.logger.error(
-                f"Timed out waiting for request_id={request_id} type={request.request_type} after {effective_timeout:.1f}s (pending={len(self.pending)})"
+                f"Timed out waiting for request_id={request_id[:8]} type={request.request_type} after {effective_timeout:.1f}s (pending={len(self.pending)})"
             )
             raise TimeoutError(
                 f"Environment timeout for {request.request_type} request after {effective_timeout}s"
             )
+        except BaseException:
+            # Clean up pending entry on CancelledError or any other exception.
+            # Without this, cancelled tasks leave orphan entries in self.pending
+            # that consume server responses without delivering them.
+            self.pending.pop(request_id, None)
+            self.logger.debug(
+                f"[send] request_id={request_id[:8]} interrupted "
+                f"(pending={len(self.pending)})"
+            )
+            raise
 
         # validate response with Pydantic
         response = response_type.model_validate(raw_response)

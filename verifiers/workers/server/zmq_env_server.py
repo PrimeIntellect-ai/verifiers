@@ -28,6 +28,8 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.RCVHWM, 10000)
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
+        self._recv_count = 0
+        self._send_count = 0
 
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
@@ -56,6 +58,11 @@ class ZMQEnvServer(EnvServer):
                         continue
 
                     client_id, request_id, payload_bytes = frames
+                    self._recv_count += 1
+                    self.logger.debug(
+                        f"[server-recv] request_id={request_id.decode()[:8]} "
+                        f"(recv_total={self._recv_count}, pending_tasks={len(self.pending_tasks)})"
+                    )
 
                     # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
@@ -121,6 +128,10 @@ class ZMQEnvServer(EnvServer):
                 )
 
         except asyncio.CancelledError:
+            self.logger.warning(
+                f"[server-cancelled] request_id={request_id[:8]} "
+                f"(pending_tasks={len(self.pending_tasks)})"
+            )
             return
 
         except Exception as e:
@@ -145,4 +156,9 @@ class ZMQEnvServer(EnvServer):
         # send response: [client_id, request_id, response]
         await self.socket.send_multipart(
             [client_id, request_id.encode(), response_bytes]
+        )
+        self._send_count += 1
+        self.logger.debug(
+            f"[server-send] request_id={request_id[:8]} success={response.success} "
+            f"(send_total={self._send_count}, pending_tasks={len(self.pending_tasks)})"
         )
