@@ -53,14 +53,17 @@ from prime_sandboxes.core import APIClient
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from verifiers.types import (
+    AssistantMessage,
     Message,
     Messages,
     Response,
     State,
     SystemMessage,
+    ToolMessage,
     TrajectoryStep,
     UserMessage,
 )
@@ -209,17 +212,12 @@ class SandboxRLMReplSession:
     paths: RLMWorkerPaths | None = None
 
 
-def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
+def _extract_tokens_from_response(response: Response | Any) -> tuple[int, int]:
+    if not response:
+        return 0, 0
     usage = getattr(response, "usage", None)
-    if not usage and isinstance(response, dict):
-        usage = response.get("usage")
     if not usage:
         return 0, 0
-    if isinstance(usage, dict):
-        return (
-            int(usage.get("prompt_tokens", 0) or 0),
-            int(usage.get("completion_tokens", 0) or 0),
-        )
     return (
         int(getattr(usage, "prompt_tokens", 0) or 0),
         int(getattr(usage, "completion_tokens", 0) or 0),
@@ -2459,33 +2457,31 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
-    ) -> dict:
-        """Execute a sub-agent tool call. Returns tool message dict."""
+    ) -> ToolMessage:
+        """Execute a sub-agent tool call. Returns tool message."""
         try:
             tool_func = self.sub_tool_map[tool_name]
             result = await maybe_await(tool_func, **tool_args)
-            return {
-                "role": "tool",
-                "content": str(result),
-                "tool_call_id": tool_call_id,
-            }
+            return ToolMessage(
+                tool_call_id=tool_call_id,
+                content=str(result),
+            )
         except Exception as e:
             if self._should_stop_for_error(e):
                 raise
-            return {
-                "role": "tool",
-                "content": f"Error: {e}",
-                "tool_call_id": tool_call_id,
-            }
+            return ToolMessage(
+                tool_call_id=tool_call_id,
+                content=f"Error: {e}",
+            )
 
     async def _call_sub_llm_api(
         self,
         state: State,
-        client: Any,
+        client: Client,
         model: str,
         messages: Messages,
-        tools: list | None = None,
-    ) -> Any | None:
+        tools: list[vf.Tool] | None = None,
+    ) -> Response | None:
         """Make a single sub-LLM API call matching main-model request mode."""
         sampling_args = dict(state.get("sampling_args") or {})
         extra_body = sampling_args.get("extra_body")
@@ -2510,6 +2506,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     cast(Messages, messages),
                     client=client,
                     model=model,
+                    tool_defs=tools,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
@@ -2543,7 +2540,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
     async def _run_sub_llm(
-        self, state: State, client: Any, model: str, messages: Messages
+        self, state: State, client: Client, model: str, messages: Messages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
@@ -2553,8 +2550,10 @@ class RLMEnv(vf.StatefulToolEnv):
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
             prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
+            content = response.message.content
+            final_content = content if isinstance(content, str) else ""
             return SubLLMResult(
-                final_content=response.message.content or "",
+                final_content=final_content,
                 turns=[
                     SubLLMTurn(
                         prompt_messages=_clone_messages(messages),
@@ -2616,8 +2615,9 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
             if not tool_calls:
+                content = assistant_message.content
                 return SubLLMResult(
-                    final_content=assistant_message.content or "",
+                    final_content=content if isinstance(content, str) else "",
                     turns=turns,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
@@ -2631,26 +2631,14 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
             for tool_call in tool_calls:
-                function_obj = getattr(tool_call, "function", None)
-                tool_name = (
-                    function_obj.name
-                    if function_obj is not None and hasattr(function_obj, "name")
-                    else getattr(tool_call, "name", "")
-                )
                 try:
-                    raw_args = (
-                        function_obj.arguments
-                        if function_obj is not None
-                        and hasattr(function_obj, "arguments")
-                        else getattr(tool_call, "arguments", "{}")
-                    )
-                    tool_args = json.loads(raw_args)
+                    tool_args = json.loads(tool_call.arguments)
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id
+                    tool_call.name, tool_args, tool_call.id
                 )
-                current_messages.append(from_raw_message(tool_result))
+                current_messages.append(tool_result)
 
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
@@ -2686,8 +2674,9 @@ class RLMEnv(vf.StatefulToolEnv):
         )
         prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
 
+        content = response.message.content
         return SubLLMResult(
-            final_content=response.message.content or "",
+            final_content=content if isinstance(content, str) else "",
             turns=turns,
             total_prompt_tokens=total_prompt_tokens + prompt_tokens,
             total_completion_tokens=total_completion_tokens + completion_tokens,
@@ -2862,7 +2851,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self,
         *,
         state_ref: State,
-        client: Any,
+        client: Client,
         sub_model: str,
         messages: Messages,
         batch_id: str,
@@ -3745,12 +3734,9 @@ class RLMEnv(vf.StatefulToolEnv):
         last_main = self._last_main_trajectory_step(state)
         if last_main is None:
             return False
-        last_message = cast(dict[str, Any], last_main["completion"][-1])
-        is_assistant = last_message.get("role") == "assistant"
-        no_tool_calls = (
-            "tool_calls" not in last_message or last_message["tool_calls"] is None
-        )
-        return is_assistant and no_tool_calls
+        last_message = cast(AssistantMessage, last_main["completion"][-1])
+        is_assistant = last_message.role == "assistant"
+        return is_assistant and not (last_message.tool_calls or [])
 
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
