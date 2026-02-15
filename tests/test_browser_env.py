@@ -6,7 +6,7 @@ without requiring external services (Browserbase, CUA server).
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datasets import Dataset
 
 # Skip all tests in this module if browser dependencies are not installed
@@ -121,6 +121,178 @@ class TestCUASandboxModeBackwardsCompat:
             assert "deprecated" in str(w[0].message).lower()
             # Check that it's actually a CUAMode with sandbox execution
             assert mode._execution_mode == "sandbox"
+
+
+class TestBrowserEnvCUAEnvResponse:
+    """Tests for BrowserEnv CUA env_response post-processing."""
+
+    @staticmethod
+    def _part_type(part):
+        if isinstance(part, dict):
+            return part.get("type")
+        return getattr(part, "type", None)
+
+    @classmethod
+    def _image_urls(cls, content):
+        urls = []
+        if not isinstance(content, list):
+            return urls
+
+        for part in content:
+            if cls._part_type(part) != "image_url":
+                continue
+            if isinstance(part, dict):
+                image_url = part.get("image_url", {})
+                urls.append(image_url.get("url"))
+            else:
+                image_source = getattr(part, "image_url", None)
+                urls.append(getattr(image_source, "url", None))
+        return urls
+
+    @staticmethod
+    def _part_field(part, key):
+        if isinstance(part, dict):
+            return part.get(key)
+        return getattr(part, key, None)
+
+    @pytest.mark.asyncio
+    async def test_env_response_moves_tool_images_only_and_preserves_non_image_parts(
+        self,
+    ):
+        """Test CUA relocation only touches tool messages and keeps unknown non-image parts."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.stateful_tool_env import StatefulToolEnv
+        from verifiers.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        assistant_msg = AssistantMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="tc_1", name="screenshot", arguments="   "),
+            ],
+        )
+
+        tool_message = ToolMessage(
+            role="tool",
+            tool_call_id="tc_1",
+            content=[
+                {"type": "text", "text": "Status: Success"},
+                {"type": "custom_meta", "foo": "bar"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+            ],
+        )
+        user_message = UserMessage(
+            role="user",
+            content=[
+                {"type": "text", "text": "keep me"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,should_not_move"},
+                },
+            ],
+        )
+
+        with patch.object(
+            StatefulToolEnv,
+            "env_response",
+            new=AsyncMock(return_value=[tool_message, user_message]),
+        ):
+            result = await env.env_response([assistant_msg], {})
+
+        # Empty args are normalized for zero-arg tool calls.
+        assert assistant_msg.tool_calls is not None
+        assert assistant_msg.tool_calls[0].arguments == "{}"
+
+        assert len(result) == 3
+
+        # Tool message keeps all non-image parts as structured content.
+        tool_result = result[0]
+        assert isinstance(tool_result.content, list)
+        assert [self._part_type(p) for p in tool_result.content] == [
+            "text",
+            "custom_meta",
+        ]
+        assert self._part_field(tool_result.content[1], "foo") == "bar"
+
+        # Non-tool message is untouched.
+        passthrough_user = result[1]
+        assert isinstance(passthrough_user.content, list)
+        assert "data:image/png;base64,should_not_move" in self._image_urls(
+            passthrough_user.content
+        )
+
+        # Relocated screenshots are appended as a trailing user message.
+        relocated_user = result[2]
+        assert relocated_user.role == "user"
+        assert isinstance(relocated_user.content, list)
+        assert self._image_urls(relocated_user.content) == ["data:image/png;base64,abc"]
+
+    @pytest.mark.asyncio
+    async def test_env_response_without_images_does_not_append_user_message(self):
+        """Test no relocation user message is appended when tool output has no images."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.stateful_tool_env import StatefulToolEnv
+        from verifiers.types import AssistantMessage, ToolCall, ToolMessage
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        assistant_msg = AssistantMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="tc_1", name="wait", arguments="{}"),
+            ],
+        )
+
+        tool_message = ToolMessage(
+            role="tool",
+            tool_call_id="tc_1",
+            content=[
+                {"type": "text", "text": "Status: Success"},
+                {"type": "custom_meta", "foo": "bar"},
+            ],
+        )
+
+        with patch.object(
+            StatefulToolEnv,
+            "env_response",
+            new=AsyncMock(return_value=[tool_message]),
+        ):
+            result = await env.env_response([assistant_msg], {})
+
+        assert len(result) == 1
+        assert isinstance(result[0].content, list)
+        assert [self._part_type(p) for p in result[0].content] == [
+            "text",
+            "custom_meta",
+        ]
 
 
 class TestCUAModeScreenshotFilter:

@@ -191,12 +191,6 @@ class BrowserEnv(vf.StatefulToolEnv):
         return getattr(part, "type", None)
 
     @staticmethod
-    def _content_part_text(part: Any) -> str:
-        if isinstance(part, dict):
-            return part.get("text", "")
-        return getattr(part, "text", "")
-
-    @staticmethod
     def _content_part_as_dict(part: Any) -> dict[str, Any] | None:
         if isinstance(part, dict):
             return part
@@ -225,14 +219,17 @@ class BrowserEnv(vf.StatefulToolEnv):
             return result
 
         # OpenAI/Anthropic adapters flatten tool message multimodal content to text.
-        # Keep text in tool messages and re-attach screenshots as a user message.
+        # Keep non-image parts in tool messages and re-attach screenshots as a user message.
         screenshots: list[dict[str, Any]] = []
         for msg in result:
+            if not isinstance(msg, vf.ToolMessage):
+                continue
+
             content = getattr(msg, "content", None)
             if not isinstance(content, list):
                 continue
 
-            text_chunks: list[str] = []
+            remaining_parts: list[Any] = []
             has_image = False
             for part in content:
                 part_type = self._content_part_type(part)
@@ -242,13 +239,11 @@ class BrowserEnv(vf.StatefulToolEnv):
                     if part_dict is not None:
                         screenshots.append(part_dict)
                     continue
-                if part_type == "text":
-                    text = self._content_part_text(part)
-                    if text:
-                        text_chunks.append(text)
+
+                remaining_parts.append(part)
 
             if has_image:
-                msg.content = "\n".join(text_chunks)
+                msg.content = remaining_parts
 
         if screenshots:
             return [
