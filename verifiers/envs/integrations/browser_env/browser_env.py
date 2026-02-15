@@ -184,62 +184,72 @@ class BrowserEnv(vf.StatefulToolEnv):
             tool_name, tool_args, messages, state, **kwargs
         )
 
+    @staticmethod
+    def _content_part_type(part: Any) -> str | None:
+        if isinstance(part, dict):
+            return part.get("type")
+        return getattr(part, "type", None)
+
+    @staticmethod
+    def _content_part_text(part: Any) -> str:
+        if isinstance(part, dict):
+            return part.get("text", "")
+        return getattr(part, "text", "")
+
+    @staticmethod
+    def _content_part_as_dict(part: Any) -> dict[str, Any] | None:
+        if isinstance(part, dict):
+            return part
+        if hasattr(part, "model_dump"):
+            dumped = part.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        return None
+
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
+        # Some providers send empty tool args for zero-arg tools.
         if self.mode == "cua":
-            # Bug 1 fix: sanitize empty arguments for zero-parameter tools (e.g. screenshot).
-            # json.loads("") raises JSONDecodeError, so default to "{}".
             last_msg = messages[-1]
-            if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-                for tc in last_msg.tool_calls:
-                    if not tc.arguments or not tc.arguments.strip():
-                        tc.arguments = "{}"
+            tool_calls = getattr(last_msg, "tool_calls", None) or []
+            for tool_call in tool_calls:
+                if not tool_call.arguments or not tool_call.arguments.strip():
+                    tool_call.arguments = "{}"
 
         result = await super().env_response(messages, state, **kwargs)
 
-        if self.mode == "cua":
-            # Bug 2 fix: move screenshots from tool messages to a trailing user message.
-            # Clients strip image_url parts from ToolMessage content but preserve them
-            # in UserMessage content, so we relocate the images.
-            # Content parts may be plain dicts or Pydantic ContentPart objects.
-            def _get_part_type(part):
-                if isinstance(part, dict):
-                    return part.get("type")
-                return getattr(part, "type", None)
+        if self.mode != "cua":
+            return result
 
-            def _part_to_dict(part):
-                if isinstance(part, dict):
-                    return part
-                if hasattr(part, "model_dump"):
-                    return part.model_dump()
-                return dict(part)
+        # OpenAI/Anthropic adapters flatten tool message multimodal content to text.
+        # Keep text in tool messages and re-attach screenshots as a user message.
+        screenshots: list[dict[str, Any]] = []
+        for msg in result:
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
 
-            screenshots = []
-            for msg in result:
-                if hasattr(msg, "content") and isinstance(msg.content, list):
-                    text_parts = []
-                    for part in msg.content:
-                        if _get_part_type(part) == "image_url":
-                            screenshots.append(_part_to_dict(part))
-                        else:
-                            text_parts.append(part)
-                    if len(text_parts) < len(msg.content):  # we extracted images
-                        texts = []
-                        for p in text_parts:
-                            if _get_part_type(p) == "text":
-                                t = (
-                                    p.get("text", "")
-                                    if isinstance(p, dict)
-                                    else getattr(p, "text", "")
-                                )
-                                texts.append(t)
-                        msg.content = "\n".join(texts) if texts else ""
+            text_chunks: list[str] = []
+            has_image = False
+            for part in content:
+                part_type = self._content_part_type(part)
+                if part_type == "image_url":
+                    has_image = True
+                    part_dict = self._content_part_as_dict(part)
+                    if part_dict is not None:
+                        screenshots.append(part_dict)
+                    continue
+                if part_type == "text":
+                    text = self._content_part_text(part)
+                    if text:
+                        text_chunks.append(text)
 
-            if screenshots:
-                result = list(result) + [
-                    vf.UserMessage(role="user", content=screenshots)
-                ]
+            if has_image:
+                msg.content = "\n".join(text_chunks)
+
+        if screenshots:
+            return [*result, vf.UserMessage(role="user", content=screenshots)]
 
         return result
 

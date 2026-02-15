@@ -770,13 +770,18 @@ class CUAMode:
             return messages
 
         def _get_item_type(item):
-            if isinstance(item, dict):
+            if hasattr(item, "get"):
                 return item.get("type")
             return getattr(item, "type", None)
 
+        def _get_message_content(msg):
+            if hasattr(msg, "get"):
+                return msg.get("content")
+            return getattr(msg, "content", None)
+
         screenshot_positions: list[tuple[int, int]] = []
         for msg_idx, msg in enumerate(messages):
-            content = msg.get("content")
+            content = _get_message_content(msg)
             if isinstance(content, list):
                 for content_idx, item in enumerate(content):
                     if _get_item_type(item) == "image_url":
@@ -793,12 +798,7 @@ class CUAMode:
         filtered_messages = copy.deepcopy(messages)
 
         for msg_idx, content_idx in positions_to_replace:
-            msg = filtered_messages[msg_idx]
-            content_list = (
-                msg["content"]
-                if isinstance(msg, dict)
-                else getattr(msg, "content", None)
-            )
+            content_list = _get_message_content(filtered_messages[msg_idx])
             if isinstance(content_list, list) and content_idx < len(content_list):
                 content_list[content_idx] = {
                     "type": "text",
