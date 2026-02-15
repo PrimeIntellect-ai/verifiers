@@ -2493,12 +2493,13 @@ class RLMEnv(vf.StatefulToolEnv):
             # never tries to compute interleaved prompt_ids from the main rollout.
             # Sub-LLM prompts are independent tool calls, not continuations of the
             # root conversation; using the real state would treat them as such.
-            # We also mirror sampling_args onto the fake state because
+            # We also mirror sampling_args/tool_defs onto the fake state because
             # get_model_response falls back to state values when args are falsy
             # (e.g., {} or None), which would otherwise raise KeyError.
             prompt_state = State()
             prompt_state["trajectory"] = []
             prompt_state["sampling_args"] = sampling_args
+            prompt_state["tool_defs"] = tools or []
             return await asyncio.wait_for(
                 self.get_model_response(
                     prompt_state,
