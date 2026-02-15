@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import verifiers as vf
 
@@ -212,10 +212,12 @@ class BrowserEnv(vf.StatefulToolEnv):
         # Some providers send empty tool args for zero-arg tools.
         if self.mode == "cua":
             last_msg = messages[-1]
-            tool_calls = getattr(last_msg, "tool_calls", None) or []
-            for tool_call in tool_calls:
-                if not tool_call.arguments or not tool_call.arguments.strip():
-                    tool_call.arguments = "{}"
+            tool_calls = getattr(last_msg, "tool_calls", None)
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    arguments = getattr(tool_call, "arguments", "")
+                    if isinstance(arguments, str) and not arguments.strip():
+                        tool_call.arguments = "{}"
 
         result = await super().env_response(messages, state, **kwargs)
 
@@ -249,7 +251,10 @@ class BrowserEnv(vf.StatefulToolEnv):
                 msg.content = "\n".join(text_chunks)
 
         if screenshots:
-            return [*result, vf.UserMessage(role="user", content=screenshots)]
+            return [
+                *result,
+                vf.UserMessage(role="user", content=cast(Any, screenshots)),
+            ]
 
         return result
 
