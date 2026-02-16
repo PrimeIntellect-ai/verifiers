@@ -46,11 +46,17 @@ async def parse_response_tokens(
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
+            routed_experts = [] if tokens.routed_experts else None
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
             completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
             completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
+            routed_experts = (
+                tokens.routed_experts[: max_seq_len - prompt_len]
+                if tokens.routed_experts is not None
+                else None
+            )
         else:
             is_truncated = False
     else:
@@ -65,5 +71,5 @@ async def parse_response_tokens(
         completion_logprobs=completion_logprobs,
         overlong_prompt=overlong_prompt,
         is_truncated=is_truncated,
-        routed_experts=tokens.routed_experts,
+        routed_experts=routed_experts,
     )

@@ -450,24 +450,19 @@ class OpenAIChatCompletionsClient(
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
             has_routed_experts = (
-                isinstance(
-                    routed_experts := getattr(choice, "routed_experts", None), dict
-                )
+                isinstance(routed_experts := getattr(choice, "routed_experts", None), dict)
                 and "data" in routed_experts
                 and "shape" in routed_experts
             )
             if has_routed_experts:
                 routed_experts = cast(dict[str, Any], routed_experts)
-                routed_experts = cast(
-                    list[list[list[int]]],
-                    (
-                        np.frombuffer(
-                            base64.b85decode(routed_experts["data"]), dtype=np.int32
-                        )
-                        .reshape(routed_experts["shape"])
-                        .tolist()
-                    ),
-                )  # [seq_len, layers, topk]
+                routed_experts = cast(list[list[list[int]]], (
+                    np.frombuffer(
+                        base64.b85decode(routed_experts["data"]), dtype=np.int32
+                    )
+                    .reshape(routed_experts["shape"])
+                    .tolist()
+                )) # [seq_len, layers, topk]
             else:
                 routed_experts = None
             return ResponseTokens(
