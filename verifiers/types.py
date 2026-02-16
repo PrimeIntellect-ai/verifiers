@@ -160,6 +160,7 @@ class ResponseTokens(CustomBaseModel):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -196,6 +197,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
 
 
 class TokenUsage(TypedDict):

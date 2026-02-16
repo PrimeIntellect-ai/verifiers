@@ -65,4 +65,5 @@ async def parse_response_tokens(
         completion_logprobs=completion_logprobs,
         overlong_prompt=overlong_prompt,
         is_truncated=is_truncated,
+        routed_experts=tokens.routed_experts,
     )
