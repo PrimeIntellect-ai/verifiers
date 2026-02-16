@@ -115,6 +115,9 @@ class BrowserEnv(vf.StatefulToolEnv):
             prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
+        if mode == "cua" and "stop_errors" not in kwargs:
+            kwargs["stop_errors"] = [vf.SandboxError]
+
         super().__init__(**kwargs)
         self.mode = mode
         browserbase_api_key = os.getenv(browserbase_api_key_var)
