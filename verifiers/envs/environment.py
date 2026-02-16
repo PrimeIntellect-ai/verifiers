@@ -14,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-import multiprocessing
+import multiprocessing as mp
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
@@ -1272,7 +1272,7 @@ class Environment(ABC):
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
-        self.env_server_process = multiprocessing.get_context("spawn").Process(
+        self.env_server_process = mp.get_context("spawn").Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
