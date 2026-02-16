@@ -120,6 +120,19 @@ DEFAULT_REASONING_FIELDS = [
     "reasoning_details",  # OpenRouter, MiniMax
 ]
 
+
+def parse_reasoning_content(message: Any) -> str | None:
+    message_dict = message.model_dump()
+    if not isinstance(message_dict, dict):
+        return None
+
+    for field in DEFAULT_REASONING_FIELDS:
+        value = message_dict.get(field)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 OpenAIChatMessage: TypeAlias = ChatCompletionMessageParam
 OpenAIChatMessages: TypeAlias = list[OpenAIChatMessage]
 OpenAIChatResponse: TypeAlias = ChatCompletion
@@ -282,12 +295,13 @@ class OpenAIChatCompletionsClient(
             raise InvalidModelResponseError(
                 f"Model returned {len(response.choices)} choices, expected 1"
             )
-        if not (
-            response.choices[0].message.content
-            or response.choices[0].message.tool_calls
-        ):
+        message = response.choices[0].message
+        has_content = bool(content_to_text(getattr(message, "content", None)))
+        has_tool_calls = bool(getattr(message, "tool_calls", None))
+        has_reasoning = bool(parse_reasoning_content(message))
+        if not (has_content or has_tool_calls or has_reasoning):
             raise EmptyModelResponseError(
-                "Model returned no content and did not call any tools"
+                "Model returned no content, reasoning, and did not call any tools"
             )
 
     async def from_native_response(self, response: OpenAIChatResponse) -> Response:
@@ -439,15 +453,10 @@ class OpenAIChatCompletionsClient(
                 completion_logprobs=completion_logprobs,
             )
 
-        def parse_reasoning_content(response: OpenAIChatResponse) -> str | None:
-            message_dict = response.choices[0].message.model_dump()
-            if not isinstance(message_dict, dict):
-                return None
-            for field in DEFAULT_REASONING_FIELDS:
-                value = message_dict.get(field)
-                if isinstance(value, str):
-                    return value
-            return None
+        def parse_reasoning_content_from_response(
+            response: OpenAIChatResponse,
+        ) -> str | None:
+            return parse_reasoning_content(response.choices[0].message)
 
         response_id = getattr(response, "id", "")
         if not isinstance(response_id, str):
@@ -466,7 +475,7 @@ class OpenAIChatCompletionsClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content(response),
+                reasoning_content=parse_reasoning_content_from_response(response),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
