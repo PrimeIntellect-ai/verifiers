@@ -10,7 +10,7 @@ Single-hand no-limit Texas Hold'em environment built on `MultiAgentEnv`.
 - Canonical actions: `fold`, `check`, `call`, `raise` (`raise_to` semantics).
 - Invalid in-tool actions are treated as folds.
 - Hand ends on folds to one player or at showdown.
-- Optional debug file logging via `hand_log_path` env arg (writes full hand state, hole cards, and showdown scoring).
+- `load_environment(num_seed_rows=16)` builds multiple dataset rows with per-row `seed` values (`0..num_seed_rows-1`), so each example can deal a different deterministic hand sequence.
 
 ## Quickstart
 ```bash

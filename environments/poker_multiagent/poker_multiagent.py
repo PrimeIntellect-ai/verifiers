@@ -3,7 +3,6 @@ from __future__ import annotations
 import itertools
 import random
 from collections import Counter
-from pathlib import Path
 
 from datasets import Dataset
 
@@ -28,7 +27,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         big_blind: int = 2,
         max_raises_per_street: int = 2,
         seed: int | None = None,
-        hand_log_path: str | None = "/tmp/poker_hand_{example_id}_{seed}.log",
         max_turns: int = 120,
         **kwargs,
     ):
@@ -51,7 +49,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         self.big_blind = big_blind
         self.max_raises_per_street = max_raises_per_street
         self.seed = seed
-        self.hand_log_path = hand_log_path
 
         super().__init__(tools=[], max_turns=max_turns, **kwargs)
         self.add_tool(self.take_action, args_to_skip=["state"])
@@ -78,19 +75,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
                 f"{actor_id}: stack={player['stack']} folded={player['folded']} street_contrib={state['street_contrib'][actor_id]} hole_cards={hole_cards}",
             )
         self._append_hand_log(state, f"action_log_tail={state['action_log'][-8:]}")
-
-    def _flush_hand_log(self, state: State) -> None:
-        if self.hand_log_path is None:
-            return
-        path_str = self.hand_log_path.format(
-            seed=state.get("seed", "unknown"),
-            example_id=state.get("example_id", "unknown"),
-        )
-        path = Path(path_str)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(state.get("hand_log_lines", [])), encoding="utf-8")
-        state["hand_log_path"] = str(path)
-        self.logger.info("poker.log file=%s", path)
 
     def _action_result(
         self,
@@ -222,9 +206,10 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
 
-        seed = self.seed
-        if seed is None:
-            seed = int(state.get("example_id", 0))
+        if self.seed is not None:
+            seed = self.seed
+        else:
+            seed = int(state.get("input", {}).get("seed", state.get("example_id", 0)))
         rng = random.Random(seed)
 
         seats = [self._actor_id(i) for i in range(self.num_players)]
@@ -259,6 +244,10 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         state["action_log"] = []
         state["hand_log_lines"] = []
         state["deck_initial_order"] = list(deck)
+        state["max_possible_payout"] = self.num_players * self.starting_stack
+        state["winner_winnings"] = 0
+        state["winner_winnings_by_player"] = {}
+        state["player_streets_seen"] = {actor_id: 1 for actor_id in seats}
 
         for _ in range(2):
             for actor_id in seats:
@@ -431,6 +420,9 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         state["current_bet"] = 0
         state["last_raise_size"] = self.big_blind
         state["street_raise_count"] = 0
+        for actor_id in state["seats"]:
+            if not state["players"][actor_id]["folded"]:
+                state["player_streets_seen"][actor_id] += 1
         first_to_act = (state["dealer_seat"] + 1) % self.num_players
         state["pending_to_act"] = self._actionable_players_from(state, first_to_act)
 
@@ -475,6 +467,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
     def _finalize_single_winner(self, state: State, winner: str) -> None:
         winnings = state["pot"]
         state["players"][winner]["stack"] += winnings
+        state["winner_winnings"] = winnings
+        state["winner_winnings_by_player"] = {winner: winnings}
         state["pot"] = 0
         state["street"] = "finished"
         state["pending_to_act"] = []
@@ -487,7 +481,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             state, f"hand_end reason=folds winner={winner} winnings={winnings}"
         )
         self._log_snapshot(state, "hand_finished_folds")
-        self._flush_hand_log(state)
         self.logger.info("poker.finish reason=folds winner=%s", winner)
 
     def _hand_rank_name(self, category: int) -> str:
@@ -537,6 +530,7 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         pot = state["pot"]
         share = pot // len(winners)
         remainder = pot % len(winners)
+        payouts = {actor_id: share for actor_id in winners}
 
         for actor_id in winners:
             state["players"][actor_id]["stack"] += share
@@ -547,10 +541,13 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
                 actor_id = self._actor_id(seat)
                 if actor_id in winners:
                     state["players"][actor_id]["stack"] += 1
+                    payouts[actor_id] += 1
                     remainder -= 1
                     if remainder == 0:
                         break
 
+        state["winner_winnings"] = max(payouts.values()) if payouts else 0
+        state["winner_winnings_by_player"] = payouts
         state["pot"] = 0
         state["street"] = "finished"
         state["pending_to_act"] = []
@@ -570,7 +567,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             f"hand_end reason=showdown winners={winners_text} category={category_name} best_score={best_score}",
         )
         self._log_snapshot(state, "hand_finished_showdown")
-        self._flush_hand_log(state)
         self.logger.info(
             "poker.showdown winners=%s category=%s", winners_text, category_name
         )
@@ -896,7 +892,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
 
 
 def load_environment(
-    seed: int = 0,
+    seed: int | None = None,
+    num_seed_rows: int = 500,
 ) -> vf.Environment:
     dataset = Dataset.from_list(
         [
@@ -908,14 +905,58 @@ def load_environment(
                     }
                 ],
                 "task": "poker_multiagent",
+                "seed": row_seed,
             }
+            for row_seed in range(num_seed_rows)
         ]
     )
 
-    async def finished_game_reward(state: State) -> float:
-        return 1.0 if state.get("final_env_response") is not None else 0.0
+    async def winner_winnings_reward(state: State) -> float:
+        if state.get("error") is not None or state.get("final_env_response") is None:
+            return -0.5
 
-    rubric = vf.Rubric(funcs=[finished_game_reward])
+        max_possible_payout = state.get("max_possible_payout", 0)
+        winner_winnings = state.get("winner_winnings", 0)
+        if (
+            not isinstance(max_possible_payout, (int, float))
+            or max_possible_payout <= 0
+        ):
+            return 0.0
+        if not isinstance(winner_winnings, (int, float)):
+            return 0.0
+
+        normalized = winner_winnings / max_possible_payout
+        return max(0.0, min(1.0, float(normalized)))
+
+    async def streets_seen_reward(state: State) -> float:
+        """Reward for total streets seen across all players. Encourages staying in hands."""
+        if state.get("error") is not None or state.get("final_env_response") is None:
+            return 0.0
+        player_streets = state.get("player_streets_seen", {})
+        if not player_streets:
+            return 0.0
+        num_players = len(state["seats"])
+        # max 4 streets per player: preflop, flop, turn, river
+        total = sum(player_streets.values())
+        return total / (num_players * 4)
+
+    async def fewer_losers_reward(state: State) -> float:
+        """Reward for fewer players losing money. Encourages selective play."""
+        if state.get("error") is not None or state.get("final_env_response") is None:
+            return 0.0
+        num_players = len(state["seats"])
+        starting_stack = state.get("max_possible_payout", 0) / max(num_players, 1)
+        num_losers = sum(
+            1
+            for actor_id in state["seats"]
+            if state["players"][actor_id]["stack"] < starting_stack
+        )
+        return 1.0 - (num_losers / num_players)
+
+    rubric = vf.Rubric(
+        funcs=[winner_winnings_reward, streets_seen_reward, fewer_losers_reward],
+        weights=[1.0, 1.0, 1.0],
+    )
     return PokerMultiAgentEnv(
         dataset=dataset,
         rubric=rubric,
