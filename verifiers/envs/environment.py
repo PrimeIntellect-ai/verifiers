@@ -14,7 +14,8 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from multiprocessing import Process
+import multiprocessing as mp
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -146,7 +147,7 @@ class Environment(ABC):
         self.set_score_rollouts(score_rollouts)
 
         self.env_client: EnvClient | None = None
-        self.env_server_process: Process | None = None
+        self.env_server_process: BaseProcess | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -1268,7 +1269,10 @@ class Environment(ABC):
             depending on it directly.
         """
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
-        self.env_server_process = Process(
+        # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+        # the parent process, which has caused hangs when multiple env server
+        # subprocesses share the same fds.
+        self.env_server_process = mp.get_context("spawn").Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
