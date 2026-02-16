@@ -145,13 +145,34 @@ class ZMQEnvServer(EnvServer):
                 error=repr(e),
             )
 
-        # Embed request_id in response for single-frame client receive
-        response_dict = response.model_dump(mode="python", warnings=False)
-        response_dict["_zmq_request_id"] = request_id
-        response_bytes = cast(
-            bytes,
-            msgpack.packb(response_dict, default=msgpack_encoder, use_bin_type=True),
-        )
+        # Serialize and send response — wrapped in try/except to guarantee
+        # we always send a response back. Without this, serialization errors
+        # (e.g. non-msgpack-serializable types in rollout outputs) silently
+        # drop the response, causing the client to hang forever.
+        try:
+            response_dict = response.model_dump(mode="python", warnings=False)
+            response_dict["_zmq_request_id"] = request_id
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    response_dict, default=msgpack_encoder, use_bin_type=True
+                ),
+            )
+        except Exception as e:
+            self.logger.error(
+                f"[server-send] Failed to serialize response for "
+                f"request_id={request_id[:8]}: {e}",
+                exc_info=True,
+            )
+            fallback = BaseResponse(success=False, error=repr(e))
+            response_dict = fallback.model_dump(mode="python", warnings=False)
+            response_dict["_zmq_request_id"] = request_id
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    response_dict, default=msgpack_encoder, use_bin_type=True
+                ),
+            )
 
         # ROUTER requires [client_id, payload] — lock prevents interleaving
         # from concurrent _process_request tasks
