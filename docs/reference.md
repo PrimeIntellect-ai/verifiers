@@ -176,6 +176,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
 ```
 
 Token-level data for training.

@@ -1,6 +1,9 @@
+import base64
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
+
+import numpy as np
 
 from openai import (
     AsyncOpenAI,
@@ -445,12 +448,35 @@ class OpenAIChatCompletionsClient(
                 assert isinstance(response.choices[0].logprobs, dict)
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
+
+            has_routed_experts = (
+                isinstance(
+                    routed_experts := getattr(choice, "routed_experts", None), dict
+                )
+                and "data" in routed_experts
+                and "shape" in routed_experts
+            )
+            if has_routed_experts:
+                routed_experts = cast(dict[str, Any], routed_experts)
+                routed_experts = cast(
+                    list[list[list[int]]],
+                    (
+                        np.frombuffer(
+                            base64.b85decode(routed_experts["data"]), dtype=np.int32
+                        )
+                        .reshape(routed_experts["shape"])
+                        .tolist()
+                    ),
+                )  # [seq_len, layers, topk]
+            else:
+                routed_experts = None
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
+                routed_experts=routed_experts,
             )
 
         def parse_reasoning_content_from_response(
