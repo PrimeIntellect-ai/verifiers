@@ -46,11 +46,7 @@ class ZMQEnvServer(EnvServer):
                     break
 
                 try:
-                    # receive with timeout to periodically check stop_event
-                    frames = await asyncio.wait_for(
-                        self.socket.recv_multipart(),
-                        timeout=1.0 if stop_event else None,
-                    )
+                    frames = await self.socket.recv_multipart()
 
                     if len(frames) != 2:
                         self.logger.warning(
@@ -71,8 +67,6 @@ class ZMQEnvServer(EnvServer):
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
 
-                except asyncio.TimeoutError:
-                    continue
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
