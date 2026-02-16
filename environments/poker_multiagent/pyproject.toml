@@ -1,0 +1,17 @@
+[project]
+name = "poker-multiagent"
+version = "0.1.0"
+tags = ["game", "multi-agent", "stateful-tool", "train", "eval", "poker"]
+license = "Apache-2.0"
+description = "Single-hand no-limit Texas Hold'em environment built on MultiAgentEnv with a shared take_action tool."
+dependencies = [
+    "verifiers>=0.1.11.dev0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["poker_multiagent.py"]

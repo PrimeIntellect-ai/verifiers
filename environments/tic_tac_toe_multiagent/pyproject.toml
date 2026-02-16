@@ -1,0 +1,17 @@
+[project]
+name = "tic-tac-toe-multiagent"
+version = "0.1.0"
+tags = ["game", "multi-agent", "stateful-tool", "train", "eval"]
+license = "Apache-2.0"
+description = "Two-agent tic-tac-toe environment built on MultiAgentEnv with a make_move tool."
+dependencies = [
+    "verifiers>=0.1.11.dev0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["tic_tac_toe_multiagent.py"]

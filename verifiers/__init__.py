@@ -17,8 +17,9 @@ from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
-from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
+from .envs.stateful_tool_env import StatefulToolEnv  # noqa # isort: skip
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
 from .clients.client import Client  # noqa # isort: skip
 from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa # isort: skip
 from .clients.openai_chat_completions_client import OpenAIChatCompletionsClient  # noqa # isort: skip
@@ -31,7 +32,6 @@ from .clients.openai_completions_client import OpenAICompletionsClient  # noqa #
 # main imports
 from .envs.env_group import EnvGroup
 from .envs.singleturn_env import SingleTurnEnv
-from .envs.stateful_tool_env import StatefulToolEnv
 from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
