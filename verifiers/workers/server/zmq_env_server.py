@@ -30,6 +30,7 @@ class ZMQEnvServer(EnvServer):
         self.socket.bind(self.address)
         self._recv_count = 0
         self._send_count = 0
+        self._send_lock = asyncio.Lock()
 
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
@@ -51,22 +52,21 @@ class ZMQEnvServer(EnvServer):
                         timeout=1.0 if stop_event else None,
                     )
 
-                    if len(frames) != 3:
+                    if len(frames) != 2:
                         self.logger.warning(
-                            f"Invalid message: expected 3 frames, got {len(frames)}"
+                            f"Invalid message: expected 2 frames, got {len(frames)}"
                         )
                         continue
 
-                    client_id, request_id, payload_bytes = frames
+                    client_id, payload_bytes = frames
                     self._recv_count += 1
                     self.logger.debug(
-                        f"[server-recv] request_id={request_id.decode()[:8]} "
-                        f"(recv_total={self._recv_count}, pending_tasks={len(self.pending_tasks)})"
+                        f"[server-recv] recv_total={self._recv_count} "
+                        f"pending_tasks={len(self.pending_tasks)}"
                     )
 
-                    # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
-                        self._process_request(client_id, request_id, payload_bytes)
+                        self._process_request(client_id, payload_bytes)
                     )
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
@@ -99,19 +99,21 @@ class ZMQEnvServer(EnvServer):
     async def _process_request(
         self,
         client_id: bytes,
-        request_id_bytes: bytes,
         payload_bytes: bytes,
     ):
-        request_id = request_id_bytes.decode()
         response: BaseResponse
+        request_id = "unknown"
 
         try:
-            # deserialize request
             raw = msgpack.unpackb(payload_bytes, raw=False)
+            request_id = raw.pop("_zmq_request_id", "unknown")
             request_type = raw.get("request_type")
-            request_id = raw.get("request_id", request_id)
 
-            # validate and route to handler
+            self.logger.debug(
+                f"[server-recv] request_id={request_id[:8]} type={request_type} "
+                f"(recv_total={self._recv_count}, pending_tasks={len(self.pending_tasks)})"
+            )
+
             if request_type == "health":
                 request = HealthRequest.model_validate(raw)
                 response = await self._handle_health(request)
@@ -143,20 +145,18 @@ class ZMQEnvServer(EnvServer):
                 error=repr(e),
             )
 
-        # serialize response using Pydantic
+        # Embed request_id in response for single-frame client receive
+        response_dict = response.model_dump(mode="python", warnings=False)
+        response_dict["_zmq_request_id"] = request_id
         response_bytes = cast(
             bytes,
-            msgpack.packb(
-                response.model_dump(mode="python", warnings=False),
-                default=msgpack_encoder,
-                use_bin_type=True,
-            ),
+            msgpack.packb(response_dict, default=msgpack_encoder, use_bin_type=True),
         )
 
-        # send response: [client_id, request_id, response]
-        await self.socket.send_multipart(
-            [client_id, request_id.encode(), response_bytes]
-        )
+        # ROUTER requires [client_id, payload] — lock prevents interleaving
+        # from concurrent _process_request tasks
+        async with self._send_lock:
+            await self.socket.send_multipart([client_id, response_bytes])
         self._send_count += 1
         self.logger.debug(
             f"[server-send] request_id={request_id[:8]} success={response.success} "

@@ -80,39 +80,27 @@ class ZMQEnvClient(EnvClient):
         """Continuously receive responses from environment servers."""
         while True:
             try:
-                # Receive multipart: [request_id, payload]
-                msg = await self.socket.recv_multipart()
+                # Single-frame receive: request_id is embedded in the payload
+                data = await self.socket.recv()
+                self._recv_count += 1
 
-                if len(msg) < 2:
+                response = msgpack.unpackb(data, raw=False)
+                request_id = response.pop("_zmq_request_id", None)
+
+                if request_id is None:
                     self.logger.error(
-                        f"Invalid message format: expected 2 frames, got {len(msg)}"
+                        f"[recv] response missing _zmq_request_id (recv_total={self._recv_count})"
                     )
                     continue
-
-                request_id_bytes, response_data = msg[0], msg[1]
-                request_id = request_id_bytes.decode()
-                self._recv_count += 1
 
                 if request_id in self.pending:
                     future = self.pending.pop(request_id)
                     if not future.done():
-                        try:
-                            response = msgpack.unpackb(response_data, raw=False)
-                            future.set_result(response)
-                            self.logger.debug(
-                                f"[recv] request_id={request_id[:8]} delivered "
-                                f"(recv_total={self._recv_count}, pending={len(self.pending)})"
-                            )
-                        except Exception as unpack_error:
-                            # Unpacking failed - fail the specific future
-                            self.logger.error(
-                                f"Failed to unpack response for request {request_id}: {unpack_error}"
-                            )
-                            future.set_exception(
-                                RuntimeError(
-                                    f"Failed to deserialize response: {unpack_error}"
-                                )
-                            )
+                        future.set_result(response)
+                        self.logger.debug(
+                            f"[recv] request_id={request_id[:8]} delivered "
+                            f"(recv_total={self._recv_count}, pending={len(self.pending)})"
+                        )
                     else:
                         self.logger.debug(
                             f"[recv] request_id={request_id[:8]} already done "
@@ -160,22 +148,19 @@ class ZMQEnvClient(EnvClient):
 
         effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
-        # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
 
-        # Serialize using Pydantic
+        # Embed request_id in the payload for single-frame send (atomic, no interleaving)
+        request_dict = request.model_dump(mode="python", warnings=False)
+        request_dict["_zmq_request_id"] = request_id
         payload_bytes = cast(
             bytes,
-            msgpack.packb(
-                request.model_dump(mode="python", warnings=False),
-                default=msgpack_encoder,
-                use_bin_type=True,
-            ),
+            msgpack.packb(request_dict, default=msgpack_encoder, use_bin_type=True),
         )
 
         future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
-        await self.socket.send_multipart([request_id.encode(), payload_bytes])
+        await self.socket.send(payload_bytes)
         self._send_count += 1
         self.logger.debug(
             f"[send] request_id={request_id[:8]} type={request.request_type} "
