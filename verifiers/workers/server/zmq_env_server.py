@@ -32,22 +32,28 @@ class ZMQEnvServer(EnvServer):
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
-        # Create a task to wait for stop signal
-        stop_task = asyncio.create_task(stop_event.wait()) if stop_event else None
+        # Use a poller to check for incoming data instead of asyncio.wait_for.
+        # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
+        # timeout. There is a race in CPython's Task.__step where the recv
+        # completes (consuming data from the ZMQ buffer) but _must_cancel is
+        # already set, so the result is silently discarded — the message is
+        # gone forever. A poller is non-destructive: it only checks socket
+        # readability without consuming any data.
+        poller = zmq.asyncio.Poller()
+        poller.register(self.socket, zmq.POLLIN)
 
         try:
             while True:
-                # exit gracefully on stop signal
                 if stop_event and stop_event.is_set():
                     self.logger.info("Stop event received, shutting down gracefully")
                     break
 
                 try:
-                    # receive with timeout to periodically check stop_event
-                    frames = await asyncio.wait_for(
-                        self.socket.recv_multipart(),
-                        timeout=1.0 if stop_event else None,
-                    )
+                    events = dict(await poller.poll(timeout=1000))
+                    if self.socket not in events:
+                        continue
+
+                    frames = await self.socket.recv_multipart()
 
                     if len(frames) != 3:
                         self.logger.warning(
@@ -64,15 +70,12 @@ class ZMQEnvServer(EnvServer):
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
 
-                except asyncio.TimeoutError:
-                    continue
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
-            if stop_task and not stop_task.done():
-                stop_task.cancel()
+            poller.unregister(self.socket)
 
     async def close(self):
         # cancel and await all pending tasks
