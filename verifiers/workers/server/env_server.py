@@ -8,6 +8,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.clients import Client, resolve_client
 from verifiers.types import ClientConfig
+from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import resolve_client_config
 from verifiers.workers.types import (
     HealthRequest,
@@ -62,6 +63,9 @@ class EnvServer(ABC):
                 f"Setting extra environment kwargs: {self.extra_env_kwargs}"
             )
             self.env.set_kwargs(**self.extra_env_kwargs)
+
+        # Start event loop lag monitor
+        self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
 
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):

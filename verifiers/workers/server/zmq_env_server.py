@@ -6,7 +6,6 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
@@ -49,9 +48,6 @@ class ZMQEnvServer(EnvServer):
         self._stop_health = threading.Event()
         self._health_thread: threading.Thread | None = None
 
-        # Start event loop lag monitor
-        self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
-
     def _run_health_thread(self):
         """Blocking health check responder on a dedicated thread."""
         ctx = zmq.Context()
@@ -89,8 +85,9 @@ class ZMQEnvServer(EnvServer):
         )
         self._health_thread.start()
 
-        # Start statistics logger
         self.lag_monitor.run_in_background()
+
+        # Start statistics logger
         log_stats_task = asyncio.create_task(self._log_stats_loop())
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
@@ -164,7 +161,7 @@ class ZMQEnvServer(EnvServer):
         self.ctx.term()
         self.logger.info("Environment server shut down")
 
-    async def _log_stats_loop(self, interval: float = 30.0):
+    async def _log_stats_loop(self, interval: float = 10.0):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)

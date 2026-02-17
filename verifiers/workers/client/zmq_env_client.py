@@ -36,24 +36,24 @@ class ZMQEnvClient(EnvClient):
         super().__init__(address=address, **kwargs)
 
         # ZMQ context
-        self.ctx = zmq.asyncio.Context()
+        self._ctx = zmq.asyncio.Context()
 
         # DEALER socket for async request/response (work only)
-        self.socket = self.ctx.socket(zmq.DEALER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        self._socket = self._ctx.socket(zmq.DEALER)
+        self._socket.setsockopt(zmq.SNDHWM, 10000)
+        self._socket.setsockopt(zmq.RCVHWM, 10000)
+        self._socket.setsockopt(zmq.LINGER, 0)
 
         # TCP keepalive for faster dead server detection
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
+        self._socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
+        self._socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)
+        self._socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
+        self._socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
 
         # Separate REQ socket for health checks — connects to the server's
         # dedicated health thread, completely independent of work traffic.
-        self.health_address = derive_health_address(address)
-        self._health_socket = self.ctx.socket(zmq.REQ)
+        self._health_address = derive_health_address(address)
+        self._health_socket = self._ctx.socket(zmq.REQ)
         self._health_socket.setsockopt(zmq.LINGER, 0)
         self._health_socket.setsockopt(zmq.REQ_RELAXED, 1)
         self._health_socket.setsockopt(zmq.REQ_CORRELATE, 1)
@@ -76,10 +76,10 @@ class ZMQEnvClient(EnvClient):
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
     ) -> HealthResponse:
-        """Send health check via the dedicated health socket (separate from work)."""
+        """Send health check via the dedicated health socket."""
         try:
             if not self._health_socket_connected:
-                self._health_socket.connect(self.health_address)
+                self._health_socket.connect(self._health_address)
                 self._health_socket_connected = True
 
             await self._health_socket.send(b"ping")
@@ -157,8 +157,8 @@ class ZMQEnvClient(EnvClient):
 
         # Close sockets and terminate context
         self._health_socket.close()
-        self.socket.close()
-        self.ctx.term()
+        self._socket.close()
+        self._ctx.term()
 
     async def _cancel_all_pending(
         self,
@@ -199,7 +199,7 @@ class ZMQEnvClient(EnvClient):
         while True:
             try:
                 # Receive multipart: [request_id, payload]
-                msg = await self.socket.recv_multipart()
+                msg = await self._socket.recv_multipart()
 
                 if len(msg) < 2:
                     self.logger.error(
@@ -252,7 +252,7 @@ class ZMQEnvClient(EnvClient):
             async with self._receiver_lock:
                 if self._receiver_task is None:
                     self._receiver_task = asyncio.create_task(self._receive_loop())
-                    self.socket.connect(self.address)
+                    self._socket.connect(self.address)
 
         if self.health_check_interval > 0 and self._health_check_task is None:
             async with self._health_check_lock:
@@ -298,7 +298,7 @@ class ZMQEnvClient(EnvClient):
             async with self._pending_lock:
                 self._pending_requests[request_id] = pending_req
 
-            await self.socket.send_multipart([request_id.encode(), payload_bytes])
+            await self._socket.send_multipart([request_id.encode(), payload_bytes])
 
             try:
                 raw_response = await asyncio.wait_for(future, timeout=effective_timeout)

@@ -121,8 +121,8 @@ class TestRetryOnServerError:
                 asyncio.create_task(succeed())
 
         with (
-            patch.object(client.socket, "connect"),
-            patch.object(client.socket, "send_multipart", new=mock_send),
+            patch.object(client._socket, "connect"),
+            patch.object(client._socket, "send_multipart", new=mock_send),
         ):
             await client._ensure_started()
             response = await client._send_request(
@@ -151,8 +151,8 @@ class TestRetryOnServerError:
             asyncio.create_task(fail())
 
         with (
-            patch.object(client.socket, "connect"),
-            patch.object(client.socket, "send_multipart", new=mock_send),
+            patch.object(client._socket, "connect"),
+            patch.object(client._socket, "send_multipart", new=mock_send),
         ):
             await client._ensure_started()
 
@@ -185,8 +185,8 @@ class TestRetryOnServerError:
             asyncio.create_task(fail())
 
         with (
-            patch.object(client.socket, "connect"),
-            patch.object(client.socket, "send_multipart", new=mock_send),
+            patch.object(client._socket, "connect"),
+            patch.object(client._socket, "send_multipart", new=mock_send),
         ):
             await client._ensure_started()
 
@@ -218,7 +218,7 @@ class TestWaitForServerStartup:
 
         client.health = mock_health
 
-        with patch.object(client.socket, "connect"):
+        with patch.object(client._socket, "connect"):
             await client.wait_for_server_startup(timeout=3.0)
 
         assert client._healthy_event.is_set()
@@ -235,7 +235,7 @@ class TestWaitForServerStartup:
 
         client.health = AsyncMock(return_value=False)
 
-        with patch.object(client.socket, "connect"):
+        with patch.object(client._socket, "connect"):
             with pytest.raises(TimeoutError, match="did not become healthy"):
                 await client.wait_for_server_startup(timeout=1.0)
 

@@ -1293,10 +1293,10 @@ class Environment(ABC):
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(
             address=address,
-            name=self.env_id,
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
+            name=self.env_id,
         )
         await self.env_client.wait_for_server_startup()
 
