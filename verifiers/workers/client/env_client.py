@@ -11,7 +11,7 @@ from verifiers.utils.client_utils import resolve_client_config
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
-    PendingTaskInfo,
+    PendingRequest,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -22,9 +22,19 @@ from verifiers.workers.types import (
 class EnvClient(ABC):
     """Base class for environment clients."""
 
-    def __init__(self, address: str):
+    def __init__(
+        self,
+        address: str,
+        health_check_interval: float = 60.0,
+        health_check_timeout: float = 1.0,
+        recovery_timeout: float = 600.0,
+    ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
+        # Health check configuration
+        self.health_check_interval = health_check_interval
+        self.health_check_timeout = health_check_timeout
+        self.recovery_timeout = recovery_timeout
 
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
@@ -97,17 +107,17 @@ class EnvClient(ABC):
     @abstractmethod
     async def cancel_all_pending(
         self, reason: str = "Cancelled"
-    ) -> list[PendingTaskInfo]:
+    ) -> list[PendingRequest]:
         """Cancel all pending requests and return info about them."""
         ...
 
     @abstractmethod
-    async def wait_for_recovery(
+    async def wait_for_server_health(
         self,
         timeout: float = 600.0,  # 10m
         check_interval: float = 10.0,  # 10s
     ) -> None:
-        """Wait for server to recover after a failure."""
+        """Wait for server to be healthy."""
         ...
 
     @abstractmethod

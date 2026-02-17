@@ -1,4 +1,4 @@
-from enum import Enum
+import asyncio
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SkipValidation
@@ -13,14 +13,6 @@ from verifiers.types import (
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
 ]
-
-
-class ServerState(str, Enum):
-    """State of the environment server connection."""
-
-    HEALTHY = "healthy"
-    UNHEALTHY = "unhealthy"
-    RECOVERING = "recovering"
 
 
 class BaseRequest(BaseModel):
@@ -83,10 +75,11 @@ BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
 BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
 
 
-class PendingTaskInfo(BaseModel):
-    """Information about a pending task."""
+class PendingRequest(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     request_id: str
     request: BaseRequest
     timeout: float | None = None
     submitted_at: float  # timestamp
+    future: "asyncio.Future[dict]"  # Response future

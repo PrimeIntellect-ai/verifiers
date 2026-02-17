@@ -1298,7 +1298,7 @@ class Environment(ABC):
             recovery_timeout=recovery_timeout,
         )
         # Wait for server to be ready using built-in health check
-        await self.env_client.wait_for_recovery(
+        await self.env_client.wait_for_server_health(
             timeout=startup_timeout,
             check_interval=1.0,  # Check every second for fast startup
         )

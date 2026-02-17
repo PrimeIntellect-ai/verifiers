@@ -10,8 +10,7 @@ from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
-    PendingTaskInfo,
-    ServerState,
+    PendingRequest,
 )
 
 
@@ -20,7 +19,7 @@ class TestCancelAllPending:
 
     @pytest.mark.asyncio
     async def test_cancel_all_pending_returns_metadata(self):
-        """Test that cancel_all_pending returns correct PendingTaskInfo objects."""
+        """Test that cancel_all_pending returns correct PendingRequest objects."""
         client = ZMQEnvClient(
             address="tcp://127.0.0.1:5555",
             health_check_interval=0,  # Disable health checks
@@ -29,39 +28,42 @@ class TestCancelAllPending:
         # Manually add some pending tasks
         request1 = HealthRequest()
         request2 = HealthRequest()
+        future1 = asyncio.Future()
+        future2 = asyncio.Future()
 
         async with client._pending_lock:
-            client.pending["req1"] = asyncio.Future()
-            client.pending["req2"] = asyncio.Future()
-            client.pending_tasks["req1"] = PendingTaskInfo(
+            client.pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=request1,
                 submitted_at=time.time(),
                 timeout=10.0,
+                future=future1,
             )
-            client.pending_tasks["req2"] = PendingTaskInfo(
+            client.pending_requests["req2"] = PendingRequest(
                 request_id="req2",
                 request=request2,
                 submitted_at=time.time(),
                 timeout=20.0,
+                future=future2,
             )
 
         # Cancel all pending
-        cancelled_tasks = await client.cancel_all_pending("Test cancellation")
+        cancelled_requests = await client.cancel_all_pending()
 
         # Verify return value
-        assert len(cancelled_tasks) == 2
-        assert all(isinstance(task, PendingTaskInfo) for task in cancelled_tasks)
-        assert {task.request_id for task in cancelled_tasks} == {"req1", "req2"}
+        assert len(cancelled_requests) == 2
+        assert all(isinstance(req, PendingRequest) for req in cancelled_requests)
+        assert {req.request_id for req in cancelled_requests} == {"req1", "req2"}
 
         # Verify internal state is cleaned up
-        assert len(client.pending) == 0
-        assert len(client.pending_tasks) == 0
+        assert len(client.pending_requests) == 0
 
         # Verify futures are cancelled
-        for task in cancelled_tasks:
+        for req in cancelled_requests:
+            assert req.future.done()
             # The futures should have been failed with RuntimeError
-            pass
+            with pytest.raises(RuntimeError):
+                req.future.result()
 
         await client.close()
 
@@ -73,11 +75,10 @@ class TestCancelAllPending:
             health_check_interval=0,  # Disable health checks
         )
 
-        cancelled_tasks = await client.cancel_all_pending("Test cancellation")
+        cancelled_requests = await client.cancel_all_pending()
 
-        assert len(cancelled_tasks) == 0
-        assert len(client.pending) == 0
-        assert len(client.pending_tasks) == 0
+        assert len(cancelled_requests) == 0
+        assert len(client.pending_requests) == 0
 
         await client.close()
 
@@ -94,30 +95,30 @@ class TestCancelAllPending:
         future2 = asyncio.Future()
 
         async with client._pending_lock:
-            client.pending["req1"] = future1
-            client.pending["req2"] = future2
-            client.pending_tasks["req1"] = PendingTaskInfo(
+            client.pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=HealthRequest(),
                 submitted_at=time.time(),
                 timeout=10.0,
+                future=future1,
             )
-            client.pending_tasks["req2"] = PendingTaskInfo(
+            client.pending_requests["req2"] = PendingRequest(
                 request_id="req2",
                 request=HealthRequest(),
                 submitted_at=time.time(),
                 timeout=10.0,
+                future=future2,
             )
 
         # Cancel all
-        await client.cancel_all_pending("Test error")
+        await client.cancel_all_pending()
 
         # Verify futures are failed
         assert future1.done()
         assert future2.done()
-        with pytest.raises(RuntimeError, match="Test error"):
+        with pytest.raises(RuntimeError):
             future1.result()
-        with pytest.raises(RuntimeError, match="Test error"):
+        with pytest.raises(RuntimeError):
             future2.result()
 
         await client.close()
@@ -182,8 +183,8 @@ class TestHealthCheck:
             await client.close()
 
     @pytest.mark.asyncio
-    async def test_health_check_marks_unhealthy_after_failures(self):
-        """Test that consecutive health check failures mark server as unhealthy."""
+    async def test_health_check_detects_failures(self):
+        """Test that consecutive health check failures are detected."""
         client = ZMQEnvClient(
             address="tcp://127.0.0.1:5555",
             health_check_interval=0.5,  # Fast checks for testing
@@ -199,24 +200,21 @@ class TestHealthCheck:
         # Wait for health checks to run and fail
         await asyncio.sleep(1.5)  # Should have 2-3 failed checks
 
-        # Verify state is now unhealthy
-        async with client._state_lock:
-            assert client._server_state == ServerState.UNHEALTHY
+        # Verify failed health checks are being tracked
+        assert client._failed_health_checks >= 2
 
         await client.close()
 
     @pytest.mark.asyncio
-    async def test_health_check_recovers_from_unhealthy(self):
-        """Test that health check can recover from unhealthy state."""
+    async def test_health_check_recovers_after_failures(self):
+        """Test that health check can recover after failures."""
         client = ZMQEnvClient(
             address="tcp://127.0.0.1:5555",
             health_check_interval=0.5,  # Fast checks for testing
         )
 
-        # Start with unhealthy state
-        async with client._state_lock:
-            client._server_state = ServerState.UNHEALTHY
-            client._failed_health_checks = 3
+        # Start with failed health checks
+        client._failed_health_checks = 3
 
         # Mock health to succeed
         client.health = AsyncMock(return_value=True)
@@ -227,55 +225,48 @@ class TestHealthCheck:
         # Wait for health check to run
         await asyncio.sleep(1.0)
 
-        # Verify state is now healthy
-        async with client._state_lock:
-            assert client._server_state == ServerState.HEALTHY
-            assert client._failed_health_checks == 0
+        # Verify health checks are now succeeding
+        assert client._failed_health_checks == 0
 
         await client.close()
 
 
-class TestWaitForRecovery:
-    """Tests for wait_for_recovery functionality."""
+class TestWaitForServerHealth:
+    """Tests for wait_for_server_health functionality."""
 
     @pytest.mark.asyncio
-    async def test_wait_for_recovery_success(self):
-        """Test that wait_for_recovery succeeds when server recovers."""
+    async def test_wait_for_server_health_success(self):
+        """Test that wait_for_server_health succeeds when server is healthy."""
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to succeed
         client.health = AsyncMock(return_value=True)
 
         # Should return quickly
-        await client.wait_for_recovery(timeout=5.0, check_interval=0.5)
+        await client.wait_for_server_health(timeout=5.0, check_interval=0.5)
 
-        # Verify state is healthy
-        async with client._state_lock:
-            assert client._server_state == ServerState.HEALTHY
+        # Verify failed health checks reset
+        assert client._failed_health_checks == 0
 
         await client.close()
 
     @pytest.mark.asyncio
-    async def test_wait_for_recovery_timeout(self):
-        """Test that wait_for_recovery raises TimeoutError on timeout."""
+    async def test_wait_for_server_health_timeout(self):
+        """Test that wait_for_server_health raises TimeoutError on timeout."""
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to always fail
         client.health = AsyncMock(side_effect=RuntimeError("Server down"))
 
         # Should timeout
-        with pytest.raises(TimeoutError, match="Server did not recover within"):
-            await client.wait_for_recovery(timeout=1.0, check_interval=0.3)
-
-        # Verify state is unhealthy
-        async with client._state_lock:
-            assert client._server_state == ServerState.UNHEALTHY
+        with pytest.raises(TimeoutError, match="Server did not become healthy within"):
+            await client.wait_for_server_health(timeout=1.0, check_interval=0.3)
 
         await client.close()
 
     @pytest.mark.asyncio
-    async def test_wait_for_recovery_delayed_success(self):
-        """Test recovery after initial failures."""
+    async def test_wait_for_server_health_delayed_success(self):
+        """Test health check after initial failures."""
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to fail first 2 times, then succeed
@@ -291,17 +282,16 @@ class TestWaitForRecovery:
         client.health = mock_health
 
         # Should eventually succeed
-        await client.wait_for_recovery(timeout=3.0, check_interval=0.5)
+        await client.wait_for_server_health(timeout=3.0, check_interval=0.5)
 
-        # Verify state is healthy
-        async with client._state_lock:
-            assert client._server_state == ServerState.HEALTHY
+        # Verify failed health checks reset
+        assert client._failed_health_checks == 0
 
         await client.close()
 
 
-class TestAutoRetry:
-    """Tests for automatic retry on server failure."""
+class TestRequestMetadata:
+    """Tests for request metadata caching."""
 
     @pytest.mark.asyncio
     async def test_send_request_caches_metadata(self):
@@ -331,7 +321,7 @@ class TestAutoRetry:
                 pass
 
             # The metadata should have been cleaned up on timeout
-            assert len(client.pending_tasks) == 0
+            assert len(client.pending_requests) == 0
 
             await client.close()
 
@@ -371,7 +361,7 @@ class TestAutoRetry:
                     timeout=2.0,
                 )
                 # Verify metadata is cleaned up
-                assert len(client.pending_tasks) == 0
+                assert len(client.pending_requests) == 0
                 assert response.success
             except asyncio.TimeoutError:
                 pass
@@ -430,17 +420,16 @@ class TestCloseCleanup:
 
         # Add some pending tasks
         async with client._pending_lock:
-            client.pending["req1"] = asyncio.Future()
-            client.pending_tasks["req1"] = PendingTaskInfo(
+            client.pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=HealthRequest(),
                 submitted_at=time.time(),
                 timeout=10.0,
+                future=asyncio.Future(),
             )
 
         # Close
         await client.close()
 
         # Verify cleanup
-        assert len(client.pending) == 0
-        assert len(client.pending_tasks) == 0
+        assert len(client.pending_requests) == 0
