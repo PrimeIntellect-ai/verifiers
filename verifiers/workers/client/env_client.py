@@ -24,12 +24,14 @@ class EnvClient(ABC):
     def __init__(
         self,
         address: str,
+        name: str | None = None,
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10min
         recovery_timeout: float = 600.0,  # 10min
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
+        self.name = f"{name} ({address})" if name is not None else address
 
         self.health_check_interval = health_check_interval
         self.startup_timeout = startup_timeout

@@ -87,7 +87,7 @@ class ZMQEnvClient(EnvClient):
         """Wait for server to become healthy on initial startup."""
         timeout = timeout if timeout is not None else self.startup_timeout
         self.logger.info(
-            f"Waiting for server at {self.address} to become healthy "
+            f"Waiting for env server {self.name} to become healthy "
             f"(timeout={print_time(timeout)})..."
         )
         await self._ensure_started()
@@ -95,10 +95,10 @@ class ZMQEnvClient(EnvClient):
             await asyncio.wait_for(self._healthy_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(
-                f"Server at {self.address} did not become healthy "
+                f"Env server {self.name} did not become healthy "
                 f"within {print_time(timeout)}"
             )
-        self.logger.info(f"Server at {self.address} is healthy")
+        self.logger.info(f"Env server {self.name} is healthy")
 
     async def close(self) -> None:
         """Close the client and clean up ZMQ resources."""
@@ -124,7 +124,7 @@ class ZMQEnvClient(EnvClient):
         cancelled = await self._cancel_all_pending()
         if cancelled:
             self.logger.info(
-                f"Cancelled {len(cancelled)} pending requests during close"
+                f"Cancelled {len(cancelled)} pending requests during close of env server {self.name}"
             )
 
         # Close socket and terminate context
@@ -139,7 +139,7 @@ class ZMQEnvClient(EnvClient):
             pending_count = len(self._pending_requests)
             if pending_count:
                 self.logger.debug(
-                    f"Cancelling {pending_count} pending request(s): {reason}"
+                    f"Cancelling {pending_count} pending request(s) on env server {self.name} ({reason})"
                 )
 
             # Collect metadata before clearing
@@ -164,7 +164,7 @@ class ZMQEnvClient(EnvClient):
 
                 if len(msg) < 2:
                     self.logger.error(
-                        f"Invalid message format: expected 2 frames, got {len(msg)}"
+                        f"Received invalid message from env server {self.name}, expected 2 frames but got {len(msg)}"
                     )
                     continue
 
@@ -182,7 +182,7 @@ class ZMQEnvClient(EnvClient):
                     except Exception as unpack_error:
                         # Unpacking failed - fail the specific future
                         self.logger.error(
-                            f"Request {request_id[:7]} failed to unpack response: {unpack_error}"
+                            f"Request {request_id[:7]} failed to unpack response from env server {self.name} ({unpack_error})"
                         )
                         pending_req.future.set_exception(
                             RuntimeError(
@@ -195,12 +195,15 @@ class ZMQEnvClient(EnvClient):
             except asyncio.CancelledError:
                 break
             except zmq.ZMQError as e:
-                self.logger.error(f"ZMQ socket error in receive loop: {e}")
+                self.logger.error(
+                    f"ZMQ socket error in receive loop for env server {self.name} ({e})"
+                )
                 await self._cancel_all_pending(f"ZMQ socket error: {e}")
                 break
             except Exception as e:
                 self.logger.error(
-                    f"Unexpected error in ZMQ receive loop: {e}", exc_info=True
+                    f"Unexpected error in receive loop for env server {self.name} ({e})",
+                    exc_info=True,
                 )
                 # Don't break - log and continue for non-socket errors
 
@@ -270,10 +273,9 @@ class ZMQEnvClient(EnvClient):
                     else self.logger.error
                 )
                 log(
-                    f"Request {request_id[:7]} timed out "
-                    f"type={request.request_type} "
+                    f"Request {request_id[:7]} timed out on env server {self.name} "
                     f"after {effective_timeout:.1f}s "
-                    f"(pending={len(self._pending_requests)})"
+                    f"(type={request.request_type}, pending={len(self._pending_requests)})"
                 )
                 raise TimeoutError(
                     f"Environment timeout for {request.request_type} "
@@ -281,7 +283,7 @@ class ZMQEnvClient(EnvClient):
                 )
             except ServerError as e:
                 self.logger.debug(
-                    f"Request {request_id[:7]} waiting for server recovery: {e}"
+                    f"Request {request_id[:7]} waiting for env server {self.name} to recover ({e})"
                 )
 
                 # Wait for health check loop to detect recovery
@@ -293,7 +295,7 @@ class ZMQEnvClient(EnvClient):
                     )
                 except asyncio.TimeoutError:
                     raise TimeoutError(
-                        f"Server at {self.address} did not recover within {print_time(self.recovery_timeout)}"
+                        f"Env server {self.name} did not recover within {print_time(self.recovery_timeout)}"
                     )
 
                 continue  # retry the request
@@ -313,7 +315,7 @@ class ZMQEnvClient(EnvClient):
     async def _health_check_loop(self):
         """Background task that periodically checks server health and handles state transitions."""
         self.logger.debug(
-            f"Starting health check loop (interval={print_time(self.health_check_interval)})"
+            f"Starting health check loop for env server {self.name} (interval={print_time(self.health_check_interval)})"
         )
 
         probe_timeout = self.health_check_interval / 2
@@ -327,7 +329,7 @@ class ZMQEnvClient(EnvClient):
                 if is_healthy:
                     if self._server_state != ServerState.HEALTHY:
                         self.logger.info(
-                            f"Server at {self.address} is healthy again "
+                            f"Env server {self.name} is healthy again "
                             f"(was {self._server_state.value}), "
                             f"rescheduling requests"
                         )
@@ -345,11 +347,11 @@ class ZMQEnvClient(EnvClient):
                         self._server_state = ServerState.UNHEALTHY
                         self._healthy_event.clear()
                         cancelled = await self._cancel_all_pending(
-                            f"Server unhealthy: {self._failed_health_checks} "
+                            f"Env server {self.name} unhealthy: {self._failed_health_checks} "
                             f"consecutive health check failures"
                         )
                         self.logger.warning(
-                            f"Server detected unhealthy, "
+                            f"Env server {self.name} detected unhealthy, "
                             f"cancelling {len(cancelled)} pending request(s)"
                         )
 
@@ -357,9 +359,12 @@ class ZMQEnvClient(EnvClient):
                 await asyncio.sleep(max(0, self.health_check_interval - elapsed))
 
             except asyncio.CancelledError:
-                self.logger.debug("Health check loop cancelled")
+                self.logger.debug(
+                    f"Health check loop for env server {self.name} cancelled"
+                )
                 break
             except Exception as e:
                 self.logger.error(
-                    f"Unexpected error in health check loop: {e}", exc_info=True
+                    f"Unexpected error in health check loop for env server {self.name}: {e}",
+                    exc_info=True,
                 )
