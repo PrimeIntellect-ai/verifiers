@@ -191,7 +191,7 @@ class TestHealthCheck:
         )
 
         # Mock health to fail
-        client.health = AsyncMock(side_effect=RuntimeError("Connection failed"))
+        client.health = AsyncMock(return_value=False)
 
         # Start the health check loop
         client._health_check_task = asyncio.create_task(client._health_check_loop())
@@ -255,7 +255,7 @@ class TestWaitForServerHealth:
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to always fail
-        client.health = AsyncMock(side_effect=RuntimeError("Server down"))
+        client.health = AsyncMock(return_value=False)
 
         # Should timeout
         with pytest.raises(TimeoutError, match="did not become healthy within"):
@@ -275,7 +275,7 @@ class TestWaitForServerHealth:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise RuntimeError("Server down")
+                return False
             return True
 
         client.health = mock_health
@@ -603,7 +603,7 @@ class TestHealthCheckCancellation:
         client._server_state = ServerState.HEALTHY
 
         # Mock health to fail
-        client.health = AsyncMock(side_effect=RuntimeError("Server down"))
+        client.health = AsyncMock(return_value=False)
 
         # Mock wait_for_server_recovery to succeed immediately
         client._wait_for_server_recovery = AsyncMock()
@@ -662,7 +662,7 @@ class TestHealthCheckCancellation:
         assert client._server_state == ServerState.HEALTHY
 
         # Make health checks fail
-        client.health = AsyncMock(side_effect=RuntimeError("Server down"))
+        client.health = AsyncMock(return_value=False)
 
         # Wait for 3 failures - should transition to UNHEALTHY
         await asyncio.sleep(0.7)  # 3+ checks

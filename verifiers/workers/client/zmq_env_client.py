@@ -67,7 +67,10 @@ class ZMQEnvClient(EnvClient):
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
     ) -> HealthResponse:
-        return await self._send_request(request, HealthResponse, timeout=timeout)
+        try:
+            return await self._send_request(request, HealthResponse, timeout=timeout)
+        except TimeoutError as e:
+            return HealthResponse(success=False, error=str(e))
 
     async def handle_run_rollout_request(
         self, request: RunRolloutRequest, timeout: float | None
@@ -217,7 +220,12 @@ class ZMQEnvClient(EnvClient):
             # Clean up on timeout
             async with self._pending_lock:
                 self._pending_requests.pop(request_id, None)
-            self.logger.error(
+            log = (
+                self.logger.debug
+                if isinstance(request, HealthRequest)
+                else self.logger.error
+            )
+            log(
                 f"Timed out waiting for request_id={request_id} type={request.request_type} "
                 f"after {effective_timeout:.1f}s (pending={len(self._pending_requests)})"
             )
@@ -308,14 +316,14 @@ class ZMQEnvClient(EnvClient):
                     await asyncio.sleep(self.health_check_interval)
                     continue
 
-                try:
-                    await self.health(timeout=self.health_check_interval)
+                is_healthy = await self.health(timeout=self.health_check_interval)
+                if is_healthy:
                     self._server_state = ServerState.HEALTHY
                     self._failed_health_checks = 0
-                except Exception as e:
+                else:
                     self._failed_health_checks += 1
                     self.logger.debug(
-                        f"Health check failed ({self._failed_health_checks} consecutive): {e}"
+                        f"Health check failed ({self._failed_health_checks} consecutive)"
                     )
 
                     # Transition from HEALTHY to UNHEALTHY after 3 consecutive failures

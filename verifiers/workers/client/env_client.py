@@ -107,16 +107,13 @@ class EnvClient(ABC):
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            try:
-                is_healthy = await self.health(timeout=interval)
-                if is_healthy:
-                    elapsed = time.time() - start_time
-                    self.logger.info(
-                        f"Server at {self.address} became healthy after {print_time(elapsed)}"
-                    )
-                    return
-            except Exception as e:
-                self.logger.debug(f"Health check failed: {e}")
+            is_healthy = await self.health(timeout=interval)
+            if is_healthy:
+                elapsed = time.time() - start_time
+                self.logger.info(
+                    f"Server at {self.address} became healthy after {print_time(elapsed)}"
+                )
+                return
 
             await asyncio.sleep(interval)
 
