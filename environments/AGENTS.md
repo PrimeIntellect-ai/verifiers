@@ -659,10 +659,10 @@ This bypasses the normal model response loop and immediately terminates the roll
 
 ## Developing Environments
 
-Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `prime env setup` command initializes this structure:
+Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `prime lab setup` command initializes this structure:
 
 ```bash
-prime env setup
+prime lab setup
 ```
 
 The `prime env init` command initializes a new environment project:
