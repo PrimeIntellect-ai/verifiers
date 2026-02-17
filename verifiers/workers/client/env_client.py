@@ -32,6 +32,7 @@ class EnvClient(ABC):
         health_check_interval: float = 10.0,  # 10s
         startup_timeout: float = 600.0,  # 10min
         recovery_timeout: float = 600.0,  # 10min
+        max_auto_retries: int = 3,  # Number of times to retry after server failure
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
@@ -39,6 +40,7 @@ class EnvClient(ABC):
         self.health_check_interval = health_check_interval
         self.startup_timeout = startup_timeout
         self.recovery_timeout = recovery_timeout
+        self.max_auto_retries = max_auto_retries
 
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()

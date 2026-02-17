@@ -31,22 +31,8 @@ class ZMQEnvClient(EnvClient):
     def __init__(self, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(address=address, **kwargs)
 
-        # DEALER socket for async request/response
+        # ZMQ context
         self.ctx = zmq.asyncio.Context()
-        self.socket = self.ctx.socket(zmq.DEALER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
-        self.socket.setsockopt(zmq.LINGER, 0)
-
-        # TCP keepalive for faster dead server detection
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
-        self.socket.setsockopt(
-            zmq.TCP_KEEPALIVE_IDLE, 10
-        )  # Start probes after 10s idle
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
-        self.socket.setsockopt(
-            zmq.TCP_KEEPALIVE_CNT, 3
-        )  # Give up after 3 failed probes
 
         # Single dict for all pending requests (includes futures)
         self.pending_requests: dict[str, PendingRequest] = {}
@@ -55,6 +41,24 @@ class ZMQEnvClient(EnvClient):
         self._pending_lock = asyncio.Lock()
         self._health_check_task: asyncio.Task | None = None
         self._failed_health_checks = 0
+
+        # Create initial socket
+        self.socket = self._create_socket()
+
+    def _create_socket(self) -> zmq.asyncio.Socket:
+        """Create and configure a new ZMQ DEALER socket."""
+        socket = self.ctx.socket(zmq.DEALER)
+        socket.setsockopt(zmq.SNDHWM, 10000)
+        socket.setsockopt(zmq.RCVHWM, 10000)
+        socket.setsockopt(zmq.LINGER, 0)
+
+        # TCP keepalive for faster dead server detection
+        socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
+        socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)  # Start probes after 10s idle
+        socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
+        socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)  # Give up after 3 failed probes
+
+        return socket
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -70,6 +74,40 @@ class ZMQEnvClient(EnvClient):
         self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
         return await self._send_request(request, RunGroupResponse, timeout=timeout)
+
+    async def wait_for_server_recovery(
+        self,
+        timeout: float | None = None,
+        interval: float | None = None,
+    ) -> None:
+        """Wait for server to recover and reconnect the socket."""
+        self.logger.info("Server failure detected, initiating reconnection...")
+
+        # Close old socket
+        try:
+            self.socket.close()
+        except Exception as e:
+            self.logger.debug(f"Error closing old socket: {e}")
+
+        # Cancel and wait for old receive loop to stop
+        if self._receiver_task is not None and not self._receiver_task.done():
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except asyncio.CancelledError:
+                pass
+            self._receiver_task = None
+
+        # Create new socket and connect
+        self.socket = self._create_socket()
+        self.socket.connect(self.address)
+
+        # Restart receive loop
+        self._receiver_task = asyncio.create_task(self._receive_loop())
+
+        # Wait for server to become healthy using base class method
+        await super().wait_for_server_recovery(timeout=timeout, interval=interval)
+        self.logger.info("Successfully reconnected to server")
 
     async def _health_check_loop(self):
         """Background task that periodically checks server health."""
@@ -191,8 +229,9 @@ class ZMQEnvClient(EnvClient):
         request: BaseRequest,
         response_type: type[BaseResponseT],
         timeout: float | None = None,
+        attempt: int = 0,
     ) -> BaseResponseT:
-        """Send request to environment and await response."""
+        """Send request to environment and await response with automatic retry."""
         # auto-start receiver if not already running (with lock to prevent race)
         if self._receiver_task is None:
             async with self._start_lock:
@@ -252,6 +291,39 @@ class ZMQEnvClient(EnvClient):
             raise TimeoutError(
                 f"Environment timeout for {request.request_type} request after {effective_timeout}s"
             )
+        except RuntimeError as e:
+            # Check if this is a server crash and we should retry
+            error_msg = str(e)
+            is_server_error = (
+                "ZMQ socket error" in error_msg or "Request cancelled" in error_msg
+            )
+
+            if is_server_error and attempt < self.max_auto_retries:
+                self.logger.warning(
+                    f"Request failed due to server error (attempt {attempt + 1}/{self.max_auto_retries}): {e}"
+                )
+                self.logger.info("Waiting for server recovery before retry...")
+
+                # Wait for server to recover (reconnects socket automatically)
+                await self.wait_for_server_recovery()
+
+                # Retry with incremented attempt counter
+                self.logger.info(
+                    f"Retrying request (attempt {attempt + 2}/{self.max_auto_retries + 1})"
+                )
+                return await self._send_request(
+                    request, response_type, timeout, attempt + 1
+                )
+
+            # Either not a server error or exceeded max retries
+            # Clean up metadata before re-raising
+            async with self._pending_lock:
+                self.pending_requests.pop(request_id, None)
+            raise
+
+        # Clean up metadata on success (receive loop already popped it, but do it here too for safety)
+        async with self._pending_lock:
+            self.pending_requests.pop(request_id, None)
 
         # validate response with Pydantic
         response = response_type.model_validate(raw_response)

@@ -1256,7 +1256,7 @@ class Environment(ABC):
     async def start_server(
         self,
         address: str | None = None,
-        extra_env_kwargs: dict[str, Any] = {},
+        extra_env_kwargs: dict[str, Any] | None = None,
         # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
@@ -1265,6 +1265,7 @@ class Environment(ABC):
         health_check_interval: float = 10.0,  # 10s
         startup_timeout: float = 600.0,  # 10m
         recovery_timeout: float = 600.0,  # 10m
+        max_auto_retries: int = 3,
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1273,6 +1274,7 @@ class Environment(ABC):
             depending on it directly.
         """
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        extra_env_kwargs = extra_env_kwargs or {}
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
@@ -1295,6 +1297,7 @@ class Environment(ABC):
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
+            max_auto_retries=max_auto_retries,
         )
         await self.env_client.wait_for_server_startup()
 

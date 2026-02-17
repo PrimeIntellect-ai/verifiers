@@ -188,7 +188,6 @@ class TestHealthCheck:
         client = ZMQEnvClient(
             address="tcp://127.0.0.1:5555",
             health_check_interval=0.5,  # Fast checks for testing
-            health_check_timeout=0.2,
         )
 
         # Mock health to fail
@@ -232,18 +231,18 @@ class TestHealthCheck:
 
 
 class TestWaitForServerHealth:
-    """Tests for wait_for_server_health functionality."""
+    """Tests for wait_for_server_startup and wait_for_server_recovery functionality."""
 
     @pytest.mark.asyncio
     async def test_wait_for_server_health_success(self):
-        """Test that wait_for_server_health succeeds when server is healthy."""
+        """Test that wait_for_server_startup succeeds when server is healthy."""
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to succeed
         client.health = AsyncMock(return_value=True)
 
         # Should return quickly
-        await client.wait_for_server_health(timeout=5.0, check_interval=0.5)
+        await client.wait_for_server_startup(timeout=5.0, interval=0.5)
 
         # Verify failed health checks reset
         assert client._failed_health_checks == 0
@@ -252,7 +251,7 @@ class TestWaitForServerHealth:
 
     @pytest.mark.asyncio
     async def test_wait_for_server_health_timeout(self):
-        """Test that wait_for_server_health raises TimeoutError on timeout."""
+        """Test that wait_for_server_startup raises TimeoutError on timeout."""
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Mock health to always fail
@@ -260,7 +259,7 @@ class TestWaitForServerHealth:
 
         # Should timeout
         with pytest.raises(TimeoutError, match="Server did not become healthy within"):
-            await client.wait_for_server_health(timeout=1.0, check_interval=0.3)
+            await client.wait_for_server_startup(timeout=1.0, interval=0.3)
 
         await client.close()
 
@@ -282,7 +281,7 @@ class TestWaitForServerHealth:
         client.health = mock_health
 
         # Should eventually succeed
-        await client.wait_for_server_health(timeout=3.0, check_interval=0.5)
+        await client.wait_for_server_startup(timeout=3.0, interval=0.5)
 
         # Verify failed health checks reset
         assert client._failed_health_checks == 0
@@ -346,12 +345,12 @@ class TestRequestMetadata:
             async def send_response():
                 await asyncio.sleep(0.1)
                 # Get the request_id from pending
-                if client.pending:
-                    request_id = list(client.pending.keys())[0]
-                    future = client.pending.get(request_id)
-                    if future and not future.done():
+                if client.pending_requests:
+                    request_id = list(client.pending_requests.keys())[0]
+                    pending_req = client.pending_requests.get(request_id)
+                    if pending_req and not pending_req.future.done():
                         # Simulate a successful response
-                        future.set_result({"success": True, "error": None})
+                        pending_req.future.set_result({"success": True, "error": None})
 
             response_task = asyncio.create_task(send_response())
 
@@ -433,3 +432,151 @@ class TestCloseCleanup:
 
         # Verify cleanup
         assert len(client.pending_requests) == 0
+
+
+class TestAutomaticRetry:
+    """Tests for automatic retry after server failure."""
+
+    @pytest.mark.asyncio
+    async def test_retry_on_server_failure(self):
+        """Test that requests are automatically retried after server failure."""
+        client = ZMQEnvClient(
+            address="tcp://127.0.0.1:5555",
+            health_check_interval=0,
+            max_auto_retries=2,
+        )
+
+        request = HealthRequest()
+        attempt_count = 0
+
+        # Mock wait_for_server_recovery to succeed immediately
+        async def mock_recovery(timeout=None, interval=None):
+            pass
+
+        client.wait_for_server_recovery = mock_recovery
+
+        # Mock socket operations
+        async def mock_send(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+
+            # Simulate server failure on first attempt
+            if attempt_count == 1:
+                # Trigger cancellation after a short delay (simulating server death)
+                async def fail_request():
+                    await asyncio.sleep(0.1)
+                    await client.cancel_all_pending("ZMQ socket error: Connection lost")
+
+                asyncio.create_task(fail_request())
+            else:
+                # Second attempt succeeds - return response immediately
+                async def succeed_request():
+                    await asyncio.sleep(0.05)
+                    request_id = list(client.pending_requests.keys())[0]
+                    pending = client.pending_requests.get(request_id)
+                    if pending and not pending.future.done():
+                        pending.future.set_result({"success": True, "error": None})
+
+                asyncio.create_task(succeed_request())
+
+        with (
+            patch.object(client.socket, "connect"),
+            patch.object(client.socket, "send_multipart", new=mock_send),
+        ):
+            await client._start()
+
+            # Send request - should retry and succeed
+            response = await client._send_request(request, HealthResponse, timeout=5.0)
+
+            # Verify retry happened
+            assert attempt_count == 2
+            assert response.success
+
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_retry_respects_max_retries(self):
+        """Test that retry stops after max_auto_retries is reached."""
+        client = ZMQEnvClient(
+            address="tcp://127.0.0.1:5555",
+            health_check_interval=0,
+            max_auto_retries=2,
+        )
+
+        request = HealthRequest()
+        attempt_count = 0
+
+        # Mock wait_for_server_recovery to succeed immediately
+        async def mock_recovery(timeout=None, interval=None):
+            pass
+
+        client.wait_for_server_recovery = mock_recovery
+
+        # Mock socket operations - always fail
+        async def mock_send(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+
+            # Always simulate server failure
+            async def fail_request():
+                await asyncio.sleep(0.05)
+                await client.cancel_all_pending("ZMQ socket error: Connection lost")
+
+            asyncio.create_task(fail_request())
+
+        with (
+            patch.object(client.socket, "connect"),
+            patch.object(client.socket, "send_multipart", new=mock_send),
+        ):
+            await client._start()
+
+            # Send request - should retry max_auto_retries times then fail
+            with pytest.raises(RuntimeError, match="ZMQ socket error"):
+                await client._send_request(request, HealthResponse, timeout=5.0)
+
+            # Verify it tried initial + 2 retries = 3 attempts
+            assert attempt_count == 3
+
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_non_server_error(self):
+        """Test that non-server errors don't trigger retry."""
+        client = ZMQEnvClient(
+            address="tcp://127.0.0.1:5555",
+            health_check_interval=0,
+            max_auto_retries=3,
+        )
+
+        request = HealthRequest()
+        attempt_count = 0
+
+        # Mock socket operations
+        async def mock_send(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+
+            # Simulate a non-server error (e.g., validation error)
+            async def fail_with_validation_error():
+                await asyncio.sleep(0.05)
+                request_id = list(client.pending_requests.keys())[0]
+                pending = client.pending_requests.get(request_id)
+                if pending and not pending.future.done():
+                    pending.future.set_exception(RuntimeError("Invalid request format"))
+
+            asyncio.create_task(fail_with_validation_error())
+
+        with (
+            patch.object(client.socket, "connect"),
+            patch.object(client.socket, "send_multipart", new=mock_send),
+        ):
+            await client._start()
+
+            # Send request - should NOT retry
+            with pytest.raises(RuntimeError, match="Invalid request format"):
+                await client._send_request(request, HealthResponse, timeout=5.0)
+
+            # Verify no retry (only 1 attempt)
+            assert attempt_count == 1
+
+            await client.close()
