@@ -133,7 +133,9 @@ class EnvClient(ABC):
         ...
 
     @abstractmethod
-    async def cancel_all_pending(self) -> list[PendingRequest]:
+    async def cancel_all_pending(
+        self, reason: str = "Request cancelled"
+    ) -> list[PendingRequest]:
         """Cancel all pending requests and return their metadata."""
         ...
 

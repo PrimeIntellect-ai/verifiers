@@ -103,37 +103,29 @@ class ZMQEnvClient(EnvClient):
                     f"Unexpected error in health check loop: {e}", exc_info=True
                 )
 
-    async def cancel_all_pending(self) -> list[PendingRequest]:
+    async def cancel_all_pending(
+        self, reason: str = "Request cancelled"
+    ) -> list[PendingRequest]:
         """Cancel all pending requests and return their metadata."""
         async with self._pending_lock:
             pending_count = len(self.pending_requests)
             if pending_count:
-                self.logger.warning(f"Cancelling {pending_count} pending request(s)")
+                self.logger.warning(
+                    f"Cancelling {pending_count} pending request(s): {reason}"
+                )
 
             # Collect metadata before clearing
             cancelled_requests = list(self.pending_requests.values())
 
-            # Fail all futures
+            # Fail all futures with the provided reason
             for pending_req in cancelled_requests:
                 if not pending_req.future.done():
-                    pending_req.future.set_exception(RuntimeError("Request cancelled"))
+                    pending_req.future.set_exception(RuntimeError(reason))
 
             # Clear tracking dict
             self.pending_requests.clear()
 
         return cancelled_requests
-
-    def _fail_all_pending(self, reason: str):
-        """Fail all pending requests synchronously."""
-        pending_count = len(self.pending_requests)
-        if pending_count:
-            self.logger.warning(f"Failing {pending_count} pending request(s): {reason}")
-
-        for pending_req in list(self.pending_requests.values()):
-            if not pending_req.future.done():
-                pending_req.future.set_exception(RuntimeError(reason))
-
-        self.pending_requests.clear()
 
     async def _receive_loop(self):
         """Continuously receive responses from environment servers."""
@@ -178,9 +170,9 @@ class ZMQEnvClient(EnvClient):
             except asyncio.CancelledError:
                 break
             except zmq.ZMQError as e:
-                # Socket-level error - fail all pending futures and exit
+                # Socket-level error - cancel all pending requests and exit
                 self.logger.error(f"ZMQ socket error in receive loop: {e}")
-                self._fail_all_pending(f"ZMQ socket error: {e}")
+                await self.cancel_all_pending(f"ZMQ socket error: {e}")
                 break
             except Exception as e:
                 self.logger.error(
