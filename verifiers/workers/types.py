@@ -82,6 +82,9 @@ class ServerState(str, Enum):
     UNHEALTHY = "unhealthy"  # Server failed health checks
 
 
+class ServerError(RuntimeError): ...
+
+
 class PendingRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

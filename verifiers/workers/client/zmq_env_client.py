@@ -20,6 +20,7 @@ from verifiers.workers.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    ServerError,
     ServerState,
 )
 
@@ -144,10 +145,10 @@ class ZMQEnvClient(EnvClient):
             # Collect metadata before clearing
             cancelled_requests = list(self._pending_requests.values())
 
-            # Fail all futures with the provided reason
+            # Fail all futures with ServerError (retryable)
             for pending_req in cancelled_requests:
                 if not pending_req.future.done():
-                    pending_req.future.set_exception(RuntimeError(reason))
+                    pending_req.future.set_exception(ServerError(reason))
 
             # Clear tracking dict
             self._pending_requests.clear()
@@ -281,22 +282,10 @@ class ZMQEnvClient(EnvClient):
                     f"Environment timeout for {request.request_type} "
                     f"request after {effective_timeout}s"
                 )
-            except RuntimeError as e:
-                # Check if this is a server crash and we should retry
-                error_msg = str(e)
-                is_server_error = (
-                    "ZMQ socket error" in error_msg
-                    or "Request cancelled" in error_msg
-                    or "Server unhealthy" in error_msg
+            except ServerError as e:
+                self.logger.warning(
+                    f"Request {request_id[:8]} failed due to server error: {e}. Waiting for server recovery before retry..."
                 )
-
-                if not is_server_error:
-                    async with self._pending_lock:
-                        self._pending_requests.pop(request_id, None)
-                    raise
-
-                self.logger.warning(f"Request failed due to server error: {e}")
-                self.logger.info("Waiting for server recovery before retry...")
 
                 # Wait for health check loop to detect recovery
                 self._healthy_event.clear()
@@ -307,12 +296,14 @@ class ZMQEnvClient(EnvClient):
                     )
                 except asyncio.TimeoutError:
                     raise TimeoutError(
-                        f"Server at {self.address} did not recover "
-                        f"within {print_time(self.recovery_timeout)}"
+                        f"Server at {self.address} did not recover within {print_time(self.recovery_timeout)}"
                     )
 
-                self.logger.info("Server recovered, retrying request...")
                 continue  # retry the request
+            except RuntimeError:
+                async with self._pending_lock:
+                    self._pending_requests.pop(request_id, None)
+                raise
 
             # validate response with Pydantic
             response = response_type.model_validate(raw_response)
@@ -325,13 +316,16 @@ class ZMQEnvClient(EnvClient):
     async def _health_check_loop(self):
         """Background task that periodically checks server health and handles state transitions."""
         self.logger.debug(
-            f"Starting health check loop "
-            f"(interval={print_time(self.health_check_interval)})"
+            f"Starting health check loop (interval={print_time(self.health_check_interval)})"
         )
+
+        probe_timeout = self.health_check_interval / 2
 
         while True:
             try:
-                is_healthy = await self.health(timeout=self.health_check_interval)
+                cycle_start = asyncio.get_event_loop().time()
+
+                is_healthy = await self.health(timeout=probe_timeout)
 
                 if is_healthy:
                     if self._server_state != ServerState.HEALTHY:
@@ -362,7 +356,8 @@ class ZMQEnvClient(EnvClient):
                             f"consecutive health check failures"
                         )
 
-                await asyncio.sleep(self.health_check_interval)
+                elapsed = asyncio.get_event_loop().time() - cycle_start
+                await asyncio.sleep(max(0, self.health_check_interval - elapsed))
 
             except asyncio.CancelledError:
                 self.logger.debug("Health check loop cancelled")

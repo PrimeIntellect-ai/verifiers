@@ -134,7 +134,7 @@ class TestHealthCheck:
         client = ZMQEnvClient(address="tcp://127.0.0.1:5555", health_check_interval=0)
 
         # Start the receiver (which would normally start health checks)
-        await client._start()
+        await client._ensure_started()
         await asyncio.sleep(0.1)
 
         # Verify health check task is not running
@@ -162,7 +162,7 @@ class TestHealthCheck:
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
             # Manually start the client
-            await client._start()
+            await client._ensure_started()
 
             # Simulate sending a request (this should start health check)
             try:
@@ -316,7 +316,7 @@ class TestRequestMetadata:
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
             # Start receiver
-            await client._start()
+            await client._ensure_started()
 
             # Send a request that will timeout
             try:
@@ -347,7 +347,7 @@ class TestRequestMetadata:
             patch.object(client.socket, "connect"),
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
-            await client._start()
+            await client._ensure_started()
 
             # Create a task to send response after a delay
             async def send_response():
@@ -406,9 +406,7 @@ class TestCloseCleanup:
             patch.object(client.socket, "connect"),
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
-            await client._start()
-            # Manually start health check
-            client._health_check_task = asyncio.create_task(client._health_check_loop())
+            await client._ensure_started()
             await asyncio.sleep(0.1)
 
             # Verify health check is running
@@ -490,7 +488,7 @@ class TestAutomaticRetry:
             patch.object(client.socket, "connect"),
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
-            await client._start()
+            await client._ensure_started()
 
             # Send request - should retry and succeed
             response = await client._send_request(request, HealthResponse, timeout=5.0)
@@ -524,7 +522,7 @@ class TestAutomaticRetry:
             patch.object(client.socket, "connect"),
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
-            await client._start()
+            await client._ensure_started()
 
             # Send request - should fail with TimeoutError after recovery_timeout
             with pytest.raises(TimeoutError, match="did not recover"):
@@ -562,7 +560,7 @@ class TestAutomaticRetry:
             patch.object(client.socket, "connect"),
             patch.object(client.socket, "send_multipart", new=mock_send),
         ):
-            await client._start()
+            await client._ensure_started()
 
             # Send request - should NOT retry
             with pytest.raises(RuntimeError, match="Invalid request format"):
