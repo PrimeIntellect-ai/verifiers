@@ -146,7 +146,6 @@ class ZMQEnvClient(EnvClient):
             except asyncio.CancelledError:
                 break
             except zmq.ZMQError as e:
-                # Socket-level error - cancel all pending requests and exit
                 self.logger.error(f"ZMQ socket error in receive loop: {e}")
                 await self._cancel_all_pending(f"ZMQ socket error: {e}")
                 break
@@ -199,8 +198,6 @@ class ZMQEnvClient(EnvClient):
 
         # Create future and pending request atomically
         future: asyncio.Future[dict] = asyncio.Future()
-        from verifiers.workers.types import PendingRequest
-
         pending_req = PendingRequest(
             request_id=request_id,
             request=request,
