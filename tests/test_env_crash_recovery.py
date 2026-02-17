@@ -48,7 +48,7 @@ class TestCancelAllPending:
             )
 
         # Cancel all pending
-        cancelled_requests = await client.cancel_all_pending()
+        cancelled_requests = await client._cancel_all_pending()
 
         # Verify return value
         assert len(cancelled_requests) == 2
@@ -75,7 +75,7 @@ class TestCancelAllPending:
             health_check_interval=0,  # Disable health checks
         )
 
-        cancelled_requests = await client.cancel_all_pending()
+        cancelled_requests = await client._cancel_all_pending()
 
         assert len(cancelled_requests) == 0
         assert len(client._pending_requests) == 0
@@ -111,7 +111,7 @@ class TestCancelAllPending:
             )
 
         # Cancel all
-        await client.cancel_all_pending()
+        await client._cancel_all_pending()
 
         # Verify futures are failed
         assert future1.done()
@@ -258,7 +258,7 @@ class TestWaitForServerHealth:
         client.health = AsyncMock(side_effect=RuntimeError("Server down"))
 
         # Should timeout
-        with pytest.raises(TimeoutError, match="Server did not become healthy within"):
+        with pytest.raises(TimeoutError, match="did not become healthy within"):
             await client.wait_for_server_startup(timeout=1.0, interval=0.3)
 
         await client.close()
@@ -347,9 +347,10 @@ class TestRequestMetadata:
                 # Get the request_id from pending
                 if client._pending_requests:
                     request_id = list(client._pending_requests.keys())[0]
-                    pending_req = client._pending_requests.get(request_id)
+                    # Simulate what the receive loop does: pop the request and set result
+                    async with client._pending_lock:
+                        pending_req = client._pending_requests.pop(request_id, None)
                     if pending_req and not pending_req.future.done():
-                        # Simulate a successful response
                         pending_req.future.set_result({"success": True, "error": None})
 
             response_task = asyncio.create_task(send_response())
@@ -465,7 +466,9 @@ class TestAutomaticRetry:
                 # Trigger cancellation after a short delay (simulating server death)
                 async def fail_request():
                     await asyncio.sleep(0.1)
-                    await client.cancel_all_pending("ZMQ socket error: Connection lost")
+                    await client._cancel_all_pending(
+                        "ZMQ socket error: Connection lost"
+                    )
 
                 asyncio.create_task(fail_request())
             else:
@@ -520,7 +523,7 @@ class TestAutomaticRetry:
             # Always simulate server failure
             async def fail_request():
                 await asyncio.sleep(0.05)
-                await client.cancel_all_pending("ZMQ socket error: Connection lost")
+                await client._cancel_all_pending("ZMQ socket error: Connection lost")
 
             asyncio.create_task(fail_request())
 
