@@ -122,9 +122,9 @@ class EventLoopLagMonitor:
         max_lag = lags[-1]
         p99_lag = lags[int(len(lags) * 0.99)]
         self.logger.info(
-            f"Event loop lag: mean={mean_lag * 1000:.1f}ms, "
-            f"p99={p99_lag * 1000:.1f}ms, "
-            f"max={max_lag * 1000:.1f}ms "
+            f"Event loop lag: mean={print_time(mean_lag)}, "
+            f"p99={print_time(p99_lag)}, "
+            f"max={print_time(max_lag)} "
             f"(n={len(lags)})"
         )
         self.reset_lags()
