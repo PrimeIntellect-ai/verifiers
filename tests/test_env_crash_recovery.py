@@ -580,3 +580,90 @@ class TestAutomaticRetry:
             assert attempt_count == 1
 
             await client.close()
+
+
+class TestHealthCheckCancellation:
+    """Tests for proactive cancellation based on health check failures."""
+
+    @pytest.mark.asyncio
+    async def test_health_check_cancels_pending_after_failures(self):
+        """Test that consecutive health check failures trigger cancellation."""
+        from verifiers.workers.types import ServerState
+
+        client = ZMQEnvClient(
+            address="tcp://127.0.0.1:5555",
+            health_check_interval=0.2,  # Fast for testing
+            max_auto_retries=1,
+        )
+
+        # Start in HEALTHY state (skip STARTUP transition)
+        client._server_state = ServerState.HEALTHY
+
+        # Mock health to fail
+        client.health = AsyncMock(side_effect=RuntimeError("Server down"))
+
+        # Mock wait_for_server_recovery to succeed immediately
+        client.wait_for_server_recovery = AsyncMock()
+
+        # Create a pending request
+        request = HealthRequest()
+        future = asyncio.Future()
+
+        async with client._pending_lock:
+            client.pending_requests["test_req"] = PendingRequest(
+                request_id="test_req",
+                request=request,
+                submitted_at=time.time(),
+                timeout=10.0,
+                future=future,
+            )
+
+        # Start health check loop
+        client._health_check_task = asyncio.create_task(client._health_check_loop())
+
+        # Wait for health checks to fail and trigger cancellation
+        # Need 3 failures + some time for processing
+        await asyncio.sleep(0.8)  # 3+ health checks should have run
+
+        # Verify the request was cancelled
+        assert future.done()
+        assert len(client.pending_requests) == 0
+
+        # Verify the reason
+        with pytest.raises(RuntimeError, match="Server unhealthy"):
+            future.result()
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_state_transitions(self):
+        """Test that server state transitions correctly."""
+        from verifiers.workers.types import ServerState
+
+        client = ZMQEnvClient(
+            address="tcp://127.0.0.1:5555",
+            health_check_interval=0.2,  # Fast for testing
+        )
+
+        # Start in STARTUP state
+        assert client._server_state == ServerState.STARTUP
+
+        # Mock health to succeed
+        client.health = AsyncMock(return_value=True)
+
+        # Start health check loop
+        client._health_check_task = asyncio.create_task(client._health_check_loop())
+
+        # Wait for first health check - should transition to HEALTHY
+        await asyncio.sleep(0.3)
+        assert client._server_state == ServerState.HEALTHY
+
+        # Make health checks fail
+        client.health = AsyncMock(side_effect=RuntimeError("Server down"))
+
+        # Wait for 3 failures - should transition to UNHEALTHY
+        await asyncio.sleep(0.7)  # 3+ checks
+        assert client._server_state == ServerState.UNHEALTHY
+        assert len(client.pending_requests) == 0  # Should have cancelled any pending
+
+        await client.close()

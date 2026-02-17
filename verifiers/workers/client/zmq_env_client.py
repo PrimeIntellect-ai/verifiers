@@ -20,6 +20,7 @@ from verifiers.workers.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    ServerState,
 )
 
 
@@ -57,9 +58,7 @@ class ZMQEnvClient(EnvClient):
         self._pending_lock = asyncio.Lock()
         self._health_check_task: asyncio.Task | None = None
         self._failed_health_checks = 0
-        self._pending_cancelled_for_health = (
-            False  # Track if we've cancelled for current failure
-        )
+        self._server_state = ServerState.STARTUP
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -76,6 +75,25 @@ class ZMQEnvClient(EnvClient):
     ) -> RunGroupResponse:
         return await self._send_request(request, RunGroupResponse, timeout=timeout)
 
+    async def wait_for_server_recovery(
+        self,
+        timeout: float | None = None,
+        interval: float | None = None,
+    ) -> None:
+        """Wait for server to recover, managing state transitions."""
+        self.logger.info(
+            "Entering recovery mode - waiting for server to become healthy"
+        )
+        self._server_state = ServerState.RECOVERING
+
+        # Wait for server to become healthy (base class handles the actual waiting)
+        await super().wait_for_server_recovery(timeout=timeout, interval=interval)
+
+        # Recovery successful - transition to HEALTHY
+        self._server_state = ServerState.HEALTHY
+        self._failed_health_checks = 0
+        self.logger.info("Recovery complete - server is healthy")
+
     async def _health_check_loop(self):
         """Background task that periodically checks server health."""
         self.logger.debug(
@@ -84,20 +102,51 @@ class ZMQEnvClient(EnvClient):
 
         while True:
             try:
+                # Skip health checks if we're in RECOVERING state
+                # (wait_for_server_recovery does its own health polling)
+                if self._server_state == ServerState.RECOVERING:
+                    await asyncio.sleep(self.health_check_interval)
+                    continue
+
                 try:
                     await self.health(timeout=self.health_check_interval)
-                    # health check only returns if server is healthy
-                    if self._failed_health_checks > 0:
-                        self.logger.info("Server health check passed")
+                    # Health check passed
+
+                    # Transition from STARTUP or UNHEALTHY to HEALTHY
+                    if self._server_state in (
+                        ServerState.STARTUP,
+                        ServerState.UNHEALTHY,
+                    ):
+                        if self._server_state == ServerState.STARTUP:
+                            self.logger.info(
+                                "Server is healthy - initial startup complete"
+                            )
+                        else:
+                            self.logger.info(
+                                "Server health check passed - server recovered"
+                            )
+                        self._server_state = ServerState.HEALTHY
+
                     self._failed_health_checks = 0
+
                 except Exception as e:
                     self._failed_health_checks += 1
                     self.logger.debug(
                         f"Health check failed ({self._failed_health_checks} consecutive): {e}"
                     )
-                    if self._failed_health_checks >= 3:
+
+                    # Transition from HEALTHY to UNHEALTHY after 3 consecutive failures
+                    if (
+                        self._server_state == ServerState.HEALTHY
+                        and self._failed_health_checks >= 3
+                    ):
                         self.logger.warning(
-                            "Server is likely unhealthy as 3 consecutive health checks failed"
+                            "Server is unhealthy after 3 consecutive health check failures - "
+                            "cancelling pending requests to trigger retry"
+                        )
+                        self._server_state = ServerState.UNHEALTHY
+                        await self.cancel_all_pending(
+                            f"Server unhealthy: {self._failed_health_checks} consecutive health check failures"
                         )
 
                 await asyncio.sleep(self.health_check_interval)
@@ -262,7 +311,9 @@ class ZMQEnvClient(EnvClient):
             # Check if this is a server crash and we should retry
             error_msg = str(e)
             is_server_error = (
-                "ZMQ socket error" in error_msg or "Request cancelled" in error_msg
+                "ZMQ socket error" in error_msg
+                or "Request cancelled" in error_msg
+                or "Server unhealthy" in error_msg
             )
 
             if is_server_error and attempt < self.max_auto_retries:

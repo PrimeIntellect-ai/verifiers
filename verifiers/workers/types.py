@@ -1,4 +1,5 @@
 import asyncio
+from enum import Enum
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SkipValidation
@@ -73,6 +74,13 @@ class RunGroupResponse(BaseResponse):
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
 BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
+
+
+class ServerState(str, Enum):
+    STARTUP = "startup"  # Initial state, before first successful health check
+    HEALTHY = "healthy"  # Server is responsive and working normally
+    UNHEALTHY = "unhealthy"  # Server failed health checks
+    RECOVERING = "recovering"  # Actively waiting for server to recover
 
 
 class PendingRequest(BaseModel):
