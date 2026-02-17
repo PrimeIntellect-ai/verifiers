@@ -9,6 +9,7 @@ import verifiers as vf
 from verifiers.clients import Client, resolve_client
 from verifiers.types import ClientConfig
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.thread_utils import get_thread_local_storage
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -51,7 +52,6 @@ class EnvServer(ABC):
         self.env_args = env_args or {}
         self.extra_env_kwargs = extra_env_kwargs or {}
 
-        self.clients: dict[str, Client] = {}
         self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
@@ -126,15 +126,22 @@ class EnvServer(ABC):
         return RunGroupResponse(outputs=outputs)
 
     async def _resolve_client(self, client_config: ClientConfig) -> Client:
+        """Resolve a client from config, caching per thread."""
+        tls = get_thread_local_storage()
+        if not hasattr(tls, "clients"):
+            tls.clients = {}
+
         resolved_client_config = resolve_client_config(client_config)
         client_key = resolved_client_config.model_dump_json()
-        if client_key in self.clients:
-            return self.clients[client_key]
+        if client_key in tls.clients:
+            return tls.clients[client_key]
         client = resolve_client(resolved_client_config)
-        self.clients[client_key] = client
+        tls.clients[client_key] = client
         return client
 
     async def _close_cached_clients(self) -> None:
-        for client in self.clients.values():
-            await client.close()
-        self.clients.clear()
+        tls = get_thread_local_storage()
+        if hasattr(tls, "clients"):
+            for client in tls.clients.values():
+                await client.close()
+            tls.clients.clear()

@@ -1,10 +1,13 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 
 import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.thread_utils import get_or_create_thread_loop
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
@@ -18,7 +21,13 @@ from verifiers.workers.types import (
 class ZMQEnvServer(EnvServer):
     """ZMQ-based environment server."""
 
-    def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
+    def __init__(
+        self,
+        *args,
+        address: str = "tcp://127.0.0.1:5000",
+        max_workers: int = 128,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.address = address
 
@@ -29,8 +38,20 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
 
+        # Thread pools: dedicated health pool (always responsive) + worker pool
+        self._health_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="env-health"
+        )
+        self._worker_executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="env-worker"
+        )
+
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
+
+        # Start event loop lag monitor
+        lag_monitor = EventLoopLagMonitor(logger=self.logger)
+        lag_monitor_task = lag_monitor.run_in_background(log_interval=30.0)
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
         # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
@@ -76,6 +97,11 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
+            lag_monitor_task.cancel()
+            try:
+                await lag_monitor_task
+            except asyncio.CancelledError:
+                pass
 
     async def close(self):
         # cancel and await all pending tasks
@@ -88,9 +114,24 @@ class ZMQEnvServer(EnvServer):
 
         await self._close_cached_clients()
 
+        self._health_executor.shutdown(wait=False)
+        self._worker_executor.shutdown(wait=False)
+
         self.socket.close()
         self.ctx.term()
         self.logger.info("Environment server shut down")
+
+    async def _run_in_executor(
+        self, executor: ThreadPoolExecutor, coro
+    ) -> BaseResponse:
+        """Run an async handler in a thread pool thread with a thread-local event loop."""
+        loop = asyncio.get_running_loop()
+
+        def run():
+            thread_loop = get_or_create_thread_loop()
+            return thread_loop.run_until_complete(coro)
+
+        return await loop.run_in_executor(executor, run)
 
     async def _process_request(
         self,
@@ -107,16 +148,22 @@ class ZMQEnvServer(EnvServer):
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
-            # validate and route to handler
+            # validate and route to handler via thread pools
             if request_type == "health":
                 request = HealthRequest.model_validate(raw)
-                response = await self._handle_health(request)
+                response = await self._run_in_executor(
+                    self._health_executor, self._handle_health(request)
+                )
             elif request_type == "run_rollout":
                 request = RunRolloutRequest.model_validate(raw)
-                response = await self._handle_run_rollout(request)
+                response = await self._run_in_executor(
+                    self._worker_executor, self._handle_run_rollout(request)
+                )
             elif request_type == "run_group":
                 request = RunGroupRequest.model_validate(raw)
-                response = await self._handle_run_group(request)
+                response = await self._run_in_executor(
+                    self._worker_executor, self._handle_run_group(request)
+                )
             else:
                 self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(

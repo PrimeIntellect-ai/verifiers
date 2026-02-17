@@ -1257,6 +1257,7 @@ class Environment(ABC):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        max_workers: int = 32,
         # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
@@ -1287,7 +1288,7 @@ class Environment(ABC):
                 log_file,
                 log_file_level,
             ),
-            kwargs=dict(address=address),
+            kwargs=dict(address=address, max_workers=max_workers),
             daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
