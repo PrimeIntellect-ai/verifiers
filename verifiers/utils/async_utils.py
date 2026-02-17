@@ -74,7 +74,7 @@ class EventLoopLagMonitor:
         self.logger = logger or logging.getLogger(
             f"{__name__}.{self.__class__.__name__}"
         )
-        self._lags: list[float] = []
+        self.lags: list[float] = []
         self.logger.debug(
             f"Event loop lag monitor initialized with measure_interval={self.measure_interval} and max_measurements={self.max_measurements}"
         )
@@ -87,21 +87,17 @@ class EventLoopLagMonitor:
         lag = now - next_time
         return lag
 
-    @property
-    def lags(self) -> list[float]:
-        return self._lags
-
     def reset(self):
         """Reset the list of measured event loop lags."""
-        self._lags = []
+        self.lags = []
 
     async def run(self):
         """Loop to measure event loop lag. Should be started as background task."""
         while True:
             lag = await self.measure_lag()
-            self._lags.append(lag)
-            if len(self._lags) > self.max_measurements:
-                self._lags.pop(0)
+            self.lags.append(lag)
+            if len(self.lags) > self.max_measurements:
+                self.lags.pop(0)
 
     def run_in_background(self):
         """Run the event loop lag monitor as a background task."""

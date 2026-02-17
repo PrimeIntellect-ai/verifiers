@@ -43,10 +43,10 @@ class ZMQEnvServer(EnvServer):
         self.socket.bind(self.address)
 
         # Health check runs completely decoupled (dedicated thread and ZMQ socket)
-        self._stop_health = threading.Event()
-        self._health_thread: threading.Thread | None = None
+        self.stop_health = threading.Event()
+        self.health_thread: threading.Thread | None = None
 
-    def _run_health_thread(self):
+    def run_health_thread(self):
         """Blocking health check responder on a dedicated thread."""
         ctx = zmq.Context()
         sock = ctx.socket(zmq.REP)
@@ -59,7 +59,7 @@ class ZMQEnvServer(EnvServer):
             {"success": True, "error": None}, use_bin_type=True
         )
 
-        while not self._stop_health.is_set():
+        while not self.stop_health.is_set():
             try:
                 sock.recv()  # block until request (with 1s timeout)
                 sock.send(health_response)
@@ -76,17 +76,17 @@ class ZMQEnvServer(EnvServer):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
         # Start health responder thread
-        self._health_thread = threading.Thread(
-            target=self._run_health_thread,
+        self.health_thread = threading.Thread(
+            target=self.run_health_thread,
             name="health-responder",
             daemon=True,
         )
-        self._health_thread.start()
+        self.health_thread.start()
 
         self.lag_monitor.run_in_background()
 
         # Start statistics logger
-        log_stats_task = asyncio.create_task(self._log_stats_loop())
+        log_stats_task = asyncio.create_task(self.log_stats_loop())
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
         # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
@@ -121,7 +121,7 @@ class ZMQEnvServer(EnvServer):
 
                     # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
-                        self._process_request(client_id, request_id, payload_bytes)
+                        self.process_request(client_id, request_id, payload_bytes)
                     )
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
@@ -140,10 +140,10 @@ class ZMQEnvServer(EnvServer):
 
     async def close(self):
         # Stop health thread
-        self._stop_health.set()
-        if self._health_thread is not None:
-            self._health_thread.join(timeout=5)
-            self._health_thread = None
+        self.stop_health.set()
+        if self.health_thread is not None:
+            self.health_thread.join(timeout=5)
+            self.health_thread = None
 
         # Cancel and await all pending tasks
         if self.pending_tasks:
@@ -153,13 +153,13 @@ class ZMQEnvServer(EnvServer):
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
             self.pending_tasks.clear()
 
-        await self._close_cached_clients()
+        await self.close_cached_clients()
 
         self.socket.close()
         self.ctx.term()
         self.logger.info("Environment server shut down")
 
-    async def _log_stats_loop(self, interval: float = 10.0):
+    async def log_stats_loop(self, interval: float = 10.0):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
@@ -176,7 +176,7 @@ class ZMQEnvServer(EnvServer):
 
             self.logger.info(message)
 
-    async def _process_request(
+    async def process_request(
         self,
         client_id: bytes,
         request_id_bytes: bytes,
@@ -195,10 +195,10 @@ class ZMQEnvServer(EnvServer):
             # so they should not arrive here. Handle just in case.
             if request_type == "run_rollout":
                 request = RunRolloutRequest.model_validate(raw)
-                response = await self._handle_run_rollout(request)
+                response = await self.handle_run_rollout(request)
             elif request_type == "run_group":
                 request = RunGroupRequest.model_validate(raw)
-                response = await self._handle_run_group(request)
+                response = await self.handle_run_group(request)
             else:
                 self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(

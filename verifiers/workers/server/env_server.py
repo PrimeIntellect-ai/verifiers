@@ -100,13 +100,13 @@ class EnvServer(ABC):
 
         return asyncio.run(run_with_graceful_shutdown())
 
-    async def _handle_health(self, _request: HealthRequest) -> HealthResponse:
+    async def handle_health(self, _request: HealthRequest) -> HealthResponse:
         return HealthResponse()
 
-    async def _handle_run_rollout(
+    async def handle_run_rollout(
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
-        client = await self._resolve_client(request.client_config)
+        client = await self.resolve_client(request.client_config)
         output = await self.env.run_rollout(
             input=request.input,
             client=client,
@@ -117,8 +117,8 @@ class EnvServer(ABC):
         )
         return RunRolloutResponse(output=output)
 
-    async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
-        client = await self._resolve_client(request.client_config)
+    async def handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
+        client = await self.resolve_client(request.client_config)
         outputs = await self.env.run_group(
             group_inputs=request.group_inputs,
             client=client,
@@ -129,7 +129,7 @@ class EnvServer(ABC):
         )
         return RunGroupResponse(outputs=outputs)
 
-    async def _resolve_client(self, client_config: ClientConfig) -> Client:
+    async def resolve_client(self, client_config: ClientConfig) -> Client:
         resolved_client_config = resolve_client_config(client_config)
         client_key = resolved_client_config.model_dump_json()
         if client_key in self.clients:
@@ -138,7 +138,7 @@ class EnvServer(ABC):
         self.clients[client_key] = client
         return client
 
-    async def _close_cached_clients(self) -> None:
+    async def close_cached_clients(self) -> None:
         for client in self.clients.values():
             await client.close()
         self.clients.clear()
