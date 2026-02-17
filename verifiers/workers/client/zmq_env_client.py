@@ -79,30 +79,21 @@ class ZMQEnvClient(EnvClient):
 
         while True:
             try:
-                await asyncio.sleep(self.health_check_interval)
-
-                # Perform health check
                 try:
-                    is_healthy = await self.health(timeout=self.health_check_timeout)
-                    if is_healthy:
-                        if self._failed_health_checks > 0:
-                            self.logger.info("Server health check passed")
-                        self._failed_health_checks = 0
-                    else:
-                        # Health check returned False (shouldn't happen but handle it)
-                        self._failed_health_checks += 1
-                        self.logger.warning(
-                            f"Health check failed ({self._failed_health_checks} consecutive)"
-                        )
+                    await self.health(timeout=self.health_check_interval)
+                    # health check only returns if server is healthy
+                    if self._failed_health_checks > 0:
+                        self.logger.info("Server health check passed")
+                    self._failed_health_checks = 0
                 except Exception as e:
                     self._failed_health_checks += 1
-                    self.logger.warning(
-                        f"Health check error ({self._failed_health_checks} consecutive): {e}"
+                    self.logger.debug(
+                        f"Health check failed ({self._failed_health_checks} consecutive): {e}"
                     )
-
-                    # Log error after multiple consecutive failures
-                    if self._failed_health_checks >= 2:
-                        self.logger.error("Server health checks failing")
+                    if self._failed_health_checks >= 3:
+                        self.logger.warning(
+                            "Server is likely unhealthy as 3 consecutive health checks failed"
+                        )
 
             except asyncio.CancelledError:
                 self.logger.debug("Health check loop cancelled")

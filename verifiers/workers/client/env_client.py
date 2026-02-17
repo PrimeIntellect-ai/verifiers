@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from verifiers.types import (
     ClientConfig,
@@ -8,6 +11,7 @@ from verifiers.types import (
     SamplingArgs,
 )
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.logging_utils import print_time
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -25,15 +29,15 @@ class EnvClient(ABC):
     def __init__(
         self,
         address: str,
-        health_check_interval: float = 60.0,
-        health_check_timeout: float = 1.0,
-        recovery_timeout: float = 600.0,
+        health_check_interval: float = 10.0,  # 10s
+        startup_timeout: float = 600.0,  # 10min
+        recovery_timeout: float = 600.0,  # 10min
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
-        # Health check configuration
+
         self.health_check_interval = health_check_interval
-        self.health_check_timeout = health_check_timeout
+        self.startup_timeout = startup_timeout
         self.recovery_timeout = recovery_timeout
 
     async def health(self, timeout: float | None = 10) -> bool:
@@ -85,6 +89,30 @@ class EnvClient(ABC):
         assert response.outputs is not None
         return response.outputs
 
+    async def wait_for_server_startup(
+        self,
+        timeout: float | None = None,
+        interval: float | None = None,
+    ) -> None:
+        """Wait for server to become healthy on initial startup"""
+        timeout = timeout if timeout is not None else self.startup_timeout
+        interval = interval if interval is not None else self.health_check_interval
+        await self._wait_for_server_health(
+            timeout=timeout, interval=interval, mode="startup"
+        )
+
+    async def wait_for_server_recovery(
+        self,
+        timeout: float | None = None,
+        interval: float | None = None,
+    ) -> None:
+        """Wait for server to become healthy on recovery"""
+        timeout = timeout if timeout is not None else self.recovery_timeout
+        interval = interval if interval is not None else self.health_check_interval
+        await self._wait_for_server_health(
+            timeout=timeout, interval=interval, mode="recovery"
+        )
+
     @abstractmethod
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -104,48 +132,6 @@ class EnvClient(ABC):
         """Run a group of rollouts on the remote environment server."""
         ...
 
-    async def wait_for_server_health(
-        self,
-        timeout: float | None = None,
-        check_interval: float | None = None,
-    ) -> None:
-        """Wait for server to become healthy.
-
-        Universal method for both initial startup and recovery scenarios.
-        Works for any client implementation that provides health().
-
-        Args:
-            timeout: Maximum time to wait (defaults to recovery_timeout)
-            check_interval: Time between health checks (defaults to health_check_timeout)
-        """
-        import asyncio
-        import time
-
-        effective_timeout = timeout if timeout is not None else self.recovery_timeout
-        effective_interval = (
-            check_interval if check_interval is not None else self.health_check_timeout
-        )
-
-        self.logger.info(
-            f"Waiting for server to become healthy (timeout={effective_timeout}s)..."
-        )
-        start_time = time.time()
-
-        while time.time() - start_time < effective_timeout:
-            try:
-                is_healthy = await self.health(timeout=effective_interval)
-                if is_healthy:
-                    elapsed = time.time() - start_time
-                    self.logger.info(f"Server is healthy after {elapsed:.1f}s")
-                    return
-            except Exception as e:
-                self.logger.debug(f"Health check failed: {e}")
-
-            await asyncio.sleep(effective_interval)
-
-        # Timeout reached
-        raise TimeoutError(f"Server did not become healthy within {effective_timeout}s")
-
     @abstractmethod
     async def cancel_all_pending(self) -> list[PendingRequest]:
         """Cancel all pending requests and return their metadata."""
@@ -155,3 +141,32 @@ class EnvClient(ABC):
     async def close(self) -> None:
         """Close the client and clean up resources."""
         ...
+
+    async def _wait_for_server_health(
+        self, timeout: float, interval: float, mode: Literal["startup", "recovery"]
+    ) -> None:
+        """Wait for server to become healthy (e.g. on initial startup or recovery)"""
+
+        self.logger.info(
+            f"Waiting for server to {'become healthy' if mode == 'startup' else 'recover'} (timeout={print_time(timeout)})..."
+        )
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                is_healthy = await self.health(timeout=interval)
+                if is_healthy:
+                    elapsed = time.time() - start_time
+                    self.logger.info(
+                        f"Server {'became healthy' if mode == 'startup' else 'recovered'} after {print_time(elapsed)}"
+                    )
+                    return
+            except Exception as e:
+                self.logger.debug(f"Health check failed: {e}")
+
+            await asyncio.sleep(interval)
+
+        # Timeout reached
+        raise TimeoutError(
+            f"Server did not {'become healthy' if mode == 'startup' else 'recover'} within {print_time(timeout)}"
+        )

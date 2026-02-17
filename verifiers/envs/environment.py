@@ -1257,14 +1257,13 @@ class Environment(ABC):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] = {},
-        startup_timeout: float = 3600,  # 1h
         # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
         # health check configs
         health_check_interval: float = 10.0,  # 10s
-        health_check_timeout: float = 1.0,  # 5s
+        startup_timeout: float = 600.0,  # 10m
         recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         """Start a ZMQ server process for this environment.
@@ -1294,14 +1293,10 @@ class Environment(ABC):
         self.env_client = ZMQEnvClient(
             address=address,
             health_check_interval=health_check_interval,
-            health_check_timeout=health_check_timeout,
+            startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
         )
-        # Wait for server to be ready using built-in health check
-        await self.env_client.wait_for_server_health(
-            timeout=startup_timeout,
-            check_interval=1.0,  # Check every second for fast startup
-        )
+        await self.env_client.wait_for_server_startup()
 
     async def stop_server(self) -> None:
         """Stop the ZMQ server process for this environment.
