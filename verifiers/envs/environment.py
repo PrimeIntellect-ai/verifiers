@@ -5,6 +5,7 @@ import atexit
 import inspect
 import json
 import logging
+import multiprocessing as mp
 import signal
 import time
 import uuid
@@ -14,7 +15,6 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-import multiprocessing as mp
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
@@ -1257,10 +1257,15 @@ class Environment(ABC):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] = {},
+        startup_timeout: float = 3600,  # 1h
+        # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
-        startup_timeout: float = 3600,  # 1h
+        # health check configs
+        health_check_interval: float = 10.0,  # 10s
+        health_check_timeout: float = 1.0,  # 5s
+        recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1286,7 +1291,12 @@ class Environment(ABC):
             daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
-        self.env_client = ZMQEnvClient(address=address)
+        self.env_client = ZMQEnvClient(
+            address=address,
+            health_check_interval=health_check_interval,
+            health_check_timeout=health_check_timeout,
+            recovery_timeout=recovery_timeout,
+        )
         await wait_for_env_server(self.env_client, timeout=startup_timeout)
 
     async def stop_server(self) -> None:

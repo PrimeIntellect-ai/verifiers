@@ -11,6 +11,7 @@ from verifiers.utils.client_utils import resolve_client_config
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
+    PendingTaskInfo,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -91,6 +92,22 @@ class EnvClient(ABC):
         self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
         """Run a group of rollouts on the remote environment server."""
+        ...
+
+    @abstractmethod
+    async def cancel_all_pending(
+        self, reason: str = "Cancelled"
+    ) -> list[PendingTaskInfo]:
+        """Cancel all pending requests and return info about them."""
+        ...
+
+    @abstractmethod
+    async def wait_for_recovery(
+        self,
+        timeout: float = 600.0,  # 10m
+        check_interval: float = 10.0,  # 10s
+    ) -> None:
+        """Wait for server to recover after a failure."""
         ...
 
     @abstractmethod

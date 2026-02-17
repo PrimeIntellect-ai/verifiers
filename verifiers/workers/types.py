@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SkipValidation
@@ -12,6 +13,14 @@ from verifiers.types import (
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
 ]
+
+
+class ServerState(str, Enum):
+    """State of the environment server connection."""
+
+    HEALTHY = "healthy"
+    UNHEALTHY = "unhealthy"
+    RECOVERING = "recovering"
 
 
 class BaseRequest(BaseModel):
@@ -72,3 +81,12 @@ class RunGroupResponse(BaseResponse):
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
 BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
+
+
+class PendingTaskInfo(BaseModel):
+    """Information about a pending task."""
+
+    request_id: str
+    request: BaseRequest
+    timeout: float | None = None
+    submitted_at: float  # timestamp
