@@ -32,14 +32,14 @@ class TestCancelAllPending:
         future2 = asyncio.Future()
 
         async with client._pending_lock:
-            client.pending_requests["req1"] = PendingRequest(
+            client._pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=request1,
                 submitted_at=time.time(),
                 timeout=10.0,
                 future=future1,
             )
-            client.pending_requests["req2"] = PendingRequest(
+            client._pending_requests["req2"] = PendingRequest(
                 request_id="req2",
                 request=request2,
                 submitted_at=time.time(),
@@ -56,7 +56,7 @@ class TestCancelAllPending:
         assert {req.request_id for req in cancelled_requests} == {"req1", "req2"}
 
         # Verify internal state is cleaned up
-        assert len(client.pending_requests) == 0
+        assert len(client._pending_requests) == 0
 
         # Verify futures are cancelled
         for req in cancelled_requests:
@@ -78,7 +78,7 @@ class TestCancelAllPending:
         cancelled_requests = await client.cancel_all_pending()
 
         assert len(cancelled_requests) == 0
-        assert len(client.pending_requests) == 0
+        assert len(client._pending_requests) == 0
 
         await client.close()
 
@@ -95,14 +95,14 @@ class TestCancelAllPending:
         future2 = asyncio.Future()
 
         async with client._pending_lock:
-            client.pending_requests["req1"] = PendingRequest(
+            client._pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=HealthRequest(),
                 submitted_at=time.time(),
                 timeout=10.0,
                 future=future1,
             )
-            client.pending_requests["req2"] = PendingRequest(
+            client._pending_requests["req2"] = PendingRequest(
                 request_id="req2",
                 request=HealthRequest(),
                 submitted_at=time.time(),
@@ -320,7 +320,7 @@ class TestRequestMetadata:
                 pass
 
             # The metadata should have been cleaned up on timeout
-            assert len(client.pending_requests) == 0
+            assert len(client._pending_requests) == 0
 
             await client.close()
 
@@ -345,9 +345,9 @@ class TestRequestMetadata:
             async def send_response():
                 await asyncio.sleep(0.1)
                 # Get the request_id from pending
-                if client.pending_requests:
-                    request_id = list(client.pending_requests.keys())[0]
-                    pending_req = client.pending_requests.get(request_id)
+                if client._pending_requests:
+                    request_id = list(client._pending_requests.keys())[0]
+                    pending_req = client._pending_requests.get(request_id)
                     if pending_req and not pending_req.future.done():
                         # Simulate a successful response
                         pending_req.future.set_result({"success": True, "error": None})
@@ -360,7 +360,7 @@ class TestRequestMetadata:
                     timeout=2.0,
                 )
                 # Verify metadata is cleaned up
-                assert len(client.pending_requests) == 0
+                assert len(client._pending_requests) == 0
                 assert response.success
             except asyncio.TimeoutError:
                 pass
@@ -419,7 +419,7 @@ class TestCloseCleanup:
 
         # Add some pending tasks
         async with client._pending_lock:
-            client.pending_requests["req1"] = PendingRequest(
+            client._pending_requests["req1"] = PendingRequest(
                 request_id="req1",
                 request=HealthRequest(),
                 submitted_at=time.time(),
@@ -431,7 +431,7 @@ class TestCloseCleanup:
         await client.close()
 
         # Verify cleanup
-        assert len(client.pending_requests) == 0
+        assert len(client._pending_requests) == 0
 
 
 class TestAutomaticRetry:
@@ -453,7 +453,7 @@ class TestAutomaticRetry:
         async def mock_recovery(timeout=None, interval=None):
             pass
 
-        client.wait_for_server_recovery = mock_recovery
+        client._wait_for_server_recovery = mock_recovery
 
         # Mock socket operations
         async def mock_send(*args, **kwargs):
@@ -472,8 +472,8 @@ class TestAutomaticRetry:
                 # Second attempt succeeds - return response immediately
                 async def succeed_request():
                     await asyncio.sleep(0.05)
-                    request_id = list(client.pending_requests.keys())[0]
-                    pending = client.pending_requests.get(request_id)
+                    request_id = list(client._pending_requests.keys())[0]
+                    pending = client._pending_requests.get(request_id)
                     if pending and not pending.future.done():
                         pending.future.set_result({"success": True, "error": None})
 
@@ -510,7 +510,7 @@ class TestAutomaticRetry:
         async def mock_recovery(timeout=None, interval=None):
             pass
 
-        client.wait_for_server_recovery = mock_recovery
+        client._wait_for_server_recovery = mock_recovery
 
         # Mock socket operations - always fail
         async def mock_send(*args, **kwargs):
@@ -559,8 +559,8 @@ class TestAutomaticRetry:
             # Simulate a non-server error (e.g., validation error)
             async def fail_with_validation_error():
                 await asyncio.sleep(0.05)
-                request_id = list(client.pending_requests.keys())[0]
-                pending = client.pending_requests.get(request_id)
+                request_id = list(client._pending_requests.keys())[0]
+                pending = client._pending_requests.get(request_id)
                 if pending and not pending.future.done():
                     pending.future.set_exception(RuntimeError("Invalid request format"))
 
@@ -603,14 +603,14 @@ class TestHealthCheckCancellation:
         client.health = AsyncMock(side_effect=RuntimeError("Server down"))
 
         # Mock wait_for_server_recovery to succeed immediately
-        client.wait_for_server_recovery = AsyncMock()
+        client._wait_for_server_recovery = AsyncMock()
 
         # Create a pending request
         request = HealthRequest()
         future = asyncio.Future()
 
         async with client._pending_lock:
-            client.pending_requests["test_req"] = PendingRequest(
+            client._pending_requests["test_req"] = PendingRequest(
                 request_id="test_req",
                 request=request,
                 submitted_at=time.time(),
@@ -627,7 +627,7 @@ class TestHealthCheckCancellation:
 
         # Verify the request was cancelled
         assert future.done()
-        assert len(client.pending_requests) == 0
+        assert len(client._pending_requests) == 0
 
         # Verify the reason
         with pytest.raises(RuntimeError, match="Server unhealthy"):
@@ -664,6 +664,6 @@ class TestHealthCheckCancellation:
         # Wait for 3 failures - should transition to UNHEALTHY
         await asyncio.sleep(0.7)  # 3+ checks
         assert client._server_state == ServerState.UNHEALTHY
-        assert len(client.pending_requests) == 0  # Should have cancelled any pending
+        assert len(client._pending_requests) == 0  # Should have cancelled any pending
 
         await client.close()

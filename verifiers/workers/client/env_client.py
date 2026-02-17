@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Literal
 
 from verifiers.types import (
     ClientConfig,
@@ -15,7 +14,6 @@ from verifiers.utils.logging_utils import print_time
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
-    PendingRequest,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -96,23 +94,34 @@ class EnvClient(ABC):
         timeout: float | None = None,
         interval: float | None = None,
     ) -> None:
-        """Wait for server to become healthy on initial startup"""
+        """Wait for server to become healthy on initial startup."""
         timeout = timeout if timeout is not None else self.startup_timeout
         interval = interval if interval is not None else self.health_check_interval
-        await self._wait_for_server_health(
-            timeout=timeout, interval=interval, mode="startup"
-        )
+        await self._wait_for_server_health(timeout=timeout, interval=interval)
 
-    async def wait_for_server_recovery(
-        self,
-        timeout: float | None = None,
-        interval: float | None = None,
-    ) -> None:
-        """Wait for server to become healthy on recovery"""
-        timeout = timeout if timeout is not None else self.recovery_timeout
-        interval = interval if interval is not None else self.health_check_interval
-        await self._wait_for_server_health(
-            timeout=timeout, interval=interval, mode="recovery"
+    async def _wait_for_server_health(self, timeout: float, interval: float) -> None:
+        """Wait for server to become healthy."""
+        self.logger.info(
+            f"Waiting for server at {self.address} to become healthy (timeout={print_time(timeout)})..."
+        )
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                is_healthy = await self.health(timeout=interval)
+                if is_healthy:
+                    elapsed = time.time() - start_time
+                    self.logger.info(
+                        f"Server at {self.address} became healthy after {print_time(elapsed)}"
+                    )
+                    return
+            except Exception as e:
+                self.logger.debug(f"Health check failed: {e}")
+
+            await asyncio.sleep(interval)
+
+        raise TimeoutError(
+            f"Server at {self.address} did not become healthy within {print_time(timeout)}"
         )
 
     @abstractmethod
@@ -135,42 +144,6 @@ class EnvClient(ABC):
         ...
 
     @abstractmethod
-    async def cancel_all_pending(
-        self, reason: str = "Request cancelled"
-    ) -> list[PendingRequest]:
-        """Cancel all pending requests and return their metadata."""
-        ...
-
-    @abstractmethod
     async def close(self) -> None:
         """Close the client and clean up resources."""
         ...
-
-    async def _wait_for_server_health(
-        self, timeout: float, interval: float, mode: Literal["startup", "recovery"]
-    ) -> None:
-        """Wait for server to become healthy (e.g. on initial startup or recovery)"""
-
-        self.logger.info(
-            f"Waiting for server to {'become healthy' if mode == 'startup' else 'recover'} (timeout={print_time(timeout)})..."
-        )
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            try:
-                is_healthy = await self.health(timeout=interval)
-                if is_healthy:
-                    elapsed = time.time() - start_time
-                    self.logger.info(
-                        f"Server {'became healthy' if mode == 'startup' else 'recovered'} after {print_time(elapsed)}"
-                    )
-                    return
-            except Exception as e:
-                self.logger.debug(f"Health check failed: {e}")
-
-            await asyncio.sleep(interval)
-
-        # Timeout reached
-        raise TimeoutError(
-            f"Server did not {'become healthy' if mode == 'startup' else 'recover'} within {print_time(timeout)}"
-        )
