@@ -74,7 +74,7 @@ class EventLoopLagMonitor:
         self.logger = logger or logging.getLogger(
             f"{__name__}.{self.__class__.__name__}"
         )
-        self.lags = []
+        self._lags: list[float] = []
         self.logger.debug(
             f"Event loop lag monitor initialized with measure_interval={self.measure_interval} and max_measurements={self.max_measurements}"
         )
@@ -87,47 +87,25 @@ class EventLoopLagMonitor:
         lag = now - next_time
         return lag
 
-    def get_lags(self) -> list[float]:
-        """Get the list of measured event loop lags."""
-        return self.lags
+    @property
+    def lags(self) -> list[float]:
+        return self._lags
 
-    def reset_lags(self):
+    def reset(self):
         """Reset the list of measured event loop lags."""
-        self.lags = []
+        self._lags = []
 
-    async def run(self, log_interval: float | None = None):
+    async def run(self):
         """Loop to measure event loop lag. Should be started as background task."""
-        last_log_time = perf_counter()
-
         while True:
             lag = await self.measure_lag()
-            self.lags.append(lag)
-            if len(self.lags) > self.max_measurements:
-                self.lags.pop(0)
+            self._lags.append(lag)
+            if len(self._lags) > self.max_measurements:
+                self._lags.pop(0)
 
-            if log_interval and perf_counter() - last_log_time >= log_interval:
-                self._log_summary()
-                last_log_time = perf_counter()
-
-    def run_in_background(self, log_interval: float | None = None):
+    def run_in_background(self):
         """Run the event loop lag monitor as a background task."""
-        return asyncio.create_task(self.run(log_interval=log_interval))
-
-    def _log_summary(self):
-        """Log a summary of recent event loop lag measurements."""
-        if not self.lags:
-            return
-        lags = sorted(self.lags)
-        mean_lag = sum(lags) / len(lags)
-        max_lag = lags[-1]
-        p99_lag = lags[int(len(lags) * 0.99)]
-        self.logger.info(
-            f"Measured event loop lag over the last {len(lags)} measurements ("
-            f"mean={print_time(mean_lag)}, "
-            f"p99={print_time(p99_lag)}, "
-            f"max={print_time(max_lag)})"
-        )
-        self.reset_lags()
+        return asyncio.create_task(self.run())
 
 
 def maybe_retry(

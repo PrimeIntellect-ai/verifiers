@@ -7,6 +7,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
@@ -48,6 +49,9 @@ class ZMQEnvServer(EnvServer):
         self._stop_health = threading.Event()
         self._health_thread: threading.Thread | None = None
 
+        # Start event loop lag monitor
+        self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
+
     def _run_health_thread(self):
         """Blocking health check responder on a dedicated thread."""
         ctx = zmq.Context()
@@ -85,12 +89,9 @@ class ZMQEnvServer(EnvServer):
         )
         self._health_thread.start()
 
-        # Start event loop lag monitor
-        lag_monitor = EventLoopLagMonitor(logger=self.logger)
-        lag_monitor_task = lag_monitor.run_in_background(log_interval=30.0)
-
-        # Start pending tasks monitor
-        pending_monitor_task = asyncio.create_task(self._pending_tasks_log_loop())
+        # Start statistics logger
+        self.lag_monitor.run_in_background()
+        log_stats_task = asyncio.create_task(self._log_stats_loop())
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
         # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
@@ -136,7 +137,7 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
-            for t in (lag_monitor_task, pending_monitor_task):
+            for t in (log_stats_task,):
                 t.cancel()
                 try:
                     await t
@@ -164,11 +165,20 @@ class ZMQEnvServer(EnvServer):
         self.ctx.term()
         self.logger.info("Environment server shut down")
 
-    async def _pending_tasks_log_loop(self, interval: float = 30.0):
-        """Periodically log the number of pending tasks."""
+    async def _log_stats_loop(self, interval: float = 30.0):
+        """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
-            self.logger.info(f"{len(self.pending_tasks)} pending task(s)")
+            lags = sorted(self.lag_monitor.lags)
+            self.lag_monitor.reset()
+            mean_lag = sum(lags) / len(lags)
+            max_lag = lags[-1]
+            p99_lag = lags[int(len(lags) * 0.99)]
+            pending = len(self.pending_tasks)
+
+            self.logger.info(
+                f"Pending tasks: {pending}, Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)}"
+            )
 
     async def _process_request(
         self,
