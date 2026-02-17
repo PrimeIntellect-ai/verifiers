@@ -89,7 +89,7 @@ class ZMQEnvClient(EnvClient):
         timeout = timeout if timeout is not None else self.startup_timeout
         self.logger.info(
             f"Waiting for env server {self.name} to become healthy "
-            f"(timeout={print_time(timeout)})..."
+            f"(timeout={print_time(timeout)})"
         )
         await self._ensure_started()
         try:
