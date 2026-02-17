@@ -25,12 +25,7 @@ def derive_health_address(address: str) -> str:
 class ZMQEnvServer(EnvServer):
     """ZMQ-based environment server."""
 
-    def __init__(
-        self,
-        *args,
-        address: str = "tcp://127.0.0.1:5000",
-        **kwargs,
-    ):
+    def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)
         self.address = address
         self.health_address = derive_health_address(address)
