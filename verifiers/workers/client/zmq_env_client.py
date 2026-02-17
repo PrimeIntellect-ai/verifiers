@@ -190,7 +190,7 @@ class ZMQEnvClient(EnvClient):
                             )
                         )
                 elif pending_req is None:
-                    self.logger.warning(
+                    self.logger.debug(
                         f"Received response for unknown request_id={request_id} "
                         f"(pending={len(self._pending_requests)})"
                     )
