@@ -138,7 +138,7 @@ class ZMQEnvClient(EnvClient):
         async with self._pending_lock:
             pending_count = len(self._pending_requests)
             if pending_count:
-                self.logger.warning(
+                self.logger.debug(
                     f"Cancelling {pending_count} pending request(s): {reason}"
                 )
 
@@ -283,8 +283,8 @@ class ZMQEnvClient(EnvClient):
                     f"request after {effective_timeout}s"
                 )
             except ServerError as e:
-                self.logger.warning(
-                    f"Request {request_id[:8]} failed due to server error: {e}. Waiting for server recovery before retry..."
+                self.logger.debug(
+                    f"Request {request_id[:8]} waiting for server recovery: {e}"
                 )
 
                 # Wait for health check loop to detect recovery
@@ -330,8 +330,9 @@ class ZMQEnvClient(EnvClient):
                 if is_healthy:
                     if self._server_state != ServerState.HEALTHY:
                         self.logger.info(
-                            f"Server at {self.address} became healthy "
-                            f"(was {self._server_state.value})"
+                            f"Server at {self.address} is healthy again "
+                            f"(was {self._server_state.value}), "
+                            f"rescheduling requests"
                         )
                     self._server_state = ServerState.HEALTHY
                     self._failed_health_checks = 0
@@ -344,16 +345,15 @@ class ZMQEnvClient(EnvClient):
                         self._server_state == ServerState.HEALTHY
                         and self._failed_health_checks >= 3
                     ):
-                        self.logger.warning(
-                            "Server is unhealthy after 3 consecutive "
-                            "health check failures - "
-                            "cancelling pending requests to trigger retry"
-                        )
                         self._server_state = ServerState.UNHEALTHY
                         self._healthy_event.clear()
-                        await self._cancel_all_pending(
+                        cancelled = await self._cancel_all_pending(
                             f"Server unhealthy: {self._failed_health_checks} "
                             f"consecutive health check failures"
+                        )
+                        self.logger.warning(
+                            f"Server detected unhealthy, "
+                            f"cancelling {len(cancelled)} pending request(s)"
                         )
 
                 elapsed = asyncio.get_event_loop().time() - cycle_start
