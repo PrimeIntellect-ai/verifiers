@@ -3,13 +3,9 @@ import socket
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 import numpy as np
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
