@@ -182,7 +182,7 @@ class ZMQEnvClient(EnvClient):
                     except Exception as unpack_error:
                         # Unpacking failed - fail the specific future
                         self.logger.error(
-                            f"Failed to unpack response for request {request_id}: {unpack_error}"
+                            f"Request {request_id[:7]} failed to unpack response: {unpack_error}"
                         )
                         pending_req.future.set_exception(
                             RuntimeError(
@@ -190,10 +190,7 @@ class ZMQEnvClient(EnvClient):
                             )
                         )
                 elif pending_req is None:
-                    self.logger.debug(
-                        f"Received response for unknown request_id={request_id} "
-                        f"(pending={len(self._pending_requests)})"
-                    )
+                    pass  # ignore responses for requests we already popped (e.g. timed out)
 
             except asyncio.CancelledError:
                 break
@@ -273,7 +270,7 @@ class ZMQEnvClient(EnvClient):
                     else self.logger.error
                 )
                 log(
-                    f"Timed out waiting for request_id={request_id} "
+                    f"Request {request_id[:7]} timed out "
                     f"type={request.request_type} "
                     f"after {effective_timeout:.1f}s "
                     f"(pending={len(self._pending_requests)})"
@@ -284,7 +281,7 @@ class ZMQEnvClient(EnvClient):
                 )
             except ServerError as e:
                 self.logger.debug(
-                    f"Request {request_id[:8]} waiting for server recovery: {e}"
+                    f"Request {request_id[:7]} waiting for server recovery: {e}"
                 )
 
                 # Wait for health check loop to detect recovery
