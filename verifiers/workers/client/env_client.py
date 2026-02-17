@@ -104,20 +104,51 @@ class EnvClient(ABC):
         """Run a group of rollouts on the remote environment server."""
         ...
 
-    @abstractmethod
-    async def cancel_all_pending(
-        self, reason: str = "Cancelled"
-    ) -> list[PendingRequest]:
-        """Cancel all pending requests and return info about them."""
-        ...
-
-    @abstractmethod
     async def wait_for_server_health(
         self,
-        timeout: float = 600.0,  # 10m
-        check_interval: float = 10.0,  # 10s
+        timeout: float | None = None,
+        check_interval: float | None = None,
     ) -> None:
-        """Wait for server to be healthy."""
+        """Wait for server to become healthy.
+
+        Universal method for both initial startup and recovery scenarios.
+        Works for any client implementation that provides health().
+
+        Args:
+            timeout: Maximum time to wait (defaults to recovery_timeout)
+            check_interval: Time between health checks (defaults to health_check_timeout)
+        """
+        import asyncio
+        import time
+
+        effective_timeout = timeout if timeout is not None else self.recovery_timeout
+        effective_interval = (
+            check_interval if check_interval is not None else self.health_check_timeout
+        )
+
+        self.logger.info(
+            f"Waiting for server to become healthy (timeout={effective_timeout}s)..."
+        )
+        start_time = time.time()
+
+        while time.time() - start_time < effective_timeout:
+            try:
+                is_healthy = await self.health(timeout=effective_interval)
+                if is_healthy:
+                    elapsed = time.time() - start_time
+                    self.logger.info(f"Server is healthy after {elapsed:.1f}s")
+                    return
+            except Exception as e:
+                self.logger.debug(f"Health check failed: {e}")
+
+            await asyncio.sleep(effective_interval)
+
+        # Timeout reached
+        raise TimeoutError(f"Server did not become healthy within {effective_timeout}s")
+
+    @abstractmethod
+    async def cancel_all_pending(self) -> list[PendingRequest]:
+        """Cancel all pending requests and return their metadata."""
         ...
 
     @abstractmethod

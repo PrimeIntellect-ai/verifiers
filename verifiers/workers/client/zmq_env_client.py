@@ -132,39 +132,6 @@ class ZMQEnvClient(EnvClient):
 
         return cancelled_requests
 
-    async def wait_for_server_health(
-        self,
-        timeout: float = 600.0,
-        check_interval: float = 10.0,
-    ) -> None:
-        """Wait for server to become healthy.
-
-        Universal method for both initial startup and recovery scenarios.
-        """
-        self.logger.info(
-            f"Waiting for server to become healthy (timeout={print_time(timeout)})..."
-        )
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            try:
-                is_healthy = await self.health(timeout=check_interval)
-                if is_healthy:
-                    self._failed_health_checks = 0
-                    self.logger.info(
-                        f"Server is healthy after {print_time(time.time() - start_time)}"
-                    )
-                    return
-            except Exception as e:
-                self.logger.debug(f"Health check failed: {e}")
-
-            await asyncio.sleep(check_interval)
-
-        # Timeout reached
-        raise TimeoutError(
-            f"Server did not become healthy within {print_time(timeout)}"
-        )
-
     def _fail_all_pending(self, reason: str):
         """Fail all pending requests synchronously."""
         pending_count = len(self.pending_requests)
