@@ -35,7 +35,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.worker_utils import get_free_port, wait_for_env_server
+from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
@@ -1297,7 +1297,11 @@ class Environment(ABC):
             health_check_timeout=health_check_timeout,
             recovery_timeout=recovery_timeout,
         )
-        await wait_for_env_server(self.env_client, timeout=startup_timeout)
+        # Wait for server to be ready using built-in health check
+        await self.env_client.wait_for_recovery(
+            timeout=startup_timeout,
+            check_interval=1.0,  # Check every second for fast startup
+        )
 
     async def stop_server(self) -> None:
         """Stop the ZMQ server process for this environment.
