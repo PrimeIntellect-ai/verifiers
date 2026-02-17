@@ -25,7 +25,7 @@ class EnvClient(ABC):
         self,
         address: str,
         name: str | None = None,
-        health_check_interval: float = 1.0,  # 1s
+        health_check_interval: float = 10.0,  # 10s
         startup_timeout: float = 600.0,  # 10min
         recovery_timeout: float = 600.0,  # 10min
     ):

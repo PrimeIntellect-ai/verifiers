@@ -90,6 +90,6 @@ class PendingRequest(BaseModel):
 
     request_id: str
     request: BaseRequest
-    future: Future[BaseResponse]
+    future: Future[dict]
     timeout: float | None = None
     submitted_at: float  # timestamp
