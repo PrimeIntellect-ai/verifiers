@@ -25,7 +25,7 @@ class EnvClient(ABC):
         self,
         address: str,
         name: str | None = None,
-        health_check_interval: float = 10.0,  # 10s
+        health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10min
         recovery_timeout: float = 600.0,  # 10min
     ):
@@ -37,7 +37,7 @@ class EnvClient(ABC):
         self.startup_timeout = startup_timeout
         self.recovery_timeout = recovery_timeout
 
-    async def health(self, timeout: float | None = 10) -> bool:
+    async def health(self, timeout: float | None = 1) -> bool:
         request = HealthRequest()
         response = await self.handle_health_request(request, timeout=timeout)
         return response.success
