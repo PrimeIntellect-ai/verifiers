@@ -74,7 +74,7 @@ class ZMQEnvServer(EnvServer):
         ctx.term()
         self.logger.debug("Health check responder stopped")
 
-    async def run(self, stop_event: asyncio.Event | None = None):
+    async def run(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
         # Start health responder thread
@@ -88,6 +88,9 @@ class ZMQEnvServer(EnvServer):
         # Start event loop lag monitor
         lag_monitor = EventLoopLagMonitor(logger=self.logger)
         lag_monitor_task = lag_monitor.run_in_background(log_interval=30.0)
+
+        # Start pending tasks monitor
+        pending_monitor_task = asyncio.create_task(self._pending_tasks_log_loop())
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
         # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
@@ -133,11 +136,12 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
-            lag_monitor_task.cancel()
-            try:
-                await lag_monitor_task
-            except asyncio.CancelledError:
-                pass
+            for t in (lag_monitor_task, pending_monitor_task):
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     async def close(self):
         # Stop health thread
@@ -159,6 +163,12 @@ class ZMQEnvServer(EnvServer):
         self.socket.close()
         self.ctx.term()
         self.logger.info("Environment server shut down")
+
+    async def _pending_tasks_log_loop(self, interval: float = 30.0):
+        """Periodically log the number of pending tasks."""
+        while True:
+            await asyncio.sleep(interval)
+            self.logger.info(f"{len(self.pending_tasks)} pending task(s)")
 
     async def _process_request(
         self,
