@@ -78,7 +78,7 @@ class ZMQEnvServer(EnvServer):
         )
         self.health_thread.start()
 
-        self.lag_monitor.run_in_background()
+        lag_monitor_task = self.lag_monitor.run_in_background()
 
         # Start statistics logger
         log_stats_task = asyncio.create_task(self.log_stats_loop())
@@ -127,11 +127,11 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
-            log_stats_task.cancel()
-            try:
-                await log_stats_task
-            except asyncio.CancelledError:
-                pass
+            for t in (log_stats_task, lag_monitor_task):
+                t.cancel()
+            await asyncio.gather(
+                log_stats_task, lag_monitor_task, return_exceptions=True
+            )
 
     async def close(self):
         # Stop health thread
