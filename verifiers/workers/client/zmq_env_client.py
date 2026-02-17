@@ -34,6 +34,22 @@ class ZMQEnvClient(EnvClient):
         # ZMQ context
         self.ctx = zmq.asyncio.Context()
 
+        # DEALER socket for async request/response
+        self.socket = self.ctx.socket(zmq.DEALER)
+        self.socket.setsockopt(zmq.SNDHWM, 10000)
+        self.socket.setsockopt(zmq.RCVHWM, 10000)
+        self.socket.setsockopt(zmq.LINGER, 0)
+
+        # TCP keepalive for faster dead server detection
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
+        self.socket.setsockopt(
+            zmq.TCP_KEEPALIVE_IDLE, 10
+        )  # Start probes after 10s idle
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
+        self.socket.setsockopt(
+            zmq.TCP_KEEPALIVE_CNT, 3
+        )  # Give up after 3 failed probes
+
         # Single dict for all pending requests (includes futures)
         self.pending_requests: dict[str, PendingRequest] = {}
         self._receiver_task: asyncio.Task | None = None
@@ -41,24 +57,9 @@ class ZMQEnvClient(EnvClient):
         self._pending_lock = asyncio.Lock()
         self._health_check_task: asyncio.Task | None = None
         self._failed_health_checks = 0
-
-        # Create initial socket
-        self.socket = self._create_socket()
-
-    def _create_socket(self) -> zmq.asyncio.Socket:
-        """Create and configure a new ZMQ DEALER socket."""
-        socket = self.ctx.socket(zmq.DEALER)
-        socket.setsockopt(zmq.SNDHWM, 10000)
-        socket.setsockopt(zmq.RCVHWM, 10000)
-        socket.setsockopt(zmq.LINGER, 0)
-
-        # TCP keepalive for faster dead server detection
-        socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
-        socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)  # Start probes after 10s idle
-        socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
-        socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)  # Give up after 3 failed probes
-
-        return socket
+        self._pending_cancelled_for_health = (
+            False  # Track if we've cancelled for current failure
+        )
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -74,40 +75,6 @@ class ZMQEnvClient(EnvClient):
         self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
         return await self._send_request(request, RunGroupResponse, timeout=timeout)
-
-    async def wait_for_server_recovery(
-        self,
-        timeout: float | None = None,
-        interval: float | None = None,
-    ) -> None:
-        """Wait for server to recover and reconnect the socket."""
-        self.logger.info("Server failure detected, initiating reconnection...")
-
-        # Close old socket
-        try:
-            self.socket.close()
-        except Exception as e:
-            self.logger.debug(f"Error closing old socket: {e}")
-
-        # Cancel and wait for old receive loop to stop
-        if self._receiver_task is not None and not self._receiver_task.done():
-            self._receiver_task.cancel()
-            try:
-                await self._receiver_task
-            except asyncio.CancelledError:
-                pass
-            self._receiver_task = None
-
-        # Create new socket and connect
-        self.socket = self._create_socket()
-        self.socket.connect(self.address)
-
-        # Restart receive loop
-        self._receiver_task = asyncio.create_task(self._receive_loop())
-
-        # Wait for server to become healthy using base class method
-        await super().wait_for_server_recovery(timeout=timeout, interval=interval)
-        self.logger.info("Successfully reconnected to server")
 
     async def _health_check_loop(self):
         """Background task that periodically checks server health."""
@@ -304,7 +271,7 @@ class ZMQEnvClient(EnvClient):
                 )
                 self.logger.info("Waiting for server recovery before retry...")
 
-                # Wait for server to recover (reconnects socket automatically)
+                # Wait for server to recover (ZMQ handles reconnection automatically)
                 await self.wait_for_server_recovery()
 
                 # Retry with incremented attempt counter
