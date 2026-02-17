@@ -25,7 +25,6 @@ class ZMQEnvServer(EnvServer):
         self,
         *args,
         address: str = "tcp://127.0.0.1:5000",
-        max_workers: int = 128,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -38,12 +37,10 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
 
-        # Thread pools: dedicated health pool (always responsive) + worker pool
+        # Dedicated thread for health probes so they always respond
+        # even when the main event loop is saturated with rollout work
         self._health_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="env-health"
-        )
-        self._worker_executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="env-worker"
         )
 
     async def run(self, stop_event: asyncio.Event | None = None):
@@ -115,7 +112,6 @@ class ZMQEnvServer(EnvServer):
         await self._close_cached_clients()
 
         self._health_executor.shutdown(wait=False)
-        self._worker_executor.shutdown(wait=False)
 
         self.socket.close()
         self.ctx.term()
@@ -148,7 +144,7 @@ class ZMQEnvServer(EnvServer):
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
-            # validate and route to handler via thread pools
+            # validate and route to handler
             if request_type == "health":
                 request = HealthRequest.model_validate(raw)
                 response = await self._run_in_executor(
@@ -156,14 +152,10 @@ class ZMQEnvServer(EnvServer):
                 )
             elif request_type == "run_rollout":
                 request = RunRolloutRequest.model_validate(raw)
-                response = await self._run_in_executor(
-                    self._worker_executor, self._handle_run_rollout(request)
-                )
+                response = await self._handle_run_rollout(request)
             elif request_type == "run_group":
                 request = RunGroupRequest.model_validate(raw)
-                response = await self._run_in_executor(
-                    self._worker_executor, self._handle_run_group(request)
-                )
+                response = await self._handle_run_group(request)
             else:
                 self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(
