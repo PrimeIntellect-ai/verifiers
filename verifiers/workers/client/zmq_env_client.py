@@ -58,11 +58,12 @@ class ZMQEnvClient(EnvClient):
         self._pending_requests: dict[str, PendingRequest] = {}
         self._pending_lock = asyncio.Lock()
 
-        # Run health check loop
+        # Health check state
         self._server_state = ServerState.STARTUP
         self._health_check_lock = asyncio.Lock()
         self._health_check_task: asyncio.Task | None = None
         self._failed_health_checks = 0
+        self._healthy_event = asyncio.Event()
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -162,21 +163,13 @@ class ZMQEnvClient(EnvClient):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.socket.connect(self.address)
 
-    async def _send_request(
-        self,
-        request: BaseRequest,
-        response_type: type[BaseResponseT],
-        timeout: float | None = None,
-        attempt: int = 0,
-    ) -> BaseResponseT:
-        """Send request to environment and await response with automatic retry."""
-        # auto-start receiver if not already running (with lock to prevent race)
+    async def _ensure_started(self) -> None:
+        """Ensure receiver and health check loop are running."""
         if self._receiver_task is None:
             async with self._receiver_lock:
                 if self._receiver_task is None:
                     await self._start()
 
-        # Start health check task if enabled and not running
         if self.health_check_interval > 0 and self._health_check_task is None:
             async with self._health_check_lock:
                 if self._health_check_task is None:
@@ -184,93 +177,127 @@ class ZMQEnvClient(EnvClient):
                         self._health_check_loop()
                     )
 
+    async def wait_for_server_startup(
+        self,
+        timeout: float | None = None,
+    ) -> None:
+        """Wait for server to become healthy on initial startup."""
+        timeout = timeout if timeout is not None else self.startup_timeout
+        self.logger.info(
+            f"Waiting for server at {self.address} to become healthy "
+            f"(timeout={print_time(timeout)})..."
+        )
+        await self._ensure_started()
+        try:
+            await asyncio.wait_for(self._healthy_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"Server at {self.address} did not become healthy "
+                f"within {print_time(timeout)}"
+            )
+        self.logger.info(f"Server at {self.address} is healthy")
+
+    async def _send_request(
+        self,
+        request: BaseRequest,
+        response_type: type[BaseResponseT],
+        timeout: float | None = None,
+    ) -> BaseResponseT:
+        """Send request to environment and await response with automatic retry."""
+        await self._ensure_started()
+
         effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
-        # Use request_id from Pydantic model, encode to bytes for ZMQ frame
-        request_id = uuid.uuid4().hex
+        while True:
+            # Use request_id from Pydantic model, encode to bytes for ZMQ frame
+            request_id = uuid.uuid4().hex
 
-        # Serialize using Pydantic
-        payload_bytes = cast(
-            bytes,
-            msgpack.packb(
-                request.model_dump(mode="python", warnings=False),
-                default=msgpack_encoder,
-                use_bin_type=True,
-            ),
-        )
+            # Serialize using Pydantic
+            payload_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    request.model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
 
-        # Create future and pending request atomically
-        future: asyncio.Future[dict] = asyncio.Future()
-        pending_req = PendingRequest(
-            request_id=request_id,
-            request=request,
-            submitted_at=time.time(),
-            timeout=effective_timeout,
-            future=future,
-        )
+            # Create future and pending request atomically
+            future: asyncio.Future[dict] = asyncio.Future()
+            pending_req = PendingRequest(
+                request_id=request_id,
+                request=request,
+                submitted_at=time.time(),
+                timeout=effective_timeout,
+                future=future,
+            )
 
-        async with self._pending_lock:
-            self._pending_requests[request_id] = pending_req
-
-        await self.socket.send_multipart([request_id.encode(), payload_bytes])
-
-        try:
-            raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
-        except asyncio.TimeoutError:
-            # Clean up on timeout
             async with self._pending_lock:
-                self._pending_requests.pop(request_id, None)
-            log = (
-                self.logger.debug
-                if isinstance(request, HealthRequest)
-                else self.logger.error
-            )
-            log(
-                f"Timed out waiting for request_id={request_id} type={request.request_type} "
-                f"after {effective_timeout:.1f}s (pending={len(self._pending_requests)})"
-            )
-            raise TimeoutError(
-                f"Environment timeout for {request.request_type} request after {effective_timeout}s"
-            )
-        except RuntimeError as e:
-            # Check if this is a server crash and we should retry
-            error_msg = str(e)
-            is_server_error = (
-                "ZMQ socket error" in error_msg
-                or "Request cancelled" in error_msg
-                or "Server unhealthy" in error_msg
-            )
+                self._pending_requests[request_id] = pending_req
 
-            if is_server_error and attempt < self.max_auto_retries:
-                self.logger.warning(
-                    f"Request failed due to server error (attempt {attempt + 1}/{self.max_auto_retries}): {e}"
+            await self.socket.send_multipart([request_id.encode(), payload_bytes])
+
+            try:
+                raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
+            except asyncio.TimeoutError:
+                # Clean up on timeout
+                async with self._pending_lock:
+                    self._pending_requests.pop(request_id, None)
+                log = (
+                    self.logger.debug
+                    if isinstance(request, HealthRequest)
+                    else self.logger.error
                 )
+                log(
+                    f"Timed out waiting for request_id={request_id} "
+                    f"type={request.request_type} "
+                    f"after {effective_timeout:.1f}s "
+                    f"(pending={len(self._pending_requests)})"
+                )
+                raise TimeoutError(
+                    f"Environment timeout for {request.request_type} "
+                    f"request after {effective_timeout}s"
+                )
+            except RuntimeError as e:
+                # Check if this is a server crash and we should retry
+                error_msg = str(e)
+                is_server_error = (
+                    "ZMQ socket error" in error_msg
+                    or "Request cancelled" in error_msg
+                    or "Server unhealthy" in error_msg
+                )
+
+                if not is_server_error:
+                    async with self._pending_lock:
+                        self._pending_requests.pop(request_id, None)
+                    raise
+
+                self.logger.warning(f"Request failed due to server error: {e}")
                 self.logger.info("Waiting for server recovery before retry...")
 
-                # Wait for server to recover
-                await self._wait_for_server_recovery()
+                # Wait for health check loop to detect recovery
+                self._healthy_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._healthy_event.wait(),
+                        timeout=self.recovery_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"Server at {self.address} did not recover "
+                        f"within {print_time(self.recovery_timeout)}"
+                    )
 
-                # Retry with incremented attempt counter
-                self.logger.info(
-                    f"Retrying request (attempt {attempt + 2}/{self.max_auto_retries + 1})"
-                )
-                return await self._send_request(
-                    request, response_type, timeout, attempt + 1
-                )
+                self.logger.info("Server recovered, retrying request...")
+                continue  # retry the request
 
-            # Either not a server error or exceeded max retries
-            # Clean up metadata before re-raising
-            async with self._pending_lock:
-                self._pending_requests.pop(request_id, None)
-            raise
+            # validate response with Pydantic
+            response = response_type.model_validate(raw_response)
 
-        # validate response with Pydantic
-        response = response_type.model_validate(raw_response)
+            if not response.success:
+                raise RuntimeError(response.error)
 
-        if not response.success:
-            raise RuntimeError(response.error)
-
-        return response
+            return response
 
     async def close(self) -> None:
         """Close the client and clean up ZMQ resources."""
@@ -304,40 +331,53 @@ class ZMQEnvClient(EnvClient):
         self.ctx.term()
 
     async def _health_check_loop(self):
-        """Background task that periodically checks server health."""
+        """Background task that periodically checks server health.
+
+        This is the single source of truth for server state. It:
+        - Probes health on every tick, regardless of current state
+        - Sets _healthy_event when server becomes healthy
+        - Clears _healthy_event and cancels pending requests when unhealthy
+        """
         self.logger.debug(
-            f"Starting health check loop (interval={print_time(self.health_check_interval)})"
+            f"Starting health check loop "
+            f"(interval={print_time(self.health_check_interval)})"
         )
 
         while True:
             try:
-                # Skip health checks if server is recovering
-                if self._server_state == ServerState.RECOVERING:
-                    await asyncio.sleep(self.health_check_interval)
-                    continue
-
                 is_healthy = await self.health(timeout=self.health_check_interval)
+
                 if is_healthy:
+                    if self._server_state != ServerState.HEALTHY:
+                        self.logger.info(
+                            f"Server at {self.address} became healthy "
+                            f"(was {self._server_state.value})"
+                        )
                     self._server_state = ServerState.HEALTHY
                     self._failed_health_checks = 0
+                    self._healthy_event.set()
                 else:
                     self._failed_health_checks += 1
                     self.logger.debug(
-                        f"Health check failed ({self._failed_health_checks} consecutive)"
+                        f"Health check failed "
+                        f"({self._failed_health_checks} consecutive)"
                     )
 
-                    # Transition from HEALTHY to UNHEALTHY after 3 consecutive failures
+                    # Transition to UNHEALTHY after 3 consecutive failures
                     if (
                         self._server_state == ServerState.HEALTHY
                         and self._failed_health_checks >= 3
                     ):
                         self.logger.warning(
-                            "Server is unhealthy after 3 consecutive health check failures - "
+                            "Server is unhealthy after 3 consecutive "
+                            "health check failures - "
                             "cancelling pending requests to trigger retry"
                         )
                         self._server_state = ServerState.UNHEALTHY
+                        self._healthy_event.clear()
                         await self._cancel_all_pending(
-                            f"Server unhealthy: {self._failed_health_checks} consecutive health check failures"
+                            f"Server unhealthy: {self._failed_health_checks} "
+                            f"consecutive health check failures"
                         )
 
                 await asyncio.sleep(self.health_check_interval)
@@ -349,18 +389,3 @@ class ZMQEnvClient(EnvClient):
                 self.logger.error(
                     f"Unexpected error in health check loop: {e}", exc_info=True
                 )
-
-    async def _wait_for_server_recovery(
-        self,
-        timeout: float | None = None,
-        interval: float | None = None,
-    ) -> None:
-        """Wait for server to recover, managing state transitions."""
-        self._server_state = ServerState.RECOVERING
-
-        timeout = timeout if timeout is not None else self.recovery_timeout
-        interval = interval if interval is not None else self.health_check_interval
-        await self._wait_for_server_health(timeout=timeout, interval=interval)
-
-        self._server_state = ServerState.HEALTHY
-        self._failed_health_checks = 0

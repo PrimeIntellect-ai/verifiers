@@ -80,7 +80,6 @@ class ServerState(str, Enum):
     STARTUP = "startup"  # Initial state, before first successful health check
     HEALTHY = "healthy"  # Server is responsive and working normally
     UNHEALTHY = "unhealthy"  # Server failed health checks
-    RECOVERING = "recovering"  # Actively waiting for server to recover
 
 
 class PendingRequest(BaseModel):

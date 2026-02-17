@@ -1265,7 +1265,6 @@ class Environment(ABC):
         health_check_interval: float = 10.0,  # 10s
         startup_timeout: float = 600.0,  # 10m
         recovery_timeout: float = 600.0,  # 10m
-        max_auto_retries: int = 3,
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1297,7 +1296,6 @@ class Environment(ABC):
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
-            max_auto_retries=max_auto_retries,
         )
         await self.env_client.wait_for_server_startup()
 

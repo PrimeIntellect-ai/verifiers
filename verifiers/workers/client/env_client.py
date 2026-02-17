@@ -1,6 +1,4 @@
-import asyncio
 import logging
-import time
 from abc import ABC, abstractmethod
 
 from verifiers.types import (
@@ -10,7 +8,6 @@ from verifiers.types import (
     SamplingArgs,
 )
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.logging_utils import print_time
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -27,10 +24,9 @@ class EnvClient(ABC):
     def __init__(
         self,
         address: str,
-        health_check_interval: float = 10.0,  # 10s
+        health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10min
         recovery_timeout: float = 600.0,  # 10min
-        max_auto_retries: int = 3,  # Number of times to retry after server failure
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
@@ -38,7 +34,6 @@ class EnvClient(ABC):
         self.health_check_interval = health_check_interval
         self.startup_timeout = startup_timeout
         self.recovery_timeout = recovery_timeout
-        self.max_auto_retries = max_auto_retries
 
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
@@ -89,37 +84,13 @@ class EnvClient(ABC):
         assert response.outputs is not None
         return response.outputs
 
+    @abstractmethod
     async def wait_for_server_startup(
         self,
         timeout: float | None = None,
-        interval: float | None = None,
     ) -> None:
         """Wait for server to become healthy on initial startup."""
-        timeout = timeout if timeout is not None else self.startup_timeout
-        interval = interval if interval is not None else self.health_check_interval
-        await self._wait_for_server_health(timeout=timeout, interval=interval)
-
-    async def _wait_for_server_health(self, timeout: float, interval: float) -> None:
-        """Wait for server to become healthy."""
-        self.logger.info(
-            f"Waiting for server at {self.address} to become healthy (timeout={print_time(timeout)})..."
-        )
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            is_healthy = await self.health(timeout=interval)
-            if is_healthy:
-                elapsed = time.time() - start_time
-                self.logger.info(
-                    f"Server at {self.address} became healthy after {print_time(elapsed)}"
-                )
-                return
-
-            await asyncio.sleep(interval)
-
-        raise TimeoutError(
-            f"Server at {self.address} did not become healthy within {print_time(timeout)}"
-        )
+        ...
 
     @abstractmethod
     async def handle_health_request(
