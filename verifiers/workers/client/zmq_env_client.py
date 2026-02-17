@@ -1,6 +1,7 @@
 import asyncio
 import time
 import uuid
+from asyncio import Future
 from typing import cast
 
 import msgpack
@@ -247,7 +248,7 @@ class ZMQEnvClient(EnvClient):
             )
 
             # Create future and pending request atomically
-            future: asyncio.Future[dict] = asyncio.Future()
+            future: Future = asyncio.Future()
             pending_req = PendingRequest(
                 request_id=request_id,
                 request=request,

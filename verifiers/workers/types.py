@@ -1,4 +1,4 @@
-import asyncio
+from asyncio import Future
 from enum import Enum
 from typing import Annotated, Literal, TypeVar
 
@@ -90,6 +90,6 @@ class PendingRequest(BaseModel):
 
     request_id: str
     request: BaseRequest
+    future: Future[BaseResponse]
     timeout: float | None = None
     submitted_at: float  # timestamp
-    future: "asyncio.Future[dict]"  # Response future
