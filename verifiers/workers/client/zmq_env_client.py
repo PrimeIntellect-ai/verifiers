@@ -95,6 +95,8 @@ class ZMQEnvClient(EnvClient):
                             "Server is likely unhealthy as 3 consecutive health checks failed"
                         )
 
+                await asyncio.sleep(self.health_check_interval)
+
             except asyncio.CancelledError:
                 self.logger.debug("Health check loop cancelled")
                 break
