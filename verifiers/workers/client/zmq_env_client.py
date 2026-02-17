@@ -325,11 +325,6 @@ class ZMQEnvClient(EnvClient):
                     f"Request {request_id[:7]} waiting for env server {self.name} to recover ({e})"
                 )
 
-                # Wait for health check loop to detect recovery.
-                # Don't clear _healthy_event here — the health loop already
-                # cleared it during the UNHEALTHY transition. Clearing again
-                # would race with a recovery that happened between the
-                # transition and this point.
                 try:
                     await asyncio.wait_for(
                         self._healthy_event.wait(),

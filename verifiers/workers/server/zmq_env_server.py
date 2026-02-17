@@ -42,9 +42,7 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
 
-        # Health check runs on a dedicated thread with its own ZMQ socket,
-        # completely decoupled from the main event loop so it always responds
-        # even when rollout work saturates the loop.
+        # Health check runs completely decoupled (dedicated thread and ZMQ socket)
         self._stop_health = threading.Event()
         self._health_thread: threading.Thread | None = None
 
