@@ -67,7 +67,7 @@ class ZMQEnvServer(EnvServer):
         ctx.term()
         self.logger.debug("Health check responder stopped")
 
-    async def run(self, stop_event: asyncio.Event | None = None) -> None:
+    async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
         # Start health responder thread

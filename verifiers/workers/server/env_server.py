@@ -68,37 +68,37 @@ class EnvServer(ABC):
         self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
 
     @abstractmethod
-    async def run(self, stop_event: asyncio.Event | None = None):
+    async def serve(self, stop_event: asyncio.Event | None = None):
+        """Main serve loop. Subclasses implement this."""
         pass
 
     @abstractmethod
     async def close(self):
         pass
 
+    async def run(self) -> None:
+        """Run the server with signal-based graceful shutdown and cleanup."""
+        stop_event = asyncio.Event()
+
+        def signal_handler(sig):
+            self.logger.info(
+                f"Received signal {sig.name}, initiating graceful shutdown"
+            )
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+
+        try:
+            await self.serve(stop_event=stop_event)
+        finally:
+            await self.close()
+
     @classmethod
     def run_server(cls, *args, **kwargs):
         server = cls(*args, **kwargs)
-
-        async def run_with_graceful_shutdown():
-            # setup graceful shutdown for SIGTERM (K8s, Docker, Slurm) and SIGINT (Ctrl+C)
-            stop_event = asyncio.Event()
-
-            def signal_handler(sig):
-                server.logger.info(
-                    f"Received signal {sig.name}, initiating graceful shutdown"
-                )
-                stop_event.set()
-
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
-
-            try:
-                await server.run(stop_event=stop_event)
-            finally:
-                await server.close()
-
-        return asyncio.run(run_with_graceful_shutdown())
+        return asyncio.run(server.run())
 
     async def handle_health(self, _request: HealthRequest) -> HealthResponse:
         return HealthResponse()
