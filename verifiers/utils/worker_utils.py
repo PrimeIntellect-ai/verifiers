@@ -44,10 +44,7 @@ def get_free_port() -> int:
 
 
 def get_free_port_pair() -> int:
-    """Get a free port whose successor (port+1) is also free.
-
-    Used when the server needs two adjacent ports (e.g. work + health).
-    """
+    """Get a free port whose successor (port+1) is also free."""
     for _ in range(10):
         with (
             socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s1,
