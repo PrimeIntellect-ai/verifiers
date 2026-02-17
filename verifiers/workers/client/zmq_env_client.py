@@ -256,10 +256,6 @@ class ZMQEnvClient(EnvClient):
                 self._pending_requests.pop(request_id, None)
             raise
 
-        # Clean up metadata on success (receive loop already popped it, but do it here too for safety)
-        async with self._pending_lock:
-            self._pending_requests.pop(request_id, None)
-
         # validate response with Pydantic
         response = response_type.model_validate(raw_response)
 
