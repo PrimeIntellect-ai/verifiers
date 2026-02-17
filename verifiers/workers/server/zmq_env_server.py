@@ -1,5 +1,5 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from typing import cast
 
 import msgpack
@@ -7,15 +7,19 @@ import zmq
 import zmq.asyncio
 
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.thread_utils import get_or_create_thread_loop
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
     BaseResponse,
-    HealthRequest,
     RunGroupRequest,
     RunRolloutRequest,
 )
+
+
+def derive_health_address(address: str) -> str:
+    """Derive health check address from main address (port + 1)."""
+    prefix, port_str = address.rsplit(":", 1)
+    return f"{prefix}:{int(port_str) + 1}"
 
 
 class ZMQEnvServer(EnvServer):
@@ -29,6 +33,7 @@ class ZMQEnvServer(EnvServer):
     ):
         super().__init__(*args, **kwargs)
         self.address = address
+        self.health_address = derive_health_address(address)
 
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
@@ -37,14 +42,48 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
 
-        # Dedicated thread for health probes so they always respond
-        # even when the main event loop is saturated with rollout work
-        self._health_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="env-health"
+        # Health check runs on a dedicated thread with its own ZMQ socket,
+        # completely decoupled from the main event loop so it always responds
+        # even when rollout work saturates the loop.
+        self._stop_health = threading.Event()
+        self._health_thread: threading.Thread | None = None
+
+    def _run_health_thread(self):
+        """Blocking health check responder on a dedicated thread."""
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.REP)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout for clean shutdown
+        sock.bind(self.health_address)
+        self.logger.info(f"Health check responder started on {self.health_address}")
+
+        health_response = msgpack.packb(
+            {"success": True, "error": None}, use_bin_type=True
         )
+
+        while not self._stop_health.is_set():
+            try:
+                sock.recv()  # block until request (with 1s timeout)
+                sock.send(health_response)
+            except zmq.Again:
+                continue  # recv timeout, check stop flag
+            except zmq.ZMQError:
+                break
+
+        sock.close()
+        ctx.term()
+        self.logger.debug("Health check responder stopped")
 
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
+
+        # Start health responder thread
+        self._health_thread = threading.Thread(
+            target=self._run_health_thread,
+            name="health-responder",
+            daemon=True,
+        )
+        self._health_thread.start()
 
         # Start event loop lag monitor
         lag_monitor = EventLoopLagMonitor(logger=self.logger)
@@ -101,7 +140,13 @@ class ZMQEnvServer(EnvServer):
                 pass
 
     async def close(self):
-        # cancel and await all pending tasks
+        # Stop health thread
+        self._stop_health.set()
+        if self._health_thread is not None:
+            self._health_thread.join(timeout=5)
+            self._health_thread = None
+
+        # Cancel and await all pending tasks
         if self.pending_tasks:
             self.logger.info(f"Cancelling {len(self.pending_tasks)} pending tasks")
             for task in self.pending_tasks:
@@ -111,23 +156,9 @@ class ZMQEnvServer(EnvServer):
 
         await self._close_cached_clients()
 
-        self._health_executor.shutdown(wait=False)
-
         self.socket.close()
         self.ctx.term()
         self.logger.info("Environment server shut down")
-
-    async def _run_in_executor(
-        self, executor: ThreadPoolExecutor, coro
-    ) -> BaseResponse:
-        """Run an async handler in a thread pool thread with a thread-local event loop."""
-        loop = asyncio.get_running_loop()
-
-        def run():
-            thread_loop = get_or_create_thread_loop()
-            return thread_loop.run_until_complete(coro)
-
-        return await loop.run_in_executor(executor, run)
 
     async def _process_request(
         self,
@@ -144,13 +175,9 @@ class ZMQEnvServer(EnvServer):
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
-            # validate and route to handler
-            if request_type == "health":
-                request = HealthRequest.model_validate(raw)
-                response = await self._run_in_executor(
-                    self._health_executor, self._handle_health(request)
-                )
-            elif request_type == "run_rollout":
+            # Health requests are handled by the dedicated health thread,
+            # so they should not arrive here. Handle just in case.
+            if request_type == "run_rollout":
                 request = RunRolloutRequest.model_validate(raw)
                 response = await self._handle_run_rollout(request)
             elif request_type == "run_group":

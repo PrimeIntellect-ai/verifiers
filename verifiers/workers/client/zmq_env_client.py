@@ -11,6 +11,7 @@ import zmq.asyncio
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.client.env_client import EnvClient
+from verifiers.workers.server.zmq_env_server import derive_health_address
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponseT,
@@ -37,7 +38,7 @@ class ZMQEnvClient(EnvClient):
         # ZMQ context
         self.ctx = zmq.asyncio.Context()
 
-        # DEALER socket for async request/response
+        # DEALER socket for async request/response (work only)
         self.socket = self.ctx.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.SNDHWM, 10000)
         self.socket.setsockopt(zmq.RCVHWM, 10000)
@@ -48,6 +49,15 @@ class ZMQEnvClient(EnvClient):
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
+
+        # Separate REQ socket for health checks — connects to the server's
+        # dedicated health thread, completely independent of work traffic.
+        self.health_address = derive_health_address(address)
+        self._health_socket = self.ctx.socket(zmq.REQ)
+        self._health_socket.setsockopt(zmq.LINGER, 0)
+        self._health_socket.setsockopt(zmq.REQ_RELAXED, 1)
+        self._health_socket.setsockopt(zmq.REQ_CORRELATE, 1)
+        self._health_socket_connected = False
 
         self._receiver_lock = asyncio.Lock()
         self._receiver_task: asyncio.Task | None = None
@@ -66,9 +76,22 @@ class ZMQEnvClient(EnvClient):
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
     ) -> HealthResponse:
+        """Send health check via the dedicated health socket (separate from work)."""
         try:
-            return await self._send_request(request, HealthResponse, timeout=timeout)
-        except TimeoutError as e:
+            if not self._health_socket_connected:
+                self._health_socket.connect(self.health_address)
+                self._health_socket_connected = True
+
+            await self._health_socket.send(b"ping")
+            raw = await asyncio.wait_for(
+                self._health_socket.recv(),
+                timeout=timeout,
+            )
+            response = msgpack.unpackb(raw, raw=False)
+            return HealthResponse.model_validate(response)
+        except asyncio.TimeoutError:
+            return HealthResponse(success=False, error="Health check timed out")
+        except Exception as e:
             return HealthResponse(success=False, error=str(e))
 
     async def handle_run_rollout_request(
@@ -128,7 +151,8 @@ class ZMQEnvClient(EnvClient):
                 f"Cancelled {len(cancelled)} pending requests during close of env server {self.name}"
             )
 
-        # Close socket and terminate context
+        # Close sockets and terminate context
+        self._health_socket.close()
         self.socket.close()
         self.ctx.term()
 
