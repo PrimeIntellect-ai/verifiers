@@ -178,7 +178,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             log_level=log_level,
             log_file=log_file,
             log_file_level=log_file_level,
+            health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
         )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:

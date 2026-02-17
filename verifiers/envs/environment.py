@@ -35,7 +35,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
@@ -1272,7 +1272,7 @@ class Environment(ABC):
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
         extra_env_kwargs = extra_env_kwargs or {}
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server

@@ -144,8 +144,12 @@ class ZMQEnvClient(EnvClient):
                 pass
             self._receiver_task = None
 
-        # Cancel all pending requests
-        cancelled = await self._cancel_all_pending()
+        # Cancel all pending requests — use CancelledError (not ServerError)
+        # so in-flight _send_request calls propagate immediately instead of
+        # waiting for a recovery that will never come.
+        cancelled = await self._cancel_all_pending(
+            reason="Client closed", use_cancelled=True
+        )
         if cancelled:
             self.logger.info(
                 f"Cancelled {len(cancelled)} pending requests during close of env server {self.name}"
@@ -157,9 +161,17 @@ class ZMQEnvClient(EnvClient):
         self.ctx.term()
 
     async def _cancel_all_pending(
-        self, reason: str = "Request cancelled"
+        self,
+        reason: str = "Request cancelled",
+        use_cancelled: bool = False,
     ) -> list[PendingRequest]:
-        """Cancel all pending requests and return their metadata."""
+        """Cancel all pending requests and return their metadata.
+
+        Args:
+            reason: Human-readable reason for cancellation.
+            use_cancelled: If True, fail futures with CancelledError (non-retryable).
+                If False (default), fail with ServerError (triggers retry in _send_request).
+        """
         async with self._pending_lock:
             pending_count = len(self._pending_requests)
             if pending_count:
@@ -170,10 +182,12 @@ class ZMQEnvClient(EnvClient):
             # Collect metadata before clearing
             cancelled_requests = list(self._pending_requests.values())
 
-            # Fail all futures with ServerError (retryable)
             for pending_req in cancelled_requests:
                 if not pending_req.future.done():
-                    pending_req.future.set_exception(ServerError(reason))
+                    if use_cancelled:
+                        pending_req.future.cancel()
+                    else:
+                        pending_req.future.set_exception(ServerError(reason))
 
             # Clear tracking dict
             self._pending_requests.clear()
@@ -258,18 +272,18 @@ class ZMQEnvClient(EnvClient):
 
         effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
+        # Serialize once — the payload doesn't change across retries
+        payload_bytes = cast(
+            bytes,
+            msgpack.packb(
+                request.model_dump(mode="python", warnings=False),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            ),
+        )
+
         while True:
             request_id = uuid.uuid4().hex
-
-            # Serialize using Pydantic
-            payload_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    request.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
 
             # Create future and pending request atomically
             future: Future = asyncio.Future()
@@ -311,8 +325,11 @@ class ZMQEnvClient(EnvClient):
                     f"Request {request_id[:7]} waiting for env server {self.name} to recover ({e})"
                 )
 
-                # Wait for health check loop to detect recovery
-                self._healthy_event.clear()
+                # Wait for health check loop to detect recovery.
+                # Don't clear _healthy_event here — the health loop already
+                # cleared it during the UNHEALTHY transition. Clearing again
+                # would race with a recovery that happened between the
+                # transition and this point.
                 try:
                     await asyncio.wait_for(
                         self._healthy_event.wait(),

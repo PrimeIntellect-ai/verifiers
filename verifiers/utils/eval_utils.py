@@ -670,7 +670,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     if config.heartbeat_url is not None:
         await heart.close()
 
-    event_loop_lags = event_loop_lag_monitor.get_lags()
+    event_loop_lags = event_loop_lag_monitor.lags
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
     for results in all_results:

@@ -137,12 +137,11 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
-            for t in (log_stats_task,):
-                t.cancel()
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    pass
+            log_stats_task.cancel()
+            try:
+                await log_stats_task
+            except asyncio.CancelledError:
+                pass
 
     async def close(self):
         # Stop health thread
@@ -169,16 +168,18 @@ class ZMQEnvServer(EnvServer):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
+            pending = len(self.pending_tasks)
+            message = f"Pending tasks: {pending}"
+
             lags = sorted(self.lag_monitor.lags)
             self.lag_monitor.reset()
-            mean_lag = sum(lags) / len(lags)
-            max_lag = lags[-1]
-            p99_lag = lags[int(len(lags) * 0.99)]
-            pending = len(self.pending_tasks)
+            if lags:
+                mean_lag = sum(lags) / len(lags)
+                max_lag = lags[-1]
+                p99_lag = lags[int(len(lags) * 0.99)]
+                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={len(lags)})"
 
-            self.logger.info(
-                f"Pending tasks: {pending}, Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)}"
-            )
+            self.logger.info(message)
 
     async def _process_request(
         self,
