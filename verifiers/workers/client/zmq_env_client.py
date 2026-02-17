@@ -43,13 +43,9 @@ class ZMQEnvClient(EnvClient):
 
         # TCP keepalive for faster dead server detection
         self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
-        self.socket.setsockopt(
-            zmq.TCP_KEEPALIVE_IDLE, 10
-        )  # Start probes after 10s idle
-        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)  # Probe every 2s
-        self.socket.setsockopt(
-            zmq.TCP_KEEPALIVE_CNT, 3
-        )  # Give up after 3 failed probes
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
+        self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
 
         self._receiver_lock = asyncio.Lock()
         self._receiver_task: asyncio.Task | None = None
@@ -82,6 +78,57 @@ class ZMQEnvClient(EnvClient):
         self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
         return await self._send_request(request, RunGroupResponse, timeout=timeout)
+
+    async def wait_for_server_startup(
+        self,
+        timeout: float | None = None,
+    ) -> None:
+        """Wait for server to become healthy on initial startup."""
+        timeout = timeout if timeout is not None else self.startup_timeout
+        self.logger.info(
+            f"Waiting for server at {self.address} to become healthy "
+            f"(timeout={print_time(timeout)})..."
+        )
+        await self._ensure_started()
+        try:
+            await asyncio.wait_for(self._healthy_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"Server at {self.address} did not become healthy "
+                f"within {print_time(timeout)}"
+            )
+        self.logger.info(f"Server at {self.address} is healthy")
+
+    async def close(self) -> None:
+        """Close the client and clean up ZMQ resources."""
+        # Cancel health check task
+        if self._health_check_task is not None:
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+            self._health_check_task = None
+
+        # Cancel receiver task
+        if self._receiver_task is not None:
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except asyncio.CancelledError:
+                pass
+            self._receiver_task = None
+
+        # Cancel all pending requests
+        cancelled = await self._cancel_all_pending()
+        if cancelled:
+            self.logger.info(
+                f"Cancelled {len(cancelled)} pending requests during close"
+            )
+
+        # Close socket and terminate context
+        self.socket.close()
+        self.ctx.term()
 
     async def _cancel_all_pending(
         self, reason: str = "Request cancelled"
@@ -159,16 +206,13 @@ class ZMQEnvClient(EnvClient):
                 )
                 # Don't break - log and continue for non-socket errors
 
-    async def _start(self):
-        self._receiver_task = asyncio.create_task(self._receive_loop())
-        self.socket.connect(self.address)
-
     async def _ensure_started(self) -> None:
         """Ensure receiver and health check loop are running."""
         if self._receiver_task is None:
             async with self._receiver_lock:
                 if self._receiver_task is None:
-                    await self._start()
+                    self._receiver_task = asyncio.create_task(self._receive_loop())
+                    self.socket.connect(self.address)
 
         if self.health_check_interval > 0 and self._health_check_task is None:
             async with self._health_check_lock:
@@ -176,26 +220,6 @@ class ZMQEnvClient(EnvClient):
                     self._health_check_task = asyncio.create_task(
                         self._health_check_loop()
                     )
-
-    async def wait_for_server_startup(
-        self,
-        timeout: float | None = None,
-    ) -> None:
-        """Wait for server to become healthy on initial startup."""
-        timeout = timeout if timeout is not None else self.startup_timeout
-        self.logger.info(
-            f"Waiting for server at {self.address} to become healthy "
-            f"(timeout={print_time(timeout)})..."
-        )
-        await self._ensure_started()
-        try:
-            await asyncio.wait_for(self._healthy_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"Server at {self.address} did not become healthy "
-                f"within {print_time(timeout)}"
-            )
-        self.logger.info(f"Server at {self.address} is healthy")
 
     async def _send_request(
         self,
@@ -209,7 +233,6 @@ class ZMQEnvClient(EnvClient):
         effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
         while True:
-            # Use request_id from Pydantic model, encode to bytes for ZMQ frame
             request_id = uuid.uuid4().hex
 
             # Serialize using Pydantic
@@ -299,45 +322,8 @@ class ZMQEnvClient(EnvClient):
 
             return response
 
-    async def close(self) -> None:
-        """Close the client and clean up ZMQ resources."""
-        # Cancel health check task
-        if self._health_check_task is not None:
-            self._health_check_task.cancel()
-            try:
-                await self._health_check_task
-            except asyncio.CancelledError:
-                pass
-            self._health_check_task = None
-
-        # Cancel receiver task
-        if self._receiver_task is not None:
-            self._receiver_task.cancel()
-            try:
-                await self._receiver_task
-            except asyncio.CancelledError:
-                pass
-            self._receiver_task = None
-
-        # Cancel all pending requests
-        cancelled = await self._cancel_all_pending()
-        if cancelled:
-            self.logger.info(
-                f"Cancelled {len(cancelled)} pending requests during close"
-            )
-
-        # Close socket and terminate context
-        self.socket.close()
-        self.ctx.term()
-
     async def _health_check_loop(self):
-        """Background task that periodically checks server health.
-
-        This is the single source of truth for server state. It:
-        - Probes health on every tick, regardless of current state
-        - Sets _healthy_event when server becomes healthy
-        - Clears _healthy_event and cancels pending requests when unhealthy
-        """
+        """Background task that periodically checks server health and handles state transitions."""
         self.logger.debug(
             f"Starting health check loop "
             f"(interval={print_time(self.health_check_interval)})"
@@ -358,10 +344,6 @@ class ZMQEnvClient(EnvClient):
                     self._healthy_event.set()
                 else:
                     self._failed_health_checks += 1
-                    self.logger.debug(
-                        f"Health check failed "
-                        f"({self._failed_health_checks} consecutive)"
-                    )
 
                     # Transition to UNHEALTHY after 3 consecutive failures
                     if (
