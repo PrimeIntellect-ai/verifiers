@@ -355,15 +355,13 @@ class AnthropicMessagesClient(
                     "sampling_args['extra_body'] must be a mapping when provided"
                 )
             if max_tokens is None:
-                # Anthropic /v1/messages requires max_tokens in every request.
-                # Use an explicit large default to keep behavior deterministic
-                # across Anthropic-compatible backends (e.g. vLLM).
+                # Anthropic /v1/messages requires max_tokens to be set in every request.
                 max_tokens = 32768
             sampling_args["max_tokens"] = max_tokens
 
-            # Anthropic SDK validates top-level request fields. Mirror OpenAI chat
-            # completions usage by forwarding unknown model args through extra_body
-            # so router replay payloads (e.g. routed_experts) can be passed via
+            # Anthropic SDK validates top-level request fields.
+            # Forward unknown model args through extra_body
+            # so backend-specific payloads (e.g. routed_experts) can be passed via
             # sampling_args without custom provider branching.
             known_anthropic_args = {
                 "max_tokens",
