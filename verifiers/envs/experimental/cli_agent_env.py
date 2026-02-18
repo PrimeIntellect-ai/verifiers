@@ -2,8 +2,8 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import Any, cast
 
-from openai import AsyncOpenAI
 from prime_sandboxes import (
     AdvancedConfigs,
     BackgroundJob,
@@ -13,18 +13,18 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.types import (
-    ChatCompletionToolParam,
     Messages,
     MessageType,
-    ModelResponse,
+    Response,
     SamplingArgs,
     State,
+    Tool,
 )
 from verifiers.utils.interception_utils import (
     InterceptionServer,
-    create_empty_completion,
     deliver_response,
     synthesize_stream,
 )
@@ -276,20 +276,79 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
                     return []
 
+    def _normalize_intercept_tool_defs(
+        self, intercept_tools: object
+    ) -> list[Tool] | None:
+        """Normalize intercepted request tools for the provider-agnostic runtime.
+
+        Agent requests arrive in OpenAI-native tool format. Convert that schema to
+        vf.Tool defs here so the main runtime can stay strict about tool_defs.
+        """
+        if not isinstance(intercept_tools, list):
+            raise TypeError("Intercepted tools must be provided as a list.")
+
+        normalized_inputs: list[dict[str, Any]] = []
+        for raw_tool in intercept_tools:
+            if isinstance(raw_tool, Tool):
+                normalized_inputs.append(raw_tool.model_dump(exclude_none=True))
+                continue
+            if not isinstance(raw_tool, dict):
+                raise TypeError(
+                    "Intercepted tools must be vf.Tool objects or dict tool definitions."
+                )
+            raw_tool_dict = cast(dict[str, Any], raw_tool)
+
+            function_payload = raw_tool_dict.get("function")
+            if raw_tool_dict.get("type") == "function" and isinstance(
+                function_payload, dict
+            ):
+                parameters = function_payload.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    raise TypeError(
+                        "Intercepted function tool parameters must be a JSON object."
+                    )
+                normalized_inputs.append(
+                    {
+                        "name": function_payload.get("name"),
+                        "description": function_payload.get("description", ""),
+                        "parameters": parameters,
+                        "strict": function_payload.get("strict"),
+                    }
+                )
+                continue
+
+            normalized_inputs.append(raw_tool_dict)
+
+        return self._normalize_tool_defs(normalized_inputs)
+
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages,
-        client: AsyncOpenAI | None = None,
+        prompt: Messages | str,
+        client: Client | None = None,
         model: str | None = None,
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
-    ) -> ModelResponse:
+    ) -> Response:
         """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
         if not prompt:
-            return create_empty_completion(model or state["model"])
+            resolved_model = model or state["model"]
+            return Response(
+                id="agent-completed",
+                created=int(time.time()),
+                model=resolved_model,
+                usage=None,
+                message=vf.ResponseMessage(
+                    content="",
+                    reasoning_content=None,
+                    tool_calls=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                ),
+            )
 
         request_id = state.get("current_request_id")
         intercept = (
@@ -300,9 +359,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             # Always use the configured model from state, not the intercepted model
             # (agent may send a placeholder like "model" from its config)
             model = state.get("model") or model
-            oai_tools = intercept.get("tools") or oai_tools
+            intercept_tools = intercept.get("tools")
+            if intercept_tools:
+                tool_defs = (
+                    self._normalize_intercept_tool_defs(intercept_tools) or tool_defs
+                )
 
-        response: ModelResponse | None = None
+        response: Response | None = None
         error: BaseException | None = None
 
         try:
@@ -312,9 +375,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 prompt=prompt,
                 client=client,
                 model=model,
-                oai_tools=oai_tools,
+                tool_defs=tool_defs,
                 sampling_args=sampling_args,
-                message_type=message_type,
             )
         except BaseException as e:
             error = e
@@ -328,13 +390,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     deliver_response(intercept, response, error)
                 state["current_request_id"] = None
 
+        assert response is not None
         return response
 
     async def add_model_response(
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
         """Add model response and update top-level prompt on first turn."""
         # Skip adding empty "agent completed" step - keeps trajectory clean

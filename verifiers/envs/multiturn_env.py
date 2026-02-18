@@ -2,21 +2,19 @@ import asyncio
 import logging
 from abc import abstractmethod
 
-from openai import AsyncOpenAI
-
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.types import (
     Messages,
-    ModelResponse,
+    Response,
     RolloutInput,
     SamplingArgs,
     State,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.message_utils import concat_messages, normalize_messages
 from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
+    parse_response_message,
     parse_response_tokens,
 )
 
@@ -42,7 +40,7 @@ class MultiTurnEnv(vf.Environment):
     @abstractmethod
     async def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
+    ) -> Messages | str:
         """
         Generate a response from the environment.
         """
@@ -72,32 +70,43 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages for the current turn."""
         if len(state["trajectory"]) == 0:
-            messages = list(state["prompt"])  # Copy to avoid mutation
-        else:
-            prev_turn_prompt = state["trajectory"][-1]["prompt"]
-            prev_turn_completion = state["trajectory"][-1]["completion"]
-            messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-            env_response = await self.env_response(messages, state)
-            messages = concat_messages([messages, env_response])
-        return self.modify_prompt_messages(messages, state)
-
-    def modify_prompt_messages(self, messages: Messages, state: State) -> Messages:
-        """Override to transform prompt before sending to model (e.g., inject system prompt)."""
-        return messages
+            return normalize_messages(state["prompt"], field_name="state.prompt")
+        prev_turn_prompt = normalize_messages(
+            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
+        )
+        prev_turn_completion = normalize_messages(
+            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
+        )
+        messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+        env_response = await self.env_response(messages, state)
+        env_response_messages = normalize_messages(
+            env_response, field_name="env_response"
+        )
+        return concat_messages([messages, env_response_messages])
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
-        last_prompt = state["trajectory"][-1]["prompt"]
-        last_completion = state["trajectory"][-1]["completion"]
+        last_prompt = normalize_messages(
+            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
+        )
+        last_completion = normalize_messages(
+            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
+        )
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
             full_conversation = concat_messages(
-                [full_conversation, state["final_env_response"]]
+                [
+                    full_conversation,
+                    normalize_messages(
+                        state["final_env_response"], field_name="final_env_response"
+                    ),
+                ]
             )
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+        prompt_messages = normalize_messages(state["prompt"], field_name="state.prompt")
+        state["completion"] = full_conversation[len(prompt_messages) :]
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
@@ -107,13 +116,11 @@ class MultiTurnEnv(vf.Environment):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
+        completion_messages = await parse_response_message(response)
+        tokens = await parse_response_tokens(response, self.max_seq_len)
+        response_is_truncated = response.message.is_truncated or False
         is_truncated = response_is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
@@ -133,7 +140,7 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:

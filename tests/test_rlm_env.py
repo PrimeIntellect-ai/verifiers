@@ -14,21 +14,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
+
+import verifiers as vf
 from verifiers.envs.experimental import rlm_env as rlm_module
 from verifiers.envs.experimental.rlm_env import (
-    RLMEnv,
-    RLMWorkerPaths,
     RLMCodeExecutionTimeout,
+    RLMEnv,
     RLMSessionError,
     RLMSetupError,
     RLMWorkerError,
+    RLMWorkerPaths,
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
-    LocalRLMReplSession,
 )
-import subprocess
-import verifiers as vf
-
 
 # =============================================================================
 # Helpers
@@ -70,6 +68,7 @@ def rlm_env() -> RLMEnv:
         max_iterations=10,
         max_output_length=1000,
         repl_language="python",
+        interception_url="http://test.invalid",
     )
 
 
@@ -89,6 +88,7 @@ def rlm_env_with_sub_tools() -> RLMEnv:
         sub_tools=[sample_tool, another_tool],
         sub_tool_max_turns=3,
         repl_language="python",
+        interception_url="http://test.invalid",
     )
 
 
@@ -100,6 +100,7 @@ def rlm_env_bash() -> RLMEnv:
         max_iterations=10,
         max_output_length=1000,
         repl_language="bash",
+        interception_url="http://test.invalid",
     )
 
 
@@ -223,8 +224,9 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_copies_context_dir(self, context_dir: Path):
         dataset = make_dataset({"context_dir": str(context_dir)})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {
@@ -252,8 +254,9 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_json(self):
         dataset = make_dataset({"context": {"a": 1}})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": {"a": 1}}, "model": "m", "client": MagicMock()}
@@ -270,8 +273,9 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_text(self):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
@@ -296,8 +300,9 @@ class TestContextFilesystemSetup:
             pytest.skip("symlinks not supported on this platform")
 
         dataset = make_dataset({"context_dir": str(src)})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context_dir": str(src)}, "model": "m", "client": MagicMock()}
@@ -311,8 +316,11 @@ class TestContextFilesystemSetup:
         (src / "big.txt").write_bytes(b"0123456789")
 
         dataset = make_dataset({"context_dir": str(src)})
-        env = build_env(dataset, filesystem_copy_max_bytes=5)
+        env = build_env(
+            dataset, filesystem_copy_max_bytes=5, interception_url="http://test.invalid"
+        )
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context_dir": str(src)}, "model": "m", "client": MagicMock()}
@@ -322,8 +330,9 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_setup_state_no_context_creates_empty_dir(self):
         dataset = make_dataset({})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
@@ -339,8 +348,9 @@ class TestContextFilesystemSetup:
     @pytest.mark.asyncio
     async def test_system_prompt_mentions_working_dir_and_empty_context(self):
         dataset = make_dataset({})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
@@ -358,8 +368,9 @@ class TestFilesystemCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_removes_filesystem_by_default(self, tmp_path: Path):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset)
+        env = build_env(dataset, interception_url="http://test.invalid")
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
@@ -373,8 +384,13 @@ class TestFilesystemCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_keeps_filesystem_when_configured(self):
         dataset = make_dataset({"context": "hello"})
-        env = build_env(dataset, retain_filesystem_after_rollout=True)
+        env = build_env(
+            dataset,
+            retain_filesystem_after_rollout=True,
+            interception_url="http://test.invalid",
+        )
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
@@ -394,6 +410,7 @@ class TestBashPrompt:
     async def test_bash_prompt_mentions_env_vars(self, rlm_env_bash):
         env = rlm_env_bash
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
@@ -447,9 +464,13 @@ class TestPromptVerbosity:
     ):
         dataset = make_dataset({})
         env = build_env(
-            dataset, repl_language="python", root_prompt_verbosity=verbosity
+            dataset,
+            repl_language="python",
+            root_prompt_verbosity=verbosity,
+            interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
@@ -562,7 +583,7 @@ class TestBashWorkerScript:
             log_file=str(tmp_path / "worker.log"),
         )
         script = rlm_module._render_worker_script(paths, repl_language="bash")
-        assert '"$?"' in script
+        assert "$?" in script
         assert "__RLM_ENV__" in script
 
 
@@ -854,7 +875,7 @@ class TestToolSplitConfiguration:
         with pytest.raises(ValueError, match="llm_batch"):
             build_env(dataset, tools=[llm_batch])
 
-    def test_tools_not_exposed_as_openai_tools(self):
+    def test_tools_not_exposed_as_environment_tool_defs(self):
         def shared_tool() -> str:
             return "shared"
 
@@ -869,7 +890,7 @@ class TestToolSplitConfiguration:
             dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
         )
 
-        tool_names = {tool["function"]["name"] for tool in env.oai_tools}
+        tool_names = {tool.name for tool in env.tool_defs}
         assert "shared_tool" not in tool_names
         assert "root_tool" not in tool_names
         assert "sub_tool" not in tool_names
@@ -890,9 +911,14 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         env = build_env(
-            dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
+            dataset,
+            tools=[shared_tool],
+            root_tools=[root_tool],
+            sub_tools=[sub_tool],
+            interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "test-model", "client": MagicMock()}
@@ -1066,16 +1092,25 @@ class TestCallSubTool:
 class TestRunSubLLMWithTools:
     @pytest.mark.asyncio
     async def test_completes_without_tool_calls(self, rlm_env_with_sub_tools):
+        from verifiers.types import Response, ResponseMessage
+
         mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_message = MagicMock()
-        mock_message.tool_calls = None
-        mock_message.content = "Final answer"
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_response.model_dump = MagicMock(
-            return_value={"choices": [{"message": {"content": "Final answer"}}]}
+        mock_client.get_response = AsyncMock(
+            return_value=Response(
+                id="mock",
+                created=0,
+                model="gpt-4",
+                usage=None,
+                message=ResponseMessage(
+                    content="Final answer",
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=None,
+                ),
+            )
         )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
         state = {}
@@ -1091,54 +1126,48 @@ class TestRunSubLLMWithTools:
 
     @pytest.mark.asyncio
     async def test_executes_tool_calls(self, rlm_env_with_sub_tools):
-        mock_client = MagicMock()
+        from verifiers.types import Response, ResponseMessage, ToolCall
 
-        mock_tool_call = MagicMock()
-        mock_tool_call.id = "call_1"
-        mock_tool_call.function.name = "sample_tool"
-        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
-
-        mock_message1 = MagicMock()
-        mock_message1.tool_calls = [mock_tool_call]
-        mock_message1.content = None
-        mock_message1.model_dump = MagicMock(
-            return_value={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "sample_tool",
-                            "arguments": '{"x": 2, "y": 3}',
-                        },
-                    }
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=None,
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1", name="sample_tool", arguments='{"x": 2, "y": 3}'
+                    )
                 ],
-            }
+            ),
         )
-
-        mock_message2 = MagicMock()
-        mock_message2.tool_calls = None
-        mock_message2.content = "The result is 5"
-
-        mock_response1 = MagicMock()
-        mock_response1.choices = [MagicMock(message=mock_message1)]
-
-        mock_response2 = MagicMock()
-        mock_response2.choices = [MagicMock(message=mock_message2)]
-        mock_response2.model_dump = MagicMock(
-            return_value={"choices": [{"message": {"content": "The result is 5"}}]}
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=None,
+            message=ResponseMessage(
+                content="The result is 5",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
         )
-
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=[mock_response1, mock_response2]
-        )
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2])
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
         state = {}
         await rlm_env_with_sub_tools._run_sub_llm(state, mock_client, "gpt-4", messages)
 
-        assert mock_client.chat.completions.create.call_count == 2
+        assert mock_client.get_response.call_count == 2
 
 
 # =============================================================================
@@ -1149,26 +1178,35 @@ class TestRunSubLLMWithTools:
 class TestSubLLMRequestPaths:
     @pytest.mark.asyncio
     async def test_sub_llm_ignores_interleaving_and_uses_chat(self, rlm_env):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.tool_calls = None
-        mock_message.content = "ok"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_client.post = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        from verifiers.types import Response, ResponseMessage
 
-        rlm_env.interleaved_rollouts = True
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(
+            return_value=Response(
+                id="mock",
+                created=0,
+                model="gpt-4",
+                usage=None,
+                message=ResponseMessage(
+                    content="ok",
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=None,
+                ),
+            )
+        )
+
         messages = [{"role": "user", "content": "hi"}]
         state = {"sampling_args": {"max_tokens": 7}}
 
         await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
 
-        mock_client.chat.completions.create.assert_awaited_once()
-        _, kwargs = mock_client.chat.completions.create.call_args
-        assert kwargs["max_completion_tokens"] == 7
-        assert "max_tokens" not in kwargs
-        mock_client.post.assert_not_called()
+        mock_client.get_response.assert_awaited_once()
+        call_kwargs = mock_client.get_response.call_args.kwargs
+        # sampling_args should have max_tokens (from state["sampling_args"]["max_tokens"])
+        assert call_kwargs["sampling_args"]["max_tokens"] == 7
 
 
 # =============================================================================
@@ -1266,53 +1304,52 @@ class TestContextLimitConfiguration:
 class TestSubLLMMetricsWithTools:
     @pytest.mark.asyncio
     async def test_accumulates_tokens_across_tool_turns(self, rlm_env_with_sub_tools):
-        mock_client = MagicMock()
+        from verifiers.types import Response, ResponseMessage, ToolCall, Usage
 
-        mock_tool_call = MagicMock()
-        mock_tool_call.id = "call_1"
-        mock_tool_call.function.name = "sample_tool"
-        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
-
-        mock_message1 = MagicMock()
-        mock_message1.tool_calls = [mock_tool_call]
-        mock_message1.content = None
-        mock_message1.model_dump = MagicMock(
-            return_value={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "sample_tool",
-                            "arguments": '{"x": 2, "y": 3}',
-                        },
-                    }
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=50,
+                reasoning_tokens=0,
+                completion_tokens=30,
+                total_tokens=80,
+            ),
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1", name="sample_tool", arguments='{"x": 2, "y": 3}'
+                    )
                 ],
-            }
+            ),
         )
-
-        mock_response1 = MagicMock()
-        mock_response1.choices = [MagicMock(message=mock_message1)]
-        mock_response1.usage = MagicMock(prompt_tokens=50, completion_tokens=30)
-
-        mock_message2 = MagicMock()
-        mock_message2.tool_calls = None
-        mock_message2.content = "The result is 5"
-
-        mock_response2 = MagicMock()
-        mock_response2.choices = [MagicMock(message=mock_message2)]
-        mock_response2.usage = MagicMock(prompt_tokens=100, completion_tokens=20)
-        mock_response2.model_dump = MagicMock(
-            return_value={
-                "choices": [{"message": {"content": "The result is 5"}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            }
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=100,
+                reasoning_tokens=0,
+                completion_tokens=20,
+                total_tokens=120,
+            ),
+            message=ResponseMessage(
+                content="The result is 5",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
         )
-
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=[mock_response1, mock_response2]
-        )
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2])
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
         state = {}
@@ -1343,10 +1380,8 @@ class TestSubLLMTrajectorySteps:
         env = build_env(
             dataset,
             include_sub_llm_in_trajectory=True,
-            interleaved_rollouts=True,
         )
         assert env.include_sub_llm_in_trajectory is True
-        assert env.interleaved_rollouts is True
 
     @pytest.mark.asyncio
     async def test_sub_llm_steps_added_to_trajectory(self, rlm_env):
@@ -1393,12 +1428,8 @@ class TestSubLLMTrajectorySteps:
                 new=AsyncMock(return_value=token_payload),
             ),
             patch(
-                "verifiers.envs.experimental.rlm_env.parse_response_messages",
+                "verifiers.envs.experimental.rlm_env.parse_response_message",
                 new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
-            ),
-            patch(
-                "verifiers.envs.experimental.rlm_env.parse_is_truncated",
-                new=AsyncMock(return_value=False),
             ),
         ):
             await rlm_env._run_sub_llm_request(
@@ -1499,112 +1530,17 @@ class TestExceptionHierarchy:
 class TestRLMSessionErrorRaised:
     """Test that RLMSessionError is raised when sessions/sandboxes are not initialized."""
 
-    def test_local_get_session_missing_rollout_id(self, rlm_env):
+    def test_get_session_missing_rollout_id(self, rlm_env):
         executor = rlm_env._executor
         state = {}
-        with pytest.raises(RLMSessionError, match="Local session not initialized"):
+        with pytest.raises(RLMSessionError, match="Sandbox session not initialized"):
             executor._get_session(state)
 
-    def test_local_get_session_unknown_rollout_id(self, rlm_env):
+    def test_get_session_unknown_rollout_id(self, rlm_env):
         executor = rlm_env._executor
         state = {"rollout_id": "nonexistent"}
-        with pytest.raises(RLMSessionError, match="Local session not initialized"):
+        with pytest.raises(RLMSessionError, match="Sandbox session not initialized"):
             executor._get_session(state)
-
-    @pytest.mark.asyncio
-    async def test_local_start_worker_no_venv(self, rlm_env):
-        executor = rlm_env._executor
-        session = LocalRLMReplSession(
-            rollout_id="test",
-            rollout_dir="/tmp/test",
-            paths=MagicMock(),
-            fs_root="/tmp/test/fs",
-            control_dir="/tmp/test/control",
-            venv_path=None,
-        )
-        state = {}
-        with pytest.raises(RLMSessionError, match="Local venv not initialized"):
-            await executor._start_worker(state, session)
-
-
-class TestRLMWorkerErrorRaised:
-    """Test that RLMWorkerError is raised when the worker is not running."""
-
-    @pytest.mark.asyncio
-    async def test_local_execute_worker_process_none(self, rlm_env):
-        executor = rlm_env._executor
-        session = LocalRLMReplSession(
-            rollout_id="test",
-            rollout_dir="/tmp/test",
-            paths=MagicMock(),
-            fs_root="/tmp/test/fs",
-            control_dir="/tmp/test/control",
-            worker_process=None,
-        )
-        executor._sessions["test"] = session
-        state = {"rollout_id": "test"}
-        try:
-            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
-                await executor.execute({"code": "1+1", "seq": 1}, state)
-        finally:
-            executor._sessions.pop("test", None)
-
-    @pytest.mark.asyncio
-    async def test_local_execute_worker_process_exited(self, rlm_env):
-        executor = rlm_env._executor
-        mock_process = MagicMock()
-        mock_process.poll.return_value = 1  # process exited
-        session = LocalRLMReplSession(
-            rollout_id="test",
-            rollout_dir="/tmp/test",
-            paths=MagicMock(),
-            fs_root="/tmp/test/fs",
-            control_dir="/tmp/test/control",
-            worker_process=mock_process,
-        )
-        executor._sessions["test"] = session
-        state = {"rollout_id": "test"}
-        try:
-            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
-                await executor.execute({"code": "1+1", "seq": 1}, state)
-        finally:
-            executor._sessions.pop("test", None)
-
-
-class TestRLMSetupErrorRaised:
-    """Test that RLMSetupError is raised on setup failures."""
-
-    @pytest.mark.asyncio
-    async def test_uv_not_found(self, rlm_env):
-        executor = rlm_env._executor
-        with patch(
-            "asyncio.to_thread", new=AsyncMock(side_effect=FileNotFoundError("uv"))
-        ):
-            with pytest.raises(RLMSetupError, match="uv not found on PATH"):
-                await executor._run_uv_command(["uv", "venv", "/tmp/test"], timeout=30)
-
-    @pytest.mark.asyncio
-    async def test_uv_command_timeout(self, rlm_env):
-        executor = rlm_env._executor
-        with patch(
-            "asyncio.to_thread",
-            new=AsyncMock(side_effect=subprocess.TimeoutExpired("uv", 30)),
-        ):
-            with pytest.raises(RLMSetupError, match="uv command timed out"):
-                await executor._run_uv_command(["uv", "venv", "/tmp/test"], timeout=30)
-
-    @pytest.mark.asyncio
-    async def test_uv_command_nonzero_exit(self, rlm_env):
-        executor = rlm_env._executor
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stderr = "some error"
-        mock_result.stdout = ""
-        with patch("asyncio.to_thread", new=AsyncMock(return_value=mock_result)):
-            with pytest.raises(RLMSetupError, match="uv command failed"):
-                await executor._run_uv_command(
-                    ["uv", "pip", "install", "foo"], timeout=30
-                )
 
 
 class TestRLMCodeExecutionTimeoutHandling:

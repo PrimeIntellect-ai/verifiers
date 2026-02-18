@@ -1,13 +1,11 @@
 import json
 from typing import Callable, cast
 
-from openai.types.chat import ChatCompletionAssistantMessageParam
-
 import verifiers as vf
-from verifiers.types import Messages
+from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import (
-    convert_func_to_oai_tool,
+    convert_func_to_tool_def,
     is_valid_tool_content_parts,
 )
 
@@ -46,11 +44,11 @@ class ToolMonitorRubric(vf.Rubric):
         total = 0
         assert isinstance(completion, list)
         for msg in completion:
-            if msg["role"] == "assistant" and "tool_calls" in msg:
-                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
-                tool_calls = assistant_msg.get("tool_calls", [])
-                if isinstance(tool_calls, list):
-                    total += len(tool_calls)
+            if msg.role != "assistant" or not hasattr(msg, "tool_calls"):
+                continue
+            tool_calls = msg.tool_calls
+            if isinstance(tool_calls, list):
+                total += len(tool_calls)
         return float(total)
 
     def get_tool_call_count_func(self, tool_name: str) -> Callable:
@@ -59,15 +57,16 @@ class ToolMonitorRubric(vf.Rubric):
         async def tool_call_count_func(completion: Messages) -> int:
             """Count calls to {tool_name} tool."""
             count = 0
-            # Find tool calls in assistant messages
             assert isinstance(completion, list)
             for msg in completion:
-                if msg["role"] == "assistant" and "tool_calls" in msg:
-                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
-                    tool_calls = assistant_msg.get("tool_calls", [])
-                    for tool_call in tool_calls:
-                        if tool_call.get("function", {}).get("name") == tool_name:
-                            count += 1
+                if not isinstance(msg, AssistantMessage):
+                    continue
+                tool_calls = msg.tool_calls
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, ToolCall) and tool_call.name == tool_name:
+                        count += 1
 
             return count
 
@@ -88,12 +87,12 @@ class ToolEnv(vf.MultiTurnEnv):
         self.max_turns = max_turns
         self.error_formatter = error_formatter
         self.stop_errors: list[type[Exception]] = stop_errors or []
-        self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
+        self.tool_defs = [convert_func_to_tool_def(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.tools
         }
-        super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
+        super().__init__(tool_defs=self.tool_defs, max_turns=max_turns, **kwargs)
 
         self.tool_monitor_rubric = ToolMonitorRubric(tools=self.tools)
         self.add_rubric(self.tool_monitor_rubric)
@@ -104,17 +103,17 @@ class ToolEnv(vf.MultiTurnEnv):
 
     def add_tool(self, tool: Callable):
         self.tools.append(tool)
-        if self.oai_tools is None:
-            self.oai_tools = []
-        self.oai_tools.append(convert_func_to_oai_tool(tool))
+        if self.tool_defs is None:
+            self.tool_defs = []
+        self.tool_defs.append(convert_func_to_tool_def(tool))
         self.tool_map[getattr(tool, "__name__", tool.__class__.__name__)] = tool
         self.tool_monitor_rubric.add_tool_metric(tool)
 
     def remove_tool(self, tool: Callable):
         self.tools.remove(tool)
-        if self.oai_tools is None:
-            self.oai_tools = []
-        self.oai_tools.remove(convert_func_to_oai_tool(tool))
+        if self.tool_defs is None:
+            self.tool_defs = []
+        self.tool_defs.remove(convert_func_to_tool_def(tool))
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map.pop(tool_name)
         self.tool_monitor_rubric.remove_tool_metric(tool)
@@ -124,69 +123,59 @@ class ToolEnv(vf.MultiTurnEnv):
         if len(state["trajectory"]) == 0:
             return False
         last_message = state["trajectory"][-1]["completion"][-1]
-        is_assistant_message = last_message["role"] == "assistant"
+        is_assistant_message = last_message.role == "assistant"
         no_tool_calls = (
-            "tool_calls" not in last_message or last_message["tool_calls"] is None
+            not hasattr(last_message, "tool_calls") or not last_message.tool_calls
         )
         return is_assistant_message and no_tool_calls
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> vf.Message:
+    ) -> ToolMessage:
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
         content = result if is_valid_tool_content_parts(result) else str(result)
-        return cast(
-            vf.Message,
-            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
+        return ToolMessage(
+            role="tool",
+            content=content,
+            tool_call_id=tool_call_id,
         )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
-        assert isinstance(messages, list)
-        assert "tool_calls" in messages[-1]
+        last_msg = cast(vf.AssistantMessage, messages[-1])
+        assert last_msg.tool_calls is not None
         tool_messages = []
-        last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
-        for tool_call in last_msg.get("tool_calls", []):
-            tool_call_id: str = tool_call.get("id", "")
+        for tool_call in last_msg.tool_calls:
+            tool_call_id: str = tool_call.id
             try:
-                tool_name: str = tool_call.get("function", {}).get("name", "")
-                tool_args: dict = json.loads(
-                    tool_call.get("function", {}).get("arguments", "")
-                )
+                tool_name: str = tool_call.name
+                tool_args: dict = json.loads(tool_call.arguments)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolParseError from e
                 tool_messages.append(
-                    cast(
-                        vf.Message,
-                        {
-                            "role": "tool",
-                            "content": self.error_formatter(e),
-                            "tool_call_id": tool_call_id,
-                        },
+                    ToolMessage(
+                        role="tool",
+                        content=self.error_formatter(e),
+                        tool_call_id=tool_call_id,
                     )
                 )
                 continue  # skip tool call below
 
             try:
-                tool_message: vf.Message = await self.call_tool(
-                    tool_name, tool_args, tool_call_id
-                )
+                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e
                 tool_messages.append(
-                    cast(
-                        vf.Message,
-                        {
-                            "role": "tool",
-                            "content": self.error_formatter(e),
-                            "tool_call_id": tool_call_id,
-                        },
+                    ToolMessage(
+                        role="tool",
+                        content=self.error_formatter(e),
+                        tool_call_id=tool_call_id,
                     )
                 )
 

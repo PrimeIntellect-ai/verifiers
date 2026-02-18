@@ -726,7 +726,13 @@ class EvalDisplay(BaseDisplay):
             completion_text = format_messages(completion)
             if error_0 is not None:
                 completion_text.append("\n\nerror: ", style="bold red")
-                completion_text.append(error_0, style="bold red")
+                if isinstance(error_0, dict):
+                    completion_text.append(
+                        error_0.get("error_chain_repr", str(error_0)),
+                        style="bold red",
+                    )
+                else:
+                    completion_text.append(str(error_0), style="bold red")
             completion_text.append("\n\nreward: ", style="bold cyan")
             completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 
