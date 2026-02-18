@@ -283,19 +283,23 @@ async def test_anthropic_get_native_response_forwards_router_replay_with_extra_b
 
 
 @pytest.mark.asyncio
-async def test_anthropic_get_native_response_requires_max_tokens():
+async def test_anthropic_get_native_response_defaults_max_tokens_when_missing():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     native_client = _CaptureAnthropicClient()
     client = AnthropicMessagesClient(native_client)
 
-    with pytest.raises(ValueError, match=r"sampling_args\['max_tokens'\] is required"):
-        await client.get_native_response(
-            prompt=[{"role": "user", "content": "hello"}],
-            model="claude-test",
-            sampling_args={"temperature": 0.2},
-        )
+    await client.get_native_response(
+        prompt=[{"role": "user", "content": "hello"}],
+        model="claude-test",
+        sampling_args={"temperature": 0.2},
+    )
+
+    sent = native_client.messages.last_kwargs
+    assert sent is not None
+    assert sent["max_tokens"] == 32768
+    assert sent["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
