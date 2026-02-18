@@ -1,4 +1,7 @@
+import base64
+
 import pytest
+import numpy as np
 from types import SimpleNamespace
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
@@ -237,3 +240,95 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
         {"type": "thinking", "thinking": "hidden chain", "signature": "sig_1"},
         {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
     ]
+
+
+class _CaptureAnthropicMessages:
+    def __init__(self) -> None:
+        self.last_kwargs: dict | None = None
+
+    async def create(self, **kwargs):
+        self.last_kwargs = kwargs
+        return SimpleNamespace()
+
+
+class _CaptureAnthropicClient:
+    def __init__(self) -> None:
+        self.messages = _CaptureAnthropicMessages()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_get_native_response_forwards_router_replay_with_extra_body():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    native_client = _CaptureAnthropicClient()
+    client = AnthropicMessagesClient(native_client)
+
+    await client.get_native_response(
+        prompt=[{"role": "user", "content": "hello"}],
+        model="claude-test",
+        sampling_args={
+            "max_tokens": 32,
+            "temperature": 0.2,
+            "extra_body": {"seed": 7},
+            "routed_experts": [[[1]]],
+        },
+    )
+
+    sent = native_client.messages.last_kwargs
+    assert sent is not None
+    assert sent["temperature"] == 0.2
+    assert sent["extra_body"] == {"seed": 7, "routed_experts": [[[1]]]}
+    assert "routed_experts" not in sent
+
+
+@pytest.mark.asyncio
+async def test_anthropic_from_native_response_extracts_tokens_and_router_replay():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    routed = np.array([[[11, 12]], [[21, 22]]], dtype=np.int32)
+    native_response = SimpleNamespace(
+        id="msg_tokens",
+        model="claude-haiku-4-5",
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=3, output_tokens=2),
+        content=[SimpleNamespace(type="text", text="ok")],
+        prompt_token_ids=[1, 2, 3],
+        token_ids=[4, 5],
+        logprobs={"content": [{"logprob": -0.1}, {"logprob": -0.2}]},
+        routed_experts={
+            "data": base64.b85encode(routed.tobytes()).decode("utf-8"),
+            "shape": list(routed.shape),
+        },
+    )
+
+    response = await client.from_native_response(native_response)
+
+    assert response.message.tokens is not None
+    assert response.message.tokens.prompt_ids == [1, 2, 3]
+    assert response.message.tokens.completion_ids == [4, 5]
+    assert response.message.tokens.completion_logprobs == [-0.1, -0.2]
+    assert response.message.tokens.routed_experts == routed.tolist()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_from_native_response_requires_logprobs_for_tokens():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    native_response = SimpleNamespace(
+        id="msg_tokens_missing",
+        model="claude-haiku-4-5",
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=2, output_tokens=1),
+        content=[SimpleNamespace(type="text", text="ok")],
+        prompt_token_ids=[1, 2],
+        token_ids=[3],
+        logprobs=None,
+    )
+
+    response = await client.from_native_response(native_response)
+    assert response.message.tokens is None
