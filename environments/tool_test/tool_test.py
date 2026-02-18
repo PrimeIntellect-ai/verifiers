@@ -95,6 +95,21 @@ def load_environment(
     # Extract tool names from ACTUAL tools being used (not hardcoded list)
     actual_tool_names = [tool.__name__ for tool in tools]
 
+    # Handle empty tools case
+    if not actual_tool_names:
+        # Create empty datasets when no tools available
+        dataset = Dataset.from_list([])
+        eval_dataset = Dataset.from_list([])
+        rubric = vf.Rubric(funcs=[tool_call_reward_func])
+        vf_env = vf.ToolEnv(
+            dataset=dataset,
+            eval_dataset=eval_dataset,
+            rubric=rubric,
+            tools=tools,
+            max_turns=1,
+        )
+        return vf_env
+
     train_rows = []
     eval_rows = []
     for i in range(num_train_examples + num_eval_examples):

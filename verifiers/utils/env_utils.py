@@ -99,12 +99,9 @@ def load_environment(
                 tools = get_tools(env_id, tool_names_to_resolve)
                 env_args["tools"] = tools
                 logger.info(f"Successfully resolved {len(tools)} tools")
-            except KeyError as e:
-                logger.error(
-                    f"Failed to resolve tools for env '{env_id}': {str(e)}\n"
-                    f"Note: Tools must be registered with @register_tool decorator "
-                    f"in the environment module before load_environment() is called."
-                )
+            except KeyError:
+                # Re-raise KeyError to preserve original error type
+                # The error message from get_tools() is already descriptive
                 raise
         sig = inspect.signature(env_load_func)
         defaults_info = []
@@ -163,6 +160,10 @@ def load_environment(
         raise ValueError(
             f"Could not import '{env_id}' environment. Ensure the package for the '{env_id}' environment is installed."
         ) from e
+    except KeyError:
+        # KeyError from tool resolution should propagate as-is
+        # The error message from get_tools() is already descriptive
+        raise
     except Exception as e:
         logger.error(
             f"Failed to load environment {env_id} with args {env_args}: {str(e)}"
