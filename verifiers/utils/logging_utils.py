@@ -24,6 +24,7 @@ class JsonFormatter(logging.Formatter):
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
+            "name": record.name,
             "message": record.getMessage(),
             "module": record.module,
             "function": record.funcName,
@@ -99,7 +100,6 @@ def setup_logging(
     # using logging.getLogger(__name__) emits JSON too
     if json_logging:
         root = logging.getLogger()
-        root.handlers.clear()
         root.setLevel(console_level)
         root_handler = logging.StreamHandler(sys.stderr)
         root_handler.setFormatter(formatter)
