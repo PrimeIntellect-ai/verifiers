@@ -158,12 +158,13 @@ def main():
         "--provider",
         "-p",
         type=str,
-        default=DEFAULT_PROVIDER,
+        default=None,
         choices=list(PROVIDER_CONFIGS.keys()),
         help=(
             "Inference provider shorthand. Resolves --api-base-url and --api-key-var "
             "automatically. Explicit --api-base-url / --api-key-var take precedence. "
-            "(default: %(default)s)"
+            "Overrides endpoint registry when model is in registry. "
+            "Falls back to 'prime' when model is not in registry."
         ),
     )
     parser.add_argument(
@@ -433,20 +434,10 @@ def main():
                 "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
             )
 
-        # Apply provider shorthand: non-default provider acts as an override
-        # (like explicit --api-base-url / --api-key-var), while the default
-        # provider is only used as a fallback when the model is not in the
-        # endpoint registry.  Explicit CLI args always win.
-        raw_provider = raw.get("provider", DEFAULT_PROVIDER)
-        provider_cfg = PROVIDER_CONFIGS[raw_provider]
-        if raw_provider != DEFAULT_PROVIDER:
-            if raw_api_base_url is None:
-                raw_api_base_url = provider_cfg["url"]
-            if raw_api_key_var is None:
-                raw_api_key_var = provider_cfg["key"]
-            if raw_client_type is None and "client_type" in provider_cfg:
-                raw_client_type = provider_cfg["client_type"]
-
+        # Provider resolution:
+        #   - model IN registry:  registry -> provider overrides -> CLI overrides
+        #   - model NOT in registry: provider (default: prime) -> CLI overrides
+        raw_provider = raw.get("provider")
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         client_type_override = raw_client_type is not None
@@ -458,15 +449,10 @@ def main():
             resolved_endpoint_id = endpoint_lookup_id
             endpoint = endpoint_group[0]
 
-            if api_key_override:
-                api_key_var = raw_api_key_var
-            else:
-                api_key_var = endpoint["key"]
-
-            if api_base_url_override:
-                api_base_url = raw_api_base_url
-            else:
-                api_base_url = endpoint["url"]
+            # Start from registry values
+            api_key_var = endpoint["key"]
+            api_base_url = endpoint["url"]
+            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
 
             endpoint_models = {entry["model"] for entry in endpoint_group}
             if len(endpoint_models) > 1:
@@ -475,18 +461,35 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            client_type = (
-                raw_client_type
-                if client_type_override
-                else endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
-            )
-            if api_key_override or api_base_url_override or client_type_override:
+
+            # Provider overrides registry
+            if raw_provider is not None:
+                provider_cfg = PROVIDER_CONFIGS[raw_provider]
+                api_key_var = provider_cfg["key"]
+                api_base_url = provider_cfg["url"]
+                if "client_type" in provider_cfg:
+                    client_type = provider_cfg["client_type"]
+
+            # CLI overrides provider / registry
+            if api_key_override:
+                api_key_var = raw_api_key_var
+            if api_base_url_override:
+                api_base_url = raw_api_base_url
+            if client_type_override:
+                client_type = raw_client_type
+
+            if (
+                api_key_override
+                or api_base_url_override
+                or client_type_override
+                or raw_provider is not None
+            ):
                 logger.debug(
                     "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
                     model,
-                    "override" if api_key_override else "registry",
-                    "override" if api_base_url_override else "registry",
-                    "override" if client_type_override else "registry",
+                    "override" if api_key_override or raw_provider else "registry",
+                    "override" if api_base_url_override or raw_provider else "registry",
+                    "override" if client_type_override or raw_provider else "registry",
                 )
             else:
                 logger.debug(
@@ -499,9 +502,12 @@ def main():
                 raise ValueError(
                     f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
                 )
+            # Fall back to provider (default: prime)
+            provider_cfg = PROVIDER_CONFIGS[raw_provider or DEFAULT_PROVIDER]
             logger.debug(
-                "Model '%s' not found in endpoint registry, using defaults",
+                "Model '%s' not found in endpoint registry, using provider '%s'",
                 raw_model,
+                raw_provider or DEFAULT_PROVIDER,
             )
             model = raw_model
             api_key_var = raw_api_key_var if api_key_override else provider_cfg["key"]
@@ -544,6 +550,7 @@ def main():
         if (
             endpoint_group is not None
             and not api_base_url_override
+            and raw_provider is None
             and len(endpoint_group) > 1
         ):
             endpoint_configs = [
