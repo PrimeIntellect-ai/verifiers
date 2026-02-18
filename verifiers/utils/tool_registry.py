@@ -218,3 +218,17 @@ def list_environments() -> list[str]:
     """
     with _registry_lock:
         return sorted(_tool_registry.keys())
+
+
+def clear_registry() -> None:
+    """
+    Clear all tools from the registry.
+
+    This is primarily useful for testing to ensure a clean state between tests.
+
+    Example:
+        clear_registry()
+    """
+    with _registry_lock:
+        _tool_registry.clear()
+        logger.debug("Tool registry cleared")

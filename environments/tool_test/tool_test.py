@@ -63,9 +63,7 @@ async def tool_D(x: bool) -> bool:
     return not x
 
 
-tool_list = [tool_A, tool_B, tool_C, tool_D]
 DEFAULT_TOOL_LIST = [tool_A, tool_B, tool_C, tool_D]
-tool_name_list = [tool.__name__ for tool in tool_list]
 
 
 def tool_call_reward_func(completion, info):

@@ -18,6 +18,13 @@ def load_environment(
     tool_names_to_resolve = None
 
     if tools is not None:
+        # Check if tools is actually a list (not a string or other type)
+        if not isinstance(tools, list):
+            raise TypeError(
+                f"tools must be a list, got {type(tools).__name__}. "
+                f"If passing tool names, use tools=['tool_name'] not tools='tool_name'"
+            )
+
         if tools:
             # Check for mixed types (both Callable and str in same list)
             first_is_callable = callable(tools[0])
@@ -29,11 +36,19 @@ def load_environment(
                     f"got list containing {type(tools[0]).__name__}"
                 )
 
-            # Verify all tools are same type
+            # Verify all tools are same type AND are valid types (callable or str)
             for i, tool in enumerate(tools):
                 is_callable = callable(tool)
                 is_str = isinstance(tool, str)
 
+                # Check if element is neither callable nor string
+                if not is_callable and not is_str:
+                    raise TypeError(
+                        f"tools list elements must be Callable or str, "
+                        f"got {type(tool).__name__} at index {i}"
+                    )
+
+                # Check for mixed types
                 if is_callable and first_is_str:
                     raise TypeError(
                         f"tools must be all Callable or all str, got mixed types "
