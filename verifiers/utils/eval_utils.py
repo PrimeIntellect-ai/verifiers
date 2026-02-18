@@ -310,6 +310,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "endpoints_path",
         "extra_env_kwargs",
         # model/client
+        "provider",
         "endpoint_id",
         "model",
         "api_client_type",
