@@ -94,11 +94,15 @@ def load_environment(
     if tools is None:
         tools = DEFAULT_TOOL_LIST
 
+    # Extract tool names from ACTUAL tools being used (not hardcoded list)
+    actual_tool_names = [tool.__name__ for tool in tools]
+
     train_rows = []
     eval_rows = []
     for i in range(num_train_examples + num_eval_examples):
+        # Sample from actual available tools only
         tool_names = random.sample(
-            tool_name_list, random.randint(1, len(tool_name_list))
+            actual_tool_names, random.randint(1, len(actual_tool_names))
         )
         prompt = [
             {

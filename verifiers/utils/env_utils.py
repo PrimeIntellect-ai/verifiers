@@ -14,7 +14,9 @@ def load_environment(
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
-    # Resolve tool names to functions if tools provided
+    # Phase 1: Pre-process tools parameter
+    tool_names_to_resolve = None
+
     if tools is not None:
         if tools:
             # Check for mixed types (both Callable and str in same list)
@@ -44,16 +46,20 @@ def load_environment(
                     )
 
             if first_is_str:
-                # String list: resolve via registry
-                from verifiers.utils.tool_registry import get_tools
+                # String list: store for later resolution AFTER module import
+                tool_names_to_resolve = cast(list[str], tools)
+                logger.info(f"Will resolve tools after import: {tool_names_to_resolve}")
+            else:
+                # Callable list: pass through immediately
+                env_args["tools"] = tools
+                logger.info(f"Using callable tools directly: {len(tools)} tools")
+        else:
+            # Empty list: explicitly set to no tools
+            env_args["tools"] = []
+            logger.info("Using empty tool list")
 
-                tool_names = cast(list[str], tools)
-                logger.info(f"Resolving tools from registry: {tool_names}")
-                tools = get_tools(env_id, tool_names)
-
-        # Pass resolved tools to environment
-        env_args["tools"] = tools
-
+    # Phase 2: Import environment module FIRST
+    # This triggers @register_tool decorators, populating the registry
     module_name = env_id.replace("-", "_").split("/")[-1]
     try:
         module = importlib.import_module(module_name)
@@ -68,6 +74,23 @@ def load_environment(
             )
 
         env_load_func: Callable[..., Environment] = getattr(module, "load_environment")
+
+        # Phase 3: NOW resolve string tools (registry is populated!)
+        if tool_names_to_resolve is not None:
+            from verifiers.utils.tool_registry import get_tools
+
+            logger.info(f"Resolving tools from registry: {tool_names_to_resolve}")
+            try:
+                tools = get_tools(env_id, tool_names_to_resolve)
+                env_args["tools"] = tools
+                logger.info(f"Successfully resolved {len(tools)} tools")
+            except KeyError as e:
+                logger.error(
+                    f"Failed to resolve tools for env '{env_id}': {str(e)}\n"
+                    f"Note: Tools must be registered with @register_tool decorator "
+                    f"in the environment module before load_environment() is called."
+                )
+                raise
         sig = inspect.signature(env_load_func)
         defaults_info = []
         for param_name, param in sig.parameters.items():

@@ -30,31 +30,29 @@ def main() -> None:
         config = tomllib.load(f)
 
     model = config["model"]
-    env_id = config["env"]["id"]
-    env_args = config["env"].get("args", {})
 
-    # Resolve tools from config
-    if "tools" in config["env"]:
-        from verifiers.utils.tool_registry import (
-            get_tools as registry_get_tools,
-            validate_tools,
-        )
+    # Handle both [[env]] array syntax (configs/rl/*.toml) and [env] dict syntax (configs/local/vf-rl/*.toml)
+    env_section = config["env"]
+    if isinstance(env_section, list):
+        # [[env]] array - use first environment
+        env_config = env_section[0]
+        if len(env_section) > 1:
+            logger.warning(f"Multiple environments in config, using first: {env_config['id']}")
+    else:
+        # [env] dict - single environment
+        env_config = env_section
 
-        tool_names = config["env"]["tools"]
+    env_id = env_config["id"]
+    env_args = env_config.get("args", {})
+
+    # Extract tools from config (will be resolved by env_utils.py after environment import)
+    if "tools" in env_config:
+        tool_names = env_config["tools"]
         if not isinstance(tool_names, list):
             raise ValueError(
                 f"env.tools must be list of tool names, got {type(tool_names).__name__}"
             )
-
-        logger.info(f"Loading tools from config: {tool_names}")
-
-        # Validate before loading
-        try:
-            validate_tools(env_id, tool_names)
-        except ValueError as e:
-            raise ValueError(f"Tool validation failed for env '{env_id}': {e}") from e
-
-        tools = registry_get_tools(env_id, tool_names)
+        tools = tool_names  # Pass as-is, let env_utils.py resolve after import
     else:
         tools = None
 
