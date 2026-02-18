@@ -36,7 +36,7 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 - [01/08/26] v0.1.9 is released, featuring a number of new experimental environment class types, monitor rubrics for automatic metric collection, improved workspace setup flow, improved error handling, bug fixes, and a documentation overhaul.
 - [11/19/25] v0.1.8 is released, featuring a major refactor of the rollout system to use trajectory-based tracking for token-in token-out training across turns, as well as support for truncated or branching rollouts.
-- [11/07/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
+- [11/07/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
 - [10/27/25] A new iteration of the Prime Intellect [Environments Program](https://docs.google.com/spreadsheets/d/13UDfRDjgIZXsMI2s9-Lmn8KSMMsgk2_zsfju6cx_pNU/edit?gid=0#gid=0) is live!  
 
 
@@ -73,8 +73,12 @@ prime lab setup
 This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
 ```
 configs/
-├── endpoints.py        # OpenAI-compatible API endpoint configuration
-└── lab/                # Example configs for Hosted Training
+├── endpoints.toml      # OpenAI-compatible API endpoint configuration
+├── rl/                 # Example configs for Hosted Training
+├── eval/               # Example multi-environment eval configs
+└── gepa/               # Example configs for prompt optimization
+.prime/
+└── skills/             # Bundled workflow skills for create/browse/review/eval/GEPA/train/brainstorm
 environments/
 └── AGENTS.md           # Documentation for AI coding agents
 AGENTS.md               # Top-level documentation for AI coding agents
@@ -136,7 +140,7 @@ To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
 prime eval run my-env -m gpt-5-nano # run and save eval results locally
 ```
-Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.py`.
+Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
 View local evaluation results in the terminal UI:
 ```bash
@@ -155,17 +159,17 @@ prime eval run primeintellect/math-python
 
 ## Documentation
 
-**[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
+**[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
 
-**[Evaluation](evaluation.md)** - Evaluate models using your environments.
+**[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 
-**[Training](training.md)** — Train models in your environments with reinforcement learning.
+**[Training](docs/training.md)** — Train models in your environments with reinforcement learning.
 
-**[Development](development.md)** — Contributing to verifiers
+**[Development](docs/development.md)** — Contributing to verifiers
 
-**[API Reference](reference.md)** — Understanding the API and data structures
+**[API Reference](docs/reference.md)** — Understanding the API and data structures
 
-**[FAQs](faqs.md)** - Other frequently asked questions.
+**[FAQs](docs/faqs.md)** - Other frequently asked questions.
 
 
 ## Citation

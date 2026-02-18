@@ -22,6 +22,34 @@ def test_load_endpoints_python_registry_normalizes_to_lists(tmp_path: Path):
     assert endpoint["key"] == "OPENAI_API_KEY"
 
 
+def test_load_endpoints_python_registry_preserves_api_client_type(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "type": "anthropic_messages"},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"
+
+
+def test_load_endpoints_rejects_deprecated_client_type_field(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "client_type": "anthropic_messages"},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
+
+
 def test_load_endpoints_toml_groups_variants_by_endpoint_id(tmp_path: Path):
     registry_path = tmp_path / "endpoints.toml"
     registry_path.write_text(
@@ -45,6 +73,76 @@ def test_load_endpoints_toml_groups_variants_by_endpoint_id(tmp_path: Path):
     assert len(endpoints["gpt-5-mini"]) == 2
     assert endpoints["gpt-5-mini"][0]["url"] == "https://api.pinference.ai/api/v1"
     assert endpoints["gpt-5-mini"][1]["url"] == "https://api.openai.com/v1"
+
+
+def test_load_endpoints_toml_accepts_long_field_names(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-5-mini"\n'
+        'model = "openai/gpt-5-mini"\n'
+        'api_base_url = "https://api.pinference.ai/api/v1"\n'
+        'api_key_var = "PRIME_API_KEY"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["gpt-5-mini"][0]["url"] == "https://api.pinference.ai/api/v1"
+    assert endpoints["gpt-5-mini"][0]["key"] == "PRIME_API_KEY"
+
+
+def test_load_endpoints_toml_accepts_matching_short_and_long_fields(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-5-mini"\n'
+        'model = "openai/gpt-5-mini"\n'
+        'url = "https://api.pinference.ai/api/v1"\n'
+        'api_base_url = "https://api.pinference.ai/api/v1"\n'
+        'key = "PRIME_API_KEY"\n'
+        'api_key_var = "PRIME_API_KEY"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["gpt-5-mini"][0]["url"] == "https://api.pinference.ai/api/v1"
+    assert endpoints["gpt-5-mini"][0]["key"] == "PRIME_API_KEY"
+
+
+def test_load_endpoints_toml_rejects_conflicting_url_fields(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-5-mini"\n'
+        'model = "openai/gpt-5-mini"\n'
+        'url = "https://a.example/v1"\n'
+        'api_base_url = "https://b.example/v1"\n'
+        'key = "PRIME_API_KEY"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
+
+
+def test_load_endpoints_toml_rejects_conflicting_key_fields(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-5-mini"\n'
+        'model = "openai/gpt-5-mini"\n'
+        'url = "https://a.example/v1"\n'
+        'key = "A_KEY"\n'
+        'api_key_var = "B_KEY"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
 
 
 def test_load_endpoints_python_registry_supports_list_variants(tmp_path: Path):
@@ -105,3 +203,20 @@ def test_qwen3_vl_endpoint_ids_map_to_vl_models():
     assert (
         endpoints["qwen3-vl-235b-t"][0]["model"] == "qwen/qwen3-vl-235b-a22b-thinking"
     )
+
+
+def test_load_endpoints_toml_accepts_type_shorthand(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "haiku"\n'
+        'model = "claude-haiku-4-5"\n'
+        'url = "https://api.anthropic.com"\n'
+        'key = "ANTHROPIC_API_KEY"\n'
+        'type = "anthropic_messages"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"

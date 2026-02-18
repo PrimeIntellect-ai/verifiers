@@ -25,6 +25,7 @@ from verifiers.utils.save_utils import (
     states_to_outputs,
     validate_resume_metadata,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 
 
 # Test models for make_serializable tests
@@ -187,6 +188,27 @@ class TestSavingResults:
         assert input_tokens == 8
         assert output_tokens == 3
 
+    def test_extract_usage_tokens_invalid_values(self):
+        response = type(
+            "Response",
+            (),
+            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
+        )()
+        input_tokens, output_tokens = extract_usage_tokens(response)
+        assert input_tokens == 0
+        assert output_tokens == 0
+
+    def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
+        self, make_state
+    ):
+        state = make_state()
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = []
+        output = states_to_outputs([state], state_columns=[])[0]
+        assert "token_usage" not in output
+
     def test_states_to_outputs(self, make_state):
         states = [
             make_state(
@@ -210,6 +232,34 @@ class TestSavingResults:
         assert result[0].get("info") is None  # empty info not included
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
+
+    def test_states_to_outputs_completion_keeps_messages(self, make_state):
+        states = [
+            make_state(
+                prompt=[
+                    {"role": "text", "content": "Start:"},
+                    {"role": "assistant", "content": "First response"},
+                    {"role": "text", "content": " Continue."},
+                ],
+                completion=[
+                    {"role": "assistant", "content": "Final DONE"},
+                ],
+                answer="",
+                info={},
+                reward=1.0,
+                message_type="completion",
+            )
+        ]
+        outputs = states_to_outputs(states, state_columns=[])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
+        assert result[0]["prompt"] == [
+            {"role": "text", "content": "Start:"},
+            {"role": "assistant", "content": "First response"},
+            {"role": "text", "content": " Continue."},
+        ]
+        assert result[0]["completion"] == [
+            {"role": "assistant", "content": "Final DONE"},
+        ]
 
     def test_non_serializable_state_column_raises(self, make_state):
         """Non-serializable state_columns should raise ValueError."""

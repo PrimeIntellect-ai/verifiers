@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -11,7 +12,6 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
-    ChatCompletionToolParam,
     ClientConfig,
     ErrorInfo,
     GenerateMetadata,
@@ -20,10 +20,18 @@ from verifiers.types import (
     SamplingArgs,
     State,
     TokenUsage,
+    Tool,
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.usage_utils import (
+    StateUsageTracker,
+)
+from verifiers.utils.usage_utils import (
+    extract_usage_tokens as extract_usage_tokens_from_response,
+)
+from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +48,7 @@ def is_json_serializable(value: object) -> bool:
         return True
     if isinstance(value, (list, tuple)):
         return all(is_json_serializable(item) for item in value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return all(
             isinstance(k, str) and is_json_serializable(v) for k, v in value.items()
         )
@@ -57,33 +65,60 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
     >>> json.dumps(value, default=make_serializable)
     """
     if isinstance(value, BaseModel):
-        return value.model_dump()
+        return value.model_dump(exclude_none=True)
     elif isinstance(value, (datetime, date)):
         return value.isoformat()
     elif isinstance(value, Path):
         return value.as_posix()
     elif isinstance(value, (BaseException)):
         return repr(value)
+    elif isinstance(value, Mapping):
+        return dict(value)
     else:
         return str(value)
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0, 0
+    return extract_usage_tokens_from_response(response)
 
-    def get_usage_value(usage_obj: object, key: str) -> int | float:
-        if isinstance(usage_obj, dict):
-            return cast(dict[str, Any], usage_obj).get(key, 0)
-        return getattr(usage_obj, key, 0)
 
-    prompt_tokens = get_usage_value(usage, "prompt_tokens")
-    completion_tokens = get_usage_value(usage, "completion_tokens")
-    if not prompt_tokens and not completion_tokens:
-        prompt_tokens = get_usage_value(usage, "input_tokens")
-        completion_tokens = get_usage_value(usage, "output_tokens")
-    return int(prompt_tokens or 0), int(completion_tokens or 0)
+def _coerce_token_usage(value: object) -> TokenUsage | None:
+    if not isinstance(value, Mapping):
+        return None
+    mapping_value = cast(Mapping[str, Any], value)
+    try:
+        input_raw = mapping_value.get("input_tokens")
+        output_raw = mapping_value.get("output_tokens")
+        input_tokens = float(0.0 if input_raw is None else input_raw)
+        output_tokens = float(0.0 if output_raw is None else output_raw)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def _extract_state_token_usage(state: State) -> TokenUsage | None:
+    tracker = state.get("usage_tracker")
+    if isinstance(tracker, StateUsageTracker):
+        usage = tracker.snapshot()
+        coerced = _coerce_token_usage(usage)
+        if coerced is not None:
+            return coerced
+        # Tracker exists but has not seen usage yet. Avoid falling through to
+        # state["usage"], which is a zeroed live tracker view.
+        token_usage = _coerce_token_usage(state.get("token_usage"))
+        if token_usage is not None:
+            return token_usage
+        return None
+
+    for key in ("token_usage", "usage"):
+        usage = _coerce_token_usage(state.get(key))
+        if usage is not None:
+            return usage
+
+    return None
 
 
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
@@ -101,7 +136,9 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     return dataset_name
 
 
-def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutput:
+def state_to_output(
+    state: State, state_columns: list[str] | None = None
+) -> RolloutOutput:
     """Convert a State to a serializable RolloutOutput.
 
     Args:
@@ -129,33 +166,41 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
-        oai_tools=state.get("oai_tools", None),
+        tool_defs=state.get("tool_defs"),
     )
-    trajectory = state.get("trajectory", [])
-    input_tokens = 0
-    output_tokens = 0
-    usage_seen = False
-    for step in trajectory:
-        response = step.get("response")
-        if response is None:
-            continue
-        if getattr(response, "usage", None) is not None:
-            usage_seen = True
-        step_input_tokens, step_output_tokens = extract_usage_tokens(response)
-        input_tokens += step_input_tokens
-        output_tokens += step_output_tokens
-    if usage_seen:
-        output["token_usage"] = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        }
+    usage = _extract_state_token_usage(state)
+    if usage is None:
+        # Legacy fallback for states that do not use state-level usage tracking.
+        trajectory = state.get("trajectory", [])
+        input_tokens = 0
+        output_tokens = 0
+        usage_seen = False
+        for step in trajectory:
+            response = step.get("response")
+            if response is None:
+                continue
+            if getattr(response, "usage", None) is not None:
+                usage_seen = True
+            step_input_tokens, step_output_tokens = extract_usage_tokens(response)
+            input_tokens += step_input_tokens
+            output_tokens += step_output_tokens
+        if usage_seen:
+            usage = {
+                "input_tokens": float(input_tokens),
+                "output_tokens": float(output_tokens),
+            }
+    if usage is not None:
+        output["token_usage"] = usage
+
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
-        output["prompt"] = sanitize_tool_calls(messages_to_printable(prompt))
+        output_prompt = sanitize_tool_calls(messages_to_printable(prompt))
+        output["prompt"] = output_prompt
     completion = state.get("completion")
     if completion is not None:
-        output["completion"] = sanitize_tool_calls(messages_to_printable(completion))
+        output_completion = sanitize_tool_calls(messages_to_printable(completion))
+        output["completion"] = output_completion
     # use repr for error
     if state.get("error") is not None:
         error_chain = ErrorChain(state.get("error"))
@@ -172,11 +217,11 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
     if "info" in output and not output["info"]:
         output.pop("info")
     # flatten metrics to top-level keys (backwards compatibility)
-    state_metrics = state.get("metrics", {})
+    state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():
         output[k] = v
     # add state columns (must be serializable)
-    for col in state_columns:
+    for col in state_columns or []:
         value = state.get(col)
         if not is_json_serializable(value):
             raise ValueError(
@@ -189,7 +234,7 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
 
 
 def states_to_outputs(
-    states: list[State], state_columns: list[str] = []
+    states: list[State], state_columns: list[str] | None = None
 ) -> list[RolloutOutput]:
     """Convert a list of States to serializable RolloutOutputs."""
     return [state_to_output(state, state_columns) for state in states]
@@ -221,10 +266,11 @@ class GenerateOutputsBuilder:
         self.results_path = results_path or get_results_path(env_id, model)
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
+        self.version_info = get_version_info(env_id=env_id)
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
-        self.tools_list: list[list[ChatCompletionToolParam] | None] = []
+        self.tools_list: list[list[Tool] | None] = []
 
     @staticmethod
     def _format_base_url(url: str) -> str:
@@ -246,7 +292,7 @@ class GenerateOutputsBuilder:
         """Accumulate new outputs."""
         self.outputs.extend(new_outputs)
         for output in new_outputs:
-            self.tools_list.append(output.get("oai_tools"))
+            self.tools_list.append(output.get("tool_defs"))
 
     def build_metadata(self) -> GenerateMetadata:
         """Build metadata from accumulated outputs."""
@@ -289,10 +335,21 @@ class GenerateOutputsBuilder:
             }
 
         # Determine tools (use first non-None if all same)
-        def tools_key(tools: list | None) -> str:
+        def tool_name(tool: Tool | dict[str, Any]) -> str:
+            if isinstance(tool, dict):
+                function = tool.get("function")
+                if isinstance(function, dict):
+                    name = function.get("name")
+                    if isinstance(name, str):
+                        return name
+                name = tool.get("name")
+                return name if isinstance(name, str) else ""
+            return tool.name
+
+        def tools_key(tools: list[Tool] | None) -> str:
             if not tools:
                 return ""
-            return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
+            return str(sorted(tool_name(t) for t in tools))
 
         unique_tools = set(tools_key(t) for t in self.tools_list)
         tools = (
@@ -315,6 +372,7 @@ class GenerateOutputsBuilder:
             avg_metrics=avg_metrics,
             avg_error=avg_error,
             usage=usage,
+            version_info=self.version_info,
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,

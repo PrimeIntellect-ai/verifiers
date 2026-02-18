@@ -263,13 +263,17 @@ class BaseDisplay:
             new_settings[3] = new_settings[3] & ~termios.ECHO
             termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
 
+        # In non-TUI mode, clamp vertical overflow so oversized renders don't
+        # scroll and smear repeated frames in-place.
+        vertical_overflow = "visible" if self.screen else "ellipsis"
+
         self._live = Live(
             self._render(),
             console=self.console,
             refresh_per_second=self.refresh_per_second,
             screen=self.screen,
             transient=False,  # Keep final display visible in scrollback
-            vertical_overflow="visible",
+            vertical_overflow=vertical_overflow,
         )
         self._live.start()
 

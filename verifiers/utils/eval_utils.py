@@ -4,24 +4,21 @@ import asyncio
 import importlib.util
 import logging
 import math
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import Callable, cast
 
+import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-import numpy as np
-
 import verifiers as vf
-from verifiers.utils.import_utils import load_toml
-
-if TYPE_CHECKING:
-    pass
 from verifiers.types import (
+    ClientType,
     Endpoint,
     Endpoints,
     EvalConfig,
@@ -35,6 +32,7 @@ from verifiers.types import (
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -67,7 +65,41 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    return Endpoint(model=model, url=url, key=key)
+    endpoint = Endpoint(model=model, url=url, key=key)
+
+    if "client_type" in raw_endpoint_dict:
+        raise ValueError(
+            f"Field 'client_type' is no longer supported in {source}. "
+            "Use 'type' or 'api_client_type'."
+        )
+
+    short_client_type = raw_endpoint_dict.get("type")
+    long_client_type = raw_endpoint_dict.get("api_client_type")
+    if (
+        short_client_type is not None
+        and long_client_type is not None
+        and short_client_type != long_client_type
+    ):
+        raise ValueError(
+            f"Conflicting values for 'type' and 'api_client_type' in {source}"
+        )
+
+    client_type = (
+        short_client_type if short_client_type is not None else long_client_type
+    )
+    if client_type is not None:
+        if client_type not in (
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ):
+            raise ValueError(
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+            )
+        endpoint["api_client_type"] = cast(ClientType, client_type)
+
+    return endpoint
 
 
 def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
@@ -129,9 +161,25 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
                 f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
             )
 
+        url = raw_entry_dict.get("url")
+        api_base_url = raw_entry_dict.get("api_base_url")
+        if url is not None and api_base_url is not None and url != api_base_url:
+            raise ValueError(
+                f"Conflicting values for 'url' and 'api_base_url' in {entry_source}"
+            )
+
+        key = raw_entry_dict.get("key")
+        api_key_var = raw_entry_dict.get("api_key_var")
+        if key is not None and api_key_var is not None and key != api_key_var:
+            raise ValueError(
+                f"Conflicting values for 'key' and 'api_key_var' in {entry_source}"
+            )
+
         endpoint_payload = {
             k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
         }
+        endpoint_payload["url"] = url if url is not None else api_base_url
+        endpoint_payload["key"] = key if key is not None else api_key_var
         endpoint = _coerce_endpoint(
             endpoint_payload,
             source=f"{entry_source} (endpoint_id={endpoint_id!r})",
@@ -264,6 +312,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # model/client
         "endpoint_id",
         "model",
+        "api_client_type",
         "api_key_var",
         "api_base_url",
         "header",
@@ -279,6 +328,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         # logging
         "verbose",
+        "debug",
         # saving
         "state_columns",
         "save_results",
@@ -429,6 +479,35 @@ def print_timing(results: GenerateOutputs):
     )
 
 
+def print_usage(results: GenerateOutputs):
+    usage_count = 0
+    input_tokens_total = 0.0
+    output_tokens_total = 0.0
+    for output in results["outputs"]:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        usage_count += 1
+        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
+        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+
+    usage = None
+    if usage_count > 0:
+        usage = {
+            "input_tokens": input_tokens_total / usage_count,
+            "output_tokens": output_tokens_total / usage_count,
+        }
+    elif results["metadata"].get("usage") is not None:
+        usage = results["metadata"]["usage"]
+
+    if usage is None:
+        return
+
+    print("Usage:")
+    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
+    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+
+
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
@@ -458,6 +537,7 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_rewards(results)
     print_info(results)
     print_timing(results)
+    print_usage(results)
 
     tasks = set([o["task"] for o in results["outputs"]])
     if len(tasks) > 1:
@@ -467,6 +547,11 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             print_rewards(task_results)
             print_info(task_results)
             print_timing(task_results)
+            print_usage(task_results)
+
+
+def get_log_level(verbose: bool) -> str:
+    return "DEBUG" if verbose else os.getenv("VF_LOG_LEVEL", "INFO")
 
 
 @contextmanager
@@ -484,7 +569,8 @@ def quiet_datasets():
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
-    on_progress: ProgressCallback | None = None,
+    on_log_file: Callable[[Path], None] | None = None,
+    on_progress: ProgressCallback | list[ProgressCallback] | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
@@ -495,16 +581,31 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # start env server as sidecar process
-    try:
-        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
+    results_path = config.resume_path or get_eval_results_path(config)
 
-        # run evaluation
-        results_path = config.resume_path or get_eval_results_path(config)
+    try:
+        if config.debug:
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level=get_log_level(config.verbose),
+            )
+        else:
+            log_file = results_path / "eval.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level="CRITICAL",  # disable console logging
+                log_file=str(log_file),
+                log_file_level=get_log_level(config.verbose),
+            )
+            if on_log_file is not None:
+                on_log_file(log_file)
+
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
+
         effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
@@ -550,12 +651,26 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
+    on_progress: list[ProgressCallback] | None = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+        on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]
+
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.evals]
+        *[
+            run_evaluation(eval_config, on_progress=on_progress)
+            for eval_config in config.evals
+        ]
     )
     end_time = time.time()
-    event_loop_lags = event_loop_lag_monitor.get_lags()
+
+    if config.heartbeat_url is not None:
+        await heart.close()
+
+    event_loop_lags = event_loop_lag_monitor.lags
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
     for results in all_results:
@@ -589,6 +704,12 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         await run_evaluations(config)
         return
 
+    heart = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+
     display = EvalDisplay(config.evals, screen=tui_mode)
 
     async def run_with_progress(
@@ -612,7 +733,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        def on_progress(
+        def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
@@ -626,8 +747,15 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 usage=metadata.get("usage"),
             )
 
+        on_progress: list[ProgressCallback] = [on_display_progress]
+        if heart is not None:
+            on_progress.append(lambda *_a, **_kw: asyncio.create_task(heart.beat()))
+
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
+
+        def register_log_file(log_file: Path) -> None:
+            display.add_log_file_for_env(env_idx, log_file)
 
         display.update_env_state(env_idx, status="running")
         try:
@@ -636,6 +764,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_start=on_start,
                 on_progress=on_progress,
                 on_log=on_log,
+                on_log_file=register_log_file,
             )
 
             # get save path if results were saved
@@ -682,6 +811,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
+    finally:
+        if heart is not None:
+            await heart.close()
 
     # print final summary after exit
     display.print_final_summary()

@@ -14,11 +14,18 @@ import importlib.resources
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from verifiers import setup_logging
-from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
+from verifiers.types import (
+    ClientConfig,
+    ClientType,
+    EndpointClientConfig,
+    EvalConfig,
+    EvalRunConfig,
+)
 from verifiers.utils.eval_utils import (
+    get_log_level,
     load_endpoints,
     load_toml_config,
     resolve_endpoints_file,
@@ -38,6 +45,7 @@ DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_CLIENT_TYPE = "openai_chat_completions"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -120,6 +128,18 @@ def main():
         type=str,
         default=DEFAULT_MODEL,
         help="Name of model to evaluate",
+    )
+    parser.add_argument(
+        "--api-client-type",
+        type=str,
+        default=None,
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'anthropic_messages')",
+        choices=[
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ],
     )
     parser.add_argument(
         "--api-key-var",
@@ -272,9 +292,16 @@ def main():
         default=0,
         help="Max retries for transient infrastructure errors (default: 0)",
     )
+    parser.add_argument(
+        "--heartbeat-url",
+        type=str,
+        default=None,
+        help="Heartbeat URL for uptime monitoring",
+    )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    if args.debug:  # only set up console logging in debug mode
+        setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
@@ -352,6 +379,7 @@ def main():
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
         )
+        raw_client_type = raw.get("api_client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
         if isinstance(raw_api_base_url, list):
@@ -362,6 +390,7 @@ def main():
 
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
+        client_type_override = raw_client_type is not None
         endpoint_group: list[dict[str, str]] | None = None
         resolved_endpoint_id: str | None = None
 
@@ -387,12 +416,18 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            if api_key_override or api_base_url_override:
+            client_type = (
+                raw_client_type
+                if client_type_override
+                else endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
+            )
+            if api_key_override or api_base_url_override or client_type_override:
                 logger.debug(
-                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s)",
+                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
                     model,
                     "override" if api_key_override else "registry",
                     "override" if api_base_url_override else "registry",
+                    "override" if client_type_override else "registry",
                 )
             else:
                 logger.debug(
@@ -413,6 +448,9 @@ def main():
             api_key_var = raw_api_key_var if api_key_override else DEFAULT_API_KEY_VAR
             api_base_url = (
                 raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+            )
+            client_type = (
+                raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
             )
 
         # Merge sampling args
@@ -441,14 +479,14 @@ def main():
         assert api_key_var is not None
         resolved_api_key_var = api_key_var
 
-        endpoint_configs: list[ClientConfig] = []
+        endpoint_configs: list[EndpointClientConfig] = []
         if (
             endpoint_group is not None
             and not api_base_url_override
             and len(endpoint_group) > 1
         ):
             endpoint_configs = [
-                ClientConfig(
+                EndpointClientConfig(
                     api_key_var=(
                         resolved_api_key_var if api_key_override else endpoint["key"]
                     ),
@@ -460,6 +498,7 @@ def main():
 
         assert primary_api_base_url is not None
         client_config = ClientConfig(
+            client_type=cast(ClientType, client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
@@ -514,6 +553,7 @@ def main():
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
             verbose=raw.get("verbose", False),
+            debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -539,7 +579,9 @@ def main():
     for config in eval_configs:
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
-    eval_run_config = EvalRunConfig(evals=eval_configs)
+    eval_run_config = EvalRunConfig(
+        evals=eval_configs, heartbeat_url=args.heartbeat_url
+    )
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:

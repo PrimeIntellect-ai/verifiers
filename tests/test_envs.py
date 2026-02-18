@@ -23,6 +23,7 @@ SKIPPED_ENVS = [
     "browser_cua_example",
     # Uses prime-tunnel which is still experimental and has low usage limits
     "terminus_harbor",
+    "opencode_harbor",
 ]
 
 SKIPPED_ENV_LOADING_ENVS = [

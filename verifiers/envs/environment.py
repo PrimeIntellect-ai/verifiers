@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import functools
 import inspect
 import json
 import logging
+import multiprocessing as mp
 import signal
 import time
 import uuid
+import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from multiprocessing import Process
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -21,37 +23,29 @@ from typing import (
     Awaitable,
     Callable,
     List,
-    Literal,
     TypeVar,
     cast,
     final,
 )
 
-from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
-
+from verifiers.clients import Client, resolve_client
 from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
-    setup_client,
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
 if TYPE_CHECKING:
     from datasets import Dataset
-from openai.types.chat import ChatCompletion
-from openai.types.chat.chat_completion import Choice
-from openai.types.completion_choice import CompletionChoice
 
 import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    ChatCompletionToolParam,
-    ChatMessage,
     ClientConfig,
     DatasetBuilder,
     GenerateMetadata,
@@ -59,14 +53,16 @@ from verifiers.types import (
     LogCallback,
     Messages,
     MessageType,
-    ModelResponse,
     ProgressCallback,
+    Response,
     RolloutInput,
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
+    TokenUsage,
+    Tool,
 )
 from verifiers.utils.async_utils import (
     maybe_retry,
@@ -74,9 +70,7 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import (
-    strip_nones_from_content,
-)
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -88,14 +82,10 @@ from verifiers.utils.save_utils import (
     state_to_output,
     validate_resume_metadata,
 )
-from verifiers.utils.token_utils import (
-    get_prompt_ids,
-    prepare_sampling_args_for_token_prompts,
-)
+from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
-if TYPE_CHECKING:
-    pass
+_MESSAGE_TYPE_UNSET = object()
 
 
 class Environment(ABC):
@@ -108,24 +98,38 @@ class Environment(ABC):
         dataset: Dataset | DatasetBuilder | None = None,
         eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: MessageType = "chat",
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        message_type: MessageType | object = _MESSAGE_TYPE_UNSET,
+        tool_defs: list[Tool] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
-        interleaved_rollouts: bool = False,
         score_rollouts: bool = True,
         **kwargs,
     ):
+        if message_type is _MESSAGE_TYPE_UNSET:
+            resolved_message_type: MessageType = "chat"
+        else:
+            if message_type != "chat":
+                warnings.warn(
+                    "message_type is deprecated and will be removed",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            resolved_message_type = cast(MessageType, message_type)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.message_type: Literal["chat", "completion"] = message_type
-        self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
+        self.message_type: MessageType = resolved_message_type
+        if "oai_tools" in kwargs:
+            raise ValueError(
+                "`oai_tools` is no longer supported. Use `tool_defs` with provider-agnostic "
+                "tool definitions: [{'name': ..., 'description': ..., 'parameters': {...}}]."
+            )
+        self.tool_defs: list[Tool] | None = self._normalize_tool_defs(tool_defs)
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
@@ -140,18 +144,10 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
-        self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_score_rollouts(score_rollouts)
 
-        if self.message_type != "chat" and (self.system_prompt or self.few_shot):
-            raise ValueError(
-                'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
-                'Please use message_type="chat" instead, or pre-format your dataset '
-                'to contain a "prompt" column.'
-            )
-
         self.env_client: EnvClient | None = None
-        self.env_server_process: Process | None = None
+        self.env_server_process: BaseProcess | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -204,6 +200,39 @@ class Environment(ABC):
         self._teardown_handlers: list[EnvironmentTeardown] = []
 
         self.__post_init__()
+
+    @staticmethod
+    def _normalize_tool_defs(
+        tools: list[Tool] | list[dict[str, Any]] | None,
+    ) -> list[Tool] | None:
+        """Normalize tools to provider-agnostic vf.Tool objects.
+
+        Accepts:
+        - vf.Tool objects
+        - vf.Tool-like dicts: {"name", "description", "parameters", "strict?"}
+        """
+        if tools is None:
+            return None
+
+        normalized: list[Tool] = []
+        for raw_tool in tools:
+            if isinstance(raw_tool, Tool):
+                normalized.append(raw_tool)
+                continue
+
+            if isinstance(raw_tool, dict):
+                if raw_tool.get("type") == "function" and isinstance(
+                    raw_tool.get("function"), dict
+                ):
+                    raise ValueError(
+                        "Legacy OpenAI tool schema is no longer supported. "
+                        "Use `tool_defs` entries in vf.Tool format: "
+                        "{'name': ..., 'description': ..., 'parameters': {...}}."
+                    )
+
+            normalized.append(Tool.model_validate(raw_tool))
+
+        return normalized
 
     def __post_init__(self):
         self._stop_conditions = [
@@ -267,7 +296,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -275,7 +304,7 @@ class Environment(ABC):
         """Ensure prompt column exists."""
         if "prompt" not in dataset.column_names:
 
-            def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
+            def format_prompt_fn(prompt_str: str) -> Messages:
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
@@ -303,18 +332,22 @@ class Environment(ABC):
         else:
             if system_prompt is not None:
 
-                def prepend_system_prompt(
-                    prompt: list[ChatMessage],
-                ) -> list[ChatMessage]:
+                def prepend_system_prompt(prompt: list[Any]) -> list[Any]:
                     assert isinstance(prompt, list), (
-                        f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
+                        f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
                     )
-                    if prompt and prompt[0].get("role") == "system":
+                    # Check if a system message already exists (first message)
+                    first = prompt[0] if prompt else None
+                    first_role = (
+                        first.get("role")
+                        if isinstance(first, dict)
+                        else getattr(first, "role", None)
+                    )
+                    if first_role == "system":
                         return prompt
-                    sys_msg = cast(
-                        ChatMessage, {"role": "system", "content": system_prompt}
-                    )
-                    return [sys_msg, *prompt]
+                    # Prepend as a plain dict so Arrow/HuggingFace can serialize.
+                    # Normalization to Pydantic happens later in init_state.
+                    return [{"role": "system", "content": system_prompt}, *prompt]
 
                 dataset = dataset.map(
                     lambda x: {"prompt": prepend_system_prompt(x["prompt"])},
@@ -342,7 +375,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -368,16 +401,13 @@ class Environment(ABC):
         return dataset
 
     def _format_dataset_source(self, dataset: Dataset) -> Dataset:
-        """Format a dataset based on message_type."""
-        if self.message_type == "chat":
-            return self._format_dataset(
-                dataset,
-                self.system_prompt,
-                self.few_shot,
-                map_kwargs=self.map_kwargs,
-            )
-        else:
-            return self._format_completion_dataset(dataset, map_kwargs=self.map_kwargs)
+        """Format a dataset as chat (messages); client maps to its format at request time."""
+        return self._format_dataset(
+            dataset,
+            self.system_prompt,
+            self.few_shot,
+            map_kwargs=self.map_kwargs,
+        )
 
     def build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
@@ -426,248 +456,118 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
+    @final
+    def _get_usage_tracker(
+        self, state: State, create_if_missing: bool = True
+    ) -> StateUsageTracker | None:
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker):
+            return tracker
+        if not create_if_missing:
+            return None
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        # Expose read-only usage in state for live inspection.
+        state["usage"] = tracker.usage
+        return tracker
+
+    @final
+    def increment_state_usage(
+        self,
+        state: State,
+        input_tokens: int | float = 0,
+        output_tokens: int | float = 0,
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment(input_tokens, output_tokens)
+
+    @final
+    def increment_state_usage_from_response(
+        self, state: State, response: object
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment_from_response(response)
+
+    @final
+    def get_state_usage(self, state: State) -> TokenUsage | None:
+        tracker = self._get_usage_tracker(state, create_if_missing=False)
+        if tracker is not None:
+            return tracker.snapshot()
+        usage = state.get("usage")
+        if isinstance(usage, Mapping):
+            try:
+                input_tokens = float(usage.get("input_tokens", 0.0))
+                output_tokens = float(usage.get("output_tokens", 0.0))
+            except (TypeError, ValueError):
+                return None
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        return None
+
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages,
-        client: AsyncOpenAI | None = None,
+        prompt: Messages | str,
+        client: Client | None = None,
         model: str | None = None,
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
-    ) -> ModelResponse:
+    ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
 
-        Convenience function for wrapping (chat, completion) API calls.
-        Returns special error messages for context length issues.
-
-        If interleaved_rollouts is set, the model response is obtained by
-        calling a custom token-in endpoint. Note, that this only works if the
-        inference server implements this endpoint.  Currently, this is a
-        hand-crafted feature for PRIME-RL's vLLM server extension, and is not
-        recommended for general use.
+        Uses the client abstraction layer to handle provider-specific API calls.
+        The vf.Client adapter handles prompt conversion, sampling arg normalization,
+        overlong prompt detection, and response parsing.
         """
 
         def resolve_optional_args(
-            client: AsyncOpenAI | None,
+            client: Client | None,
             model: str | None,
-            oai_tools: list[ChatCompletionToolParam] | None,
+            tool_defs: list[Tool] | None,
             sampling_args: SamplingArgs | None,
-            message_type: MessageType | None,
-        ) -> tuple[
-            AsyncOpenAI,
-            str,
-            list[ChatCompletionToolParam] | None,
-            SamplingArgs,
-            MessageType,
-        ]:
+        ) -> tuple[Client, str, list[Tool] | None, SamplingArgs]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            client = client if client is not None else state["client"]
+            assert client is not None
             model = model or state["model"]
-            assert client is not None and model is not None
-            oai_tools = oai_tools or state["oai_tools"]
+            assert model is not None
+            if tool_defs is None:
+                tool_defs = state.get("tool_defs")
+            if tool_defs is not None and not all(
+                isinstance(tool, Tool) for tool in tool_defs
+            ):
+                raise TypeError(
+                    "tool_defs must be a list of vf.Tool objects at runtime. "
+                    "Normalize tool dicts during state initialization."
+                )
+            if isinstance(tool_defs, list) and len(tool_defs) == 0:
+                tool_defs = None
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
-            message_type = message_type or self.message_type
-            return client, model, oai_tools, sampling_args, message_type
+            return client, model, tool_defs, sampling_args
 
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
-            """
-            Normalize sampling arguments. Mainly does 2 things:
-            - if max_tokens is provided for chat, rename to max_completion_tokens
-            - drop any None-valued entries to avoid sending to the client
-            """
-            if "max_tokens" in sampling_args:
-                if sampling_args["max_tokens"] is None:
-                    sampling_args.pop("max_tokens")
-                elif message_type == "chat":
-                    sampling_args["max_completion_tokens"] = sampling_args.pop(
-                        "max_tokens"
-                    )
-            if (
-                "max_completion_tokens" in sampling_args
-                and sampling_args["max_completion_tokens"] is None
-            ):
-                sampling_args.pop("max_completion_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
-
-        def handle_overlong_prompt(func):
-            """Decorator to handle overlong prompt errors from the model API."""
-
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await func(*args, **kwargs)
-                except AuthenticationError:
-                    # re-raise auth errors to exit immediately
-                    raise
-                except BadRequestError as e:
-                    # in case of making a request with an overlong prompt, e.g
-                    # we raise a special overlong prompt error
-                    error_text = e.response.text.lower()
-                    context_length_phrases = [
-                        "maximum context length is",
-                        "is longer than the model's context length",
-                        "exceeds the model's context length",
-                        "exceed the configured limit",
-                        "exceeds the configured limit",
-                        "exceeded model",
-                    ]
-                    if any(phrase in error_text for phrase in context_length_phrases):
-                        self.logger.debug("Caught overlong prompt.")
-                        raise vf.OverlongPromptError from e
-                    raise vf.ModelError from e
-                except Exception as e:
-                    # in all other case we raise a generic model error
-                    raise vf.ModelError from e
-
-            return wrapper
-
-        @handle_overlong_prompt
-        async def get_model_response_with_messages(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """Convenience function for wrapping (chat, completion) API calls."""
-            if message_type == "chat":
-                assert isinstance(prompt, list)
-                prompt = strip_nones_from_content(prompt)
-                # --- detect audio parts and force text-only modality if caller didn't set one ---
-                has_audio = False
-                try:
-                    for m in prompt:
-                        c = m.get("content")
-                        if isinstance(c, list):
-                            for p in c:
-                                if isinstance(p, dict) and str(
-                                    p.get("type", "")
-                                ).startswith("input_audio"):
-                                    has_audio = True
-                                    break
-                        if has_audio:
-                            break
-                except Exception:
-                    has_audio = False
-                if has_audio and "modalities" not in sampling_args:
-                    sampling_args = {
-                        **sampling_args,
-                        "modalities": ["text"],
-                    }
-
-                if oai_tools:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        tools=oai_tools,
-                        **sampling_args,
-                    )
-                else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        **sampling_args,
-                    )
-                return response
-            elif message_type == "completion":
-                if oai_tools:
-                    raise ValueError(
-                        "oai_tools are not supported for completion tasks."
-                    )
-                assert isinstance(prompt, str)
-                response = await client.completions.create(
-                    model=model, prompt=prompt, **sampling_args
-                )
-                return response
-
-        @handle_overlong_prompt
-        async def get_model_response_with_tokens(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            prompt_ids: list[int],
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """
-            Get a model response with pre-tokenized prompt from custom
-            /v1/chat/completions/tokens endpoint (only available in PRIME-RL's
-            vLLM server extension)
-            """
-            assert message_type == "chat", (
-                "get_model_response_with_tokens is only supported for chat tasks."
-            )
-
-            extra_body = sampling_args.pop("extra_body", {})
-            body = dict(
-                model=model,
-                messages=prompt,
-                tools=oai_tools,
-                tokens=prompt_ids,
-                **sampling_args,
-                **extra_body,
-            )
-
-            return await client.post(
-                "/chat/completions/tokens",
-                body=body,
-                cast_to=ChatCompletion,
-            )
-
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
+        client, model, tool_defs, sampling_args = resolve_optional_args(
+            client, model, tool_defs, sampling_args
         )
-        sampling_args = normalize_sampling_args(sampling_args)
-        if self.interleaved_rollouts:
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
-        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
-            prompt_ids = await get_prompt_ids(state, prompt, client)
-            response = await get_model_response_with_tokens(
-                client=client,
-                model=model,
-                prompt=prompt,
-                prompt_ids=prompt_ids,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
-        else:
-            response = await get_model_response_with_messages(
-                client=client,
-                model=model,
-                prompt=prompt,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
+        normalized_prompt = normalize_messages(prompt, field_name="prompt")
 
-        # Some providers (e.g. OpenRouter) may return None for response or response.choices
-        if response is None:
-            raise vf.EmptyModelResponseError("Model returned no response")
-        if response.choices is None:
-            raise vf.EmptyModelResponseError("Model returned no response choices")
-        if not len(response.choices) == 1:
-            raise vf.InvalidModelResponseError(
-                f"Model returned {len(response.choices)} choices, expected 1"
-            )
-        if isinstance(response.choices[0], Choice):
-            if not (
-                response.choices[0].message.content
-                or response.choices[0].message.tool_calls
-            ):
-                raise vf.EmptyModelResponseError(
-                    "Model returned no content and did not call any tools"
-                )
-        elif isinstance(response.choices[0], CompletionChoice):
-            if not response.choices[0].text:
-                raise vf.EmptyModelResponseError("Model returned no content")
+        self._get_usage_tracker(state, create_if_missing=True)
+
+        response = await client.get_response(
+            prompt=normalized_prompt,
+            model=model,
+            tools=tool_defs,
+            sampling_args=sampling_args,
+            state=state,
+        )
+        self.increment_state_usage_from_response(state, response)
 
         return response
 
@@ -675,7 +575,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -692,22 +592,37 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=state_input)
-        state["client"] = client
+
+        # Convert prompt to Pydantic messages
+        raw_prompt = input.get("prompt")
+        if isinstance(raw_prompt, (str, list)):
+            state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
+
+        state["client"] = resolve_client(client)
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
-        state["oai_tools"] = None
+
+        # Resolve tool definitions
+        resolved_tool_defs: list[Tool] | list[dict[str, Any]] | None = None
         info = state.get("info")
         if isinstance(info, dict) and "oai_tools" in info:
-            state["oai_tools"] = info["oai_tools"]
-        elif info is not None and hasattr(info, "oai_tools"):
-            state["oai_tools"] = getattr(info, "oai_tools")
-        elif hasattr(self, "oai_tools"):
-            state["oai_tools"] = self.oai_tools
+            raise ValueError(
+                "info['oai_tools'] is no longer supported. Use info['tool_defs'] with "
+                "provider-agnostic tool definitions: "
+                "[{'name': ..., 'description': ..., 'parameters': {...}}]."
+            )
+        if isinstance(info, dict) and "tool_defs" in info:
+            resolved_tool_defs = info["tool_defs"]
+        elif self.tool_defs is not None:
+            resolved_tool_defs = self.tool_defs
         else:
-            state["oai_tools"] = []
+            resolved_tool_defs = []
+        state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
+
         state["trajectory"] = []
+        self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None
@@ -725,7 +640,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -782,11 +697,12 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -794,12 +710,13 @@ class Environment(ABC):
         if isinstance(client, ClientConfig):
             resolved_client_config = resolve_client_config(client)
 
-        if self.env_client is not None:  # in server mode
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
             if resolved_client_config is None:
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            return await self.env_client.run_rollout(
+            return await env_client.run_rollout(
                 input,
                 resolved_client_config,
                 model,
@@ -808,16 +725,15 @@ class Environment(ABC):
                 state_columns,
             )
 
-        local_client: AsyncOpenAI
-        owned_local_client: AsyncOpenAI | None = None
-        if resolved_client_config is not None:
-            owned_local_client = setup_client(resolved_client_config)
-            local_client = owned_local_client
-        else:
-            local_client = cast(AsyncOpenAI, client)
+        resolved_client = resolve_client(client)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(input, local_client, model, sampling_args)
+            state = await self.rollout(
+                input,
+                resolved_client,
+                model,
+                sampling_args,
+            )
 
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
@@ -826,11 +742,7 @@ class Environment(ABC):
 
             return state
 
-        try:
-            state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        finally:
-            if owned_local_client is not None:
-                await owned_local_client.close()
+        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -838,11 +750,12 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -851,12 +764,13 @@ class Environment(ABC):
         if isinstance(client, ClientConfig):
             resolved_client_config = resolve_client_config(client)
 
-        if self.env_client is not None:  # in server mode
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
             if resolved_client_config is None:
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            return await self.env_client.run_group(
+            return await env_client.run_group(
                 group_inputs,
                 resolved_client_config,
                 model,
@@ -865,17 +779,16 @@ class Environment(ABC):
                 state_columns,
             )
 
-        local_client: AsyncOpenAI
-        owned_local_client: AsyncOpenAI | None = None
-        if resolved_client_config is not None:
-            owned_local_client = setup_client(resolved_client_config)
-            local_client = owned_local_client
-        else:
-            local_client = cast(AsyncOpenAI, client)
+        resolved_client = resolve_client(client)
 
         async def run_group_attempt() -> list[State]:
             rollout_tasks = [
-                self.rollout(input, local_client, model, sampling_args)
+                self.rollout(
+                    input,
+                    resolved_client,
+                    model,
+                    sampling_args,
+                )
                 for input in group_inputs
             ]
             group_states = await asyncio.gather(*rollout_tasks)
@@ -886,13 +799,7 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
             return group_states
 
-        try:
-            group_states = await maybe_retry(
-                run_group_attempt, max_retries=max_retries
-            )()
-        finally:
-            if owned_local_client is not None:
-                await owned_local_client.close()
+        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -901,7 +808,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -913,7 +820,7 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
     ) -> GenerateOutputs:
         """
@@ -921,6 +828,9 @@ class Environment(ABC):
 
         Args:
             client: Can be a single AsyncOpenAI client or a ClientConfig.
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
         """
         from datasets import Dataset
         from tqdm import tqdm
@@ -983,7 +893,15 @@ class Environment(ABC):
             self.logger.info(message)
 
         on_start = on_start or cast(StartCallback, default_on_start)
-        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        extra_on_progress: list[ProgressCallback] = []
+        if isinstance(on_progress, list):
+            extra_on_progress = cast(list[ProgressCallback], on_progress)
+        elif on_progress is not None:
+            extra_on_progress = [on_progress]
+
+            def default_on_progress(*a, **kw):
+                None
+
         on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
@@ -1016,18 +934,18 @@ class Environment(ABC):
             results_path=results_path,
         )
 
-        single_client: AsyncOpenAI | None = None
+        single_client: Client | None = None
         endpoint_client_configs: list[ClientConfig] = []
         endpoint_client_idx = 0
         if isinstance(client, ClientConfig):
             endpoint_client_configs = resolve_client_configs(client)
         else:
-            # AsyncOpenAI path
+            # Raw async-client path
             single_client = client
 
-        local_endpoint_clients: list[AsyncOpenAI] = []
+        local_endpoint_clients: list[Client] = []
 
-        def get_client_for_group() -> AsyncOpenAI | ClientConfig:
+        def get_client_for_group() -> Client | ClientConfig:
             """Get next client in round-robin order or return the single client."""
             nonlocal endpoint_client_idx
             if self.env_client is not None and endpoint_client_configs:
@@ -1048,7 +966,7 @@ class Environment(ABC):
         try:
             if self.env_client is None and endpoint_client_configs:
                 for endpoint_config in endpoint_client_configs:
-                    local_endpoint_clients.append(setup_client(endpoint_config))
+                    local_endpoint_clients.append(resolve_client(endpoint_config))
 
             # load existing results if available
             if results_path is not None and is_valid_eval_results_path(results_path):
@@ -1110,9 +1028,7 @@ class Environment(ABC):
                     for i, group_input in enumerate(filtered_group_inputs):
                         # For grouped scoring, keep each group on one endpoint so
                         # rollouts in the same group can benefit from shared KV cache.
-                        group_client: AsyncOpenAI | ClientConfig = (
-                            get_client_for_group()
-                        )
+                        group_client = get_client_for_group()
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
@@ -1136,7 +1052,9 @@ class Environment(ABC):
                     builder.add_outputs(new_outputs)
                     metadata = builder.build_metadata()
 
-                    on_progress(builder.outputs, new_outputs, metadata)
+                    default_on_progress(builder.outputs, new_outputs, metadata)
+                    for cb in extra_on_progress:
+                        cb(builder.outputs, new_outputs, metadata)
 
                     # incrementally save outputs
                     if save_results:
@@ -1177,11 +1095,9 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI | ClientConfig,
+        client: Client | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
-        if isinstance(client, OpenAI):
-            client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
         coro = self.generate(
             inputs,
             client=client,
@@ -1223,7 +1139,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1237,12 +1153,17 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset.
+
+        Args:
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
         """
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return await self.generate(
@@ -1266,7 +1187,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1306,7 +1227,7 @@ class Environment(ABC):
 
         For each kwarg, checks if a `set_{key}` method exists and calls it,
         otherwise falls back to setattr. This ensures proper propagation for
-        attributes like `interleaved_rollouts` in EnvGroup.
+        attributes like `score_rollouts` in EnvGroup.
         """
         for key, value in kwargs.items():
             setter_name = f"set_{key}"
@@ -1328,21 +1249,22 @@ class Environment(ABC):
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
 
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved rollouts flag for this environment."""
-        self.interleaved_rollouts = interleaved_rollouts
-        if self.interleaved_rollouts:
-            self.logger.warning(
-                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
-            )
+    def set_score_rollouts(self, score_rollouts: bool) -> None:
+        """Set the score rollouts flag for this environment."""
+        self.score_rollouts = score_rollouts
 
     async def start_server(
         self,
         address: str | None = None,
-        extra_env_kwargs: dict[str, Any] = {},
+        extra_env_kwargs: dict[str, Any] | None = None,
+        # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
-        startup_timeout: float = 10.0,
+        log_file_level: str | None = None,
+        # health check configs
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10m
+        recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1350,8 +1272,12 @@ class Environment(ABC):
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        address = address or f"tcp://127.0.0.1:{get_free_port()}"
-        self.env_server_process = Process(
+        address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+        extra_env_kwargs = extra_env_kwargs or {}
+        # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+        # the parent process, which has caused hangs when multiple env server
+        # subprocesses share the same fds.
+        self.env_server_process = mp.get_context("spawn").Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
@@ -1359,13 +1285,20 @@ class Environment(ABC):
                 extra_env_kwargs,
                 log_level,
                 log_file,
+                log_file_level,
             ),
             kwargs=dict(address=address),
             daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
-        self.env_client = ZMQEnvClient(address=address)
-        await self.env_client.health(timeout=startup_timeout)
+        self.env_client = ZMQEnvClient(
+            address=address,
+            health_check_interval=health_check_interval,
+            startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
+            name=self.env_id,
+        )
+        await self.env_client.wait_for_server_startup()
 
     async def stop_server(self) -> None:
         """Stop the ZMQ server process for this environment.
@@ -1384,10 +1317,6 @@ class Environment(ABC):
                 self.env_server_process.kill()
                 self.env_server_process.join(timeout=5)
             self.env_server_process = None
-
-    def set_score_rollouts(self, score_rollouts: bool) -> None:
-        """Set the score rollouts flag for this environment."""
-        self.score_rollouts = score_rollouts
 
     make_dataset = staticmethod(make_dataset)
 

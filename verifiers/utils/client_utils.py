@@ -4,56 +4,44 @@ import os
 from pathlib import Path
 
 import httpx
-from httpx import AsyncClient
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from verifiers.types import ClientConfig
+from verifiers.types import (
+    ClientConfig,
+    EndpointClientConfig,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_client_config_impl(
-    config: ClientConfig, ancestors: list[ClientConfig] | None = None
+def _merge_endpoint(
+    parent: ClientConfig, endpoint: EndpointClientConfig
 ) -> ClientConfig:
-    """Resolve possibly nested endpoint configs to a single concrete client config."""
-    chain = list(ancestors or [])
-    visited = {id(ancestor) for ancestor in chain}
-    resolved = config
-    while resolved.endpoint_configs:
-        resolved_id = id(resolved)
-        if resolved_id in visited:
-            raise ValueError(
-                "Detected cyclic ClientConfig.endpoint_configs while resolving client"
-            )
-        visited.add(resolved_id)
-        chain.append(resolved)
-        endpoint_idx = resolved.client_idx % len(resolved.endpoint_configs)
-        resolved = resolved.endpoint_configs[endpoint_idx]
-
-    resolved_data = resolved.model_dump(mode="python")
-    resolved_fields = set(resolved.model_fields_set)
-    for parent in reversed(chain):
-        for field_name in ClientConfig.model_fields:
-            if field_name == "endpoint_configs":
-                continue
-            if field_name not in resolved_fields:
-                resolved_data[field_name] = getattr(parent, field_name)
-                resolved_fields.add(field_name)
-
-    return ClientConfig.model_validate(resolved_data)
+    """Merge parent config fields into an endpoint config, preserving endpoint overrides."""
+    merged_data = endpoint.model_dump(mode="python")
+    explicitly_set = set(endpoint.model_fields_set)
+    for field_name in ClientConfig.model_fields:
+        if field_name == "endpoint_configs":
+            continue
+        if field_name not in explicitly_set:
+            merged_data[field_name] = getattr(parent, field_name)
+    return ClientConfig.model_validate(merged_data)
 
 
 def resolve_client_config(config: ClientConfig) -> ClientConfig:
-    return _resolve_client_config_impl(config)
+    """Resolve endpoint config overrides onto a concrete client config."""
+    if not config.endpoint_configs:
+        return ClientConfig.model_validate(config.model_dump(mode="python"))
+
+    endpoint_idx = config.client_idx % len(config.endpoint_configs)
+    return _merge_endpoint(config, config.endpoint_configs[endpoint_idx])
 
 
 def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     """Expand a client config into one or more resolved endpoint configs."""
     if config.endpoint_configs:
-        return [
-            _resolve_client_config_impl(endpoint, ancestors=[config])
-            for endpoint in config.endpoint_configs
-        ]
+        return [_merge_endpoint(config, ep) for ep in config.endpoint_configs]
     return [resolve_client_config(config)]
 
 
@@ -70,40 +58,72 @@ def load_prime_config() -> dict:
     return {}
 
 
-def setup_client(config: ClientConfig) -> AsyncOpenAI:
-    """A helper function to setup an AsyncOpenAI client."""
-    resolved_config = resolve_client_config(config)
+def _build_headers_and_api_key(
+    config: ClientConfig,
+) -> tuple[dict[str, str], str | None]:
+    headers = dict(config.extra_headers)
+    api_key = os.getenv(config.api_key_var)
 
-    # Setup timeouts and limits
-    http_timeout = httpx.Timeout(resolved_config.timeout, connect=5.0)
-    limits = httpx.Limits(
-        max_connections=resolved_config.max_connections,
-        max_keepalive_connections=resolved_config.max_keepalive_connections,
-    )
-
-    headers = resolved_config.extra_headers
-    api_key = os.getenv(resolved_config.api_key_var)
-
-    # Fall back to prime config if using PRIME_API_KEY
-    if resolved_config.api_key_var == "PRIME_API_KEY":
+    if config.api_key_var == "PRIME_API_KEY":
         prime_config = load_prime_config()
         if not api_key:
             api_key = prime_config.get("api_key", "")
         team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
         if team_id:
-            headers = {**resolved_config.extra_headers, "X-Prime-Team-ID": team_id}
+            headers["X-Prime-Team-ID"] = team_id
 
-    # Setup client
-    http_client = AsyncClient(
+    return headers, api_key
+
+
+def _build_http_client(
+    config: ClientConfig, headers: dict[str, str]
+) -> httpx.AsyncClient:
+    timeout = httpx.Timeout(config.timeout, connect=5.0)
+    limits = httpx.Limits(
+        max_connections=config.max_connections,
+        max_keepalive_connections=config.max_keepalive_connections,
+    )
+    return httpx.AsyncClient(
         limits=limits,
-        timeout=http_timeout,
+        timeout=timeout,
         headers=headers,
     )
-    client = AsyncOpenAI(
-        base_url=resolved_config.api_base_url,
+
+
+def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
+    """Setup base HTTP client with timeouts, limits, and PRIME headers."""
+    resolved_config = resolve_client_config(config)
+    headers, _ = _build_headers_and_api_key(resolved_config)
+    return _build_http_client(resolved_config, headers)
+
+
+def _setup_openai_client_from_resolved(config: ClientConfig) -> AsyncOpenAI:
+    headers, api_key = _build_headers_and_api_key(config)
+    return AsyncOpenAI(
         api_key=api_key or "EMPTY",
-        max_retries=resolved_config.max_retries,
-        http_client=http_client,
+        base_url=config.api_base_url,
+        max_retries=config.max_retries,
+        http_client=_build_http_client(config, headers),
     )
 
-    return client
+
+def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
+    """Setup an AsyncOpenAI client from config."""
+    resolved_config = resolve_client_config(config)
+    return _setup_openai_client_from_resolved(resolved_config)
+
+
+def _setup_anthropic_client_from_resolved(config: ClientConfig) -> AsyncAnthropic:
+    headers, api_key = _build_headers_and_api_key(config)
+    return AsyncAnthropic(
+        api_key=api_key or "EMPTY",
+        base_url=config.api_base_url,
+        max_retries=config.max_retries,
+        http_client=_build_http_client(config, headers),
+    )
+
+
+def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
+    """Setup an AsyncAnthropic client from config."""
+    resolved_config = resolve_client_config(config)
+    return _setup_anthropic_client_from_resolved(resolved_config)

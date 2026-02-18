@@ -1,3 +1,4 @@
+import logging
 import socket
 from datetime import date, datetime
 from enum import Enum
@@ -5,6 +6,8 @@ from pathlib import Path
 from uuid import UUID
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def msgpack_encoder(obj):
@@ -38,3 +41,20 @@ def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("localhost", 0))
         return s.getsockname()[1]
+
+
+def get_free_port_pair() -> int:
+    """Get a free port whose successor (port+1) is also free."""
+    for _ in range(10):
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s1,
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2,
+        ):
+            s1.bind(("localhost", 0))
+            port = s1.getsockname()[1]
+            try:
+                s2.bind(("localhost", port + 1))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("Could not find a free port pair after 10 attempts")

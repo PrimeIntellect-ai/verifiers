@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Callable
+from unittest.mock import AsyncMock
 
 import pytest
 from datasets import Dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.envs.environment import Environment
@@ -26,11 +25,16 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ClientConfig,
     GenerateOutputs,
+    Response,
+    ResponseMessage,
     RolloutInput,
     SamplingArgs,
+    Tool,
+    Usage,
 )
 from verifiers.utils.message_utils import sanitize_tool_calls
 from verifiers.utils.save_utils import make_dataset as build_dataset
+from verifiers.utils.save_utils import state_to_output
 
 
 # Local simple concrete Environment for testing
@@ -56,12 +60,12 @@ class DummyEnvironment(Environment):
 
         from verifiers.types import TrajectoryStep
         from verifiers.utils.response_utils import (
-            parse_response_messages,
+            parse_response_message,
             parse_response_tokens,
         )
 
-        completion_messages = await parse_response_messages(response, self.message_type)
-        tokens = await parse_response_tokens(response, self.message_type)
+        completion_messages = await parse_response_message(response)
+        tokens = await parse_response_tokens(response)
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
@@ -87,13 +91,13 @@ class DummyEnvironment(Environment):
 
 
 @pytest.fixture
-def make_dummy_env() -> Callable[[AsyncOpenAI, Dataset | None], DummyEnvironment]:
+def make_dummy_env():
     def _make_dummy_env(
-        mock_openai_client: AsyncOpenAI, dataset: Dataset | None = None, **kwargs
+        mock_client, dataset: Dataset | None = None, **kwargs
     ) -> DummyEnvironment:
         dataset = dataset or Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
         return DummyEnvironment(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=Parser(),
@@ -106,57 +110,171 @@ def make_dummy_env() -> Callable[[AsyncOpenAI, Dataset | None], DummyEnvironment
 
 @pytest.mark.asyncio
 async def test_get_model_response_chat_with_tools(
-    mock_openai_client, make_dummy_env, make_input
+    mock_client, make_dummy_env, make_input
 ):
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     prompt: vf.Messages = [{"role": "user", "content": "Hello"}]
-    tools = [
-        {
-            "type": "function",
-            "function": {"name": "echo", "description": "echo", "parameters": {}},
-        }
+    tool_defs = [
+        Tool(
+            name="echo",
+            description="echo",
+            parameters={},
+        )
     ]
     state = await env.init_state(
         input=make_input(prompt=prompt),
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
     )
-    state["oai_tools"] = tools
+    state["tool_defs"] = tool_defs
     resp = await env.get_model_response(
         state=state,
         prompt=prompt,
     )
-    # Ensure the client was invoked and received tools kwarg
-    assert hasattr(resp, "choices")
-    assert mock_openai_client.chat.completions.create.await_count == 1
-    kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
-    assert "tools" in kwargs and kwargs["tools"] == tools
+    # Ensure the client was invoked and returned provider-agnostic Response
+    assert isinstance(resp, vf.Response)
+    assert mock_client.call_count == 1
+    kwargs = mock_client.last_call_kwargs
+    assert kwargs["tools"] is not None
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0].name == "echo"
+    assert kwargs["tools"][0].description == "echo"
+    assert kwargs["tools"][0].parameters == {}
+
+
+@pytest.mark.asyncio
+async def test_get_model_response_tracks_usage_on_state(
+    mock_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_client)
+    prompt: vf.Messages = [{"role": "user", "content": "Track usage"}]
+    state = await env.init_state(
+        input=make_input(prompt=prompt),
+        client=mock_client,
+        model="test-model",
+    )
+
+    resp1 = Response(
+        id="1",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=11, reasoning_tokens=0, completion_tokens=7, total_tokens=18
+        ),
+        message=ResponseMessage(
+            content="ok",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    resp2 = Response(
+        id="2",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=3, reasoning_tokens=0, completion_tokens=2, total_tokens=5
+        ),
+        message=ResponseMessage(
+            content="ok2",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    mock_client.get_response = AsyncMock(side_effect=[resp1, resp2])
+
+    await env.get_model_response(state=state, prompt=prompt)
+    await env.get_model_response(state=state, prompt=prompt)
+
+    usage = env.get_state_usage(state)
+    assert usage == {"input_tokens": 14.0, "output_tokens": 9.0}
+    assert state["usage"] == {"input_tokens": 14.0, "output_tokens": 9.0}
+    assert "usage_tracker" in state
+    with pytest.raises(TypeError):
+        state["usage"]["input_tokens"] = 999  # read-only view
+
+
+@pytest.mark.asyncio
+async def test_state_to_output_uses_state_usage_not_trajectory(
+    mock_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_client)
+    prompt: vf.Messages = [{"role": "user", "content": "Track usage independently"}]
+    state = await env.init_state(
+        input=make_input(prompt=prompt),
+        client=mock_client,
+        model="test-model",
+    )
+
+    resp = Response(
+        id="1",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=5, reasoning_tokens=0, completion_tokens=4, total_tokens=9
+        ),
+        message=ResponseMessage(
+            content="ok",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    mock_client.get_response = AsyncMock(return_value=resp)
+
+    await env.get_model_response(state=state, prompt=prompt)
+    # Simulate user clobbering visible usage and omitting response from trajectory.
+    state["usage"] = {"input_tokens": 0.0, "output_tokens": 0.0}
+    state["trajectory"] = []
+    state["metrics"] = {}
+    state["reward"] = 0.0
+
+    output = state_to_output(state, state_columns=[])
+    assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
 
 
 @pytest.mark.asyncio
 async def test_get_model_response_completion_rejects_tools(
-    mock_openai_client, make_dummy_env, make_input
+    mock_client, make_dummy_env, make_input
 ):
-    env = make_dummy_env(mock_openai_client, message_type="completion")
-    with pytest.raises(vf.ModelError):
+    env = make_dummy_env(mock_client, message_type="completion")
+    # Mock get_response to raise ValueError like the real OpenAICompletionsClient does
+    mock_client.get_response = AsyncMock(
+        side_effect=ValueError(
+            "Completions API does not support tools. "
+            "Use chat_completions or messages client_type instead."
+        )
+    )
+    with pytest.raises(ValueError, match="does not support tools"):
         state = await env.init_state(
             input=make_input(prompt=[{"role": "user", "content": "Complete this"}]),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
-        state["oai_tools"] = [{"type": "function", "function": {"name": "noop"}}]
+        state["tool_defs"] = [
+            Tool(
+                name="noop",
+                description="",
+                parameters={},
+            )
+        ]
         await env.get_model_response(state=state, prompt="Complete this")
 
 
-def test_run_rollouts_with_max_concurrent(
-    mock_openai_client, make_dummy_env, make_input
-):
-    env = make_dummy_env(mock_openai_client)
+def test_run_rollouts_with_max_concurrent(mock_client, make_dummy_env, make_input):
+    env = make_dummy_env(mock_client)
     inputs = [make_input(example_id=i) for i in range(3)]
     outputs = asyncio.run(
         env.generate(
             inputs,
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             max_concurrent=2,
         )
@@ -165,15 +283,15 @@ def test_run_rollouts_with_max_concurrent(
     assert len(states) == 3
 
 
-def test_evaluate_fallback_and_repeat(mock_openai_client, make_dummy_env, make_input):
+def test_evaluate_fallback_and_repeat(mock_client, make_dummy_env, make_input):
     # No eval_dataset provided -> falls back to train; ensure >= num_examples
     from datasets import Dataset
 
     ds = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
-    env = make_dummy_env(mock_openai_client, dataset=ds)
+    env = make_dummy_env(mock_client, dataset=ds)
     outputs = asyncio.run(
         env.evaluate(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             num_examples=2,
             rollouts_per_example=2,
@@ -185,13 +303,11 @@ def test_evaluate_fallback_and_repeat(mock_openai_client, make_dummy_env, make_i
 
 
 @pytest.mark.asyncio
-async def test_generate_inside_running_loop(
-    mock_openai_client, make_dummy_env, make_input
-):
-    env = make_dummy_env(mock_openai_client)
+async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_input):
+    env = make_dummy_env(mock_client)
     inputs = [make_input(example_id=0)]
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
-    outputs = await env.generate(inputs, client=mock_openai_client, model="test-model")
+    outputs = await env.generate(inputs, client=mock_client, model="test-model")
     states = outputs["outputs"]
     assert len(states) == 1
     assert states[0].get("completion") is not None
@@ -199,7 +315,7 @@ async def test_generate_inside_running_loop(
 
 @pytest.mark.asyncio
 async def test_generate_grouped_scoring_distributes_per_group(
-    mock_openai_client, make_dummy_env, make_input
+    mock_client, make_dummy_env, make_input
 ):
     class StubEnvClient:
         def __init__(self):
@@ -230,12 +346,12 @@ async def test_generate_grouped_scoring_distributes_per_group(
                     "timestamp": "",
                     "token_usage": None,
                     "error": None,
-                    "oai_tools": None,
+                    "tool_defs": None,
                 }
                 for input_item in group_inputs
             ]
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     env.env_client = StubEnvClient()
 
     inputs = [
@@ -272,7 +388,7 @@ async def test_generate_grouped_scoring_distributes_per_group(
 
 @pytest.mark.asyncio
 async def test_run_group_server_mode_rejects_non_client_config_client(
-    mock_openai_client, make_dummy_env, make_input
+    mock_client, make_dummy_env, make_input
 ):
     class StubEnvClient:
         async def run_group(self, *args, **kwargs):
@@ -280,7 +396,7 @@ async def test_run_group_server_mode_rejects_non_client_config_client(
                 "run_group should not be called for invalid client type"
             )
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     env.env_client = StubEnvClient()
 
     with pytest.raises(ValueError, match="client must be have type ClientConfig"):
@@ -294,7 +410,7 @@ async def test_run_group_server_mode_rejects_non_client_config_client(
 
 @pytest.mark.asyncio
 async def test_run_group_server_mode_resolves_endpoint_config(
-    mock_openai_client, make_dummy_env, make_input
+    mock_client, make_dummy_env, make_input
 ):
     class StubEnvClient:
         def __init__(self):
@@ -325,12 +441,12 @@ async def test_run_group_server_mode_resolves_endpoint_config(
                     "timestamp": "",
                     "token_usage": None,
                     "error": None,
-                    "oai_tools": None,
+                    "tool_defs": None,
                 }
                 for input_item in group_inputs
             ]
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     stub_client = StubEnvClient()
     env.env_client = stub_client
 
@@ -353,7 +469,7 @@ async def test_run_group_server_mode_resolves_endpoint_config(
 
 @pytest.mark.asyncio
 async def test_run_rollout_server_mode_resolves_endpoint_config(
-    mock_openai_client, make_dummy_env, make_input, make_output
+    mock_client, make_dummy_env, make_input, make_output
 ):
     class StubEnvClient:
         def __init__(self):
@@ -372,7 +488,7 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
             self.client_url = str(client_config.api_base_url)
             return make_output(example_id=input["example_id"])
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     stub_client = StubEnvClient()
     env.env_client = stub_client
 
@@ -395,7 +511,7 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
 
 @pytest.mark.asyncio
 async def test_generate_resume_closes_local_endpoint_clients(
-    tmp_path, monkeypatch, mock_openai_client, make_dummy_env, make_input, make_output
+    tmp_path, monkeypatch, mock_client, make_dummy_env, make_input, make_output
 ):
     class LocalClientStub:
         def __init__(self):
@@ -406,14 +522,16 @@ async def test_generate_resume_closes_local_endpoint_clients(
 
     created_clients: list[LocalClientStub] = []
 
-    def fake_setup_client(_config):
-        client = LocalClientStub()
-        created_clients.append(client)
-        return client
+    def fake_resolve_client(_config):
+        wrapper = LocalClientStub()
+        created_clients.append(wrapper)
+        return wrapper
 
-    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+    monkeypatch.setattr(
+        "verifiers.envs.environment.resolve_client", fake_resolve_client
+    )
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     results_path = tmp_path / "resume-complete"
     results_path.mkdir()
     (results_path / "results.jsonl").write_text(
@@ -452,7 +570,7 @@ async def test_generate_resume_closes_local_endpoint_clients(
 
 @pytest.mark.asyncio
 async def test_generate_closes_partially_created_clients_on_setup_failure(
-    monkeypatch, mock_openai_client, make_dummy_env, make_input
+    monkeypatch, mock_client, make_dummy_env, make_input
 ):
     class LocalClientStub:
         def __init__(self):
@@ -464,17 +582,19 @@ async def test_generate_closes_partially_created_clients_on_setup_failure(
     created_clients: list[LocalClientStub] = []
     calls = {"count": 0}
 
-    def fake_setup_client(_config):
+    def fake_resolve_client(_config):
         calls["count"] += 1
         if calls["count"] == 2:
             raise RuntimeError("setup failed")
-        client = LocalClientStub()
-        created_clients.append(client)
-        return client
+        wrapper = LocalClientStub()
+        created_clients.append(wrapper)
+        return wrapper
 
-    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+    monkeypatch.setattr(
+        "verifiers.envs.environment.resolve_client", fake_resolve_client
+    )
 
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
     with pytest.raises(RuntimeError, match="setup failed"):
         await env.generate(
             inputs=[make_input(example_id=0)],
@@ -498,7 +618,7 @@ def test_sanitize_tool_calls_outputs_strings():
         def __init__(self, name: str, args: str):
             self.function = type("F", (), {"name": name, "arguments": args})()
 
-        def model_dump(self):
+        def model_dump(self, **kwargs):
             return {
                 "id": "x",
                 "type": "function",
@@ -523,9 +643,9 @@ def test_make_dataset_basic_without_tools(make_metadata, make_output):
 
 @pytest.mark.asyncio
 async def test_generate_resume_raises_on_metadata_mismatch(
-    tmp_path, mock_openai_client, make_dummy_env, make_input
+    tmp_path, mock_client, make_dummy_env, make_input
 ):
-    env = make_dummy_env(mock_openai_client)
+    env = make_dummy_env(mock_client)
 
     results_path = tmp_path / "resume"
     results_path.mkdir()
@@ -546,7 +666,7 @@ async def test_generate_resume_raises_on_metadata_mismatch(
     with pytest.raises(ValueError, match="metadata mismatch"):
         await env.generate(
             inputs=inputs,
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             results_path=results_path,
         )

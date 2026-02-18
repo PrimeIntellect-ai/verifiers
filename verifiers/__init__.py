@@ -1,4 +1,4 @@
-__version__ = "0.1.10.dev2"
+__version__ = "0.1.11.dev0"
 
 import importlib
 import os
@@ -18,6 +18,14 @@ from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
+from .clients.client import Client  # noqa # isort: skip
+from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa # isort: skip
+from .clients.openai_chat_completions_client import OpenAIChatCompletionsClient  # noqa # isort: skip
+from .clients.openai_chat_completions_token_client import (
+    OpenAIChatCompletionsTokenClient,
+)  # noqa # isort: skip
+
+from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup
@@ -43,7 +51,7 @@ from .utils.logging_utils import (
 )
 
 # Setup default logging configuration
-setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
+setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
     "DatasetBuilder",
@@ -71,6 +79,11 @@ __all__ = [
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    "Client",
+    "AnthropicMessagesClient",
+    "OpenAIChatCompletionsClient",
+    "OpenAIChatCompletionsTokenClient",
+    "OpenAICompletionsClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -144,6 +157,8 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
@@ -155,15 +170,13 @@ if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
-    from verifiers_rl.rl.trainer import (  # noqa: F401
-        GRPOConfig,
-        GRPOTrainer,
-        RLConfig,
-        RLTrainer,
-        grpo_defaults,
-        lora_defaults,
-    )
-    from verifiers_rl.rl.trainer.utils import (  # noqa: F401
-        get_model,
-        get_model_and_tokenizer,
-    )
+
+    # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
+    RLConfig: Any
+    RLTrainer: Any
+    GRPOTrainer: Any
+    GRPOConfig: Any
+    grpo_defaults: Any
+    lora_defaults: Any
+    get_model: Any
+    get_model_and_tokenizer: Any

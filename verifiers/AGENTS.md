@@ -105,7 +105,7 @@ uv add verifiers            # core
 uv add 'verifiers[all]'     # + training
 
 # Scaffold new environment
-vf-init new-environment
+prime env init new-environment
 
 # Install + test
 prime env install new-environment

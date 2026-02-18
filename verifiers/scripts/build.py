@@ -317,6 +317,22 @@ def _wait_for_ready(
     return last_status
 
 
+def _resolve_env_push_target(raw_env_id: str | None, raw_path: str) -> tuple[str, Path]:
+    base_path = Path(raw_path).expanduser().resolve()
+
+    if raw_env_id is None:
+        env_dir = base_path
+        env_id_underscore = env_dir.name
+        if not env_id_underscore:
+            raise ValueError("Could not infer environment id from --path.")
+    else:
+        _, env_id_underscore = _normalize_env_id(raw_env_id)
+        env_dir = base_path / env_id_underscore
+
+    env_id_dash = env_id_underscore.replace("_", "-")
+    return env_id_dash, env_dir
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -326,29 +342,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "env",
-        help="Environment id (hyphenated, e.g. openenv-echo).",
+        nargs="?",
+        help=(
+            "Optional environment id (hyphenated, e.g. openenv-echo). "
+            "When provided, it is appended to --path as the final directory name "
+            "after converting hyphens to underscores."
+        ),
     )
     parser.add_argument(
         "-p",
         "--path",
         default="./environments",
-        help="Path to the environments directory (default: ./environments).",
+        help=(
+            "Base path for environments (default: ./environments). "
+            "When env id is omitted, this should point directly to the target "
+            "environment directory."
+        ),
     )
     args = parser.parse_args(argv)
 
     try:
-        env_id_dash, env_id_underscore = _normalize_env_id(args.env)
+        env_id_dash, env_path = _resolve_env_push_target(args.env, args.path)
+        env_id_underscore = env_path.name
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
 
-    environments_root = Path(args.path).expanduser().resolve()
-    if not environments_root.exists() or not environments_root.is_dir():
-        print(f"Environments path not found: {environments_root}", file=sys.stderr)
+    if not env_path.exists() or not env_path.is_dir():
+        print(f"Environment path not found: {env_path}", file=sys.stderr)
         return 2
 
     try:
-        project_dir = _resolve_project_dir(environments_root, env_id_underscore)
+        project_dir = _resolve_project_dir(env_path.parent, env_id_underscore)
         dockerfile = _find_dockerfile(project_dir)
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
