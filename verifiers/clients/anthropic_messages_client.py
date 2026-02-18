@@ -53,6 +53,10 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_anthropic_client
 
+# Default output-token limit used when callers omit max_tokens.
+# Anthropic /v1/messages requires max_tokens on every request.
+ANTHROPIC_MAX_TOKENS: int = 32768
+
 
 def _handle_anthropic_overlong_prompt(func):
     """Decorator to handle overlong prompt errors from the Anthropic API."""
@@ -91,6 +95,12 @@ class AnthropicMessagesClient(
     """Wrapper for Messages API via AsyncAnthropic client."""
 
     def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
+        # Log the default and remind that max_tokens is required for Anthropic.
+        self.logger.info(
+            "Anthropic client initialized. max_tokens is required on every request; "
+            "defaulting to ANTHROPIC_MAX_TOKENS=%d when not provided.",
+            ANTHROPIC_MAX_TOKENS,
+        )
         return setup_anthropic_client(config)
 
     async def close(self) -> None:
@@ -356,7 +366,7 @@ class AnthropicMessagesClient(
                 )
             if max_tokens is None:
                 # Anthropic /v1/messages requires max_tokens to be set in every request.
-                max_tokens = 32768
+                max_tokens = ANTHROPIC_MAX_TOKENS
             sampling_args["max_tokens"] = max_tokens
 
             # Anthropic SDK validates top-level request fields.
