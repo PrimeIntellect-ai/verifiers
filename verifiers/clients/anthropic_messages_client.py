@@ -355,10 +355,9 @@ class AnthropicMessagesClient(
                     "sampling_args['extra_body'] must be a mapping when provided"
                 )
             if max_tokens is None:
-                self.logger.warning(
-                    "max_tokens is not set but Anthropic /v1/messages endpoint requires it, falling back to max_tokens=4096"
+                raise ValueError(
+                    "sampling_args['max_tokens'] is required for Anthropic /v1/messages requests"
                 )
-                max_tokens = 4096
             sampling_args["max_tokens"] = max_tokens
 
             # Anthropic SDK validates top-level request fields. Mirror OpenAI chat
