@@ -4,7 +4,7 @@ Recursive Language Model (RLM) Environment.
 Implements the RLM inference strategy where language models can decompose and
 recursively interact with input data of unbounded length through REPL environments.
 
-Based on: https://www.alexzhang.dev/blog/recursive-language-models
+Based on: https://alexzhang13.github.io/blog/2025/rlm/
 
 Architecture:
 - REPL loop runs in the framework (MultiTurnEnv pattern)

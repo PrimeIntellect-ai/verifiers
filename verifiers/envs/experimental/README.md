@@ -37,3 +37,7 @@ Tool split:
 - `sub_tools`: tools exposed to sub-LLMs
 
 `llm_batch` is a fixed root tool and always available (callable as a shell command in Bash mode, or a Python function in Python mode).
+
+## SRLMEnv
+
+Simpler RLM environment that uses the [rlms](https://pypi.org/project/rlms/) PyPI library (from the [RLM GitHub repo](https://github.com/alexzhang13/rlm)). Single-turn: one `rlm.completion(prompt)` per task, no sandbox or custom tools. Install with `pip install rlms`. When you run eval (e.g. `prime eval run`), the RLM library’s logger is used to save trajectory steps under the eval results folder in `outputs/.../rlm_trajectories/` (`.jsonl` files viewable with the RLM visualizer). The module docstring in `srlm_env.py` describes the ideal return shape for the RLM client (for when you modify the client) so it maps cleanly into verifiers' `Response` and usage tracking.
