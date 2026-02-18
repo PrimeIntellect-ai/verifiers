@@ -100,6 +100,9 @@ def setup_logging(
     # using logging.getLogger(__name__) emits JSON too
     if json_logging:
         root = logging.getLogger()
+        root.handlers = [
+            h for h in root.handlers if not isinstance(h.formatter, JsonFormatter)
+        ]
         root.setLevel(console_level)
         root_handler = logging.StreamHandler(sys.stderr)
         root_handler.setFormatter(formatter)
