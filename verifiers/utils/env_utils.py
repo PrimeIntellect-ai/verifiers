@@ -1,14 +1,58 @@
 import importlib
 import inspect
 import logging
-from typing import Callable
+from typing import Callable, cast
 
 from verifiers.envs.environment import Environment
 
 
-def load_environment(env_id: str, **env_args) -> Environment:
+def load_environment(
+    env_id: str,
+    tools: list[Callable] | list[str] | None = None,
+    **env_args,
+) -> Environment:
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
+
+    # Resolve tool names to functions if tools provided
+    if tools is not None:
+        if tools:
+            # Check for mixed types (both Callable and str in same list)
+            first_is_callable = callable(tools[0])
+            first_is_str = isinstance(tools[0], str)
+
+            if not first_is_callable and not first_is_str:
+                raise TypeError(
+                    f"tools must be list of Callable or list of str, "
+                    f"got list containing {type(tools[0]).__name__}"
+                )
+
+            # Verify all tools are same type
+            for i, tool in enumerate(tools):
+                is_callable = callable(tool)
+                is_str = isinstance(tool, str)
+
+                if is_callable and first_is_str:
+                    raise TypeError(
+                        f"tools must be all Callable or all str, got mixed types "
+                        f"(tool[0] is {type(tools[0]).__name__}, tool[{i}] is {type(tool).__name__})"
+                    )
+                if is_str and first_is_callable:
+                    raise TypeError(
+                        f"tools must be all Callable or all str, got mixed types "
+                        f"(tool[0] is {type(tools[0]).__name__}, tool[{i}] is {type(tool).__name__})"
+                    )
+
+            if first_is_str:
+                # String list: resolve via registry
+                from verifiers.utils.tool_registry import get_tools
+
+                tool_names = cast(list[str], tools)
+                logger.info(f"Resolving tools from registry: {tool_names}")
+                tools = get_tools(env_id, tool_names)
+
+        # Pass resolved tools to environment
+        env_args["tools"] = tools
 
     module_name = env_id.replace("-", "_").split("/")[-1]
     try:
