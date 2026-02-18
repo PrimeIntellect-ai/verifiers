@@ -8,8 +8,8 @@ from collections import Counter
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.types import Messages, State, SystemMessage, TrajectoryStep, UserMessage
-from verifiers.utils.message_utils import concat_messages, normalize_messages
+from verifiers.types import Messages, State, TrajectoryStep
+from verifiers.utils.message_utils import concat_messages
 
 
 class MultiAgentEnv(vf.StatefulToolEnv):
@@ -17,6 +17,9 @@ class MultiAgentEnv(vf.StatefulToolEnv):
     Multi-agent environment on top of StatefulToolEnv.
 
     `state["trajectory_id"]` is the active actor id.
+
+    Inlined and adapted for verifiers v0.1.10 compatibility
+    (no normalize_messages, no SystemMessage/UserMessage classes).
     """
 
     @abstractmethod
@@ -67,10 +70,8 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         step = self.last_step_for_trajectory_id(state, trajectory_id)
         if step is None:
             return None
-        step_prompt = normalize_messages(step["prompt"], field_name="trajectory.prompt")
-        step_completion = normalize_messages(
-            step["completion"], field_name="trajectory.completion"
-        )
+        step_prompt = step["prompt"]
+        step_completion = step["completion"]
         return concat_messages([step_prompt, step_completion])
 
     async def get_prompt_messages(self, state: State) -> Messages:
@@ -79,34 +80,24 @@ class MultiAgentEnv(vf.StatefulToolEnv):
                 "multiagent.turn initial actor=%s",
                 state["trajectory_id"],
             )
-            return normalize_messages(
-                self.get_prompt_for_actor([], state),
-                field_name="get_prompt_for_actor",
-            )
+            return self.get_prompt_for_actor([], state)
 
         self.logger.debug(
             "multiagent.turn resume trajectory_len=%s last_actor=%s",
             len(state["trajectory"]),
             state["trajectory"][-1]["trajectory_id"],
         )
-        prev_turn_prompt = normalize_messages(
-            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
-        )
-        prev_turn_completion = normalize_messages(
-            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
-        )
+        prev_turn_prompt = state["trajectory"][-1]["prompt"]
+        prev_turn_completion = state["trajectory"][-1]["completion"]
         prev_messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(prev_messages, state)
-        env_response_messages = normalize_messages(
-            env_response, field_name="env_response"
-        )
         prev_trajectory_id = state["trajectory"][-1]["trajectory_id"]
-        state["tool_responses"][prev_trajectory_id] = env_response_messages
-        state["trajectory"][-1]["extras"]["env_response"] = env_response_messages
+        state["tool_responses"][prev_trajectory_id] = env_response
+        state["trajectory"][-1]["extras"]["env_response"] = env_response
         self.logger.debug(
             "multiagent.env_response stored actor=%s message_count=%s",
             prev_trajectory_id,
-            len(env_response_messages),
+            len(env_response),
         )
         state["trajectory_id"] = self.get_next_actor_id(state)
         self.logger.debug("multiagent.turn switched actor=%s", state["trajectory_id"])
@@ -116,15 +107,9 @@ class MultiAgentEnv(vf.StatefulToolEnv):
                 "multiagent.prompt actor=%s history=none",
                 state["trajectory_id"],
             )
-            return normalize_messages(
-                self.get_prompt_for_actor([], state),
-                field_name="get_prompt_for_actor",
-            )
+            return self.get_prompt_for_actor([], state)
         actor_messages = messages
-        prompt_messages = normalize_messages(
-            self.get_prompt_for_actor(actor_messages, state),
-            field_name="get_prompt_for_actor",
-        )
+        prompt_messages = self.get_prompt_for_actor(actor_messages, state)
         tool_response = state["tool_responses"][state["trajectory_id"]]
         if tool_response is None:
             self.logger.warning(
@@ -135,17 +120,12 @@ class MultiAgentEnv(vf.StatefulToolEnv):
                 f"Missing tool response for actor '{state['trajectory_id']}'"
             )
 
-        tool_response_messages = normalize_messages(
-            tool_response, field_name="tool_responses"
-        )
         self.logger.debug(
             "multiagent.prompt actor=%s history=present tool_response_count=%s",
             state["trajectory_id"],
-            len(tool_response_messages),
+            len(tool_response),
         )
-        return concat_messages(
-            [actor_messages, tool_response_messages, prompt_messages]
-        )
+        return concat_messages([actor_messages, tool_response, prompt_messages])
 
     async def render_completion(self, state: State):
         """Render latest prompt/completion pair per actor from newest to oldest."""
@@ -163,24 +143,16 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             unique_steps.append(step)
 
         completion: Messages = []
-        for i, step in enumerate(unique_steps):
-            step_prompt = normalize_messages(
-                step["prompt"], field_name=f"trajectory[{i}].prompt"
-            )
-            step_completion = normalize_messages(
-                step["completion"], field_name=f"trajectory[{i}].completion"
-            )
+        for step in unique_steps:
+            step_prompt = step["prompt"]
+            step_completion = step["completion"]
             completion = concat_messages([completion, step_prompt, step_completion])
 
         if state.get("final_env_response") is not None:
-            completion = concat_messages(
-                [
-                    completion,
-                    normalize_messages(
-                        state["final_env_response"], field_name="final_env_response"
-                    ),
-                ]
-            )
+            final_resp = state["final_env_response"]
+            if isinstance(final_resp, str):
+                final_resp = [{"role": "assistant", "content": final_resp}]
+            completion = concat_messages([completion, final_resp])
 
         state["completion"] = completion
 
@@ -561,11 +533,12 @@ class PokerMultiAgentEnv(MultiAgentEnv):
     def get_prompt_for_actor(self, messages: Messages, state: State) -> Messages:
         actor_id = state["trajectory_id"]
         system_prompt = state["system_prompts"][actor_id]
-        game_state_message = UserMessage(
-            content=self._render_game_state_prompt(actor_id, state)
-        )
+        game_state_message = {
+            "role": "user",
+            "content": self._render_game_state_prompt(actor_id, state),
+        }
         if len(messages) == 0:
-            return [SystemMessage(content=system_prompt), game_state_message]
+            return [{"role": "system", "content": system_prompt}, game_state_message]
         return [game_state_message]
 
     def _remove_from_pending(self, state: State, actor_id: str) -> None:

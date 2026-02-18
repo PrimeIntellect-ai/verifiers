@@ -1,0 +1,19 @@
+[project]
+name = "writer-critiquer-multiagent"
+version = "0.1.0"
+tags = ["writing", "multi-agent", "stateful-tool", "llm-judge", "train", "eval"]
+license = "Apache-2.0"
+description = "Two-agent collaborative writing environment with writer and critiquer roles."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.11.dev0",
+    "datasets",
+    "openai",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["writer_critiquer_multiagent.py", "pyproject.toml"]
