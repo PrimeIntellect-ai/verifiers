@@ -43,9 +43,49 @@ DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
-DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+
+# Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
+PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
+    "prime": {
+        "url": "https://api.pinference.ai/api/v1",
+        "key": "PRIME_API_KEY",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1",
+        "key": "OPENROUTER_API_KEY",
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1",
+        "key": "OPENAI_API_KEY",
+    },
+    "anthropic": {
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
+        "client_type": "anthropic_messages",
+    },
+    "minimax": {
+        "url": "https://api.minimax.chat/v1",
+        "key": "MINIMAX_API_KEY",
+    },
+    "deepseek": {
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+    },
+    "glm": {
+        "url": "https://open.bigmodel.cn/api/paas/v4",
+        "key": "GLM_API_KEY",
+    },
+    "local": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+    "vllm": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+}
+DEFAULT_PROVIDER = "prime"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -110,10 +150,21 @@ def main():
     )
     parser.add_argument(
         "--env-dir-path",
-        "-p",
         type=str,
         default=DEFAULT_ENV_DIR_PATH,
         help="Path to environments directory",
+    )
+    parser.add_argument(
+        "--provider",
+        "-p",
+        type=str,
+        default=DEFAULT_PROVIDER,
+        choices=list(PROVIDER_CONFIGS.keys()),
+        help=(
+            "Inference provider shorthand. Resolves --api-base-url and --api-key-var "
+            "automatically. Explicit --api-base-url / --api-key-var take precedence. "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--endpoints-path",
@@ -146,20 +197,14 @@ def main():
         "-k",
         type=str,
         default=None,
-        help=(
-            "Environment variable name for API key "
-            "(defaults to PRIME_API_KEY when not set and not in registry)"
-        ),
+        help="Environment variable name for API key (overrides --provider)",
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
         default=None,
-        help=(
-            "Base URL for API. "
-            "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
-        ),
+        help="Base URL for API (overrides --provider)",
     )
     parser.add_argument(
         "--header",
@@ -388,6 +433,20 @@ def main():
                 "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
             )
 
+        # Apply provider shorthand: non-default provider acts as an override
+        # (like explicit --api-base-url / --api-key-var), while the default
+        # provider is only used as a fallback when the model is not in the
+        # endpoint registry.  Explicit CLI args always win.
+        raw_provider = raw.get("provider", DEFAULT_PROVIDER)
+        provider_cfg = PROVIDER_CONFIGS[raw_provider]
+        if raw_provider != DEFAULT_PROVIDER:
+            if raw_api_base_url is None:
+                raw_api_base_url = provider_cfg["url"]
+            if raw_api_key_var is None:
+                raw_api_key_var = provider_cfg["key"]
+            if raw_client_type is None and "client_type" in provider_cfg:
+                raw_client_type = provider_cfg["client_type"]
+
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         client_type_override = raw_client_type is not None
@@ -445,12 +504,14 @@ def main():
                 raw_model,
             )
             model = raw_model
-            api_key_var = raw_api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+            api_key_var = raw_api_key_var if api_key_override else provider_cfg["key"]
             api_base_url = (
-                raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+                raw_api_base_url if api_base_url_override else provider_cfg["url"]
             )
             client_type = (
-                raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
+                raw_client_type
+                if client_type_override
+                else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
             )
 
         # Merge sampling args
