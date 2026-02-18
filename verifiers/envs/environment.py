@@ -5,6 +5,7 @@ import atexit
 import inspect
 import json
 import logging
+import multiprocessing as mp
 import signal
 import time
 import uuid
@@ -14,7 +15,6 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-import multiprocessing as mp
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
@@ -35,7 +35,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.worker_utils import get_free_port, wait_for_env_server
+from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
@@ -1256,11 +1256,15 @@ class Environment(ABC):
     async def start_server(
         self,
         address: str | None = None,
-        extra_env_kwargs: dict[str, Any] = {},
+        extra_env_kwargs: dict[str, Any] | None = None,
+        # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
-        startup_timeout: float = 3600,  # 1h
+        # health check configs
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10m
+        recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1268,7 +1272,8 @@ class Environment(ABC):
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+        extra_env_kwargs = extra_env_kwargs or {}
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
@@ -1286,8 +1291,14 @@ class Environment(ABC):
             daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
-        self.env_client = ZMQEnvClient(address=address)
-        await wait_for_env_server(self.env_client, timeout=startup_timeout)
+        self.env_client = ZMQEnvClient(
+            address=address,
+            health_check_interval=health_check_interval,
+            startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
+            name=self.env_id,
+        )
+        await self.env_client.wait_for_server_startup()
 
     async def stop_server(self) -> None:
         """Stop the ZMQ server process for this environment.
