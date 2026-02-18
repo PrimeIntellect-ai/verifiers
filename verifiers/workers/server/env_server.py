@@ -32,15 +32,23 @@ class EnvServer(ABC):
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
+        json_logging: bool = False,
     ):
         # setup logging
         log_file = log_file or f"logs/{env_id}.log"
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         if log_level is None:
-            vf.setup_logging(log_file=log_file, log_file_level=log_file_level)
+            vf.setup_logging(
+                log_file=log_file,
+                log_file_level=log_file_level,
+                json_logging=json_logging,
+            )
         else:
             vf.setup_logging(
-                level=log_level, log_file=log_file, log_file_level=log_file_level
+                level=log_level,
+                log_file=log_file,
+                log_file_level=log_file_level,
+                json_logging=json_logging,
             )
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
