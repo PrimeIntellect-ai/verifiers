@@ -63,7 +63,7 @@ class InterceptionServer:
                 lambda _: web.json_response({"status": "ok"}),
             )
 
-            runner = web.AppRunner(app)
+            runner = web.AppRunner(app, access_log=None)
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", self.port)
             await site.start()

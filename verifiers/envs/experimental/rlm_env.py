@@ -2808,7 +2808,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 self._handle_root_tool_request,
             )
 
-            runner = web.AppRunner(app)
+            runner = web.AppRunner(app, access_log=None)
             await runner.setup()
             site = web.TCPSite(
                 runner, self._interception_bind_host, self.interception_port
