@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import itertools
 import math
-import os
 import random
 from collections import Counter
-from datetime import datetime, timezone
-from pathlib import Path
 
 from datasets import Dataset
 
@@ -17,7 +14,6 @@ from verifiers.types import Messages, State
 class PokerMultiAgentEnv(vf.MultiAgentEnv):
     SUITS = "cdhs"
     RANKS = "23456789TJQKA"
-    DEBUG_LOG_DIRNAME = "outputs/debug"
     EQUITY_EXACT_COMBO_LIMIT = 1500
     EQUITY_MONTE_CARLO_SAMPLES = 600
     SYSTEM_PROMPT = (
@@ -87,19 +83,7 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         return events if isinstance(events, list) else []
 
     def _write_debug_line(self, state: State, line: str) -> None:
-        debug_log_path = state.get("debug_log_path")
-        if not debug_log_path:
-            return
-        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        try:
-            with open(debug_log_path, "a", encoding="utf-8") as f:
-                f.write(f"{ts} | {line}\n")
-        except OSError as exc:
-            self.logger.warning(
-                "poker.debug_log_write_failed path=%s error=%s",
-                debug_log_path,
-                exc,
-            )
+        return
 
     def _write_debug_block(self, state: State, header: str, body: str) -> None:
         self._write_debug_line(state, header)
@@ -107,20 +91,7 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             self._write_debug_line(state, f"  {line}")
 
     def _init_debug_log(self, state: State) -> None:
-        debug_dir = Path(__file__).resolve().parent / self.DEBUG_LOG_DIRNAME
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-        seed = state.get("seed")
-        example_id = state.get("example_id")
-        pid = os.getpid()
-        filename = f"poker_debug_ex{example_id}_seed{seed}_{ts}_pid{pid}.log"
-        debug_path = (debug_dir / filename).resolve()
-        debug_path.write_text("", encoding="utf-8")
-        state["debug_log_path"] = str(debug_path)
-        self._write_debug_line(
-            state,
-            f"debug_log_initialized path={state['debug_log_path']} seed={seed} example_id={example_id}",
-        )
+        state["debug_log_path"] = None
 
     def _log_snapshot(self, state: State, label: str) -> None:
         board = (
@@ -353,6 +324,7 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         state["current_hand_number"] = 0
         state["hands_completed"] = 0
         state["hand_summaries"] = []
+        state["completed_hand_results"] = []
         state["last_hand_summary"] = None
         state["last_hand_result"] = {}
 
@@ -372,7 +344,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         state["match_payouts_by_player"] = {actor_id: 0 for actor_id in seats}
         state["rollout_completed_cleanly"] = True
         state["malformed_handoff"] = None
-        self._init_debug_log(state)
         started = self._start_next_hand(state, initial=True, emit_turn_event=False)
         if not started:
             self._finalize_match(state, reason="insufficient active players")
@@ -753,6 +724,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         pot_before: int,
         equity: float,
         illegal: bool,
+        raise_to: int | None = None,
+        raise_delta: int | None = None,
     ) -> None:
         record = {
             "hand_number": int(state.get("current_hand_number", 0)),
@@ -763,6 +736,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             "pot_before": int(pot_before),
             "equity": float(max(0.0, min(1.0, equity))),
             "illegal": bool(illegal),
+            "raise_to": int(raise_to) if isinstance(raise_to, int) else None,
+            "raise_delta": int(raise_delta) if isinstance(raise_delta, int) else None,
         }
         if "decision_records" not in state:
             state["decision_records"] = []
@@ -772,7 +747,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             (
                 f"decision_snapshot actor={actor_id} action={action} "
                 f"to_call={record['to_call']} pot_before={record['pot_before']} "
-                f"equity={record['equity']:.4f} illegal={record['illegal']}"
+                f"equity={record['equity']:.4f} illegal={record['illegal']} "
+                f"raise_to={record['raise_to']} raise_delta={record['raise_delta']}"
             ),
         )
 
@@ -926,8 +902,6 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
         )
         if state.get("last_hand_summary"):
             base = f"{base} Last hand: {state['last_hand_summary']}"
-        if state.get("debug_log_path"):
-            base = f"{base} Debug log: {state['debug_log_path']}"
         state["final_env_response"] = base
         self._append_turn_event(state, base)
         self._record_match_event(state, base)
@@ -987,13 +961,15 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
             self._record_action(state, f"Showdown winners: {winners_text} ({category})")
 
         state["last_hand_summary"] = hand_summary
-        state["last_hand_result"] = {
+        hand_result = {
             "reason": reason,
             "winners": winners,
             "payouts": payouts,
             "category_name": category_name,
             "hand_number": state["hands_completed"],
         }
+        state["last_hand_result"] = hand_result
+        state["completed_hand_results"].append(hand_result)
         state["hand_summaries"].append(hand_summary)
         self._record_match_event(state, hand_summary)
         self._append_turn_event(state, hand_summary)
@@ -1531,6 +1507,8 @@ class PokerMultiAgentEnv(vf.MultiAgentEnv):
                 pot_before=pot_before,
                 equity=equity_snapshot(),
                 illegal=False,
+                raise_to=amount,
+                raise_delta=delta,
             )
             previous_bet = state["current_bet"]
             self._commit_chips(state, actor_id, delta)
@@ -1714,6 +1692,18 @@ def load_environment(
     def _clamp01(value: float) -> float:
         return max(0.0, min(1.0, value))
 
+    def _to_float(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     async def pot_odds_decision_quality_reward(state: State) -> float:
         """
         Reward action quality using equity vs pot-odds at decision time.
@@ -1769,6 +1759,193 @@ def load_environment(
             return 0.0
         return weighted_score / total_weight
 
+    def _street_bluff_threshold(street: str) -> float:
+        thresholds = {
+            "preflop": 0.40,
+            "flop": 0.35,
+            "turn": 0.35,
+            "river": 0.25,
+        }
+        return thresholds.get(street, 0.35)
+
+    def _estimate_fold_equity_from_history(
+        records: list[dict],
+        *,
+        upto_index: int,
+        street: str,
+        current_hand: int,
+    ) -> tuple[float, int]:
+        def _usable_decision(record: object) -> bool:
+            if not isinstance(record, dict):
+                return False
+            if bool(record.get("illegal", False)):
+                return False
+            if _to_int(record.get("hand_number", 0), 0) >= current_hand:
+                return False
+            if _to_float(record.get("to_call", 0.0), 0.0) <= 0.0:
+                return False
+            action = str(record.get("action", "")).strip().lower()
+            return action in {"fold", "call", "raise"}
+
+        prior = [record for record in records[:upto_index] if _usable_decision(record)]
+        same_street_prior = [
+            record
+            for record in prior
+            if str(record.get("street", "")).strip().lower() == street
+        ]
+
+        observed = same_street_prior if len(same_street_prior) >= 2 else prior
+        folds = sum(
+            1
+            for record in observed
+            if str(record.get("action", "")).strip().lower() == "fold"
+        )
+        total = len(observed)
+        fold_equity = (folds + 1.0) / (total + 2.0)
+        return _clamp01(fold_equity), total
+
+    async def exploitative_bluff_ev_reward(state: State) -> float:
+        """
+        Reward positive-EV low-equity raises using fold-equity estimated from
+        earlier hands in the same match, with a bonus for improved later-hand
+        bluff quality.
+        """
+        if not task_rewards_enabled(state):
+            return 0.0
+
+        records = state.get("decision_records", [])
+        if not isinstance(records, list) or not records:
+            return 0.0
+
+        max_pot = max(_to_float(state.get("max_possible_payout", 1.0), 1.0), 1.0)
+        hands_target = max(_to_int(state.get("num_hands_target", 1), 1), 1)
+        midpoint_hand = max(hands_target // 2, 1)
+
+        weighted_score = 0.0
+        total_weight = 0.0
+        early_ev_norms: list[float] = []
+        late_ev_norms: list[float] = []
+
+        for idx, record in enumerate(records):
+            if not isinstance(record, dict):
+                continue
+            if bool(record.get("illegal", False)):
+                continue
+
+            action = str(record.get("action", "")).strip().lower()
+            if action != "raise":
+                continue
+
+            street = str(record.get("street", "")).strip().lower()
+            equity = _clamp01(_to_float(record.get("equity", 0.0), 0.0))
+            if equity >= _street_bluff_threshold(street):
+                continue
+
+            hand_number = _to_int(record.get("hand_number", 0), 0)
+            fold_equity, prior_samples = _estimate_fold_equity_from_history(
+                records,
+                upto_index=idx,
+                street=street,
+                current_hand=hand_number,
+            )
+
+            pot_before = max(_to_float(record.get("pot_before", 0.0), 0.0), 0.0)
+            to_call = max(_to_float(record.get("to_call", 0.0), 0.0), 0.0)
+
+            raise_delta = _to_float(record.get("raise_delta", 0.0), 0.0)
+            if raise_delta > 0.0:
+                risked_chips = raise_delta
+            elif to_call > 0.0:
+                # Approximate missing raise size as at least one additional call.
+                risked_chips = max(to_call * 2.0, to_call + 1.0)
+            else:
+                # Treat open bet risk as a quarter-pot baseline when to_call=0.
+                risked_chips = max(1.0, 0.25 * max(pot_before, 1.0))
+
+            bluff_ev = (fold_equity * pot_before) - ((1.0 - fold_equity) * risked_chips)
+            ev_norm = bluff_ev / max(pot_before + risked_chips, 1.0)
+            decision_score = _clamp01(0.5 + (2.0 * ev_norm))
+
+            confidence_weight = 0.5 + (0.5 * min(prior_samples / 6.0, 1.0))
+            pot_weight = 1.0 + min(pot_before / max_pot, 1.0)
+            weight = confidence_weight * pot_weight
+
+            weighted_score += decision_score * weight
+            total_weight += weight
+
+            if hand_number <= midpoint_hand:
+                early_ev_norms.append(ev_norm)
+            else:
+                late_ev_norms.append(ev_norm)
+
+        if total_weight == 0.0:
+            return 0.0
+
+        base_score = weighted_score / total_weight
+        if not early_ev_norms or not late_ev_norms:
+            return _clamp01(base_score)
+
+        early_mean = sum(early_ev_norms) / len(early_ev_norms)
+        late_mean = sum(late_ev_norms) / len(late_ev_norms)
+        adaptation_bonus = _clamp01(0.5 + (2.0 * (late_mean - early_mean)))
+        return _clamp01((0.8 * base_score) + (0.2 * adaptation_bonus))
+
+    async def successful_bluff_reward(state: State) -> float:
+        """
+        Reward only successful bluffs:
+        a low-equity raise by the eventual winner in a hand that ends by folds.
+        """
+        if not task_rewards_enabled(state):
+            return 0.0
+
+        hands_target = max(_to_int(state.get("num_hands_target", 1), 1), 1)
+        hand_results = state.get("completed_hand_results", [])
+        records = state.get("decision_records", [])
+        if not isinstance(hand_results, list) or not isinstance(records, list):
+            return 0.0
+
+        successful_bluffs = 0
+        for hand_result in hand_results:
+            if not isinstance(hand_result, dict):
+                continue
+            if str(hand_result.get("reason", "")).strip().lower() != "folds":
+                continue
+
+            hand_number = _to_int(hand_result.get("hand_number", 0), 0)
+            if hand_number <= 0:
+                continue
+
+            winners_raw = hand_result.get("winners", [])
+            if not isinstance(winners_raw, list) or not winners_raw:
+                continue
+            winners = {str(actor_id) for actor_id in winners_raw}
+
+            found_bluff = False
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                if bool(record.get("illegal", False)):
+                    continue
+                if _to_int(record.get("hand_number", 0), 0) != hand_number:
+                    continue
+                if str(record.get("action", "")).strip().lower() != "raise":
+                    continue
+
+                actor_id = str(record.get("actor_id", ""))
+                if actor_id not in winners:
+                    continue
+
+                street = str(record.get("street", "")).strip().lower()
+                equity = _clamp01(_to_float(record.get("equity", 0.0), 0.0))
+                if equity < _street_bluff_threshold(street):
+                    found_bluff = True
+                    break
+
+            if found_bluff:
+                successful_bluffs += 1
+
+        return _clamp01(successful_bluffs / hands_target)
+
     async def avg_abs_net_winnings_metric(state: State) -> float:
         """Average absolute net winnings per player, normalized by starting stack."""
         if not task_rewards_enabled(state):
@@ -1785,33 +1962,6 @@ def load_environment(
             for actor_id in seats
         ]
         return sum(abs(delta) for delta in deltas) / (num_players * starting_stack)
-
-    async def bluff_success_reward(state: State) -> float:
-        """Reward for winning by folds with a weak hand. Encourages bluffing."""
-        if not task_rewards_enabled(state):
-            return 0.0
-        last_hand_result = state.get("last_hand_result", {})
-        if last_hand_result.get("reason") != "folds":
-            return 0.0
-        winners = last_hand_result.get("winners", [])
-        if not winners:
-            return 0.0
-        winner = winners[0]
-        hole_cards = state["players"][winner]["hole_cards"]
-        if len(hole_cards) != 2:
-            return 0.0
-        # simple preflop hand strength: rank sum normalized, bonus for pairs/suited
-        rank_order = "23456789TJQKA"
-        r0 = rank_order.index(hole_cards[0][0]) + 2  # 2-14
-        r1 = rank_order.index(hole_cards[1][0]) + 2
-        strength = (r0 + r1) / 28.0  # AA=1.0, 2-3=0.18
-        if hole_cards[0][1] == hole_cards[1][1]:  # suited
-            strength += 0.05
-        if r0 == r1:  # paired
-            strength += 0.10
-        strength = min(strength, 1.0)
-        # reward is inverse: weaker hand = better bluff
-        return 1.0 - strength
 
     async def showdown_rate(state: State) -> float:
         """Fraction of completed hands that reached showdown."""
@@ -1859,15 +2009,16 @@ def load_environment(
         funcs=[
             streets_seen_reward,
             pot_odds_decision_quality_reward,
+            exploitative_bluff_ev_reward,
+            successful_bluff_reward,
             malformed_handoff_count,
             illegal_action_count_metric,
             avg_abs_net_winnings_metric,
-            bluff_success_reward,
             showdown_rate,
             aggression_ratio,
             pot_size_metric,
         ],
-        weights=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     )
     return PokerMultiAgentEnv(
         dataset=dataset,
