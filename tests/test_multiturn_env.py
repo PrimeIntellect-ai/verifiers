@@ -559,11 +559,17 @@ class TestMultiTurnEnv:
     @pytest.mark.asyncio
     async def test_multiturn_rollout_with_early_error(self, mock_client, sample_chat_dataset, make_input):
         """Test that early errors (before any turns) don't crash cleanup."""
+        import verifiers as vf
+
         # Create environment with error during setup
         class ErrorDuringSetupEnv(MultiTurnEnv):
+            async def env_response(self, messages, state, **kwargs):
+                # This should never be called due to error in setup_state
+                return []
+
             async def setup_state(self, state, **kwargs):
                 # Simulate an error that occurs before any trajectory steps
-                raise RuntimeError("Setup failed")
+                raise vf.SandboxError("Setup failed")
 
         env = ErrorDuringSetupEnv(
             client=mock_client,
