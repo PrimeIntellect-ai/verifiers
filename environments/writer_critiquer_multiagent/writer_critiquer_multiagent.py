@@ -14,7 +14,6 @@ from verifiers.types import (
     Messages,
     State,
     SystemMessage,
-    Tool,
     UserMessage,
 )
 
@@ -58,21 +57,8 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
     WRITER_ID = "writer"
     CRITIQUER_ID = "critiquer"
 
-    WRITER_TOOL_NAME = "submit_draft"
-    CRITIQUER_TOOL_NAME = "submit_feedback"
-
     def __init__(self, max_turns: int = 6, **kwargs):
         super().__init__(tools=[], max_turns=max_turns, **kwargs)
-        self.add_tool(self.submit_draft, args_to_skip=["state"])
-        self.add_tool(self.submit_feedback, args_to_skip=["state"])
-
-        self.actor_tool_names = {
-            self.WRITER_ID: self.WRITER_TOOL_NAME,
-            self.CRITIQUER_ID: self.CRITIQUER_TOOL_NAME,
-        }
-        self.tool_defs_by_name = {
-            tool_def.name: tool_def for tool_def in (self.tool_defs or [])
-        }
 
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
@@ -89,8 +75,6 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
         state["draft_history"] = []
         state["feedback_history"] = []
         state["collaboration_log"] = []
-
-        self._set_visible_tool_for_actor(state["trajectory_id"], state)
         self.logger.debug(
             "writer_critiquer.setup topic=%r initial_actor=%s max_turns=%s",
             state["topic"][:80],
@@ -104,12 +88,12 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
             self.WRITER_ID: (
                 "You are the writer in a two-agent collaboration. "
                 "Write strong, clear, specific prose that addresses the topic and latest critique. "
-                f"On every turn call `{self.WRITER_TOOL_NAME}` exactly once with your full draft text."
+                "You may use tools during your turn if available, but finish by providing the final draft handoff."
             ),
             self.CRITIQUER_ID: (
                 "You are the critiquer in a two-agent collaboration. "
                 "Give specific, actionable, high-signal feedback that improves structure, clarity, style, and correctness. "
-                f"On every turn call `{self.CRITIQUER_TOOL_NAME}` exactly once with your feedback text."
+                "You may use tools during your turn if available, but finish by providing critique handoff."
             ),
         }
 
@@ -121,22 +105,20 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
             return self.CRITIQUER_ID
         return self.WRITER_ID
 
-    def update_tool_args(
-        self,
-        tool_name: str,
-        tool_args: dict,
-        messages: Messages,
-        state: State,
-        **kwargs,
-    ) -> dict:
-        return {**tool_args, "state": state}
-
-    def _set_visible_tool_for_actor(self, actor_id: str, state: State) -> None:
-        tool_name = self.actor_tool_names[actor_id]
-        tool_def: Tool | None = self.tool_defs_by_name.get(tool_name)
-        if tool_def is None:
-            raise ValueError(f"Missing tool definition for '{tool_name}'")
-        state["tool_defs"] = [tool_def]
+    def get_handoff_schema(self, actor_id: str, state: State) -> dict:
+        if actor_id == self.WRITER_ID:
+            return {
+                "type": "object",
+                "properties": {"writing": {"type": "string", "minLength": 1}},
+                "required": ["writing"],
+                "additionalProperties": False,
+            }
+        return {
+            "type": "object",
+            "properties": {"feedback": {"type": "string", "minLength": 1}},
+            "required": ["feedback"],
+            "additionalProperties": False,
+        }
 
     def _latest_draft(self, state: State) -> str | None:
         draft_history = state.get("draft_history", [])
@@ -152,7 +134,7 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
             return str(last)
         return None
 
-    async def submit_draft(self, writing: str, state: State) -> str:
+    async def _store_draft(self, writing: str, state: State) -> str:
         """
         Store a writer draft version.
 
@@ -185,7 +167,7 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
         )
         return f"Stored draft #{draft_num}."
 
-    async def submit_feedback(self, feedback: str, state: State) -> str:
+    async def _store_feedback(self, feedback: str, state: State) -> str:
         """
         Store a critique feedback message.
 
@@ -218,6 +200,11 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
         )
         return f"Stored feedback #{feedback_num}."
 
+    async def apply_handoff(self, actor_id: str, handoff: dict, state: State):
+        if actor_id == self.WRITER_ID:
+            return await self._store_draft(str(handoff.get("writing", "")), state)
+        return await self._store_feedback(str(handoff.get("feedback", "")), state)
+
     def _writer_user_prompt(self, state: State) -> str:
         topic = state["topic"]
         latest_feedback = self._latest_feedback(state)
@@ -231,7 +218,7 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
             f"Writing topic:\n{topic}\n\n"
             f"Most recent feedback:\n{feedback_text}\n\n"
             "Write a complete draft that directly addresses the topic and incorporates the feedback where useful. "
-            "Call submit_draft once with the full draft in the `writing` field."
+            "End your turn with a handoff whose `writing` field is your full draft."
         )
 
     def _critiquer_user_prompt(self, state: State) -> str:
@@ -246,12 +233,11 @@ class WriterCritiquerMultiAgentEnv(vf.MultiAgentEnv):
             f"Most recent draft:\n{draft_text}\n\n"
             "Give specific, prioritized, and actionable critique to improve the next draft. "
             "Cover structure, argument quality, clarity, style, and mechanics. "
-            "Call submit_feedback once with your feedback in the `feedback` field."
+            "End your turn with a handoff whose `feedback` field contains your critique."
         )
 
     def get_prompt_for_actor(self, messages: Messages, state: State) -> Messages:
         actor_id = state["trajectory_id"]
-        self._set_visible_tool_for_actor(actor_id, state)
 
         if actor_id == self.WRITER_ID:
             user_content = self._writer_user_prompt(state)

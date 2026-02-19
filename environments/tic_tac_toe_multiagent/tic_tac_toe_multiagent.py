@@ -10,7 +10,6 @@ class TicTacToeMultiAgentEnv(vf.MultiAgentEnv):
 
     def __init__(self, max_turns: int = 9, **kwargs):
         super().__init__(tools=[], max_turns=max_turns, **kwargs)
-        self.add_tool(self.make_move, args_to_skip=["state"])
 
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
@@ -22,11 +21,11 @@ class TicTacToeMultiAgentEnv(vf.MultiAgentEnv):
         return {
             self.PLAYER_X_ID: (
                 "You are player X in tic-tac-toe. "
-                "Use make_move with an integer from 1 to 9."
+                "You may use tools during your turn if available. End your turn by handing off a board position."
             ),
             self.PLAYER_O_ID: (
                 "You are player O in tic-tac-toe. "
-                "Use make_move with an integer from 1 to 9."
+                "You may use tools during your turn if available. End your turn by handing off a board position."
             ),
         }
 
@@ -38,17 +37,13 @@ class TicTacToeMultiAgentEnv(vf.MultiAgentEnv):
             return self.PLAYER_O_ID
         return self.PLAYER_X_ID
 
-    def update_tool_args(
-        self,
-        tool_name: str,
-        tool_args: dict,
-        messages: Messages,
-        state: State,
-        **kwargs,
-    ) -> dict:
-        if tool_name == "make_move":
-            return {**tool_args, "state": state}
-        return tool_args
+    def get_handoff_schema(self, actor_id: str, state: State) -> dict:
+        return {
+            "type": "object",
+            "properties": {"position": {"type": "integer", "minimum": 1, "maximum": 9}},
+            "required": ["position"],
+            "additionalProperties": False,
+        }
 
     def actor_mark(self, actor_id: str) -> str:
         if actor_id == self.PLAYER_X_ID:
@@ -90,7 +85,7 @@ class TicTacToeMultiAgentEnv(vf.MultiAgentEnv):
     def is_draw(self, board_state: list[str]) -> bool:
         return all(cell != " " for cell in board_state)
 
-    async def make_move(self, position: int, state: State) -> str:
+    async def _apply_move(self, position: int, state: State) -> str:
         """
         Play a tic-tac-toe move.
 
@@ -151,6 +146,10 @@ class TicTacToeMultiAgentEnv(vf.MultiAgentEnv):
 
         self.logger.debug("ttt.move applied actor=%s position=%s", actor_id, position)
         return f"Successfully played move {position}."
+
+    async def apply_handoff(self, actor_id: str, handoff: dict, state: State):
+        position = int(handoff["position"])
+        return await self._apply_move(position=position, state=state)
 
     def get_prompt_for_actor(self, messages: Messages, state: State) -> Messages:
         actor_id = state["trajectory_id"]
