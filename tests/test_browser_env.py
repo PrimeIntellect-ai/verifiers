@@ -8,6 +8,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 from datasets import Dataset
+import verifiers as vf
 
 # Skip all tests in this module if browser dependencies are not installed
 pytest.importorskip("stagehand", reason="verifiers[browser] extra not installed")
@@ -297,6 +298,75 @@ class TestCUAModeScreenshotFilter:
         # Both screenshots should be preserved (2 < 5)
         assert filtered[0]["content"][0]["type"] == "image_url"
         assert filtered[1]["content"][0]["type"] == "image_url"
+
+
+
+
+class TestCUAModeSetupErrors:
+    """Tests for setup_state error wrapping in CUAMode."""
+
+    def test_local_setup_errors_wrapped_as_vf_error(self):
+        """Test local setup_state wraps unexpected exceptions in BrowserSessionSetupError."""
+        import asyncio
+
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
+            BrowserSessionSetupError,
+            CUAMode,
+        )
+
+        mode = CUAMode(execution_mode="local")
+
+        class FailingAttempt:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class SingleAttemptRetry:
+            def __init__(self):
+                self._used = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._used:
+                    raise StopAsyncIteration
+                self._used = True
+                return FailingAttempt()
+
+        mode.retrying = SingleAttemptRetry()
+
+        async def fail_create_session_http():
+            raise RuntimeError("boom")
+
+        mode._create_session_http = fail_create_session_http  # type: ignore[method-assign]
+
+        with pytest.raises(BrowserSessionSetupError):
+            asyncio.run(mode.setup_state({}))
+
+
+class TestBrowserEnvStopErrors:
+    """Tests for BrowserEnv stop error configuration."""
+
+    def test_cua_defaults_stop_errors_to_sandbox_error(self):
+        """Test CUA mode configures stop_errors to include vf.SandboxError by default."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+
+        with patch.dict(os.environ, {"BROWSERBASE_API_KEY": "test"}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+        assert any(err_type is vf.SandboxError for err_type in env.stop_errors)
 
 
 class TestCUAModeResponseFormat:
