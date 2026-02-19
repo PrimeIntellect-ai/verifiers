@@ -34,7 +34,7 @@ Configure model and sampling:
 
 ```bash
 prime eval run {env_id_dash} \
-  -m gpt-4.1-mini \
+  -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{{"key": "value"}}'  # env-specific args as JSON
 ```

@@ -11,15 +11,15 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
 ```bash
-prime eval run my-env -m gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
 ```
 2. Use owner/env slug directly when evaluating Hub environments:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 5
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
 ```
 3. Scale only after smoke pass:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
 
@@ -57,7 +57,7 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted eval workflows, prefer running large jobs against the Hub slug:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 
 ## Prefer Config-Driven Evals Beyond Smoke Tests
