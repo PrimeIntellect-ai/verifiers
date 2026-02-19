@@ -29,7 +29,7 @@ from anthropic.types import (
 )
 
 from verifiers.clients.client import Client
-from verifiers.errors import OverlongPromptError
+from verifiers.errors import OverlongPromptError, RateLimitError as VFRateLimitError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -60,6 +60,9 @@ def _handle_anthropic_overlong_prompt(func):
         except (AuthenticationError, PermissionDeniedError):
             raise
         except BadRequestError as e:
+            # Check for HTTP 429 rate limit
+            if hasattr(e, "response") and hasattr(e.response, "status_code") and e.response.status_code == 429:
+                raise VFRateLimitError(f"Anthropic rate limit: {e}") from e
             error_text = e.message.lower()
             context_length_phrases = [
                 "prompt is too long",

@@ -109,15 +109,25 @@ def maybe_retry(
     max_retries: int = 0,
     initial: float = 1.0,
     max_wait: float = 60.0,
+    jitter: bool = True,
     error_types: tuple[type[Exception], ...] = (
         vf.InfraError,
         vf.InvalidModelResponseError,
+        vf.RateLimitError,
     ),
 ) -> Callable[..., Coroutine[Any, Any, T]]:
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
     Re-raises specified errors from state["error"] to trigger tenacity retry.
     Returns result with error in state if retries are exhausted (does not crash).
+
+    Args:
+        func: Async function to wrap with retry logic
+        max_retries: Maximum number of retry attempts (0 = no retry)
+        initial: Initial delay in seconds for exponential backoff
+        max_wait: Maximum wait time between retries
+        jitter: Whether to add random jitter to avoid thundering herd
+        error_types: Tuple of exception types to retry on
 
     Usage:
         state = await maybe_retry(self.run_rollout, max_retries=3)(input, client, ...)
@@ -187,7 +197,11 @@ def maybe_retry(
     return tc.AsyncRetrying(
         retry=tc.retry_if_exception_type(error_types),
         stop=tc.stop_after_attempt(max_retries + 1),
-        wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
+        wait=(
+            tc.wait_exponential_jitter(initial=initial, max=max_wait)
+            if jitter
+            else tc.wait_exponential(multiplier=1, min=initial, max=max_wait)
+        ),
         before_sleep=log_retry,
         retry_error_callback=return_last_result,
         reraise=True,
