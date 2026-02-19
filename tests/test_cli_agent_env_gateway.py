@@ -259,3 +259,43 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
 
     await env.teardown_resources()
     assert tunnel.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
+    FakeTunnel.instances.clear()
+    monkeypatch.setattr(cli_agent_env, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        gateway_port=8000,
+    )
+
+    url_a = await env.get_tunnel_url(local_addr="10.20.0.58")
+    url_b = await env.get_tunnel_url(local_addr="10.20.0.59")
+    url_a_reuse = await env.get_tunnel_url(local_addr="10.20.0.58")
+
+    assert url_a == "https://unit-test.tunnel.prime.ai"
+    assert url_b == "https://unit-test.tunnel.prime.ai"
+    assert url_a_reuse == url_a
+
+    assert len(FakeTunnel.instances) == 2
+    assert {t.local_addr for t in FakeTunnel.instances} == {"10.20.0.58", "10.20.0.59"}
+    assert sum(t.start_calls for t in FakeTunnel.instances) == 2
+
+    with pytest.raises(
+        ValueError, match="local_addr is required when multiple tunnels are active"
+    ):
+        await env.get_tunnel_url()
+
+    await env.teardown_resources()
+    assert sum(t.stop_calls for t in FakeTunnel.instances) == 2
