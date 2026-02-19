@@ -562,11 +562,12 @@ class SFTConfig(TrainingArguments):
         if self.eval_strategy != "no":
             self.per_device_eval_batch_size = self.micro_batch_size
 
+        super().__post_init__()
+
         # Calculate gradient accumulation steps to achieve effective batch_size
+        # Must be AFTER super().__post_init__() so world_size is properly initialized
         num_processes = self.world_size
         self.gradient_accumulation_steps = self.batch_size // (self.micro_batch_size * num_processes)
-
-        super().__post_init__()
 
         # Validate batch size
         assert self.batch_size % (self.micro_batch_size * num_processes) == 0, (

@@ -597,10 +597,19 @@ class SFTTrainer(Trainer):
         Much simpler than RLTrainer's PPO loss with importance sampling.
         """
         # Forward pass
+        # Get labels, masking pad tokens with -100 so they're ignored in loss
+        labels = inputs.get("labels")
+        if labels is None:
+            labels = inputs["input_ids"].clone()
+            # Mask pad tokens with -100 (HuggingFace ignores this index in loss)
+            attention_mask = inputs.get("attention_mask")
+            if attention_mask is not None:
+                labels[attention_mask == 0] = -100
+
         outputs = model(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
-            labels=inputs.get("labels", inputs["input_ids"]),
+            labels=labels,
         )
 
         # Standard cross-entropy loss
@@ -634,6 +643,39 @@ class SFTTrainer(Trainer):
 
         return loss
 
+    async def _generate_samples_async(self, sample_indices: list[int]) -> list[dict]:
+        """Generate samples asynchronously using vLLM."""
+        samples = []
+        for idx in sample_indices:
+            example = self.train_dataset[idx]
+            # Assuming dataset has 'prompt' field with messages
+            prompt = example.get("prompt", example)
+
+            # Convert prompt to proper format for OpenAI API
+            if isinstance(prompt, str):
+                messages = [{"role": "user", "content": prompt}]
+            elif isinstance(prompt, list):
+                messages = prompt
+            else:
+                messages = [{"role": "user", "content": str(prompt)}]
+
+            # Generate using vLLM (via async OpenAI API)
+            response = await self.vllm_client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=self.max_seq_len,
+                temperature=1.0,
+            )
+
+            completion = response.choices[0].message.content or ""
+
+            samples.append({
+                "prompt": prompt,
+                "completion": completion,
+            })
+
+        return samples
+
     def _generate_and_log_samples(self):
         """Generate samples using vLLM and log them."""
         if not self.vllm_client:
@@ -649,36 +691,8 @@ class SFTTrainer(Trainer):
                 min(self.vllm_num_samples, len(self.train_dataset))
             )
 
-            samples = []
-            for idx in sample_indices:
-                example = self.train_dataset[idx]
-                # Assuming dataset has 'prompt' field with messages
-                prompt = example.get("prompt", example)
-
-                # Convert prompt to proper format for OpenAI API
-                if isinstance(prompt, str):
-                    messages = [{"role": "user", "content": prompt}]
-                elif isinstance(prompt, list):
-                    messages = prompt
-                else:
-                    messages = [{"role": "user", "content": str(prompt)}]
-
-                # Generate using vLLM (via async OpenAI API)
-                response = asyncio.run(
-                    self.vllm_client.chat.completions.create(
-                        model=self.model_name,
-                        messages=messages,
-                        max_tokens=self.max_seq_len,
-                        temperature=1.0,
-                    )
-                )
-
-                completion = response.choices[0].message.content or ""
-
-                samples.append({
-                    "prompt": prompt,
-                    "completion": completion,
-                })
+            # Use single asyncio.run() for all samples (not in loop!)
+            samples = asyncio.run(self._generate_samples_async(sample_indices))
 
             # Log samples
             self._log_samples(samples)
