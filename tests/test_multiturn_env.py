@@ -555,3 +555,35 @@ class TestMultiTurnEnv:
         assert completion[0]["content"] == "First response"
         assert completion[1]["role"] == "user"
         assert completion[1]["content"] == "Final feedback"
+
+    @pytest.mark.asyncio
+    async def test_multiturn_rollout_with_early_error(self, mock_client, sample_chat_dataset, make_input):
+        """Test that early errors (before any turns) don't crash cleanup."""
+        # Create environment with error during setup
+        class ErrorDuringSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state, **kwargs):
+                # Simulate an error that occurs before any trajectory steps
+                raise RuntimeError("Setup failed")
+
+        env = ErrorDuringSetupEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        prompt = [{"role": "user", "content": "Test"}]
+        input_data = make_input(prompt=prompt, answer="test")
+
+        # Should not raise - cleanup should handle empty trajectory
+        state = await env.rollout(
+            input=input_data,
+            client=mock_client,
+            model="test-model",
+        )
+
+        # Verify error was captured
+        assert state.get("error") is not None
+        # Verify cleanup ran (trajectory may be empty or have partial data)
+        assert "trajectory" in state
