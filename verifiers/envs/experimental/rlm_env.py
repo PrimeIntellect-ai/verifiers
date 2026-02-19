@@ -3294,9 +3294,10 @@ class RLMEnv(vf.StatefulToolEnv):
     async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
         if self._use_shared_pool:
-            if self._has_pool_ref:
-                await _interception_pool.release(self.interception_port)
-                self._has_pool_ref = False
+            async with self._server_lock:
+                if self._has_pool_ref:
+                    await _interception_pool.release(self.interception_port)
+                    self._has_pool_ref = False
             return
         async with self._tunnel_lock:
             if self._tunnel is not None:
