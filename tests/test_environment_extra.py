@@ -314,6 +314,70 @@ async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_in
 
 
 @pytest.mark.asyncio
+async def test_generate_uses_env_image_mode_setting_for_https_image_urls(
+    mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+    env.set_kwargs(image_mode="placeholder")
+    image_prompt: vf.Messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/sample.png"},
+                },
+            ],
+        }
+    ]
+
+    outputs = await env.generate(
+        [make_input(example_id=0, prompt=image_prompt)],
+        client=mock_openai_client,
+        model="test-model",
+    )
+
+    prompt = outputs["outputs"][0]["prompt"]
+    assert isinstance(prompt, list)
+    assert prompt[0]["content"] == "describe this image\n\n[image]"
+    assert "images" not in prompt[0]
+
+
+@pytest.mark.asyncio
+async def test_generate_explicit_image_mode_overrides_env_setting(
+    mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+    env.set_kwargs(image_mode="placeholder")
+    image_prompt: vf.Messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        }
+    ]
+
+    outputs = await env.generate(
+        [make_input(example_id=0, prompt=image_prompt)],
+        client=mock_openai_client,
+        model="test-model",
+        image_mode="base64",
+    )
+
+    prompt = outputs["outputs"][0]["prompt"]
+    assert isinstance(prompt, list)
+    assert prompt[0]["content"] == "describe this image\n\n[image]"
+    assert prompt[0]["images"][0]["media_type"] == "image/png"
+    assert prompt[0]["images"][0]["base64"] == "QUJDRA=="
+
+
+@pytest.mark.asyncio
 async def test_generate_grouped_scoring_distributes_per_group(
     mock_client, make_dummy_env, make_input
 ):
@@ -329,7 +393,7 @@ async def test_generate_grouped_scoring_distributes_per_group(
             sampling_args,
             max_retries,
             state_columns,
-            image_mode="placeholder",
+            image_mode="base64",
             max_image_base64_chars=None,
         ):
             assert isinstance(client_config, ClientConfig)
@@ -426,7 +490,7 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             sampling_args,
             max_retries,
             state_columns,
-            image_mode="placeholder",
+            image_mode="base64",
             max_image_base64_chars=None,
         ):
             assert isinstance(client_config, ClientConfig)
@@ -487,7 +551,7 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
             sampling_args,
             max_retries,
             state_columns,
-            image_mode="placeholder",
+            image_mode="base64",
             max_image_base64_chars=None,
         ):
             assert isinstance(client_config, ClientConfig)
