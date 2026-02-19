@@ -183,6 +183,85 @@ The best way to improve training is to ensure appropriate task difficulty for yo
 
 `verifiers` is intended to be largely trainer-agnostic and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
 
+### `vf.SFTTrainer`
+
+Supervised Fine-Tuning (SFT) trainer for training models on static datasets. `SFTTrainer` provides a consistent API with `vf.RLTrainer`, making it easy to transition from SFT to RL workflows. It uses standard cross-entropy loss and supports optional vLLM integration for monitoring sample quality during training.
+
+**Installation**: `pip install verifiers[rl]`
+
+**Usage**:
+```python
+import verifiers as vf
+from datasets import load_dataset
+
+# Load dataset
+dataset = load_dataset("willcb/V3-wordle", split="train")
+
+# Create config
+config = vf.SFTConfig(
+    run_name="wordle-sft",
+    max_steps=500,
+    learning_rate=2e-5,
+    batch_size=512,
+    micro_batch_size=8,
+    use_lora=True,
+    lora_rank=8,
+)
+
+# Create and train
+trainer = vf.SFTTrainer(
+    model="Qwen/Qwen3-4B-Instruct",
+    train_dataset=dataset,
+    args=config,
+)
+trainer.train()
+```
+
+**CLI Usage**:
+```bash
+vf-sft @ path/to/config.toml
+```
+
+**Example TOML config**:
+```toml
+model = "Qwen/Qwen3-4B-Instruct"
+dataset = "willcb/V3-wordle"
+
+[sft]
+run_name = "wordle-sft"
+max_steps = 500
+learning_rate = 2e-5
+batch_size = 512
+micro_batch_size = 8
+use_lora = true
+lora_rank = 8
+use_liger = true
+bf16 = true
+gradient_checkpointing = false
+report_to = "wandb"
+```
+
+**Key Features**:
+- Same configuration structure as `RLConfig`
+- Simple cross-entropy loss (no PPO, no orchestrator)
+- Optional vLLM integration for sample generation (`use_vllm=True`)
+- Same logging and metrics patterns as `RLTrainer`
+
+**SFT → RL Workflow**:
+```python
+# Phase 1: SFT
+sft_trainer = vf.SFTTrainer(model="Qwen/Qwen3-4B-Instruct", ...)
+sft_trainer.train()
+
+# Phase 2: RL on SFT checkpoint
+rl_trainer = vf.RLTrainer(
+    model="outputs/wordle-sft/checkpoint-500",  # SFT checkpoint
+    env=env,
+    args=rl_config,
+)
+rl_trainer.train()
+```
+
 ### `vf.RLTrainer` (Legacy)
 
 The legacy `vf.RLTrainer` still exists for educational and experimental purposes via the optional `verifiers-rl` package and the legacy RL CLI entrypoint, but it is not actively maintained. It is a compact single-node async RL trainer with a narrower feature set than production trainers. Its core implementation (`trainer.py` and `orchestrator.py` under `packages/verifiers-rl/verifiers_rl/rl/trainer/`) remains intentionally lightweight for algorithm experimentation. For production training and current guidance, use [`prime-rl`](#training-with-prime-rl).

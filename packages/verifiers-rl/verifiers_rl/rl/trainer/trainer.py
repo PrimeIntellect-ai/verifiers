@@ -708,31 +708,33 @@ class SFTTrainer(Trainer):
         if self.accelerator.is_main_process:
             textual_logs = cast(dict[str, Any], self._textual_logs)
 
-            # Print sample prompts/completions
-            from verifiers.utils.logging_utils import print_prompt_completions_sample
-            print_prompt_completions_sample(
-                prompts=list(textual_logs["prompt"]),
-                completions=list(textual_logs["completion"]),
-                errors=[None] * len(textual_logs["prompt"]),
-                rewards=[0.0] * len(textual_logs["prompt"]),
-                step=self.state.global_step,
-            )
+            # Only log if we have samples to display
+            if len(textual_logs["prompt"]) > 0:
+                # Print sample prompts/completions
+                from verifiers.utils.logging_utils import print_prompt_completions_sample
+                print_prompt_completions_sample(
+                    prompts=list(textual_logs["prompt"]),
+                    completions=list(textual_logs["completion"]),
+                    errors=[None] * len(textual_logs["prompt"]),
+                    rewards=[0.0] * len(textual_logs["prompt"]),
+                    step=self.state.global_step,
+                )
 
-            # Log to W&B if available
-            if (
-                self.args.report_to
-                and "wandb" in self.args.report_to
-                and wandb.run is not None
-            ):
-                import pandas as pd
+                # Log to W&B if available
+                if (
+                    self.args.report_to
+                    and "wandb" in self.args.report_to
+                    and wandb.run is not None
+                ):
+                    import pandas as pd
 
-                table = {
-                    "step": [str(self.state.global_step)] * len(textual_logs["prompt"]),
-                    "prompt": list(textual_logs["prompt"]),
-                    "completion": list(textual_logs["completion"]),
-                }
-                df = pd.DataFrame(table)
-                wandb.log({"samples": wandb.Table(dataframe=df)})
+                    table = {
+                        "step": [str(self.state.global_step)] * len(textual_logs["prompt"]),
+                        "prompt": list(textual_logs["prompt"]),
+                        "completion": list(textual_logs["completion"]),
+                    }
+                    df = pd.DataFrame(table)
+                    wandb.log({"samples": wandb.Table(dataframe=df)})
 
             # Clear after logging
             textual_logs["prompt"].clear()
