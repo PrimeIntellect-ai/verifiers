@@ -12,6 +12,7 @@ from verifiers.clients.openai_chat_completions_client import (
 )
 from verifiers.types import SamplingArgs, State
 
+
 # copy from vllm/entrypoints/openai/protocol.py
 class TokenizeResponse(BaseModel):
     count: int
