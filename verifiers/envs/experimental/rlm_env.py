@@ -1959,8 +1959,12 @@ class _InterceptionPool:
 
             runner = web.AppRunner(app)
             await runner.setup()
-            site = web.TCPSite(runner, bind_host, port)
-            await site.start()
+            try:
+                site = web.TCPSite(runner, bind_host, port)
+                await site.start()
+            except BaseException:
+                await runner.cleanup()
+                raise
 
             entry.server_app = app
             entry.server_runner = runner
