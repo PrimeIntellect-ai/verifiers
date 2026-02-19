@@ -1942,7 +1942,14 @@ class _InterceptionPool:
         """Create or reuse server on this port. Increments refcount."""
         async with self.lock:
             if port in self._entries:
-                self._entries[port].refcount += 1
+                existing = self._entries[port]
+                if existing.bind_host != bind_host:
+                    logger.warning(
+                        f"InterceptionPool: bind_host mismatch on port {port}: "
+                        f"existing={existing.bind_host}, requested={bind_host}. "
+                        f"Reusing existing server."
+                    )
+                existing.refcount += 1
                 return
 
             entry = _PoolEntry(port=port, bind_host=bind_host)
