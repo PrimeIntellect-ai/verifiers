@@ -2959,11 +2959,12 @@ class RLMEnv(vf.StatefulToolEnv):
     async def _ensure_interception_server(self):
         """Start shared HTTP server for sub-LLM interception if needed."""
         if self._use_shared_pool:
-            if not self._has_pool_ref:
-                await _interception_pool.acquire_server(
-                    self.interception_port, self._interception_bind_host
-                )
-                self._has_pool_ref = True
+            async with self._server_lock:
+                if not self._has_pool_ref:
+                    await _interception_pool.acquire_server(
+                        self.interception_port, self._interception_bind_host
+                    )
+                    self._has_pool_ref = True
             return
 
         async with self._server_lock:

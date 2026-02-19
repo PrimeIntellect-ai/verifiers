@@ -26,6 +26,7 @@ from verifiers.envs.experimental.rlm_env import (
     RLMWorkerPaths,
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
+    _InterceptionPool,
 )
 
 # =============================================================================
@@ -1619,3 +1620,196 @@ class TestSubLLMEmptyModelResponseErrorRaised:
             with pytest.raises(SubLLMEmptyModelResponseError) as exc_info:
                 await rlm_env._call_sub_llm_api(state, MagicMock(), "gpt-4", messages)
             assert exc_info.value.__cause__ is original
+
+
+# =============================================================================
+# _InterceptionPool tests
+# =============================================================================
+
+
+class TestInterceptionPool:
+    """Tests for the shared _InterceptionPool."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_pool(self):
+        """Each test gets a fresh pool."""
+        self.pool = _InterceptionPool()
+
+    @pytest.mark.asyncio
+    async def test_acquire_creates_server(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        assert 0 in self.pool._entries
+        entry = self.pool._entries[0]
+        assert entry.refcount == 1
+        assert entry.server_app is not None
+        assert entry.server_site is not None
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_acquire_twice_increments_refcount(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.acquire_server(0, "127.0.0.1")
+        assert self.pool._entries[0].refcount == 2
+        await self.pool.release(0)
+        assert self.pool._entries[0].refcount == 1
+        await self.pool.release(0)
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_release_destroys_at_zero(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.release(0)
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_double_release_does_not_crash(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.release(0)
+        await self.pool.release(0)  # should not raise
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_register_and_unregister_rollout(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        sentinel = object()
+        self.pool.register_rollout(0, "roll_1", sentinel)
+        assert self.pool._entries[0].rollout_dispatch["roll_1"] is sentinel
+        self.pool.unregister_rollout(0, "roll_1")
+        assert "roll_1" not in self.pool._entries[0].rollout_dispatch
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_unregister_missing_rollout_does_not_crash(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        self.pool.unregister_rollout(0, "nonexistent")  # should not raise
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_to_correct_env(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        await self.pool.acquire_server(0, "127.0.0.1")
+        entry = self.pool._entries[0]
+
+        # Mock two env instances with different handlers
+        env_a = MagicMock()
+        env_a._handle_sub_llm_request = AsyncMock(
+            return_value=web.json_response({"from": "a"})
+        )
+        env_b = MagicMock()
+        env_b._handle_sub_llm_request = AsyncMock(
+            return_value=web.json_response({"from": "b"})
+        )
+
+        self.pool.register_rollout(0, "roll_a", env_a)
+        self.pool.register_rollout(0, "roll_b", env_b)
+
+        server = TestServer(entry.server_app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.post("/rollout/roll_a/v1/chat/completions", json={})
+            assert resp.status == 200
+            env_a._handle_sub_llm_request.assert_called_once()
+            env_b._handle_sub_llm_request.assert_not_called()
+        finally:
+            await client.close()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_returns_404_for_unknown_rollout(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        await self.pool.acquire_server(0, "127.0.0.1")
+        entry = self.pool._entries[0]
+
+        server = TestServer(entry.server_app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.post("/rollout/unknown/v1/chat/completions", json={})
+            assert resp.status == 404
+        finally:
+            await client.close()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_without_server_raises(self):
+        with pytest.raises(RuntimeError, match="No server on port"):
+            await self.pool.get_tunnel_url(9999)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_reuses_tunnel(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        mock_tunnel = MagicMock()
+        mock_tunnel.is_running = True
+        mock_tunnel.url = "https://test-tunnel.example.com"
+        mock_tunnel.start = AsyncMock(return_value="https://test-tunnel.example.com")
+        mock_tunnel.stop = AsyncMock()
+
+        with patch(
+            "verifiers.envs.experimental.rlm_env.Tunnel",
+            return_value=mock_tunnel,
+        ):
+            url1 = await self.pool.get_tunnel_url(0)
+            url2 = await self.pool.get_tunnel_url(0)
+            assert url1 == url2
+            # Tunnel constructor called only once
+            mock_tunnel.start.assert_called_once()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_recreates_dead_tunnel(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+
+        dead_tunnel = MagicMock()
+        dead_tunnel.is_running = False
+        dead_tunnel.stop = AsyncMock()
+
+        new_tunnel = MagicMock()
+        new_tunnel.is_running = True
+        new_tunnel.url = "https://new-tunnel.example.com"
+        new_tunnel.start = AsyncMock(return_value="https://new-tunnel.example.com")
+
+        # Inject a dead tunnel into the entry
+        entry = self.pool._entries[0]
+        entry.tunnel = dead_tunnel
+        entry.tunnel_url = "https://old-tunnel.example.com"
+
+        with patch(
+            "verifiers.envs.experimental.rlm_env.Tunnel",
+            return_value=new_tunnel,
+        ):
+            url = await self.pool.get_tunnel_url(0)
+            assert url == "https://new-tunnel.example.com"
+            dead_tunnel.stop.assert_called_once()
+            new_tunnel.start.assert_called_once()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_acquire_no_double_increment(self):
+        """Verify that concurrent rollouts in one RLMEnv don't double-acquire."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            interception_port=18080,
+            interception_url="http://test.invalid",
+        )
+        # Replace the global pool with our fresh one
+        with patch("verifiers.envs.experimental.rlm_env._interception_pool", self.pool):
+            # Simulate concurrent _ensure_interception_server calls
+            import asyncio
+
+            await asyncio.gather(
+                env._ensure_interception_server(),
+                env._ensure_interception_server(),
+                env._ensure_interception_server(),
+            )
+            assert self.pool._entries[18080].refcount == 1
+            assert env._has_pool_ref is True
+            await self.pool.release(18080)
