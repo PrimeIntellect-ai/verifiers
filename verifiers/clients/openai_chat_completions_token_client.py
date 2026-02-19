@@ -101,9 +101,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
         prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
 
-        # the env response is all messages after the previous turn
+        # the context is all messages from the previous turn (prompt + completion)
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-        env_response = prompt_messages[len(messages) :]
 
         def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
             """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
