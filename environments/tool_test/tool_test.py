@@ -3,9 +3,11 @@ import random
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.utils.tool_registry import register_tool
 
 
 # dummy tools for sanity checking parallel tool calls
+@register_tool("tool-test", "tool_A")
 async def tool_A(x: int) -> int:
     """
     Tool for adding 1 to an integer.
@@ -19,6 +21,7 @@ async def tool_A(x: int) -> int:
     return x + 1
 
 
+@register_tool("tool-test", "tool_B")
 async def tool_B(x: str) -> str:
     """
     Tool for concatenating a string with "2".
@@ -32,6 +35,7 @@ async def tool_B(x: str) -> str:
     return x + "2"
 
 
+@register_tool("tool-test", "tool_C")
 async def tool_C(x: float) -> float:
     """
     Tool for adding 3.0 to a float.
@@ -45,6 +49,7 @@ async def tool_C(x: float) -> float:
     return x + 3.0
 
 
+@register_tool("tool-test", "tool_D")
 async def tool_D(x: bool) -> bool:
     """
     Tool for negating a boolean.
@@ -58,8 +63,7 @@ async def tool_D(x: bool) -> bool:
     return not x
 
 
-tool_list = [tool_A, tool_B, tool_C, tool_D]
-tool_name_list = [tool.__name__ for tool in tool_list]
+DEFAULT_TOOL_LIST = [tool_A, tool_B, tool_C, tool_D]
 
 
 def tool_call_reward_func(completion, info):
@@ -76,17 +80,42 @@ def tool_call_reward_func(completion, info):
 
 
 def load_environment(
-    num_train_examples: int = 1000, num_eval_examples: int = 100
+    num_train_examples: int = 1000,
+    num_eval_examples: int = 100,
+    tools: list | None = None,
 ) -> vf.ToolEnv:
     """
     Loads tool-test environment.
     """
 
+    # Use provided tools or fall back to default
+    if tools is None:
+        tools = DEFAULT_TOOL_LIST
+
+    # Extract tool names from ACTUAL tools being used (not hardcoded list)
+    actual_tool_names = [tool.__name__ for tool in tools]
+
+    # Handle empty tools case
+    if not actual_tool_names:
+        # Create empty datasets when no tools available
+        dataset = Dataset.from_list([])
+        eval_dataset = Dataset.from_list([])
+        rubric = vf.Rubric(funcs=[tool_call_reward_func])
+        vf_env = vf.ToolEnv(
+            dataset=dataset,
+            eval_dataset=eval_dataset,
+            rubric=rubric,
+            tools=tools,
+            max_turns=1,
+        )
+        return vf_env
+
     train_rows = []
     eval_rows = []
     for i in range(num_train_examples + num_eval_examples):
+        # Sample from actual available tools only
         tool_names = random.sample(
-            tool_name_list, random.randint(1, len(tool_name_list))
+            actual_tool_names, random.randint(1, len(actual_tool_names))
         )
         prompt = [
             {
@@ -107,7 +136,7 @@ def load_environment(
         dataset=dataset,
         eval_dataset=eval_dataset,
         rubric=rubric,
-        tools=tool_list,
+        tools=tools,
         max_turns=1,
     )
     return vf_env
