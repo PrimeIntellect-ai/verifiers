@@ -71,6 +71,74 @@ prime env pull owner/name -t ./tmp-env
 5. Validate required secrets in `load_environment()` via `vf.ensure_keys(...)`.
 6. Surface feature limits directly. Do not ship hacky workarounds without explicit user approval.
 
+## Resource Management and Cleanup Handlers
+
+### Critical: Cleanup Handler Execution Order
+
+**IMPORTANT**: Cleanup handlers marked with `@vf.cleanup` run **BEFORE** `state["completion"]` is set.
+
+Execution order:
+1. Rollout loop completes (stop condition met, error, or max_turns)
+2. **All `@vf.cleanup` handlers run** ← post_rollout executes here
+3. `render_completion()` is called → Sets `state["completion"]`
+4. Rollout returns final state
+
+### Safe post_rollout Implementation
+
+When implementing `post_rollout` for `SandboxEnv` subclasses:
+
+```python
+class MySandboxEnv(vf.SandboxEnv):
+    async def post_rollout(self, state: vf.State):
+        """Extract sandbox state before destruction."""
+        await super().post_rollout(state)
+
+        # CRITICAL: Check trajectory exists before accessing
+        if not state.get("trajectory"):
+            # Early error - no trajectory steps recorded
+            state["reward"] = 0.0
+            return
+
+        # Safe access pattern
+        last_step = state["trajectory"][-1]
+        sandbox_id = state.get("sandbox_id")
+
+        # Extract sandbox state for reward computation
+        result = await self.run_in_sandbox("cat /output.json")
+        state["final_output"] = result
+```
+
+### Available State Data in Cleanup Handlers
+
+- `state["trajectory"]`: List of trajectory steps (may be **empty** if error occurred before any turns)
+- `state["error"]`: Error if one occurred (`None` otherwise)
+- `state["is_completed"]`: bool indicating if rollout completed successfully
+- `state["is_truncated"]`: bool indicating if rollout was truncated (max_turns reached)
+- `state["sandbox_id"]`: Sandbox identifier (if applicable)
+
+### NOT Available in Cleanup Handlers
+
+- `state["completion"]`: This is set **AFTER** cleanup handlers run
+
+### Safe Trajectory Access Patterns
+
+```python
+# Pattern 1: Check before accessing
+if state.get("trajectory"):
+    last_step = state["trajectory"][-1]
+    # ... process last_step
+
+# Pattern 2: Check for error state first
+if isinstance(state.get("error"), vf.InfraError):
+    # Skip processing on infrastructure errors
+    return
+
+# Pattern 3: Use get() with defaults
+last_step = state.get("trajectory", [{}])[-1]
+```
+
+For full details, see `docs/environments.md` section "Cleanup Handlers and post_rollout".
+
 ## Verification Gate
 Run these before claiming completion:
 ```bash

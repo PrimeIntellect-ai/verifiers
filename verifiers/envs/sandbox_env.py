@@ -199,12 +199,29 @@ class SandboxEnv(vf.StatefulToolEnv):
         """
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
+
+        IMPORTANT: This method runs as a cleanup handler BEFORE state["completion"] is set.
+        Available state data:
+            - trajectory: List[TrajectoryStep] - may be EMPTY if error occurred before any turns
+            - error: Error | None - set if an error occurred during rollout
+            - sandbox_id: str | None - sandbox identifier if applicable
+
+        To safely access trajectory data:
+            if state.get("trajectory"):
+                last_step = state["trajectory"][-1]
+                # ... process last_step
         """
+        # Base implementation does nothing - override in subclasses
         pass
 
     @vf.cleanup
     async def destroy_sandbox(self, state: vf.State):
-        await self.post_rollout(state)
+        try:
+            await self.post_rollout(state)
+        except Exception as e:
+            # Log but don't fail - sandbox cleanup should continue
+            self.logger.warning(f"post_rollout failed: {type(e).__name__}: {e}")
+
         sandbox_id = state.get("sandbox_id")
         if sandbox_id is None:
             return

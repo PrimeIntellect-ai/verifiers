@@ -461,7 +461,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
         """Cleanup sandbox after rollout."""
-        await self.post_rollout(state)
+        try:
+            await self.post_rollout(state)
+        except Exception as e:
+            self.logger.warning(f"post_rollout failed: {type(e).__name__}: {e}")
+
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
             await self.delete_sandbox(sandbox_id)
