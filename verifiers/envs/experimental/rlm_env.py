@@ -37,7 +37,7 @@ import tempfile
 import textwrap
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Literal, cast
@@ -1905,6 +1905,168 @@ class RLMExecutor(SandboxMixin):
                     pass
 
 
+@dataclass
+class _PoolEntry:
+    """Shared interception server + tunnel for a given port."""
+
+    port: int
+    bind_host: str
+    server_app: web.Application | None = None
+    server_runner: web.AppRunner | None = None
+    server_site: web.TCPSite | None = None
+    tunnel: Tunnel | None = None
+    tunnel_url: str | None = None
+    refcount: int = 0
+    rollout_dispatch: dict[str, Any] = field(default_factory=dict)
+
+
+class _InterceptionPool:
+    """Shares interception servers and tunnels across RLMEnv instances on the same port.
+
+    When multiple RLMEnv instances use the same non-zero interception_port, they
+    share a single aiohttp server and tunnel instead of each creating their own.
+    Request dispatch is based on rollout_id.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, _PoolEntry] = {}
+        self._lock: asyncio.Lock | None = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    async def acquire_server(self, port: int, bind_host: str) -> None:
+        """Create or reuse server on this port. Increments refcount."""
+        async with self.lock:
+            if port in self._entries:
+                self._entries[port].refcount += 1
+                return
+
+            entry = _PoolEntry(port=port, bind_host=bind_host)
+
+            app = web.Application()
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/chat/completions",
+                self._make_dispatch_handler(port, "_handle_sub_llm_request"),
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/rlm/tools",
+                self._make_dispatch_handler(port, "_handle_root_tool_request"),
+            )
+
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, bind_host, port)
+            await site.start()
+
+            entry.server_app = app
+            entry.server_runner = runner
+            entry.server_site = site
+            entry.refcount = 1
+
+            self._entries[port] = entry
+            logger.debug(
+                f"InterceptionPool: started shared server on {bind_host}:{port}"
+            )
+
+    def _make_dispatch_handler(
+        self, port: int, handler_name: str
+    ) -> Callable[..., Any]:
+        """Create an aiohttp handler that dispatches to the correct RLMEnv instance."""
+
+        async def handler(request: web.Request) -> web.Response:
+            rollout_id = request.match_info["rollout_id"]
+            entry = self._entries.get(port)
+            if not entry:
+                return web.json_response({"error": "Pool entry not found"}, status=500)
+            env = entry.rollout_dispatch.get(rollout_id)
+            if not env:
+                return web.json_response({"error": "Rollout not found"}, status=404)
+            return await getattr(env, handler_name)(request)
+
+        return handler
+
+    async def get_tunnel_url(self, port: int, log_level: str = "info") -> str:
+        """Get tunnel URL for this port. Creates tunnel on first call."""
+        async with self.lock:
+            entry = self._entries.get(port)
+            if entry is None:
+                raise RuntimeError(
+                    f"No server on port {port}. Call acquire_server first."
+                )
+
+            if entry.tunnel is not None:
+                if entry.tunnel.is_running:
+                    assert entry.tunnel_url is not None
+                    return entry.tunnel_url
+                # Tunnel died, recreate
+                try:
+                    await entry.tunnel.stop()
+                except Exception:
+                    pass
+                entry.tunnel = None
+                entry.tunnel_url = None
+
+            tunnel = Tunnel(
+                local_port=port,
+                log_level=log_level,
+            )
+            url = await tunnel.start()
+            entry.tunnel = tunnel
+            entry.tunnel_url = url
+            logger.debug(f"InterceptionPool: started tunnel on port {port}: {url}")
+            return url
+
+    def register_rollout(self, port: int, rollout_id: str, env: Any) -> None:
+        """Register rollout for request dispatch."""
+        entry = self._entries.get(port)
+        if entry:
+            entry.rollout_dispatch[rollout_id] = env
+
+    def unregister_rollout(self, port: int, rollout_id: str) -> None:
+        """Unregister rollout from dispatch table."""
+        entry = self._entries.get(port)
+        if entry:
+            entry.rollout_dispatch.pop(rollout_id, None)
+
+    async def release(self, port: int) -> None:
+        """Decrement refcount. Destroy server+tunnel when refcount hits 0."""
+        async with self.lock:
+            entry = self._entries.get(port)
+            if entry is None:
+                return
+            entry.refcount -= 1
+            if entry.refcount <= 0:
+                await self._destroy_entry(entry)
+                del self._entries[port]
+
+    async def _destroy_entry(self, entry: _PoolEntry) -> None:
+        """Stop server and tunnel for a pool entry."""
+        if entry.tunnel is not None:
+            try:
+                await entry.tunnel.stop()
+                logger.debug(f"InterceptionPool: stopped tunnel on port {entry.port}")
+            except Exception as e:
+                logger.warning(f"Error stopping shared tunnel: {e}")
+        if entry.server_site is not None:
+            try:
+                await entry.server_site.stop()
+            except Exception:
+                pass
+        if entry.server_runner is not None:
+            try:
+                await entry.server_runner.cleanup()
+            except Exception:
+                pass
+        logger.debug(f"InterceptionPool: destroyed entry on port {entry.port}")
+
+
+_interception_pool = _InterceptionPool()
+
+
 class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
@@ -2161,6 +2323,8 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         # Interception server state (shared across rollouts)
+        self._use_shared_pool = interception_port != 0
+        self._has_pool_ref = False
         self._interception_server: Any = None
         self._server_lock = asyncio.Lock()
         self._server_runner: Any = None
@@ -2794,6 +2958,14 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _ensure_interception_server(self):
         """Start shared HTTP server for sub-LLM interception if needed."""
+        if self._use_shared_pool:
+            if not self._has_pool_ref:
+                await _interception_pool.acquire_server(
+                    self.interception_port, self._interception_bind_host
+                )
+                self._has_pool_ref = True
+            return
+
         async with self._server_lock:
             if self._interception_server is not None:
                 return
@@ -2831,6 +3003,12 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed."""
+        if self._use_shared_pool:
+            log_level = "debug" if logger.isEnabledFor(logging.DEBUG) else "info"
+            return await _interception_pool.get_tunnel_url(
+                self.interception_port, log_level
+            )
+
         async with self._tunnel_lock:
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
@@ -3092,6 +3270,8 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
+        if self._use_shared_pool:
+            return  # Pool manages the server lifecycle
         async with self._server_lock:
             if self._server_site is not None:
                 try:
@@ -3112,6 +3292,11 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
+        if self._use_shared_pool:
+            if self._has_pool_ref:
+                await _interception_pool.release(self.interception_port)
+                self._has_pool_ref = False
+            return
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
@@ -3175,6 +3360,10 @@ class RLMEnv(vf.StatefulToolEnv):
             "sub_model": self.sub_model or state.get("model"),
             "state": state,
         }
+        if self._use_shared_pool:
+            _interception_pool.register_rollout(
+                self.interception_port, rollout_id, self
+            )
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
@@ -3271,6 +3460,10 @@ class RLMEnv(vf.StatefulToolEnv):
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
             if rollout_id in self.active_rollouts:
                 del self.active_rollouts[rollout_id]
+            if self._use_shared_pool:
+                _interception_pool.unregister_rollout(
+                    self.interception_port, rollout_id
+                )
             try:
                 await self._executor.cleanup(state)
             except Exception:
@@ -3756,6 +3949,8 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
+        if self._use_shared_pool and rollout_id:
+            _interception_pool.unregister_rollout(self.interception_port, rollout_id)
 
         try:
             await self._executor.cleanup(state)
