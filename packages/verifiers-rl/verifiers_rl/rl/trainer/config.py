@@ -532,7 +532,10 @@ class SFTConfig(TrainingArguments):
     def __post_init__(self):
         # Configure output dir
         if self.output_dir is None:
-            self.output_dir = f"outputs/{self.run_name}"
+            if self.run_name is None:
+                self.output_dir = "outputs"
+            else:
+                self.output_dir = f"outputs/{self.run_name}"
 
         # Configure LoRA (same as RLConfig)
         if not self.use_lora:

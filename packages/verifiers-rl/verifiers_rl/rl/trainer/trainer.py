@@ -526,12 +526,12 @@ class SFTTrainer(Trainer):
 
         # Model + tokenizer (same as RLTrainer)
         if isinstance(model, str):
-            model_name = model
+            self.model_name = model
             model, processing_class = vf.get_model_and_tokenizer(
                 model, use_liger=args.use_liger
             )
         else:
-            model_name = model.config._name_or_path
+            self.model_name = model.config._name_or_path
         assert isinstance(model, PreTrainedModel)
 
         # LoRA setup (same as RLTrainer)
@@ -627,8 +627,8 @@ class SFTTrainer(Trainer):
         # Standard training loop (no orchestrator, no rollouts)
         loss = super().training_step(model, *args, **kwargs)
 
-        # Optional: Generate samples with vLLM
-        if self.use_vllm and self.vllm_client:
+        # Optional: Generate samples with vLLM (only on main process)
+        if self.use_vllm and self.vllm_client and self.process_index == 0:
             if self.state.global_step % self.vllm_sample_every_n_steps == 0:
                 self._generate_and_log_samples()
 
@@ -666,7 +666,7 @@ class SFTTrainer(Trainer):
                 # Generate using vLLM (via async OpenAI API)
                 response = asyncio.run(
                     self.vllm_client.chat.completions.create(
-                        model="",
+                        model=self.model_name,
                         messages=messages,
                         max_tokens=self.max_seq_len,
                         temperature=1.0,
