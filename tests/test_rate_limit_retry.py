@@ -5,6 +5,7 @@ import pytest
 from openai import RateLimitError as OpenAIRateLimitError
 
 from verifiers.errors import RateLimitError as VFRateLimitError
+from verifiers.types import EvalConfig
 from verifiers.utils.async_utils import maybe_retry
 
 
@@ -110,3 +111,51 @@ async def test_multiple_error_types_in_retry():
 
     assert result["result"] == "success"
     assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_configuration_values_are_used():
+    """Test that EvalConfig accepts and stores retry timing parameters."""
+    from verifiers.types import ClientConfig
+
+    config = EvalConfig(
+        env_id="test_env",
+        env_args={},
+        env_dir_path="/tmp/test",
+        model="gpt-4",
+        client_config=ClientConfig(api_key_var="TEST_KEY"),
+        sampling_args={},
+        num_examples=1,
+        rollouts_per_example=1,
+        max_concurrent=1,
+        retry_base_delay=2.0,
+        retry_max_backoff=30.0,
+        retry_jitter=False,
+    )
+
+    assert config.retry_base_delay == 2.0
+    assert config.retry_max_backoff == 30.0
+    assert config.retry_jitter is False
+
+
+@pytest.mark.asyncio
+async def test_retry_configuration_defaults():
+    """Test that EvalConfig has correct default values for retry timing."""
+    from verifiers.types import ClientConfig
+
+    config = EvalConfig(
+        env_id="test_env",
+        env_args={},
+        env_dir_path="/tmp/test",
+        model="gpt-4",
+        client_config=ClientConfig(api_key_var="TEST_KEY"),
+        sampling_args={},
+        num_examples=1,
+        rollouts_per_example=1,
+        max_concurrent=1,
+    )
+
+    # Verify defaults match maybe_retry defaults
+    assert config.retry_base_delay == 1.0
+    assert config.retry_max_backoff == 60.0
+    assert config.retry_jitter is True

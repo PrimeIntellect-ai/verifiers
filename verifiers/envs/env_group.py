@@ -276,13 +276,25 @@ class EnvGroup(vf.Environment):
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
         env = self.get_env_for_task(input["task"])
         env_client = env_client or env.env_client or self.env_client
         return await env.run_rollout(
-            input, client, model, sampling_args, max_retries, state_columns, env_client
+            input,
+            client,
+            model,
+            sampling_args,
+            max_retries,
+            retry_base_delay,
+            retry_max_backoff,
+            retry_jitter,
+            state_columns,
+            env_client,
         )
 
     @final
@@ -293,6 +305,9 @@ class EnvGroup(vf.Environment):
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
@@ -304,6 +319,9 @@ class EnvGroup(vf.Environment):
             model,
             sampling_args,
             max_retries,
+            retry_base_delay,
+            retry_max_backoff,
+            retry_jitter,
             state_columns,
             env_client,
         )

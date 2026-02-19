@@ -494,6 +494,9 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    retry_base_delay: float = 1.0
+    retry_max_backoff: float = 60.0
+    retry_jitter: bool = True
     # logging
     verbose: bool = False
     debug: bool = False
