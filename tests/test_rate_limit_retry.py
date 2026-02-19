@@ -89,17 +89,16 @@ async def test_multiple_error_types_in_retry():
     from verifiers.errors import InfraError
 
     call_count = 0
-    error_sequence = [
-        VFRateLimitError("Rate limited"),
-        InfraError("Infra error"),
-        {"result": "success"}
-    ]
 
     async def multi_error_func():
         nonlocal call_count
-        result = error_sequence[min(call_count, len(error_sequence) - 1)]
         call_count += 1
-        return result
+        if call_count == 1:
+            return {"error": VFRateLimitError("Rate limited")}
+        elif call_count == 2:
+            return {"error": InfraError("Infra error")}
+        else:
+            return {"result": "success"}
 
     wrapped = maybe_retry(
         multi_error_func,
