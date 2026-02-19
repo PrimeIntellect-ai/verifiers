@@ -40,10 +40,11 @@ class EnvEvalState:
     total: int = 0  # total rollouts
     num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
     rollouts_per_example: int = 1  # rollouts per example (from config)
-    reward: float = 0.0  # reward (rolling avg)
+    reward: float = 0.0  # reward (rolling avg, 0.0 for multi-agent)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
+    is_multiagent: bool = False  # whether this env has multiple actors
 
     # path where results were saved (if save_results=true)
     save_path: Path | None = None
@@ -210,6 +211,7 @@ class EvalDisplay(BaseDisplay):
         metrics: dict[str, float] | None = None,
         usage: TokenUsage | None = None,
         error_rate: float | None = None,
+        is_multiagent: bool | None = None,
         error: str | None = None,
         save_path: Path | None = None,
         log_message: str | None = None,
@@ -246,6 +248,9 @@ class EvalDisplay(BaseDisplay):
 
         if error_rate is not None:
             env_state.error_rate = error_rate
+
+        if is_multiagent is not None:
+            env_state.is_multiagent = is_multiagent
 
         if error is not None:
             env_state.error = error
@@ -298,10 +303,17 @@ class EvalDisplay(BaseDisplay):
         return "white"
 
     def _make_metrics_row(
-        self, reward: float, metrics: dict[str, float], error_rate: float
+        self,
+        reward: float,
+        metrics: dict[str, float],
+        error_rate: float,
+        is_multiagent: bool = False,
     ) -> Table | None:
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
-        metrics = {"reward": reward, **metrics}
+        # For multi-agent, per-actor rewards are already in metrics
+        # For single-agent, show combined "reward"
+        if not is_multiagent:
+            metrics = {"reward": reward, **metrics}
 
         # build the left-aligned metrics text
         metrics_text = Text()
@@ -427,7 +439,7 @@ class EvalDisplay(BaseDisplay):
 
         # metrics display
         metrics_content = self._make_metrics_row(
-            env_state.reward, env_state.metrics, env_state.error_rate
+            env_state.reward, env_state.metrics, env_state.error_rate, env_state.is_multiagent
         )
         tokens_content = (
             self._make_tokens_row(env_state.usage)
@@ -709,7 +721,6 @@ class EvalDisplay(BaseDisplay):
                     title="[dim]example 0 — prompt[/dim]",
                     border_style="dim",
                 )
-            )
 
             # Completion panel (with error if any)
             completion_text = format_messages(completion)
@@ -731,7 +742,6 @@ class EvalDisplay(BaseDisplay):
                     title="[dim]example 0 — completion[/dim]",
                     border_style="dim",
                 )
-            )
 
         # Reward distribution
         rewards = [o["reward"] for o in outputs]
@@ -763,15 +773,42 @@ class EvalDisplay(BaseDisplay):
                     expand=True,
                 )
             else:
-                reward_display = all_rollouts_content
-
-            items.append(
-                Panel(
-                    reward_display,
-                    title="[dim]reward distribution[/dim]",
-                    border_style="dim",
+                # Single-agent: original behavior
+                all_rollouts_content = Group(
+                    Text("all rollouts:", style="bold"),
+                    _make_histogram(rewards, bins=8, width=25),
                 )
-            )
+
+                # Per-example averages if multiple rollouts
+                rollouts_per = config.rollouts_per_example
+                if rollouts_per > 1 and len(rewards) >= rollouts_per:
+                    num_examples = len(rewards) // rollouts_per
+                    example_avgs = []
+                    for i in range(num_examples):
+                        example_rewards = rewards[i * rollouts_per : (i + 1) * rollouts_per]
+                        example_avgs.append(sum(example_rewards) / len(example_rewards))
+
+                    per_example_content = Group(
+                        Text("per-example avg:", style="bold"),
+                        _make_histogram(example_avgs, bins=8, width=25),
+                    )
+
+                    # Side by side
+                    reward_display = Columns(
+                        [all_rollouts_content, per_example_content],
+                        equal=True,
+                        expand=True,
+                    )
+                else:
+                    reward_display = all_rollouts_content
+
+                items.append(
+                    Panel(
+                        reward_display,
+                        title="[dim]reward distribution[/dim]",
+                        border_style="dim",
+                    )
+                )
 
         # Metrics
         if env_state.metrics:
