@@ -304,6 +304,9 @@ class RLConfig(TrainingArguments):
                     lora_alpha=self.lora_alpha,
                     target_modules=self.lora_target_modules,
                     task_type="CAUSAL_LM",
+                    lora_dropout=self.lora_dropout,
+                    modules_to_save=self.lora_modules_to_save,
+                    use_rslora=self.lora_use_rslora,
                 )
 
         self.per_device_train_batch_size = self.micro_batch_size
@@ -546,6 +549,9 @@ class SFTConfig(TrainingArguments):
                     lora_alpha=self.lora_alpha,
                     target_modules=self.lora_target_modules,
                     task_type="CAUSAL_LM",
+                    lora_dropout=self.lora_dropout,
+                    modules_to_save=self.lora_modules_to_save,
+                    use_rslora=self.lora_use_rslora,
                 )
 
         # Configure batch sizes

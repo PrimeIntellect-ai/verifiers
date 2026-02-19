@@ -740,7 +740,3 @@ class SFTTrainer(Trainer):
             textual_logs["prompt"].clear()
             textual_logs["completion"].clear()
 
-    def log_metrics(self, split: str, metrics: Dict[str, float]) -> None:
-        """Log metrics (same as RLTrainer)."""
-        for key, value in metrics.items():
-            self._metrics[split][key].append(value)

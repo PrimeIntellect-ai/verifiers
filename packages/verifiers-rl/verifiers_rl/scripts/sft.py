@@ -55,7 +55,8 @@ def main() -> None:
     # Load dataset
     dataset_name = config.get("dataset")
     if dataset_name:
-        dataset = load_dataset(dataset_name, split="train")
+        dataset_split = config.get("sft", {}).get("dataset_split", "train")
+        dataset = load_dataset(dataset_name, split=dataset_split)
     else:
         raise ValueError("Config must specify 'dataset'")
 
