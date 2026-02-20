@@ -37,3 +37,5 @@ Tool split:
 - `sub_tools`: tools exposed to sub-LLMs
 
 `llm_batch` is a fixed root tool and always available (callable as a shell command in Bash mode, or a Python function in Python mode).
+
+When `expose_message_history=True`, the model's conversation history is written to `.messages` (JSONL, one message object per line) in the sandbox working directory and updated incrementally before each code execution. This lets the model read or forward parts of its own conversation to sub-LLMs for context.
