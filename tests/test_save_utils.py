@@ -16,9 +16,9 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from verifiers.types import ClientConfig
+from verifiers.utils.metric_utils import compute_pass_at_k
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
-    compute_pass_at_k,
     extract_usage_tokens,
     load_outputs,
     make_serializable,

@@ -425,12 +425,12 @@ def print_rewards(results: GenerateOutputs):
 
     pass_at_k = results["metadata"].get("pass_at_k") or {}
     if pass_at_k:
-        for k, v in sorted(pass_at_k.items()):
-            print(f"pass@{k}: {v:.3f}")
+        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_at_k.items())]
+        print(f"pass@k: {', '.join(parts)}")
     pass_hat_k = results["metadata"].get("pass_hat_k") or {}
     if pass_hat_k:
-        for k, v in sorted(pass_hat_k.items()):
-            print(f"pass^{k}: {v:.3f}")
+        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_hat_k.items())]
+        print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
     metrics_col = to_col_order(metrics)
