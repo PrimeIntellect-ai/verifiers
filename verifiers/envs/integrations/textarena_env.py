@@ -121,7 +121,7 @@ class TextArenaEnv(vf.MultiTurnEnv):
         if ta_env.state.done:
             self.logger.debug(f"Game completed! {ta_env.state.game_info=}")
             response = vf.UserMessage(content=ta_env.state.game_info[0]["reason"])
-            state["final_env_response"] = response
+            state["final_env_response"] = [response]
             return [response]
         else:
             _, observation = await asyncio.to_thread(ta_env.get_observation)
