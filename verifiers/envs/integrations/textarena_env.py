@@ -101,8 +101,8 @@ class TextArenaEnv(vf.MultiTurnEnv):
         return memo
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
-        ta_env = await asyncio.to_thread(deepcopy, self.ta_env, self.shared_memo.copy())  # type: ignore[unresolved-attribute]
-        ta_env.state.game_state["secret_word"] = state["answer"]
+        ta_env = await asyncio.to_thread(deepcopy, self.ta_env, self.shared_memo.copy())
+        ta_env.state.game_state["secret_word"] = state["answer"]  # type: ignore[unresolved-attribute]
         state["ta_env"] = ta_env
         return state
 
