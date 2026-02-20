@@ -488,6 +488,7 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    disable_env_server: bool = False
     # logging
     verbose: bool = False
     debug: bool = False
