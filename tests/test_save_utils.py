@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from verifiers.types import ClientConfig
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
+    compute_pass_at_k,
     extract_usage_tokens,
     load_outputs,
     make_serializable,
@@ -425,3 +426,179 @@ class TestResumeMetadataValidation:
                 num_examples=3,
                 rollouts_per_example=2,
             )
+
+
+class TestComputePassAtK:
+    @staticmethod
+    def _make_output(example_id: int, reward: float) -> dict:
+        return {"example_id": example_id, "reward": reward}
+
+    def test_single_rollout_returns_empty(self):
+        """rollouts_per_example=1 should return empty dicts."""
+        outputs = [self._make_output(0, 1.0)]
+        pass_at_k, pass_hat_k = compute_pass_at_k(outputs, rollouts_per_example=1)
+        assert pass_at_k == {}
+        assert pass_hat_k == {}
+
+    def test_all_correct(self):
+        """All rollouts correct → pass@k = 1.0 and pass^k = 1.0 for all k."""
+        outputs = [self._make_output(0, 1.0) for _ in range(8)]
+        pass_at_k, pass_hat_k = compute_pass_at_k(outputs, rollouts_per_example=8)
+        assert set(pass_at_k.keys()) == {1, 2, 4, 8}
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(1.0)
+            assert pass_hat_k[k] == pytest.approx(1.0)
+
+    def test_none_correct(self):
+        """No rollouts correct → pass@k = 0.0 and pass^k = 0.0 for all k."""
+        outputs = [self._make_output(0, 0.0) for _ in range(8)]
+        pass_at_k, pass_hat_k = compute_pass_at_k(outputs, rollouts_per_example=8)
+        assert set(pass_at_k.keys()) == {1, 2, 4, 8}
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(0.0)
+            assert pass_hat_k[k] == pytest.approx(0.0)
+
+    def test_partial_correctness(self):
+        """Partial correctness: 2 correct out of 4 rollouts."""
+        outputs = [
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 0.0),
+            self._make_output(0, 0.0),
+        ]
+        pass_at_k, pass_hat_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # k values: 1, 2, 4
+        assert set(pass_at_k.keys()) == {1, 2, 4}
+        # n=4, c=2: pass@1 = 1 - C(2,1)/C(4,1) = 1 - 2/4 = 0.5
+        assert pass_at_k[1] == pytest.approx(0.5)
+        # n=4, c=2: pass@2 = 1 - C(2,2)/C(4,2) = 1 - 1/6
+        assert pass_at_k[2] == pytest.approx(1.0 - 1.0 / 6.0)
+        # n=4, c=2: pass@4 = 1 - C(2,4)/C(4,4) = 1 - 0/1 = 1.0 (n-c < k)
+        assert pass_at_k[4] == pytest.approx(1.0)
+        # pass^k: C(c,k)/C(n,k)
+        # n=4, c=2: pass^1 = C(2,1)/C(4,1) = 2/4 = 0.5
+        assert pass_hat_k[1] == pytest.approx(0.5)
+        # n=4, c=2: pass^2 = C(2,2)/C(4,2) = 1/6
+        assert pass_hat_k[2] == pytest.approx(1.0 / 6.0)
+        # n=4, c=2: pass^4 = C(2,4)/C(4,4) = 0/1 = 0.0
+        assert pass_hat_k[4] == pytest.approx(0.0)
+
+    def test_multiple_examples_averaged(self):
+        """pass@k and pass^k are averaged across multiple examples."""
+        outputs = [
+            # Example 0: all correct
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            # Example 1: none correct
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+        ]
+        pass_at_k, pass_hat_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        assert set(pass_at_k.keys()) == {1, 2, 4}
+        # pass@1: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k[1] == pytest.approx(0.5)
+        # pass@2: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k[2] == pytest.approx(0.5)
+        # pass@4: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k[4] == pytest.approx(0.5)
+        # pass^1: (1.0 + 0.0) / 2 = 0.5
+        assert pass_hat_k[1] == pytest.approx(0.5)
+        # pass^4: (1.0 + 0.0) / 2 = 0.5
+        assert pass_hat_k[4] == pytest.approx(0.5)
+
+    def test_powers_of_two_k_selection(self):
+        """k values are powers of 2 in [1, n]."""
+        outputs = [self._make_output(0, 1.0) for _ in range(16)]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=16)
+        assert set(pass_at_k.keys()) == {1, 2, 4, 8, 16}
+
+    def test_n3_k_values(self):
+        """n=3 should give k=1,2."""
+        outputs = [self._make_output(0, 1.0) for _ in range(3)]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=3)
+        assert set(pass_at_k.keys()) == {1, 2}
+
+    def test_correctness_threshold(self):
+        """Only reward >= 1.0 counts as correct by default."""
+        outputs = [
+            self._make_output(0, 0.99),  # not correct
+            self._make_output(0, 1.0),  # correct
+            self._make_output(0, 1.5),  # correct
+            self._make_output(0, 0.0),  # not correct
+        ]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # n=4, c=2
+        assert pass_at_k[1] == pytest.approx(0.5)
+
+    def test_custom_threshold(self):
+        """Custom threshold changes which rollouts count as correct."""
+        outputs = [
+            self._make_output(0, 0.4),  # not correct at 0.5
+            self._make_output(0, 0.6),  # correct at 0.5
+            self._make_output(0, 0.8),  # correct at 0.5
+            self._make_output(0, 0.3),  # not correct at 0.5
+        ]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4, threshold=0.5)
+        # n=4, c=2: pass@1 = 1 - C(2,1)/C(4,1) = 0.5
+        assert pass_at_k[1] == pytest.approx(0.5)
+        # n=4, c=2: pass@2 = 1 - C(2,2)/C(4,2) = 1 - 1/6
+        assert pass_at_k[2] == pytest.approx(1.0 - 1.0 / 6.0)
+
+    def test_builder_includes_pass_at_k(self):
+        """GenerateOutputsBuilder.build_metadata() includes pass_at_k and pass_hat_k."""
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=4,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+        builder.add_outputs(
+            [
+                {"example_id": 0, "reward": 1.0, "metrics": {}},
+                {"example_id": 0, "reward": 0.0, "metrics": {}},
+                {"example_id": 0, "reward": 1.0, "metrics": {}},
+                {"example_id": 0, "reward": 0.0, "metrics": {}},
+            ]
+        )
+        metadata = builder.build_metadata()
+        assert set(metadata["pass_at_k"].keys()) == {1, 2, 4}
+        assert set(metadata["pass_hat_k"].keys()) == {1, 2, 4}
+        assert metadata["passed_threshold"] == 1.0
+
+    def test_builder_uses_custom_threshold(self):
+        """GenerateOutputsBuilder respects passed_threshold."""
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=4,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+            passed_threshold=0.5,
+        )
+        builder.add_outputs(
+            [
+                {"example_id": 0, "reward": 0.4, "metrics": {}},
+                {"example_id": 0, "reward": 0.6, "metrics": {}},
+                {"example_id": 0, "reward": 0.8, "metrics": {}},
+                {"example_id": 0, "reward": 0.3, "metrics": {}},
+            ]
+        )
+        metadata = builder.build_metadata()
+        assert metadata["passed_threshold"] == 0.5
+        # 2 of 4 correct at threshold=0.5: pass@1 = 0.5
+        assert metadata["pass_at_k"][1] == pytest.approx(0.5)
+        # 2 of 4 correct at threshold=0.5: pass^1 = 0.5
+        assert metadata["pass_hat_k"][1] == pytest.approx(0.5)

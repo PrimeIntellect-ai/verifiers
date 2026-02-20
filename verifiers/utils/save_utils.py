@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import time
 from collections import defaultdict
 from collections.abc import Mapping
@@ -80,6 +81,68 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
     return extract_usage_tokens_from_response(response)
+
+
+def compute_pass_at_k(
+    outputs: list[RolloutOutput],
+    rollouts_per_example: int,
+    threshold: float = 1.0,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """Compute pass@k and pass^k metrics using unbiased estimators.
+
+    pass@k = 1 - C(n-c, k) / C(n, k)  (at least one correct in k samples)
+    pass^k = C(c, k) / C(n, k)         (all k samples correct)
+
+    Both averaged across examples.
+    n = rollouts per example, c = correct rollouts (reward >= threshold).
+    k values: all powers of 2 in [1, n].
+    Returns (empty, empty) if rollouts_per_example <= 1.
+    """
+    if rollouts_per_example <= 1:
+        return {}, {}
+
+    # Determine k values: powers of 2 in [1, n]
+    k_values: list[int] = []
+    k = 1
+    while k <= rollouts_per_example:
+        k_values.append(k)
+        k *= 2
+
+    if not k_values:
+        return {}, {}
+
+    # Group outputs by example_id
+    examples: dict[int, list[RolloutOutput]] = defaultdict(list)
+    for output in outputs:
+        examples[output.get("example_id", 0)].append(output)
+
+    # Compute pass@k and pass^k for each example, then average
+    pass_at_k_sums: dict[int, float] = {kv: 0.0 for kv in k_values}
+    pass_hat_k_sums: dict[int, float] = {kv: 0.0 for kv in k_values}
+    num_examples = len(examples)
+
+    for example_outputs in examples.values():
+        n = len(example_outputs)
+        c = sum(1 for o in example_outputs if o.get("reward", 0.0) >= threshold)
+        for kv in k_values:
+            if n < kv:
+                continue
+            n_choose_k = math.comb(n, kv)
+            # pass@k: P(at least one correct)
+            if n - c < kv:
+                pass_at_k_sums[kv] += 1.0
+            else:
+                pass_at_k_sums[kv] += 1.0 - math.comb(n - c, kv) / n_choose_k
+            # pass^k: P(all correct)
+            pass_hat_k_sums[kv] += math.comb(c, kv) / n_choose_k
+
+    pass_at_k = {
+        kv: pass_at_k_sums[kv] / num_examples for kv in k_values if num_examples > 0
+    }
+    pass_hat_k = {
+        kv: pass_hat_k_sums[kv] / num_examples for kv in k_values if num_examples > 0
+    }
+    return pass_at_k, pass_hat_k
 
 
 def _coerce_token_usage(value: object) -> TokenUsage | None:
@@ -254,6 +317,7 @@ class GenerateOutputsBuilder:
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
+        passed_threshold: float = 1.0,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -264,6 +328,7 @@ class GenerateOutputsBuilder:
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
+        self.passed_threshold = passed_threshold
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
         self.version_info = get_version_info(env_id=env_id)
@@ -314,6 +379,11 @@ class GenerateOutputsBuilder:
         errors = [o.get("error") for o in self.outputs]
         has_errors = [e is not None for e in errors]
         avg_error = sum(has_errors) / len(has_errors) if has_errors else 0.0
+
+        # compute pass@k and pass^k from accumulated outputs
+        pass_at_k, pass_hat_k = compute_pass_at_k(
+            self.outputs, self.rollouts_per_example, self.passed_threshold
+        )
 
         input_tokens_total = 0.0
         output_tokens_total = 0.0
@@ -371,6 +441,9 @@ class GenerateOutputsBuilder:
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
             avg_error=avg_error,
+            pass_at_k=pass_at_k,
+            pass_hat_k=pass_hat_k,
+            passed_threshold=self.passed_threshold,
             usage=usage,
             version_info=self.version_info,
             state_columns=self.state_columns,

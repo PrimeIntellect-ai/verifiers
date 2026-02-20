@@ -358,6 +358,9 @@ class GenerateMetadata(TypedDict):
     avg_reward: float
     avg_metrics: dict[str, float]
     avg_error: float
+    pass_at_k: dict[int, float]
+    pass_hat_k: dict[int, float]
+    passed_threshold: float
     usage: TokenUsage | None
     version_info: VersionInfo
     state_columns: list[str]

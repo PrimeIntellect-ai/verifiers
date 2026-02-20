@@ -423,6 +423,15 @@ def print_rewards(results: GenerateOutputs):
         out = f"r{i + 1}: {trials}"
         print(out)
 
+    pass_at_k = results["metadata"].get("pass_at_k") or {}
+    if pass_at_k:
+        for k, v in sorted(pass_at_k.items()):
+            print(f"pass@{k}: {v:.3f}")
+    pass_hat_k = results["metadata"].get("pass_hat_k") or {}
+    if pass_hat_k:
+        for k, v in sorted(pass_hat_k.items()):
+            print(f"pass^{k}: {v:.3f}")
+
     metrics = [o["metrics"] for o in results["outputs"]]
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
@@ -739,11 +748,18 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
         ) -> None:
+            metrics = dict(metadata.get("avg_metrics") or {})
+            pass_at_k = metadata.get("pass_at_k") or {}
+            for k, v in pass_at_k.items():
+                metrics[f"pass@{k}"] = v
+            pass_hat_k = metadata.get("pass_hat_k") or {}
+            for k, v in pass_hat_k.items():
+                metrics[f"pass^{k}"] = v
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
                 reward=metadata.get("avg_reward"),
-                metrics=metadata.get("avg_metrics"),
+                metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
             )
