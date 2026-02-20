@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from copy import deepcopy
@@ -77,7 +78,7 @@ class TextArenaEnv(vf.MultiTurnEnv):
         )
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
-        ta_env = deepcopy(self.ta_env)
+        ta_env = await asyncio.to_thread(deepcopy, self.ta_env)
         ta_env.state.game_state["secret_word"] = state["answer"]
         state["ta_env"] = ta_env
         return state
@@ -92,22 +93,20 @@ class TextArenaEnv(vf.MultiTurnEnv):
         ta_env = state["ta_env"]
         guess = self.parser.parse_answer(messages)
         self.logger.debug(f"Parsed {guess=}")
-        ta_env.step(str(guess))
+        await asyncio.to_thread(ta_env.step, str(guess))
 
         if ta_env.state.done:
             self.logger.debug(f"Game completed! {ta_env.state.game_info=}")
-            response = cast(
-                vf.Messages,
-                [{"role": "user", "content": ta_env.state.game_info[0]["reason"]}],
-            )
+            response = vf.UserMessage(content=ta_env.state.game_info[0]["reason"])
             state["final_env_response"] = response
-            return response
+            return [response]
         else:
-            _, observation = ta_env.get_observation()
+            _, observation = await asyncio.to_thread(ta_env.get_observation)
             self.logger.debug(f"Got {observation=}")
             feedback = self.feedback_fn(observation)
             self.logger.debug(f"Parsed {feedback=}")
-            return cast(vf.Messages, [{"role": "user", "content": str(feedback)}])
+            response = vf.UserMessage(content=str(feedback))
+            return [response]
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []
