@@ -48,6 +48,9 @@ class RunRolloutRequest(BaseRequest):
     model: str
     sampling_args: SamplingArgs
     max_retries: int
+    retry_base_delay: float
+    retry_max_backoff: float
+    retry_jitter: bool
     state_columns: list[str] | None
 
 
@@ -65,6 +68,9 @@ class RunGroupRequest(BaseRequest):
     model: str
     sampling_args: SamplingArgs
     max_retries: int
+    retry_base_delay: float
+    retry_max_backoff: float
+    retry_jitter: bool
     state_columns: list[str] | None
 
 

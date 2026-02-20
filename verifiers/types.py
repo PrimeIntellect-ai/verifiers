@@ -410,6 +410,9 @@ class ClientConfig(BaseModel):
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
+    retry_base_delay: float = 1.0
+    retry_max_backoff: float = 60.0
+    retry_jitter: bool = True
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("endpoint_configs", mode="before")
@@ -464,6 +467,9 @@ class EndpointClientConfig(BaseModel):
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
+    retry_base_delay: float = 1.0
+    retry_max_backoff: float = 60.0
+    retry_jitter: bool = True
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
 
@@ -488,6 +494,9 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    retry_base_delay: float = 1.0
+    retry_max_backoff: float = 60.0
+    retry_jitter: bool = True
     # logging
     verbose: bool = False
     debug: bool = False

@@ -339,6 +339,24 @@ def main():
         help="Max retries for transient infrastructure errors (default: 0)",
     )
     parser.add_argument(
+        "--retry-base-delay",
+        type=float,
+        default=None,
+        help="Initial delay in seconds for exponential backoff (default: 1.0)",
+    )
+    parser.add_argument(
+        "--retry-max-backoff",
+        type=float,
+        default=None,
+        help="Maximum backoff wait time in seconds (default: 60.0)",
+    )
+    parser.add_argument(
+        "--retry-jitter",
+        type=lambda x: x.lower() in ("true", "1", "yes") if x is not None else None,
+        default=None,
+        help="Enable jitter to avoid thundering herd (default: True)",
+    )
+    parser.add_argument(
         "--heartbeat-url",
         type=str,
         default=None,
@@ -620,6 +638,9 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            retry_base_delay=raw.get("retry_base_delay", 1.0),
+            retry_max_backoff=raw.get("retry_max_backoff", 60.0),
+            retry_jitter=raw.get("retry_jitter", True),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),

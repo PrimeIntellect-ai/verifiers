@@ -701,6 +701,9 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> RolloutOutput:
@@ -722,6 +725,9 @@ class Environment(ABC):
                 model,
                 sampling_args,
                 max_retries,
+                retry_base_delay,
+                retry_max_backoff,
+                retry_jitter,
                 state_columns,
             )
 
@@ -742,7 +748,13 @@ class Environment(ABC):
 
             return state
 
-        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        state = await maybe_retry(
+            run_rollout_attempt,
+            max_retries=max_retries,
+            initial=retry_base_delay,
+            max_wait=retry_max_backoff,
+            jitter=retry_jitter,
+        )()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -754,6 +766,9 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
         **kwargs,
@@ -776,6 +791,9 @@ class Environment(ABC):
                 model,
                 sampling_args,
                 max_retries,
+                retry_base_delay,
+                retry_max_backoff,
+                retry_jitter,
                 state_columns,
             )
 
@@ -799,7 +817,13 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
             return group_states
 
-        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        group_states = await maybe_retry(
+            run_group_attempt,
+            max_retries=max_retries,
+            initial=retry_base_delay,
+            max_wait=retry_max_backoff,
+            jitter=retry_jitter,
+        )()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -819,6 +843,9 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -1012,6 +1039,9 @@ class Environment(ABC):
                                     model,
                                     sampling_args,
                                     max_retries=max_retries,
+                                    retry_base_delay=retry_base_delay,
+                                    retry_max_backoff=retry_max_backoff,
+                                    retry_jitter=retry_jitter,
                                     state_columns=state_columns,
                                 ),
                             ),
@@ -1038,6 +1068,9 @@ class Environment(ABC):
                                     model,
                                     sampling_args,
                                     max_retries=max_retries,
+                                    retry_base_delay=retry_base_delay,
+                                    retry_max_backoff=retry_max_backoff,
+                                    retry_jitter=retry_jitter,
                                     state_columns=state_columns,
                                 ),
                             ),
@@ -1152,6 +1185,9 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        retry_max_backoff: float = 60.0,
+        retry_jitter: bool = True,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -1179,6 +1215,9 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
+            retry_base_delay=retry_base_delay,
+            retry_max_backoff=retry_max_backoff,
+            retry_jitter=retry_jitter,
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,

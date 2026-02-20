@@ -10,6 +10,7 @@ from openai import (
     AuthenticationError,
     BadRequestError,
     PermissionDeniedError,
+    RateLimitError as OpenAIRateLimitError,
 )
 from openai.types.chat import (
     ChatCompletion,
@@ -40,6 +41,7 @@ from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
     OverlongPromptError,
+    RateLimitError as VFRateLimitError,
 )
 from verifiers.types import (
     AssistantMessage,
@@ -71,6 +73,8 @@ def handle_openai_overlong_prompt(func):
             return await func(*args, **kwargs)
         except (AuthenticationError, PermissionDeniedError):
             raise
+        except OpenAIRateLimitError as e:
+            raise VFRateLimitError(f"OpenAI rate limit: {e}") from e
         except BadRequestError as e:
             error_text = e.response.text.lower()
             context_length_phrases = [

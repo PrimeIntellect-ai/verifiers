@@ -50,6 +50,12 @@ class InfraError(Error):
     pass
 
 
+class RateLimitError(Error):
+    """Used to catch rate limit errors (HTTP 429, Too Many Requests)."""
+
+    pass
+
+
 class SandboxError(InfraError):
     """Used to catch errors while interacting with sandboxes."""
 

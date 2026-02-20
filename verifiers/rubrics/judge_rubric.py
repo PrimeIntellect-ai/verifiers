@@ -1,6 +1,8 @@
 from typing import Any
 
-from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError as OpenAIRateLimitError
+
+from verifiers.errors import RateLimitError as VFRateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -96,14 +98,13 @@ class JudgeRubric(Rubric):
                 **judge_args,
             )
             judge_response = str(judge_response.choices[0].message.content)
-        except RateLimitError as e:
+        except OpenAIRateLimitError as e:
             self.logger.warning(
                 f"Rate limit exceeded when calling judge model '{self.judge_model}'. "
                 f"Try reducing concurrency or waiting before retrying. Error: {str(e)}"
             )
-            raise RuntimeError(
-                f"Judge model rate limit exceeded. Try reducing concurrency or waiting before retrying. "
-                f"Model: {self.judge_model}, Error: {str(e)}"
+            raise VFRateLimitError(
+                f"Judge model rate limit: {self.judge_model}, Error: {str(e)}"
             ) from e
         except APITimeoutError as e:
             self.logger.warning(
