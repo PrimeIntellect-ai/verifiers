@@ -219,6 +219,7 @@ class TrajectoryStep(TypedDict):
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
+    completion_advantages: NotRequired[list[float] | None]
     is_truncated: bool
     trajectory_id: str
     extras: dict[str, Any]
@@ -282,6 +283,7 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    use_verifiers_advantages: bool
 
 
 class State(dict):
@@ -300,6 +302,7 @@ class State(dict):
     completion: Messages | None
     reward: float | None
     advantage: float | None
+    use_verifiers_advantages: bool | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None

@@ -261,6 +261,27 @@ class Rubric:
         for state in states:
             await self.dummy_score_rollout(state)
 
+    def _populate_step_completion_advantages(
+        self,
+        state: State,
+        fallback_reward: float | None,
+        fallback_advantage: float | None,
+    ) -> None:
+        for step in state["trajectory"]:
+            if step["advantage"] is None:
+                step["advantage"] = fallback_advantage
+            if step["reward"] is None:
+                step["reward"] = fallback_reward
+
+            tokens = step.get("tokens")
+            step_advantage = step.get("advantage")
+            if tokens is None or step_advantage is None:
+                step["completion_advantages"] = None
+                continue
+            step["completion_advantages"] = [step_advantage] * len(
+                tokens["completion_ids"]
+            )
+
     async def score_group(self, states: list[State]):
         """
         Score a group of rollouts together.
@@ -312,11 +333,11 @@ class Rubric:
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
-            for t in state["trajectory"]:
-                if t["advantage"] is None:
-                    t["advantage"] = state["advantage"]
-                if t["reward"] is None:
-                    t["reward"] = state["reward"]
+            self._populate_step_completion_advantages(
+                state=state,
+                fallback_reward=state["reward"],
+                fallback_advantage=state["advantage"],
+            )
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
