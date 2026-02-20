@@ -110,6 +110,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
+        use_verifiers_advantages: bool = False,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -143,6 +144,7 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
+        self.use_verifiers_advantages = use_verifiers_advantages
 
         self.set_score_rollouts(score_rollouts)
 
@@ -627,6 +629,7 @@ class Environment(ABC):
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None
+        state["use_verifiers_advantages"] = self.use_verifiers_advantages
         state["final_env_response"] = None
         state["timing"] = RolloutTiming(
             generation_ms=0.0,
