@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import uuid
 from asyncio import Future
@@ -50,14 +51,8 @@ class ZMQEnvClient(EnvClient):
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
 
-        # Separate REQ socket for health checks — connects to the server's
-        # dedicated health thread, completely independent of work traffic.
+        # Health address — probed by the dedicated health-check thread
         self.health_address = derive_health_address(address)
-        self.health_socket = self.ctx.socket(zmq.REQ)
-        self.health_socket.setsockopt(zmq.LINGER, 0)
-        self.health_socket.setsockopt(zmq.REQ_RELAXED, 1)
-        self.health_socket.setsockopt(zmq.REQ_CORRELATE, 1)
-        self.health_socket_connected = False
 
         self.receiver_lock = asyncio.Lock()
         self.receiver_task: asyncio.Task | None = None
@@ -66,33 +61,28 @@ class ZMQEnvClient(EnvClient):
         self.pending_requests: dict[str, PendingRequest] = {}
         self.pending_lock = asyncio.Lock()
 
-        # Health check state
+        # Health check state — the periodic health monitor runs on a
+        # dedicated thread so it is completely immune to event loop lag.
         self.server_state = ServerState.STARTUP
-        self.health_check_lock = asyncio.Lock()
-        self.health_check_task: asyncio.Task | None = None
-        self.failed_health_checks = 0
         self.healthy_event = asyncio.Event()
+        self.health_thread: threading.Thread | None = None
+        self.stop_health_thread = threading.Event()
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
     ) -> HealthResponse:
-        """Send health check via the dedicated health socket."""
-        try:
-            if not self.health_socket_connected:
-                self.health_socket.connect(self.health_address)
-                self.health_socket_connected = True
+        """Return current server health based on the dedicated health-check thread.
 
-            await self.health_socket.send(b"ping")
-            raw = await asyncio.wait_for(
-                self.health_socket.recv(),
-                timeout=timeout,
-            )
-            response = msgpack.unpackb(raw, raw=False)
-            return HealthResponse.model_validate(response)
-        except asyncio.TimeoutError:
-            return HealthResponse(success=False, error="Health check timed out")
-        except Exception as e:
-            return HealthResponse(success=False, error=str(e))
+        The actual probing is done by ``run_health_check_thread`` on its own
+        thread with its own ZMQ context, immune to event loop lag.
+        This method simply reports the latest known state.
+        """
+        if self.server_state == ServerState.HEALTHY:
+            return HealthResponse(success=True)
+        return HealthResponse(
+            success=False, error=f"Server state: {self.server_state.value}"
+        )
 
     async def handle_run_rollout_request(
         self, request: RunRolloutRequest, timeout: float | None
@@ -126,14 +116,11 @@ class ZMQEnvClient(EnvClient):
 
     async def close(self) -> None:
         """Close the client and clean up ZMQ resources."""
-        # Cancel health check task
-        if self.health_check_task is not None:
-            self.health_check_task.cancel()
-            try:
-                await self.health_check_task
-            except asyncio.CancelledError:
-                pass
-            self.health_check_task = None
+        # Stop health check thread
+        self.stop_health_thread.set()
+        if self.health_thread is not None:
+            self.health_thread.join(timeout=5)
+            self.health_thread = None
 
         # Cancel receiver task
         if self.receiver_task is not None:
@@ -155,8 +142,7 @@ class ZMQEnvClient(EnvClient):
                 f"Cancelled {len(cancelled)} pending requests during close of env server {self.name}"
             )
 
-        # Close sockets and terminate context
-        self.health_socket.close()
+        # Close async sockets and terminate context
         self.socket.close()
         self.ctx.term()
 
@@ -254,12 +240,14 @@ class ZMQEnvClient(EnvClient):
                     self.receiver_task = asyncio.create_task(self.receive_loop())
                     self.socket.connect(self.address)
 
-        if self.health_check_interval > 0 and self.health_check_task is None:
-            async with self.health_check_lock:
-                if self.health_check_task is None:
-                    self.health_check_task = asyncio.create_task(
-                        self.health_check_loop()
-                    )
+        if self.health_check_interval > 0 and self.health_thread is None:
+            self.loop = asyncio.get_running_loop()
+            self.health_thread = threading.Thread(
+                target=self.run_health_check_thread,
+                name="health-checker",
+                daemon=True,
+            )
+            self.health_thread.start()
 
     async def send_request(
         self,
@@ -349,59 +337,72 @@ class ZMQEnvClient(EnvClient):
 
             return response
 
-    async def health_check_loop(self):
-        """Background task that periodically checks server health and handles state transitions."""
-        self.logger.debug(
-            f"Starting health check loop for env server {self.name} (interval={print_time(self.health_check_interval)})"
+    def run_health_check_thread(self):
+        """Dedicated health-check thread.
+
+        Runs the full probe-and-state-machine loop on its own thread with its
+        own synchronous ZMQ context so that it is completely immune to asyncio
+        event loop lag from high-concurrency workloads.  State transitions are
+        forwarded to the event loop via ``call_soon_threadsafe``.
+        """
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.REQ_RELAXED, 1)
+        sock.setsockopt(zmq.REQ_CORRELATE, 1)
+        sock.connect(self.health_address)
+
+        # Generous probe timeout — no cost since this is a dedicated thread.
+        probe_timeout_ms = max(int(self.health_check_interval * 1000), 2000)
+        sock.setsockopt(zmq.SNDTIMEO, probe_timeout_ms)
+        sock.setsockopt(zmq.RCVTIMEO, probe_timeout_ms)
+
+        failed = 0
+        state = ServerState.STARTUP
+
+        assert self.loop is not None
+
+        while not self.stop_health_thread.is_set():
+            is_healthy = False
+            try:
+                sock.send(b"ping")
+                raw = sock.recv()
+                resp = msgpack.unpackb(raw, raw=False)
+                is_healthy = resp.get("success", False)
+            except zmq.Again:
+                pass
+            except Exception:
+                pass
+
+            if is_healthy:
+                if state != ServerState.HEALTHY:
+                    old_state = state
+                    state = ServerState.HEALTHY
+                    failed = 0
+                    self.loop.call_soon_threadsafe(self.on_became_healthy, old_state)
+                else:
+                    failed = 0
+            else:
+                failed += 1
+                if state == ServerState.HEALTHY and failed >= 5:
+                    state = ServerState.UNHEALTHY
+                    self.loop.call_soon_threadsafe(self.on_became_unhealthy, failed)
+
+            self.stop_health_thread.wait(self.health_check_interval)
+
+        sock.close()
+        ctx.term()
+
+    def on_became_healthy(self, old_state: ServerState):
+        self.server_state = ServerState.HEALTHY
+        self.healthy_event.set()
+        self.logger.info(
+            f"Env server {self.name} became healthy (was {old_state.value})"
         )
 
-        probe_timeout = self.health_check_interval / 2
-
-        while True:
-            try:
-                cycle_start = asyncio.get_event_loop().time()
-
-                is_healthy = await self.health(timeout=probe_timeout)
-
-                if is_healthy:
-                    if self.server_state != ServerState.HEALTHY:
-                        self.logger.info(
-                            f"Env server {self.name} is healthy again "
-                            f"(was {self.server_state.value}), "
-                            f"rescheduling requests"
-                        )
-                    self.server_state = ServerState.HEALTHY
-                    self.failed_health_checks = 0
-                    self.healthy_event.set()
-                else:
-                    self.failed_health_checks += 1
-
-                    # Transition to UNHEALTHY after 3 consecutive failures
-                    if (
-                        self.server_state == ServerState.HEALTHY
-                        and self.failed_health_checks >= 3
-                    ):
-                        self.server_state = ServerState.UNHEALTHY
-                        self.healthy_event.clear()
-                        cancelled = await self.cancel_all_pending(
-                            f"Env server {self.name} unhealthy: {self.failed_health_checks} "
-                            f"consecutive health check failures"
-                        )
-                        self.logger.warning(
-                            f"Env server {self.name} detected unhealthy, "
-                            f"cancelling {len(cancelled)} pending request(s)"
-                        )
-
-                elapsed = asyncio.get_event_loop().time() - cycle_start
-                await asyncio.sleep(max(0, self.health_check_interval - elapsed))
-
-            except asyncio.CancelledError:
-                self.logger.debug(
-                    f"Health check loop for env server {self.name} cancelled"
-                )
-                break
-            except Exception as e:
-                self.logger.error(
-                    f"Unexpected error in health check loop for env server {self.name}: {e}",
-                    exc_info=True,
-                )
+    def on_became_unhealthy(self, failed_checks: int):
+        self.server_state = ServerState.UNHEALTHY
+        self.healthy_event.clear()
+        msg = f"Env server {self.name} became unhealthy ({failed_checks} consecutive health check failures)"
+        asyncio.ensure_future(self.cancel_all_pending(msg))
+        self.logger.warning(msg)
