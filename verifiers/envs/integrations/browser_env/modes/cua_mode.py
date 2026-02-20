@@ -1054,6 +1054,10 @@ class CUAMode:
                     async for attempt in self.retrying:  # type: ignore[union-attr]
                         with attempt:
                             sandbox_id = await self._create_sandbox()
+                    if sandbox_id is None:
+                        raise vf.SandboxError(
+                            "Failed to create CUA sandbox: no sandbox ID returned"
+                        )
                     state["cua_sandbox_id"] = sandbox_id
                     await self._wait_for_sandbox_ready(sandbox_id)
                     await self._wait_for_server(sandbox_id)
@@ -1064,12 +1068,20 @@ class CUAMode:
                     async for attempt in self.retrying:  # type: ignore[union-attr]
                         with attempt:
                             sandbox_id = await self._create_sandbox()
+                    if sandbox_id is None:
+                        raise vf.SandboxError(
+                            "Failed to create CUA sandbox: no sandbox ID returned"
+                        )
                     state["cua_sandbox_id"] = sandbox_id
                     await self._wait_for_sandbox_ready(sandbox_id)
                     await self._upload_server_files(sandbox_id)
                     await self._start_server(sandbox_id)
                     await self._wait_for_server(sandbox_id)
 
+                if sandbox_id is None:
+                    raise vf.SandboxError(
+                        "Failed to create CUA sandbox: no sandbox ID returned"
+                    )
                 async for attempt in session_retrying:  # type: ignore[union-attr]
                     with attempt:
                         result = await self._create_session_curl(sandbox_id)
