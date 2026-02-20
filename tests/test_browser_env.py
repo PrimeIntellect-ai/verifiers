@@ -97,6 +97,35 @@ class TestCUAModeInit:
                 assert isinstance(env._mode_impl, CUAMode)
                 assert env._mode_impl._execution_mode == "local"
 
+    def test_forwards_session_create_retry_config(self):
+        """Test BrowserEnv forwards dedicated session creation retry settings."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    session_create_max_retries=7,
+                    session_create_base_delay=1.0,
+                    session_create_backoff_factor=3.0,
+                    session_create_max_backoff_seconds=45.0,
+                    session_create_jitter=0.01,
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+                assert isinstance(env._mode_impl, CUAMode)
+                assert env._mode_impl.session_create_max_retries == 7
+                assert env._mode_impl.session_create_base_delay == 1.0
+                assert env._mode_impl.session_create_backoff_factor == 3.0
+                assert env._mode_impl.session_create_max_backoff_seconds == 45.0
+                assert env._mode_impl.session_create_jitter == 0.01
+
 
 class TestCUASandboxModeBackwardsCompat:
     """Tests for backwards compatibility with CUASandboxMode."""
@@ -551,6 +580,40 @@ class TestCUAModeResponseFormat:
 
         assert len(formatted) == 1
         assert formatted[0]["type"] == "text"
+
+
+class TestCUAModeSessionCreateRetries:
+    """Tests for session creation retry behavior."""
+
+    def test_retryable_status_code_detection(self):
+        """Test transient status code detection for session creation."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
+        assert mode._is_retryable_status_code(429)
+        assert mode._is_retryable_status_code(503)
+        assert not mode._is_retryable_status_code(400)
+        assert not mode._is_retryable_status_code(401)
+
+    def test_session_create_exception_retry_predicate(self):
+        """Test session creation retry predicate respects error retryability."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
+            CUAMode,
+            CUASessionCreateError,
+        )
+
+        retryable_error = CUASessionCreateError("retry me", retryable=True)
+        non_retryable_error = CUASessionCreateError("do not retry", retryable=False)
+        assert CUAMode._should_retry_session_create_exception(retryable_error)
+        assert not CUAMode._should_retry_session_create_exception(non_retryable_error)
+
+    def test_extract_error_message_handles_json_payload(self):
+        """Test extraction of human-readable error messages from JSON response bodies."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        json_body = '{"error":"rate limited","code":"SESSION_RATE_LIMITED"}'
+        assert CUAMode._extract_error_message(json_body) == "rate limited"
+        assert CUAMode._extract_error_message("plain error") == "plain error"
 
 
 # ============================================================================

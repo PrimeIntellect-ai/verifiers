@@ -61,6 +61,11 @@ class BrowserEnv(vf.StatefulToolEnv):
         env: Literal["LOCAL", "BROWSERBASE"] = "BROWSERBASE",
         viewport_width: int = 1024,
         viewport_height: int = 768,
+        session_create_max_retries: int | None = None,
+        session_create_base_delay: float | None = None,
+        session_create_backoff_factor: float | None = None,
+        session_create_max_backoff_seconds: float | None = None,
+        session_create_jitter: float | None = None,
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
         proxies: bool = False,
@@ -97,6 +102,11 @@ class BrowserEnv(vf.StatefulToolEnv):
             env: Browser execution environment - "LOCAL" or "BROWSERBASE"
             viewport_width: Browser viewport width (default: 1024)
             viewport_height: Browser viewport height (default: 768)
+            session_create_max_retries: Retry attempts for browser session creation only
+            session_create_base_delay: Base delay for session creation retry backoff
+            session_create_backoff_factor: Exponential factor for session creation retries
+            session_create_max_backoff_seconds: Max backoff for session creation retries
+            session_create_jitter: Jitter for session creation retries
             save_screenshots: Save screenshots to disk (default: True)
             keep_recent_screenshots: Number of recent screenshots to keep in context (default: 2)
             proxies: Enable Browserbase proxies (default: False)
@@ -139,6 +149,11 @@ class BrowserEnv(vf.StatefulToolEnv):
                 browserbase_project_id=project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
+                session_create_max_retries=session_create_max_retries,
+                session_create_base_delay=session_create_base_delay,
+                session_create_backoff_factor=session_create_backoff_factor,
+                session_create_max_backoff_seconds=session_create_max_backoff_seconds,
+                session_create_jitter=session_create_jitter,
                 save_screenshots=save_screenshots,
                 keep_recent_screenshots=keep_recent_screenshots,
                 proxies=proxies,
