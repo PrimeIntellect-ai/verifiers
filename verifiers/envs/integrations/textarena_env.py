@@ -57,6 +57,7 @@ class TextArenaEnv(vf.MultiTurnEnv):
         self.game = game
         self.ta_env = ta.make(env_id=game)
         self.ta_env.reset(num_players=1)
+        self.shared_memo = self.build_shared_memo(self.ta_env)
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
@@ -77,8 +78,30 @@ class TextArenaEnv(vf.MultiTurnEnv):
             **kwargs,
         )
 
+    @staticmethod
+    def build_shared_memo(ta_env) -> dict:
+        """Build deepcopy memo to share immutable data across env copies.
+
+        The textarena EnglishDictionary holds ~430K strings in 4 sets (~38MB).
+        These are read-only after construction, so sharing them via the memo
+        dict avoids copying them on every rollout (~120ms and ~38MB saved each).
+        """
+        memo: dict = {}
+        env = ta_env
+        while hasattr(env, "env"):
+            env = env.env
+        # Share the dictionary object (contains uk_words, us_words, nltk_words sets)
+        dictionary = getattr(env, "dictionary", None)
+        if dictionary is not None:
+            memo[id(dictionary)] = dictionary
+        # Share the word list (small but also immutable)
+        word_list = getattr(env, "word_list", None)
+        if word_list is not None:
+            memo[id(word_list)] = word_list
+        return memo
+
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
-        ta_env = await asyncio.to_thread(deepcopy, self.ta_env)
+        ta_env = await asyncio.to_thread(deepcopy, self.ta_env, self.shared_memo.copy())
         ta_env.state.game_state["secret_word"] = state["answer"]
         state["ta_env"] = ta_env
         return state
