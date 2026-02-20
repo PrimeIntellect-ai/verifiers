@@ -50,6 +50,7 @@ dependencies = [
     "gepa",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
+    "wandb>=0.25.0",
 ]
 
 [dependency-groups]

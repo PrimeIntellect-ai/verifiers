@@ -1,5 +1,5 @@
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { sessionManager } from "./sessionManager";
+import { SessionCreateError, sessionManager } from "./sessionManager";
 import { executeAction } from "./actionExecutor";
 import { captureBrowserState } from "./stateCapture";
 import {
@@ -46,6 +46,15 @@ export function createServer(): FastifyInstance {
         state,
       };
     } catch (error) {
+      if (error instanceof SessionCreateError) {
+        reply.status(error.statusCode);
+        return {
+          error: error.message,
+          code: error.code,
+          retryable: error.retryable,
+          statusCode: error.statusCode,
+        };
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       reply.status(500);
       return { error: errorMessage, code: "SESSION_CREATE_FAILED" };
@@ -165,4 +174,3 @@ export function createServer(): FastifyInstance {
 
   return server;
 }
-

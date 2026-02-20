@@ -113,4 +113,6 @@ export interface BrowserSession {
 export interface ErrorResponse {
   error: string;
   code: string;
+  retryable?: boolean;
+  statusCode?: number;
 }
