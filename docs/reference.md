@@ -739,6 +739,84 @@ Endpoints = dict[str, list[Endpoint]]
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 
+### SFTConfig
+
+```python
+class SFTConfig(TrainingArguments):
+    use_liger: bool = True
+    use_lora: bool = True
+    lora_rank: int = 8
+    lora_alpha: int = 32
+    lora_dropout: float = 0.0
+    lora_target_modules: List[str] | str | None = None
+    lora_modules_to_save: Optional[List[str]] = None
+    lora_use_rslora: bool = False
+    lora_config: Optional[LoraConfig] = None
+
+    dataset_name: Optional[str] = None
+    dataset_split: str = "train"
+
+    batch_size: int = 512
+    micro_batch_size: int = 8
+    max_seq_len: int = 2048
+
+    max_steps: int = 500
+    num_train_epochs: int = 1
+    learning_rate: float = 1e-5
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    weight_decay: float = 0.0
+    max_grad_norm: float = 1.0
+
+    use_vllm: bool = False
+    vllm_sample_every_n_steps: int = 100
+    vllm_num_samples: int = 5
+    vllm_server_host: str = "0.0.0.0"
+    vllm_server_port: int = 8000
+```
+
+Configuration class for `SFTTrainer`. Extends `transformers.TrainingArguments` with additional fields for model loading, LoRA configuration, batch parameters, and optional vLLM integration.
+
+**Key parameters:**
+- `batch_size`: Total effective batch size for training (automatically calculates `gradient_accumulation_steps`)
+- `micro_batch_size`: Batch size per device per step
+- `use_vllm`: Enable vLLM integration for sample generation during training (optional monitoring)
+- `dataset_name` / `dataset_split`: Dataset specification (can be loaded externally and passed to trainer)
+
+### SFTTrainer
+
+```python
+class SFTTrainer(Trainer):
+    def __init__(
+        self,
+        model: PreTrainedModel | str,
+        train_dataset: Dataset,
+        args: SFTConfig,
+        processing_class: Optional[PreTrainedTokenizerBase] = None,
+        eval_dataset: Optional[Dataset] = None,
+        **kwargs,
+    )
+```
+
+Supervised Fine-Tuning trainer that provides a consistent API with `RLTrainer`. Uses standard cross-entropy loss (no PPO, no advantages, no orchestrator). Supports optional vLLM integration for monitoring sample quality during training.
+
+**Key methods:**
+- `compute_loss()`: Computes cross-entropy loss (simpler than RLTrainer's PPO loss)
+- `training_step()`: Standard training step without orchestrator
+- `log()`: Logs metrics and samples (only when samples are available via vLLM or manual logging)
+- `log_metrics()`: Tracks metrics for averaging
+
+**Usage:**
+```python
+from verifiers import SFTConfig, SFTTrainer
+from datasets import load_dataset
+
+dataset = load_dataset("willcb/V3-wordle", split="train")
+config = SFTConfig(run_name="wordle-sft", max_steps=500)
+trainer = SFTTrainer(model="Qwen/Qwen3-4B-Instruct", train_dataset=dataset, args=config)
+trainer.train()
+```
+
 ---
 
 ## Prime CLI Plugin

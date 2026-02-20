@@ -32,6 +32,7 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 vf-rl = "verifiers_rl.scripts.rl:main"
 vf-train = "verifiers_rl.scripts.train:main"
 vf-vllm = "verifiers_rl.rl.inference.server:main"
+vf-sft = "verifiers_rl.scripts.sft:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["verifiers_rl"]
