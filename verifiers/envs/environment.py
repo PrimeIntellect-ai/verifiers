@@ -1277,7 +1277,9 @@ class Environment(ABC):
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
-        self.env_server_process = mp.get_context("spawn").Process(
+        self.env_server_process = mp.get_context(
+            "spawn"
+        ).Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
@@ -1288,7 +1290,7 @@ class Environment(ABC):
                 log_file_level,
             ),
             kwargs=dict(address=address),
-            daemon=True,  # ensure server process is terminated when parent exits
+            daemon=False,  # cannot be daemon because we spawn subprocesses from the env server
         )
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(
