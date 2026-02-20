@@ -983,6 +983,42 @@ class CUAMode:
 
     # ==================== Lifecycle Methods ====================
 
+    async def _cleanup_failed_sandbox_setup(
+        self,
+        sandbox_id: str | None,
+        session_id: str | None,
+        state: vf.State,
+    ) -> None:
+        """Best-effort cleanup for partially initialized sandbox-mode setup."""
+        if session_id and sandbox_id:
+            try:
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        await self._destroy_session_curl(session_id, sandbox_id)
+                with self._sessions_lock:
+                    self.active_sessions.discard(session_id)
+                state.pop("session_id", None)
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        f"Failed to destroy session {session_id} during setup cleanup: {e}"
+                    )
+
+        if sandbox_id:
+            sandbox_deleted = False
+            try:
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        await self._delete_sandbox(sandbox_id)
+                sandbox_deleted = True
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        f"Failed to delete sandbox {sandbox_id} during setup cleanup: {e}"
+                    )
+            if sandbox_deleted:
+                state.pop("cua_sandbox_id", None)
+
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Create a browser session (and sandbox if in sandbox mode)."""
         session_retrying = self.session_create_retrying or self.retrying
@@ -1006,45 +1042,57 @@ class CUAMode:
             state["browser_state"] = result.get("state", {})
         else:
             # Sandbox mode: create sandbox, set up server, create session
-            if self.use_prebuilt_image:
-                if self.logger:
-                    self.logger.debug(f"Using prebuilt image: {self.prebuilt_image}")
+            sandbox_id: str | None = None
+            session_id: str | None = None
+            try:
+                if self.use_prebuilt_image:
+                    if self.logger:
+                        self.logger.debug(
+                            f"Using prebuilt image: {self.prebuilt_image}"
+                        )
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    await self._wait_for_server(sandbox_id)
+                else:
+                    if self.use_binary:
+                        await self._ensure_binary_exists()
+
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    await self._upload_server_files(sandbox_id)
+                    await self._start_server(sandbox_id)
+                    await self._wait_for_server(sandbox_id)
+
+                async for attempt in session_retrying:  # type: ignore[union-attr]
                     with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._wait_for_server(sandbox_id)
-            else:
-                if self.use_binary:
-                    await self._ensure_binary_exists()
+                        result = await self._create_session_curl(sandbox_id)
+                session_id = result.get("sessionId")
+                if not session_id:
+                    raise CUASessionCreateError(
+                        "Failed to get session ID from sandbox CUA server response "
+                        f"(keys: {list(result.keys())}, response: {str(result)[:500]})",
+                        retryable=False,
+                    )
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
-                    with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._upload_server_files(sandbox_id)
-                await self._start_server(sandbox_id)
-                await self._wait_for_server(sandbox_id)
+                with self._sessions_lock:
+                    self.active_sessions.add(session_id)
 
-            async for attempt in session_retrying:  # type: ignore[union-attr]
-                with attempt:
-                    result = await self._create_session_curl(sandbox_id)
-            session_id = result.get("sessionId")
-            if not session_id:
-                raise CUASessionCreateError(
-                    "Failed to get session ID from sandbox CUA server response "
-                    f"(keys: {list(result.keys())}, response: {str(result)[:500]})",
-                    retryable=False,
-                )
-
-            with self._sessions_lock:
-                self.active_sessions.add(session_id)
-
-            state["session_id"] = session_id
-            state["browser_state"] = result.get("state", {})
+                state["session_id"] = session_id
+                state["browser_state"] = result.get("state", {})
+            except Exception as e:
+                await self._cleanup_failed_sandbox_setup(sandbox_id, session_id, state)
+                if isinstance(e, vf.Error):
+                    raise
+                raise vf.SandboxError(
+                    f"Failed to set up CUA sandbox session: {e}"
+                ) from e
 
         return state
 

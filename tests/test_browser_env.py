@@ -6,6 +6,7 @@ without requiring external services (Browserbase, CUA server).
 
 import os
 import pytest
+import tenacity as tc
 from unittest.mock import AsyncMock, MagicMock, patch
 from datasets import Dataset
 
@@ -614,6 +615,84 @@ class TestCUAModeSessionCreateRetries:
         json_body = '{"error":"rate limited","code":"SESSION_RATE_LIMITED"}'
         assert CUAMode._extract_error_message(json_body) == "rate limited"
         assert CUAMode._extract_error_message("plain error") == "plain error"
+
+
+class TestCUAModeSandboxSetupCleanup:
+    """Tests for CUA sandbox setup failure cleanup and error normalization."""
+
+    @staticmethod
+    def _single_attempt_retrying() -> tc.AsyncRetrying:
+        return tc.AsyncRetrying(stop=tc.stop_after_attempt(1), reraise=True)
+
+    @classmethod
+    def _build_test_mode(cls):
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
+        mode._execution_mode = "sandbox"
+        mode.use_prebuilt_image = True
+        mode.retrying = cls._single_attempt_retrying()
+        mode.session_create_retrying = cls._single_attempt_retrying()
+        mode.logger = MagicMock()
+        return mode
+
+    @pytest.mark.asyncio
+    async def test_setup_state_cleans_sandbox_and_wraps_runtime_errors(self):
+        """Test setup failures clean created sandbox and wrap non-vf errors."""
+        import verifiers as vf
+
+        mode = self._build_test_mode()
+        mode._create_sandbox = AsyncMock(return_value="sandbox-1")
+        mode._wait_for_sandbox_ready = AsyncMock(side_effect=RuntimeError("boom"))
+        mode._delete_sandbox = AsyncMock()
+
+        state = {}
+        with pytest.raises(vf.SandboxError) as exc_info:
+            await mode.setup_state(state)
+
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        mode._delete_sandbox.assert_awaited_once_with("sandbox-1")
+        assert "cua_sandbox_id" not in state
+
+    @pytest.mark.asyncio
+    async def test_setup_state_cleans_sandbox_on_session_create_error(self):
+        """Test sandbox is cleaned when session creation fails after setup."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
+            CUASessionCreateError,
+        )
+
+        mode = self._build_test_mode()
+        mode._create_sandbox = AsyncMock(return_value="sandbox-2")
+        mode._wait_for_sandbox_ready = AsyncMock()
+        mode._wait_for_server = AsyncMock()
+        mode._create_session_curl = AsyncMock(
+            side_effect=CUASessionCreateError("rate limited", retryable=True)
+        )
+        mode._delete_sandbox = AsyncMock()
+
+        state = {}
+        with pytest.raises(CUASessionCreateError):
+            await mode.setup_state(state)
+
+        mode._delete_sandbox.assert_awaited_once_with("sandbox-2")
+        assert "cua_sandbox_id" not in state
+
+    @pytest.mark.asyncio
+    async def test_setup_state_keeps_state_when_cleanup_delete_fails(self):
+        """Test setup preserves sandbox id for downstream cleanup when delete fails."""
+        import verifiers as vf
+
+        mode = self._build_test_mode()
+        mode._create_sandbox = AsyncMock(return_value="sandbox-3")
+        mode._wait_for_sandbox_ready = AsyncMock(side_effect=RuntimeError("not ready"))
+        mode._delete_sandbox = AsyncMock(side_effect=RuntimeError("delete failed"))
+
+        state = {}
+        with pytest.raises(vf.SandboxError):
+            await mode.setup_state(state)
+
+        mode._delete_sandbox.assert_awaited_once_with("sandbox-3")
+        assert state.get("cua_sandbox_id") == "sandbox-3"
 
 
 # ============================================================================
