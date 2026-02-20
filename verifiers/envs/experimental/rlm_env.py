@@ -1167,6 +1167,21 @@ _SUB_LLM_SYSTEM_PROMPT_STORE = {
 
 
 # System prompt for RLM
+_RLM_MESSAGE_HISTORY_NOTE_PYTHON = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```python
+import json
+history = [json.loads(line) for line in open(".messages")]
+```
+"""
+
+_RLM_MESSAGE_HISTORY_NOTE_BASH = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```bash
+cat .messages  # one JSON object per line
+```
+"""
+
 _RLM_PYTHON_SYSTEM_PROMPT_STORE = {
     "light": """You have the `call_python_repl` tool and a filesystem available to you.
 
@@ -2154,6 +2169,10 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
+        expose_message_history: If True, the model's conversation history is
+                   written to `.messages` (JSONL) in the sandbox working directory
+                   and updated incrementally before each code execution. This lets
+                   the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
         filesystem_copy_max_bytes: Optional max bytes for context directory copy.
         local_repl_max_workers: Deprecated, has no effect. Sandbox execution is always used.
@@ -2202,6 +2221,7 @@ class RLMEnv(vf.StatefulToolEnv):
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
+        expose_message_history: bool = False,
         retain_filesystem_after_rollout: bool = False,
         filesystem_copy_max_bytes: int | None = 1_000_000_000,
         local_repl_max_workers: int | None = None,  # deprecated
@@ -2270,6 +2290,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
+        self.expose_message_history = expose_message_history
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
         self._interception_bind_host = self.interception_host
@@ -3436,8 +3457,18 @@ class RLMEnv(vf.StatefulToolEnv):
             packages_docs = self._generate_packages_documentation()
             root_tools_docs = self._generate_root_tools_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
+            message_history_docs = ""
+            if self.expose_message_history:
+                if self.repl_language == "bash":
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_BASH
+                else:
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_PYTHON
             state["rlm_system_prompt"] = (
-                base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+                base_system_prompt
+                + packages_docs
+                + root_tools_docs
+                + sub_tools_docs
+                + message_history_docs
             )
             state["rlm_packages_docs"] = packages_docs
             state["rlm_root_tools_docs"] = root_tools_docs
@@ -3465,6 +3496,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
             # Initialize FIFO sequence counter for detecting stale responses
             state["_exec_seq"] = 0
+
+            # Initialize message history upload counter
+            state["_messages_uploaded_count"] = 0
 
             _ensure_rlm_metric_state(state)
 
@@ -3649,6 +3683,55 @@ class RLMEnv(vf.StatefulToolEnv):
         return output
 
     # =========================================================================
+    # Message History Upload
+    # =========================================================================
+
+    def _build_message_history(self, state: State) -> list[dict[str, Any]]:
+        """Build the full serialized message history from the trajectory."""
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is None:
+            return []
+        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+        serialized: list[dict[str, Any]] = []
+        for msg in messages:
+            if hasattr(msg, "model_dump"):
+                serialized.append(msg.model_dump(exclude_none=True))
+            elif isinstance(msg, dict):
+                serialized.append(dict(msg))
+        return serialized
+
+    async def _upload_message_history(self, state: State) -> None:
+        """Incrementally upload new messages to .messages (JSONL) in the sandbox."""
+        messages = self._build_message_history(state)
+        uploaded_count: int = state.get("_messages_uploaded_count", 0)
+        new_messages = messages[uploaded_count:]
+        if not new_messages and uploaded_count > 0:
+            return
+
+        session = self._executor._get_session(state)
+        assert session.sandbox_id is not None, "sandbox must be initialized"
+        fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
+        remote_path = f"{fs_root}/.messages"
+
+        if new_messages:
+            lines = [json.dumps(msg, ensure_ascii=False) for msg in new_messages]
+            delta = "\n".join(lines) + "\n"
+            delta_b64 = base64.b64encode(delta.encode("utf-8")).decode("ascii")
+            cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+        else:
+            cmd = f"touch {remote_path}"
+
+        try:
+            await self._executor._execute_sandbox_command(
+                session.sandbox_id,
+                f"bash -lc {shlex.quote(cmd)}",
+                timeout=30,
+            )
+            state["_messages_uploaded_count"] = len(messages)
+        except Exception as e:
+            logger.warning("Failed to upload message history: %s", e)
+
+    # =========================================================================
     # REPL Tool
     # =========================================================================
 
@@ -3663,6 +3746,9 @@ class RLMEnv(vf.StatefulToolEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        if self.expose_message_history:
+            await self._upload_message_history(state)
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
