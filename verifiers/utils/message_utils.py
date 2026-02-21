@@ -1,5 +1,8 @@
+import base64
+import binascii
 import json
 from collections.abc import Mapping
+from enum import Enum
 from typing import Any, cast
 
 from rich.text import Text
@@ -17,6 +20,26 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
+
+
+class ImageMode(str, Enum):
+    PLACEHOLDER = "placeholder"
+    BASE64 = "base64"
+
+
+def coerce_image_mode(
+    image_mode: str | ImageMode, *, arg_name: str = "image_mode"
+) -> ImageMode:
+    """Convert a string to ImageMode with a helpful error."""
+    if isinstance(image_mode, ImageMode):
+        return image_mode
+    try:
+        return ImageMode(image_mode)
+    except ValueError as exc:
+        valid_modes = "', '".join(mode.value for mode in ImageMode)
+        raise ValueError(
+            f"Invalid {arg_name}: {image_mode}. Expected one of '{valid_modes}'."
+        ) from exc
 
 
 def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
@@ -146,21 +169,80 @@ def concat_messages(messages_list: list[Messages]) -> Messages:
     return result
 
 
-def message_to_printable(message: Any) -> Any:
+def _extract_data_uri_base64(url: str) -> tuple[str, str]:
+    if not url.startswith("data:"):
+        raise ValueError(
+            f"Image URLs must be data URIs when image_mode='base64'. Got: {url[:64]}"
+        )
+    if "," not in url:
+        raise ValueError("Invalid data URI: missing comma separator")
+    header, payload = url.split(",", 1)
+    if ";base64" not in header:
+        raise ValueError("Data URI must include ';base64' when image_mode='base64'")
+    media_type = header.removeprefix("data:").split(";", 1)[0]
+    if not media_type.startswith("image/"):
+        raise ValueError(f"Expected image/* media type in data URI, got: {media_type}")
+    if payload == "":
+        raise ValueError("Data URI payload is empty")
+    try:
+        base64.b64decode(payload, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("Data URI payload is not valid base64") from exc
+    return media_type, payload
+
+
+def _extract_image_payload(
+    part: dict[str, Any], max_image_base64_chars: int | None
+) -> dict[str, str | int]:
+    image_url_obj = part.get("image_url")
+    if isinstance(image_url_obj, dict):
+        url = image_url_obj.get("url")
+    else:
+        url = getattr(image_url_obj, "url", None)
+    if not isinstance(url, str):
+        raise ValueError("image_url content block must contain a string URL")
+
+    media_type, payload = _extract_data_uri_base64(url)
+    payload_size = len(payload)
+    if max_image_base64_chars is not None and payload_size > max_image_base64_chars:
+        raise ValueError(
+            f"Image base64 payload exceeds max_image_base64_chars: {payload_size} > {max_image_base64_chars}"
+        )
+    return {
+        "media_type": media_type,
+        "base64": payload,
+        "base64_chars": payload_size,
+    }
+
+
+def message_to_printable(
+    message: Any,
+    image_mode: str | ImageMode = ImageMode.PLACEHOLDER,
+    max_image_base64_chars: int | None = None,
+) -> Any:
+    """Convert message content into log/save-friendly text placeholders.
+
+    - text parts are preserved
+    - input_audio parts are rendered as [audio]
+    - image_url parts are rendered as [image]
+    - in base64 mode, extracted image payloads are emitted under `images`
     """
-    Removes image_url objects from message content.
-    Replaces audio parts with a short placeholder to keep logs readable.
-    """
+    image_mode = coerce_image_mode(image_mode)
+
     if isinstance(message, dict):
         role = message.get("role")
         content = message.get("content")
         reasoning_content = message.get("reasoning_content")
         tool_calls = message.get("tool_calls")
+
         if isinstance(content, list):
             chunks: list[str] = []
+            images: list[dict[str, str | int]] = []
             for part in content:
                 if not isinstance(part, dict):
+                    chunks.append(str(part))
                     continue
+
                 part_type = part.get("type")
                 if part_type == "text":
                     text = part.get("text")
@@ -170,15 +252,23 @@ def message_to_printable(message: Any) -> Any:
                     chunks.append("[audio]")
                 elif part_type == "image_url":
                     chunks.append("[image]")
+                    if image_mode == ImageMode.BASE64:
+                        images.append(
+                            _extract_image_payload(part, max_image_base64_chars)
+                        )
+
             printable: dict[str, Any] = {
                 "role": role,
-                "content": " ".join(chunks).strip(),
+                "content": "\n\n".join(chunks).strip(),
             }
+            if images:
+                printable["images"] = images
             if isinstance(reasoning_content, str):
                 printable["reasoning_content"] = reasoning_content
             if tool_calls is not None:
                 printable["tool_calls"] = tool_calls
             return printable
+
         return message
 
     content = getattr(message, "content", None)
@@ -188,20 +278,55 @@ def message_to_printable(message: Any) -> Any:
             if hasattr(message, "model_dump")
             else {"content": content}
         )
-        printable = message_to_printable(raw)
+        printable = message_to_printable(
+            raw,
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
+        )
         if hasattr(message, "model_copy"):
             return message.model_copy(update={"content": printable.get("content", "")})
         return printable
     return message
 
 
-def messages_to_printable(messages: Any) -> Any:
-    """
-    Removes image_url objects from messages.
-    """
+def messages_to_printable(
+    messages: Any,
+    image_mode: str | ImageMode = ImageMode.PLACEHOLDER,
+    max_image_base64_chars: int | None = None,
+) -> Any:
+    """Convert messages to printable/saveable form."""
     if isinstance(messages, str):
         return messages
-    return [message_to_printable(m) for m in messages or []]
+    return [
+        message_to_printable(
+            m,
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
+        )
+        for m in messages or []
+    ]
+
+
+def strip_nones_from_content(messages: list[Any]) -> list[Any]:
+    """Strip None-valued keys from content parts (HF map schema normalization helper)."""
+    result: list[Any] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            result.append(msg)
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            new_msg = dict(msg)
+            new_msg["content"] = [
+                {k: v for k, v in c.items() if v is not None}
+                if isinstance(c, dict)
+                else c
+                for c in content
+            ]
+            result.append(new_msg)
+        else:
+            result.append(msg)
+    return result
 
 
 # --- Legacy utilities (still used by save_utils, trainer, logging) ---
@@ -272,7 +397,7 @@ def sanitize_tool_calls(messages: Messages):
     """Sanitize tool calls from messages for serialization.
 
     Used by save_utils and trainer to convert tool call objects to JSON strings.
-    Works with both Pydantic messages and legacy dicts.
+    Works with both Pydantic message objects and legacy dicts.
     """
     if not isinstance(messages, list):
         return messages
@@ -289,29 +414,27 @@ def sanitize_tool_calls(messages: Messages):
         if tool_calls:
             tool_calls_json = []
             for tc in tool_calls:
+                if isinstance(tc, str):
+                    tool_calls_json.append(tc)
+                    continue
                 if isinstance(tc, dict):
                     tc_dict = tc
-                elif isinstance(tc, str):
-                    tc_dict = json.loads(tc)
                 else:
                     model_dump = getattr(tc, "model_dump", None)
                     assert model_dump is not None
                     tc_dict = model_dump(exclude_none=True)
                 tool_calls_json.append(json.dumps(tc_dict))
             if isinstance(m, dict):
-                new_m = {
-                    "role": m["role"],
-                    "content": m.get("content", ""),
-                    "tool_calls": tool_calls_json,
-                }
+                new_m = dict(m)
+                new_m["tool_calls"] = tool_calls_json
             else:
                 new_m = {
                     "role": m.role,
                     "content": m.content or "",
                     "tool_calls": tool_calls_json,
                 }
-            if isinstance(reasoning_content, str):
-                new_m["reasoning_content"] = reasoning_content
+                if isinstance(reasoning_content, str):
+                    new_m["reasoning_content"] = reasoning_content
             sanitized_messages.append(new_m)
         else:
             sanitized_messages.append(m)

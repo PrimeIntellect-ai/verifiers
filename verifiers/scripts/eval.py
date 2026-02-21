@@ -34,6 +34,7 @@ from verifiers.utils.eval_utils import (
 )
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.utils.message_utils import ImageMode, coerce_image_mode
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+MAX_IMAGE_BASE64_CHARS = 10_000_000  # ~7.5 MB decoded; fail-fast guard for base64 mode
 
 # Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
 PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
@@ -279,6 +281,17 @@ def main():
         help="Save results to disk",
     )
     parser.add_argument(
+        "--save-image-mode",
+        type=str,
+        choices=[mode.value for mode in ImageMode],
+        default=ImageMode.BASE64.value,
+        help=(
+            "How to serialize image content into saved results. "
+            "'placeholder' writes [image], 'base64' stores extracted base64 payloads "
+            "under each message's images field."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         "-R",
         nargs="?",
@@ -366,6 +379,13 @@ def main():
     def build_eval_config(raw: dict) -> EvalConfig:
         """Build EvalConfig from a raw config dict."""
         env_id = raw["env_id"]
+        image_mode = coerce_image_mode(
+            raw.get("save_image_mode", ImageMode.BASE64.value),
+            arg_name="save_image_mode",
+        )
+        max_image_base64_chars = (
+            MAX_IMAGE_BASE64_CHARS if image_mode == ImageMode.BASE64 else None
+        )
 
         # Resolve num_examples and rollouts_per_example with env defaults
         env_defaults = get_env_eval_defaults(env_id)
@@ -624,6 +644,8 @@ def main():
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
+            save_image_mode=image_mode.value,
+            max_image_base64_chars=max_image_base64_chars,
             resume_path=resume_path,
             independent_scoring=raw.get("independent_scoring", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),

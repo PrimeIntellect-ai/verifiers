@@ -363,6 +363,7 @@ class GenerateMetadata(TypedDict):
     state_columns: list[str]
     path_to_save: Path
     tools: list[Tool] | None
+    save_image_mode: str
 
 
 class GenerateOutputs(TypedDict):
@@ -494,6 +495,8 @@ class EvalConfig(BaseModel):
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
+    save_image_mode: str = "base64"
+    max_image_base64_chars: int | None = None
     resume_path: Path | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None

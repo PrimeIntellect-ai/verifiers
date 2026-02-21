@@ -23,7 +23,11 @@ from verifiers.types import (
     Tool,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import (
+    ImageMode,
+    messages_to_printable,
+    sanitize_tool_calls,
+)
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.usage_utils import (
     StateUsageTracker,
@@ -137,7 +141,10 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
 
 
 def state_to_output(
-    state: State, state_columns: list[str] | None = None
+    state: State,
+    state_columns: list[str] | None = None,
+    image_mode: str | ImageMode = ImageMode.PLACEHOLDER,
+    max_image_base64_chars: int | None = None,
 ) -> RolloutOutput:
     """Convert a State to a serializable RolloutOutput.
 
@@ -195,12 +202,22 @@ def state_to_output(
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
-        output_prompt = sanitize_tool_calls(messages_to_printable(prompt))
-        output["prompt"] = output_prompt
+        output["prompt"] = sanitize_tool_calls(
+            messages_to_printable(
+                prompt,
+                image_mode=image_mode,
+                max_image_base64_chars=max_image_base64_chars,
+            )
+        )
     completion = state.get("completion")
     if completion is not None:
-        output_completion = sanitize_tool_calls(messages_to_printable(completion))
-        output["completion"] = output_completion
+        output["completion"] = sanitize_tool_calls(
+            messages_to_printable(
+                completion,
+                image_mode=image_mode,
+                max_image_base64_chars=max_image_base64_chars,
+            )
+        )
     # use repr for error
     if state.get("error") is not None:
         error_chain = ErrorChain(state.get("error"))
@@ -234,10 +251,21 @@ def state_to_output(
 
 
 def states_to_outputs(
-    states: list[State], state_columns: list[str] | None = None
+    states: list[State],
+    state_columns: list[str] | None = None,
+    image_mode: str | ImageMode = ImageMode.PLACEHOLDER,
+    max_image_base64_chars: int | None = None,
 ) -> list[RolloutOutput]:
     """Convert a list of States to serializable RolloutOutputs."""
-    return [state_to_output(state, state_columns) for state in states]
+    return [
+        state_to_output(
+            state,
+            state_columns,
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
+        )
+        for state in states
+    ]
 
 
 class GenerateOutputsBuilder:
@@ -254,6 +282,7 @@ class GenerateOutputsBuilder:
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
+        save_image_mode: str = ImageMode.BASE64.value,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -264,6 +293,7 @@ class GenerateOutputsBuilder:
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
+        self.save_image_mode = save_image_mode
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
         self.version_info = get_version_info(env_id=env_id)
@@ -376,6 +406,7 @@ class GenerateOutputsBuilder:
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,
+            save_image_mode=self.save_image_mode,
         )
 
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:

@@ -70,7 +70,11 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.message_utils import (
+    ImageMode,
+    coerce_image_mode,
+    normalize_messages,
+)
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -143,6 +147,8 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
+        self.image_mode = ImageMode.BASE64.value
+        self.max_image_base64_chars: int | None = None
 
         self.set_score_rollouts(score_rollouts)
 
@@ -683,6 +689,27 @@ class Environment(ABC):
         state["timing"]["generation_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 
+    def _resolve_output_image_options(
+        self,
+        image_mode: str | None,
+        max_image_base64_chars: int | None,
+    ) -> tuple[str, int | None]:
+        resolved_image_mode = self.image_mode if image_mode is None else image_mode
+        resolved_image_mode = coerce_image_mode(
+            resolved_image_mode, arg_name="image_mode"
+        ).value
+
+        resolved_max_image_base64_chars = max_image_base64_chars
+        if max_image_base64_chars is None:
+            resolved_max_image_base64_chars = self.max_image_base64_chars
+        if (
+            resolved_max_image_base64_chars is not None
+            and resolved_max_image_base64_chars < 0
+        ):
+            raise ValueError("max_image_base64_chars must be >= 0 or None")
+
+        return resolved_image_mode, resolved_max_image_base64_chars
+
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
         """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
@@ -702,9 +729,14 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         env_client: EnvClient | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
+        image_mode, max_image_base64_chars = self._resolve_output_image_options(
+            image_mode, max_image_base64_chars
+        )
 
         resolved_client_config: ClientConfig | None = None
         if isinstance(client, ClientConfig):
@@ -723,6 +755,8 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                image_mode,
+                max_image_base64_chars,
             )
 
         resolved_client = resolve_client(client)
@@ -743,7 +777,12 @@ class Environment(ABC):
             return state
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        output = state_to_output(state, state_columns or [])
+        output = state_to_output(
+            state,
+            state_columns or [],
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
+        )
         return output
 
     @final
@@ -755,10 +794,15 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         env_client: EnvClient | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
+        image_mode, max_image_base64_chars = self._resolve_output_image_options(
+            image_mode, max_image_base64_chars
+        )
 
         resolved_client_config: ClientConfig | None = None
         if isinstance(client, ClientConfig):
@@ -777,6 +821,8 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                image_mode,
+                max_image_base64_chars,
             )
 
         resolved_client = resolve_client(client)
@@ -801,7 +847,13 @@ class Environment(ABC):
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [
-            state_to_output(state, state_columns or []) for state in group_states
+            state_to_output(
+                state,
+                state_columns or [],
+                image_mode=image_mode,
+                max_image_base64_chars=max_image_base64_chars,
+            )
+            for state in group_states
         ]
         return outputs
 
@@ -815,6 +867,8 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -917,6 +971,9 @@ class Environment(ABC):
         if sampling_args is not None:
             default_sampling_args.update(sampling_args)
         sampling_args = default_sampling_args
+        image_mode, max_image_base64_chars = self._resolve_output_image_options(
+            image_mode, max_image_base64_chars
+        )
 
         # initialize outputs builder
         total_rollouts = len(raw_inputs)
@@ -932,6 +989,7 @@ class Environment(ABC):
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
+            save_image_mode=image_mode,
         )
 
         single_client: Client | None = None
@@ -1013,6 +1071,8 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    image_mode=image_mode,
+                                    max_image_base64_chars=max_image_base64_chars,
                                 ),
                             ),
                         )
@@ -1039,6 +1099,8 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    image_mode=image_mode,
+                                    max_image_base64_chars=max_image_base64_chars,
                                 ),
                             ),
                         )
@@ -1148,6 +1210,8 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -1175,6 +1239,8 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
@@ -1196,6 +1262,8 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -1214,6 +1282,8 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
+            image_mode=image_mode,
+            max_image_base64_chars=max_image_base64_chars,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
@@ -1252,6 +1322,24 @@ class Environment(ABC):
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""
         self.score_rollouts = score_rollouts
+
+    def set_image_mode(self, image_mode: str | ImageMode) -> None:
+        """Set how image content is serialized in rollout outputs."""
+        self.image_mode = coerce_image_mode(image_mode, arg_name="image_mode").value
+
+    def set_max_image_base64_chars(self, max_image_base64_chars: int | None) -> None:
+        """Set the max allowed image base64 payload length in output serialization."""
+        if max_image_base64_chars is not None and max_image_base64_chars < 0:
+            raise ValueError("max_image_base64_chars must be >= 0 or None")
+        self.max_image_base64_chars = max_image_base64_chars
+
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        """Set the interleaved rollouts flag for this environment."""
+        self.interleaved_rollouts = interleaved_rollouts
+        if self.interleaved_rollouts:
+            self.logger.warning(
+                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
+            )
 
     async def start_server(
         self,

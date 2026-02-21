@@ -277,12 +277,22 @@ class EnvGroup(vf.Environment):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
         env = self.get_env_for_task(input["task"])
         env_client = env_client or env.env_client or self.env_client
         return await env.run_rollout(
-            input, client, model, sampling_args, max_retries, state_columns, env_client
+            input,
+            client,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+            image_mode,
+            max_image_base64_chars,
+            env_client,
         )
 
     @final
@@ -294,6 +304,8 @@ class EnvGroup(vf.Environment):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        image_mode: str | None = None,
+        max_image_base64_chars: int | None = None,
         env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
         env = self.get_env_for_task(group_inputs[0]["task"])
@@ -305,6 +317,8 @@ class EnvGroup(vf.Environment):
             sampling_args,
             max_retries,
             state_columns,
+            image_mode,
+            max_image_base64_chars,
             env_client,
         )
 
@@ -327,6 +341,24 @@ class EnvGroup(vf.Environment):
         self.max_seq_len = max_seq_len
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
+
+    def set_image_mode(self, image_mode: str) -> None:
+        """Set image output serialization mode for this group and all sub-environments."""
+        super().set_image_mode(image_mode)
+        for env in self.envs:
+            env.set_image_mode(image_mode)
+
+    def set_max_image_base64_chars(self, max_image_base64_chars: int | None) -> None:
+        """Set max image base64 payload chars for this group and all sub-environments."""
+        super().set_max_image_base64_chars(max_image_base64_chars)
+        for env in self.envs:
+            env.set_max_image_base64_chars(max_image_base64_chars)
+
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        """Set the interleaved_rollouts flag for this environment group and all sub-environments."""
+        self.interleaved_rollouts = interleaved_rollouts
+        for env in self.envs:
+            env.set_interleaved_rollouts(interleaved_rollouts)
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score_rollouts flag for this environment group and all sub-environments."""

@@ -34,6 +34,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
+from verifiers.utils.message_utils import ImageMode
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -333,6 +334,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # saving
         "state_columns",
         "save_results",
+        "save_image_mode",
         "resume",
         "resume_path",
         "save_to_hf_hub",
@@ -577,24 +579,38 @@ async def run_evaluation(
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
-    # set extra environment kwargs
+    save_image_mode = (
+        config.save_image_mode if config.save_results else ImageMode.PLACEHOLDER.value
+    )
+    max_image_base64_chars = (
+        config.max_image_base64_chars
+        if config.save_results and save_image_mode == ImageMode.BASE64.value
+        else None
+    )
+    runtime_env_kwargs = {
+        **config.extra_env_kwargs,
+        "image_mode": save_image_mode,
+        "max_image_base64_chars": max_image_base64_chars,
+    }
+
+    # set runtime environment kwargs once (local + server env)
     if config.extra_env_kwargs:
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+    vf_env.set_kwargs(**runtime_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
 
     try:
         if config.debug:
             await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
+                extra_env_kwargs=runtime_env_kwargs,
                 log_level=get_log_level(config.verbose),
             )
         else:
             log_file = results_path / "eval.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
             await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
+                extra_env_kwargs=runtime_env_kwargs,
                 log_level="CRITICAL",  # disable console logging
                 log_file=str(log_file),
                 log_file_level=get_log_level(config.verbose),

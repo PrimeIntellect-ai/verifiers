@@ -145,6 +145,8 @@ class EnvServer(ABC):
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            image_mode=request.image_mode,
+            max_image_base64_chars=request.max_image_base64_chars,
         )
         return RunRolloutResponse(output=output)
 
@@ -157,6 +159,8 @@ class EnvServer(ABC):
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            image_mode=request.image_mode,
+            max_image_base64_chars=request.max_image_base64_chars,
         )
         return RunGroupResponse(outputs=outputs)
 
