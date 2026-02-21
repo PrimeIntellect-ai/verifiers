@@ -41,7 +41,7 @@ class FakeTunnel:
         self.stop_calls += 1
 
 
-class GatewayCliAgentEnv(vf.CliAgentEnv):
+class GatewayCliAgentEnv(vf.RolloutGatewayEnv):
     async def post_rollout(self, state: vf.State):
         state["reward"] = 1.0
         state["test_output"] = "ok"
