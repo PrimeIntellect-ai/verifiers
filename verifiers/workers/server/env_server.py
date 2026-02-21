@@ -111,19 +111,19 @@ class EnvServer(ABC):
 
         stop_event = asyncio.Event()
 
-        def signal_handler(sig):
-            self.logger.info(
-                f"Received signal {sig.name}, initiating graceful shutdown"
-            )
+        def signal_handler(sig, frame):
             stop_event.set()
+            if sig == signal.SIGTERM:
+                raise SystemExit(143)
+            raise KeyboardInterrupt()
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
 
         try:
             await self.serve(stop_event=stop_event)
         finally:
+            await self.env._teardown()
             await self.close()
 
     @classmethod
