@@ -33,6 +33,8 @@ __pycache__/
 
 # libraries
 /prime-rl
+/packages/tasksets
+/packages/harnesses
 
 # outputs
 wandb/
