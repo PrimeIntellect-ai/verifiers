@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
@@ -10,7 +9,7 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
-import verifiers.envs.experimental.cli_agent_env as cli_agent_env
+import verifiers.envs.experimental.rollout_gateway_env as rollout_gateway_env
 
 pytestmark = [pytest.mark.integration, pytest.mark.environments]
 
@@ -160,7 +159,7 @@ def _build_gateway_transport(tracker: dict) -> httpx.MockTransport:
 @pytest.mark.asyncio
 async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     FakeTunnel.instances.clear()
-    monkeypatch.setattr(cli_agent_env, "Tunnel", FakeTunnel)
+    monkeypatch.setattr(rollout_gateway_env, "Tunnel", FakeTunnel)
 
     tracker = {
         "paths": [],
@@ -172,12 +171,18 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     }
     transport = _build_gateway_transport(tracker)
     real_async_client = httpx.AsyncClient
+    client = vf.OpenAIChatCompletionsClient(
+        vf.ClientConfig(
+            api_key_var="UNIT_TEST_API_KEY",
+            api_base_url="http://gateway.internal:8000/v1/",
+        )
+    )
 
     def _client_factory(*args, **kwargs):
         kwargs["transport"] = transport
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(cli_agent_env.httpx, "AsyncClient", _client_factory)
+    monkeypatch.setattr(rollout_gateway_env.httpx, "AsyncClient", _client_factory)
 
     dataset = Dataset.from_dict(
         {
@@ -216,7 +221,6 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
         "example_id": 0,
         "task": "gateway-test",
     }
-    client = cast(Any, SimpleNamespace(base_url="http://gateway.internal:8000/v1/"))
     state = await env.rollout(
         input=rollout_input,
         client=client,
@@ -264,7 +268,7 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
 @pytest.mark.asyncio
 async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
     FakeTunnel.instances.clear()
-    monkeypatch.setattr(cli_agent_env, "Tunnel", FakeTunnel)
+    monkeypatch.setattr(rollout_gateway_env, "Tunnel", FakeTunnel)
 
     dataset = Dataset.from_dict(
         {

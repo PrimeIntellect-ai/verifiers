@@ -144,7 +144,8 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             return tunnel.url
 
     def _resolve_gateway_url(self, state: State) -> str:
-        client = cast(AsyncOpenAI, state["client"])
+        # `state["client"]` may be a Verifiers wrapper with the raw client on `.client`.
+        client = getattr(state["client"], "client", state["client"])
         gateway_url = str(client.base_url).rstrip("/")
         if gateway_url.endswith("/v1"):
             gateway_url = gateway_url[:-3]
