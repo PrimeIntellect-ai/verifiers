@@ -567,7 +567,7 @@ class MyGameEnv(vf.MultiTurnEnv):
         return state.get("lives", 1) <= 0
 ```
 
-`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, and `max_turns` by default.
+`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and incomplete response detection by default.
 
 Execution order can be controlled with `priority` (higher runs first). This is useful for checking cheap conditions before expensive ones:
 
