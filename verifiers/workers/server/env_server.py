@@ -123,8 +123,12 @@ class EnvServer(ABC):
         try:
             await self.serve(stop_event=stop_event)
         finally:
-            await self.env._teardown()
-            await self.close()
+            try:
+                await self.env._teardown()
+            except Exception:
+                self.logger.exception("Error during environment teardown")
+            finally:
+                await self.close()
 
     @classmethod
     def run_server(cls, *args, **kwargs):
