@@ -172,30 +172,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         return state
 
-        if logger.isEnabledFor(logging.DEBUG):
-            rollout_id = state.get("rollout_id")
-            logger.debug(
-                "rollout=%s fetched trajectory steps=%d truncated=%s",
-                rollout_id,
-                len(trajectory),
-                state["is_truncated"],
-            )
-            for turn_idx, step in enumerate(trajectory):
-                tokens = step.get("tokens")
-                prompt_token_count = (
-                    len(tokens["prompt_ids"]) if tokens is not None else 0
-                )
-                completion_token_count = (
-                    len(tokens["completion_ids"]) if tokens is not None else 0
-                )
-                logger.debug(
-                    "rollout=%s turn=%d prompt_tokens=%d completion_tokens=%d",
-                    rollout_id,
-                    turn_idx,
-                    prompt_token_count,
-                    completion_token_count,
-                )
-
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
