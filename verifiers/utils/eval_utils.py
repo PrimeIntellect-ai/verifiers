@@ -327,6 +327,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        "disable_env_server",
         # logging
         "verbose",
         "debug",
@@ -585,22 +586,23 @@ async def run_evaluation(
     results_path = config.resume_path or get_eval_results_path(config)
 
     try:
-        if config.debug:
-            await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
-                log_level=get_log_level(config.verbose),
-            )
-        else:
-            log_file = results_path / "eval.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
-                log_level="CRITICAL",  # disable console logging
-                log_file=str(log_file),
-                log_file_level=get_log_level(config.verbose),
-            )
-            if on_log_file is not None:
-                on_log_file(log_file)
+        if not config.disable_env_server:
+            if config.debug:
+                await vf_env.start_server(
+                    extra_env_kwargs=config.extra_env_kwargs,
+                    log_level=get_log_level(config.verbose),
+                )
+            else:
+                log_file = results_path / "eval.log"
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                await vf_env.start_server(
+                    extra_env_kwargs=config.extra_env_kwargs,
+                    log_level="CRITICAL",  # disable console logging
+                    log_file=str(log_file),
+                    log_file_level=get_log_level(config.verbose),
+                )
+                if on_log_file is not None:
+                    on_log_file(log_file)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
@@ -642,7 +644,8 @@ async def run_evaluation(
             on_log=on_log,
         )
     finally:
-        await vf_env.stop_server()
+        if not config.disable_env_server:
+            await vf_env.stop_server()
 
     return outputs
 
