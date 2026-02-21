@@ -124,6 +124,7 @@ class EnvServer(ABC):
         try:
             await self.serve(stop_event=stop_event)
         finally:
+            await self.env._teardown()
             await self.close()
 
     @classmethod
