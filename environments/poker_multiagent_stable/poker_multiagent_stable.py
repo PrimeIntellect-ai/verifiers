@@ -75,7 +75,7 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         if messages is None:
             return []
         if isinstance(messages, str):
-            return [{"role": "assistant", "content": messages}]
+            return [{"role": "user", "content": messages}]
         if isinstance(messages, list):
             return messages
         raise ValueError(f"Expected list/str messages, got {type(messages).__name__}")
