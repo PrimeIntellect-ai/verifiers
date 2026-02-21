@@ -110,6 +110,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
+        passed_threshold: float = 1.0,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -145,6 +146,7 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_score_rollouts(score_rollouts)
+        self.passed_threshold = passed_threshold
 
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
@@ -932,6 +934,7 @@ class Environment(ABC):
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
+            passed_threshold=self.passed_threshold,
         )
 
         single_client: Client | None = None
