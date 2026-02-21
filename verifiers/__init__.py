@@ -67,6 +67,7 @@ __all__ = [
     "ReasoningGymEnv",
     "GymEnv",
     "CliAgentEnv",
+    "RolloutGatewayEnv",
     "HarborEnv",
     "MCPEnv",
     "BrowserEnv",
@@ -121,6 +122,7 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
     "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
+    "RolloutGatewayEnv": "verifiers.envs.experimental.rollout_gateway_env:RolloutGatewayEnv",
     "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
     "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
     "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
@@ -160,6 +162,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
+    from .envs.experimental.rollout_gateway_env import RolloutGatewayEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
     from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
