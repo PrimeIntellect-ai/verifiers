@@ -63,9 +63,11 @@ class ZMQEnvServer(EnvServer):
 
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        # require client to receive all messages
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+        self.socket.setsockopt(zmq.SNDHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.RCVHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
         # Health check runs in a separate process (immune to env workload)
@@ -233,6 +235,12 @@ class ZMQEnvServer(EnvServer):
         )
 
         # send response: [client_id, request_id, response]
-        await self.socket.send_multipart(
-            [client_id, request_id.encode(), response_bytes]
-        )
+        try:
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(
+                f"Failed to send response for request {request_id[:7]}: {e} "
+                f"(client likely disconnected)"
+            )
