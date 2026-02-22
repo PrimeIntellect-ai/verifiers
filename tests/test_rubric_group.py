@@ -417,3 +417,79 @@ class TestRubricGroup:
 
         assert state["reward"] == 1.0
         assert recorded_parsers == [xml_parser]
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_score_rollout_timing_invariant(self):
+        """Test that generation_ms + scoring_ms == total_ms after score_rollout."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2])
+
+        state = State(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                task="default",
+                example_id=0,
+            )
+        )
+        state["completion"] = [{"role": "assistant", "content": "test"}]
+        state["trajectory"] = []
+        state["timing"] = RolloutTiming(
+            generation_ms=100.0,
+            scoring_ms=0.0,
+            total_ms=100.0,
+            start_time=0.0,
+        )
+
+        await group.score_rollout(state)
+
+        assert state["timing"]["generation_ms"] == 100.0
+        assert state["timing"]["scoring_ms"] > 0.0
+        assert state["timing"]["total_ms"] == 100.0 + state["timing"]["scoring_ms"]
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_score_group_timing_invariant(self):
+        """Test that generation_ms + scoring_ms == total_ms after score_group."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2])
+
+        state = State(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                task="default",
+                example_id=0,
+            )
+        )
+        state["completion"] = [{"role": "assistant", "content": "test"}]
+        state["trajectory"] = []
+        state["timing"] = RolloutTiming(
+            generation_ms=100.0,
+            scoring_ms=0.0,
+            total_ms=100.0,
+            start_time=0.0,
+        )
+
+        await group.score_group([state])
+
+        assert state["timing"]["generation_ms"] == 100.0
+        assert state["timing"]["scoring_ms"] > 0.0
+        assert state["timing"]["total_ms"] == 100.0 + state["timing"]["scoring_ms"]
