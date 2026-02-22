@@ -41,9 +41,9 @@ class ZMQEnvClient(EnvClient):
 
         # DEALER socket for async request/response (work only)
         self.socket = self.ctx.socket(zmq.DEALER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 0)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.SNDHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.RCVHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
 
         # TCP keepalive for faster dead server detection
         self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)
