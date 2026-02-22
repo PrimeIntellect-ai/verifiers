@@ -419,7 +419,7 @@ class TestRubricGroup:
         assert recorded_parsers == [xml_parser]
 
     @pytest.mark.asyncio
-    async def test_rubric_group_score_rollout_timing_invariant(self):
+    async def test_rubric_group_score_rollout_timing(self):
         """Test that generation_ms + scoring_ms == total_ms after score_rollout."""
 
         def func1(completion, **kwargs):
@@ -457,7 +457,7 @@ class TestRubricGroup:
         assert state["timing"]["total_ms"] == 100.0 + state["timing"]["scoring_ms"]
 
     @pytest.mark.asyncio
-    async def test_rubric_group_score_group_timing_invariant(self):
+    async def test_rubric_group_score_group_timing(self):
         """Test that generation_ms + scoring_ms == total_ms after score_group."""
 
         def func1(completion, **kwargs):
