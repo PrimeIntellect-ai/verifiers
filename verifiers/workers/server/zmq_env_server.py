@@ -63,7 +63,8 @@ class ZMQEnvServer(EnvServer):
 
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+        self.socket.setsockopt(zmq.SNDHWM, 0)
         self.socket.setsockopt(zmq.RCVHWM, 10000)
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)

@@ -42,7 +42,7 @@ class ZMQEnvClient(EnvClient):
         # DEALER socket for async request/response (work only)
         self.socket = self.ctx.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
+        self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.setsockopt(zmq.LINGER, 0)
 
         # TCP keepalive for faster dead server detection
