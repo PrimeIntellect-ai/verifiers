@@ -333,6 +333,12 @@ def main():
         help="Disable Rich display; use normal logging and tqdm progress instead",
     )
     parser.add_argument(
+        "--human-debug",
+        default=False,
+        action="store_true",
+        help="Use interactive human input for model responses (eval-only debug mode)",
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=0,
@@ -622,6 +628,7 @@ def main():
             max_retries=raw.get("max_retries", 0),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
+            human_debug=raw.get("human_debug", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -644,14 +651,36 @@ def main():
         raise SystemExit(1)
 
     eval_configs = [build_eval_config(raw) for raw in raw_eval_configs]
+    human_debug_configs = [config for config in eval_configs if config.human_debug]
+    if human_debug_configs:
+        if len(eval_configs) != 1:
+            raise ValueError(
+                "human_debug mode only supports a single evaluation per run."
+            )
+        config = human_debug_configs[0]
+        if config.max_concurrent != 1:
+            logger.info(
+                "human_debug mode requires sequential execution; forcing max_concurrent=1"
+            )
+            config.max_concurrent = 1
+        if not config.independent_scoring:
+            logger.info(
+                "human_debug mode requires independent scoring; enabling independent_scoring=True"
+            )
+            config.independent_scoring = True
+
     for config in eval_configs:
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
     eval_run_config = EvalRunConfig(
         evals=eval_configs, heartbeat_url=args.heartbeat_url
     )
-    if args.debug:
-        asyncio.run(run_evaluations(eval_run_config))
+    if args.debug or human_debug_configs:
+        try:
+            asyncio.run(run_evaluations(eval_run_config))
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user.")
+            raise SystemExit(130)
     else:
         asyncio.run(run_evaluations_tui(eval_run_config, tui_mode=args.tui))
 

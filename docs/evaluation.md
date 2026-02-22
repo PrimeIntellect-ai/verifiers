@@ -154,6 +154,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--verbose` | `-v` | false | Enable debug logging |
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
+| `--human-debug` | — | false | Use interactive human input for model responses (text-only) |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
@@ -165,6 +166,21 @@ Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
+
+### Human Debug Mode
+
+Use `--human-debug` to replace API model calls with terminal-entered responses:
+
+```bash
+prime eval run my-env --human-debug -n 3 -r 1 -s
+```
+
+In this mode:
+- Responses are entered interactively in the CLI and ended with `:wq` on its own line
+- Only text responses are supported (tool calls are not supported)
+- Exactly one eval config is supported per run
+- Execution is forced to sequential + independent scoring (`max_concurrent=1`, `independent_scoring=true`)
+- TUI display is disabled automatically to avoid stdin/display conflicts
 
 ### Resuming Evaluations
 
@@ -290,6 +306,7 @@ Each `[[eval]]` section must contain an `env_id` field. All other fields are opt
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `human_debug` | boolean | Use interactive human-entered model responses (single eval only) |
 
 Example with `env_args`:
 

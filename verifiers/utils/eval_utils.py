@@ -17,6 +17,7 @@ from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
+from verifiers.clients.human_cli_client import HumanCLIClient
 from verifiers.types import (
     ClientType,
     Endpoint,
@@ -326,6 +327,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "rollouts_per_example",
         "max_concurrent",
         "independent_scoring",
+        "human_debug",
         "max_retries",
         # logging
         "verbose",
@@ -585,22 +587,28 @@ async def run_evaluation(
     results_path = config.resume_path or get_eval_results_path(config)
 
     try:
-        if config.debug:
-            await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
-                log_level=get_log_level(config.verbose),
-            )
+        if config.human_debug:
+            logger.info("Running evaluation in human debug mode")
+            client = HumanCLIClient()
         else:
-            log_file = results_path / "eval.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            await vf_env.start_server(
-                extra_env_kwargs=config.extra_env_kwargs,
-                log_level="CRITICAL",  # disable console logging
-                log_file=str(log_file),
-                log_file_level=get_log_level(config.verbose),
-            )
-            if on_log_file is not None:
-                on_log_file(log_file)
+            if config.debug:
+                await vf_env.start_server(
+                    extra_env_kwargs=config.extra_env_kwargs,
+                    log_level=get_log_level(config.verbose),
+                )
+            else:
+                log_file = results_path / "eval.log"
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                await vf_env.start_server(
+                    extra_env_kwargs=config.extra_env_kwargs,
+                    log_level="CRITICAL",  # disable console logging
+                    log_file=str(log_file),
+                    log_file_level=get_log_level(config.verbose),
+                )
+                if on_log_file is not None:
+                    on_log_file(log_file)
+
+            client = config.client_config
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
@@ -624,7 +632,7 @@ async def run_evaluation(
                 )
 
         outputs = await vf_env.evaluate(
-            client=config.client_config,
+            client=client,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,

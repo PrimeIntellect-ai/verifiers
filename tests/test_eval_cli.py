@@ -57,6 +57,7 @@ def run_cli(make_metadata, make_state, make_input):
             "max_retries": 0,
             "tui": False,
             "debug": False,
+            "human_debug": False,
             "heartbeat_url": None,
         }
         base_args.update(overrides)
@@ -114,6 +115,35 @@ def test_cli_single_env_id(monkeypatch, run_cli):
     configs = captured["configs"]
     assert len(configs) == 1
     assert configs[0].env_id == "env1"
+
+
+def test_cli_human_debug_sets_flag(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "env_id_or_config": "env1",
+            "human_debug": True,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.human_debug is True
+
+
+def test_cli_human_debug_forces_safe_runtime(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "env_id_or_config": "env1",
+            "human_debug": True,
+            "max_concurrent": 8,
+            "independent_scoring": False,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.max_concurrent == 1
+    assert config.independent_scoring is True
 
 
 def test_cli_sampling_args_precedence_over_flags(monkeypatch, run_cli):
@@ -469,6 +499,15 @@ def test_load_toml_config_single_eval():
         assert result[0]["env_id"] == "env1"
 
 
+def test_load_toml_config_accepts_human_debug():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\nhuman_debug = true\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+        assert len(result) == 1
+        assert result[0]["human_debug"] is True
+
+
 def test_repo_eval_example_configs_are_valid():
     """Bundled example configs should parse with the current eval config schema."""
     config_paths = sorted(Path("configs/eval").glob("*.toml"))
@@ -567,6 +606,23 @@ def test_cli_multi_env_via_toml_config(monkeypatch, run_cli):
     assert len(configs) == 2
     assert configs[0].env_id == "env1"
     assert configs[1].env_id == "env2"
+
+
+def test_cli_human_debug_rejects_multi_eval_config(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'human_debug = true\n[[eval]]\nenv_id = "env1"\n[[eval]]\nenv_id = "env2"\n'
+        )
+        f.flush()
+        with pytest.raises(
+            ValueError, match="human_debug mode only supports a single evaluation"
+        ):
+            run_cli(
+                monkeypatch,
+                {
+                    "env_id_or_config": f.name,
+                },
+            )
 
 
 def test_cli_toml_ignores_cli_args(monkeypatch, run_cli):
