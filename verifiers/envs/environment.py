@@ -156,7 +156,9 @@ class Environment(ABC):
 
         if dataset is not None:
             if callable(dataset):
-                self.dataset_source: DatasetBuilder | None = dataset
+                self.dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, dataset
+                )
             else:
                 self.dataset_source = lambda ds=dataset: ds
                 self.build_dataset()  # Eagerly build for raw datasets (backwards compat)
@@ -165,7 +167,9 @@ class Environment(ABC):
 
         if eval_dataset is not None:
             if callable(eval_dataset):
-                self.eval_dataset_source: DatasetBuilder | None = eval_dataset
+                self.eval_dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, eval_dataset
+                )
             else:
                 self.eval_dataset_source = lambda ds=eval_dataset: ds
                 self.build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
