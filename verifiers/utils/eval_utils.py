@@ -427,10 +427,16 @@ def print_rewards(results: GenerateOutputs):
     threshold = results["metadata"].get("pass_threshold", 0.5)
     pass_at_k, pass_all_k = compute_pass_at_k(results["outputs"], r, threshold)
     if pass_at_k:
-        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_at_k.items(), key=lambda x: int(x[0]))]
+        parts = [
+            f"{k}={v:.3f}"
+            for k, v in sorted(pass_at_k.items(), key=lambda x: int(x[0]))
+        ]
         print(f"pass@k: {', '.join(parts)}")
     if pass_all_k:
-        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_all_k.items(), key=lambda x: int(x[0]))]
+        parts = [
+            f"{k}={v:.3f}"
+            for k, v in sorted(pass_all_k.items(), key=lambda x: int(x[0]))
+        ]
         print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
