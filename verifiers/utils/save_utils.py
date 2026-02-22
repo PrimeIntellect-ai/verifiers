@@ -255,7 +255,7 @@ class GenerateOutputsBuilder:
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
-        passed_threshold: float = 1.0,
+        pass_threshold: float = 0.5,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -266,7 +266,7 @@ class GenerateOutputsBuilder:
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
-        self.passed_threshold = passed_threshold
+        self.pass_threshold = pass_threshold
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
         self.version_info = get_version_info(env_id=env_id)
@@ -319,8 +319,8 @@ class GenerateOutputsBuilder:
         avg_error = sum(has_errors) / len(has_errors) if has_errors else 0.0
 
         # compute pass@k and pass^k from accumulated outputs
-        pass_at_k, pass_hat_k = compute_pass_at_k(
-            self.outputs, self.rollouts_per_example, self.passed_threshold
+        pass_at_k, pass_all_k = compute_pass_at_k(
+            self.outputs, self.rollouts_per_example, self.pass_threshold
         )
 
         input_tokens_total = 0.0
@@ -380,8 +380,8 @@ class GenerateOutputsBuilder:
             avg_metrics=avg_metrics,
             avg_error=avg_error,
             pass_at_k=pass_at_k,
-            pass_hat_k=pass_hat_k,
-            passed_threshold=self.passed_threshold,
+            pass_all_k=pass_all_k,
+            pass_threshold=self.pass_threshold,
             usage=usage,
             version_info=self.version_info,
             state_columns=self.state_columns,

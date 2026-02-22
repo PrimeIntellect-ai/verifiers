@@ -34,6 +34,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
+from verifiers.utils.metric_utils import compute_pass_at_k
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -423,13 +424,13 @@ def print_rewards(results: GenerateOutputs):
         out = f"r{i + 1}: {trials}"
         print(out)
 
-    pass_at_k = results["metadata"].get("pass_at_k") or {}
+    threshold = results["metadata"].get("pass_threshold", 0.5)
+    pass_at_k, pass_all_k = compute_pass_at_k(results["outputs"], r, threshold)
     if pass_at_k:
-        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_at_k.items())]
+        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_at_k.items(), key=lambda x: int(x[0]))]
         print(f"pass@k: {', '.join(parts)}")
-    pass_hat_k = results["metadata"].get("pass_hat_k") or {}
-    if pass_hat_k:
-        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_hat_k.items())]
+    if pass_all_k:
+        parts = [f"{k}={v:.3f}" for k, v in sorted(pass_all_k.items(), key=lambda x: int(x[0]))]
         print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
@@ -752,8 +753,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             pass_at_k = metadata.get("pass_at_k") or {}
             for k, v in pass_at_k.items():
                 metrics[f"pass@{k}"] = v
-            pass_hat_k = metadata.get("pass_hat_k") or {}
-            for k, v in pass_hat_k.items():
+            pass_all_k = metadata.get("pass_all_k") or {}
+            for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
             display.update_env_state(
                 env_idx,
