@@ -1,13 +1,11 @@
 import asyncio
-import sys
 
 import pytest
 
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import (
-    EndpointDispatcher,
-    EndpointVariantSlot,
-    NullEndpointDispatcher,
+    EndpointSlot,
+    LeastLoadedDispatcher,
 )
 
 
@@ -15,24 +13,24 @@ def _make_config(url: str = "https://a.example/v1") -> ClientConfig:
     return ClientConfig(api_base_url=url)
 
 
-class TestEndpointVariantSlot:
+class TestEndpointSlot:
     def test_available_reflects_capacity(self):
-        slot = EndpointVariantSlot(config=_make_config(), max_concurrent=10)
+        slot = EndpointSlot(config=_make_config(), max_concurrent=10)
         assert slot.available == 10
         slot.active = 3
         assert slot.available == 7
 
 
-class TestEndpointDispatcher:
+class TestLeastLoadedDispatcher:
     @pytest.mark.asyncio
     async def test_least_loaded_picks_emptier_variant(self):
-        slot_a = EndpointVariantSlot(
+        slot_a = EndpointSlot(
             config=_make_config("https://a.example/v1"), max_concurrent=4
         )
-        slot_b = EndpointVariantSlot(
+        slot_b = EndpointSlot(
             config=_make_config("https://b.example/v1"), max_concurrent=4
         )
-        dispatcher = EndpointDispatcher([slot_a, slot_b])
+        dispatcher = LeastLoadedDispatcher([slot_a, slot_b])
 
         # Acquire one on each — first should go to whichever has more available
         async with dispatcher.acquire() as got1:
@@ -45,8 +43,8 @@ class TestEndpointDispatcher:
 
     @pytest.mark.asyncio
     async def test_blocks_when_all_full_then_unblocks(self):
-        slot = EndpointVariantSlot(config=_make_config(), max_concurrent=1)
-        dispatcher = EndpointDispatcher([slot])
+        slot = EndpointSlot(config=_make_config(), max_concurrent=1)
+        dispatcher = LeastLoadedDispatcher([slot])
 
         acquired = asyncio.Event()
         released = asyncio.Event()
@@ -77,8 +75,8 @@ class TestEndpointDispatcher:
 
     @pytest.mark.asyncio
     async def test_count_parameter_consumes_correct_slots(self):
-        slot = EndpointVariantSlot(config=_make_config(), max_concurrent=4)
-        dispatcher = EndpointDispatcher([slot])
+        slot = EndpointSlot(config=_make_config(), max_concurrent=4)
+        dispatcher = LeastLoadedDispatcher([slot])
 
         async with dispatcher.acquire(count=3) as got:
             assert got is slot
@@ -90,8 +88,8 @@ class TestEndpointDispatcher:
 
     @pytest.mark.asyncio
     async def test_releases_on_exception(self):
-        slot = EndpointVariantSlot(config=_make_config(), max_concurrent=2)
-        dispatcher = EndpointDispatcher([slot])
+        slot = EndpointSlot(config=_make_config(), max_concurrent=2)
+        dispatcher = LeastLoadedDispatcher([slot])
 
         with pytest.raises(RuntimeError, match="boom"):
             async with dispatcher.acquire():
@@ -102,8 +100,8 @@ class TestEndpointDispatcher:
     @pytest.mark.asyncio
     async def test_oversize_count_waits_for_full_idle(self):
         """When count exceeds every variant's max_concurrent, wait for idle."""
-        slot = EndpointVariantSlot(config=_make_config(), max_concurrent=2)
-        dispatcher = EndpointDispatcher([slot])
+        slot = EndpointSlot(config=_make_config(), max_concurrent=2)
+        dispatcher = LeastLoadedDispatcher([slot])
 
         released = asyncio.Event()
 
@@ -129,39 +127,4 @@ class TestEndpointDispatcher:
 
     def test_empty_variants_raises(self):
         with pytest.raises(ValueError):
-            EndpointDispatcher([])
-
-
-class TestNullEndpointDispatcher:
-    @pytest.mark.asyncio
-    async def test_round_robins_without_blocking(self):
-        configs = [
-            _make_config("https://a.example/v1"),
-            _make_config("https://b.example/v1"),
-            _make_config("https://c.example/v1"),
-        ]
-        dispatcher = NullEndpointDispatcher(configs)
-
-        urls = []
-        for _ in range(6):
-            async with dispatcher.acquire() as slot:
-                urls.append(slot.config.api_base_url)
-
-        assert urls == [
-            "https://a.example/v1",
-            "https://b.example/v1",
-            "https://c.example/v1",
-            "https://a.example/v1",
-            "https://b.example/v1",
-            "https://c.example/v1",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_slot_has_maxsize_capacity(self):
-        dispatcher = NullEndpointDispatcher([_make_config()])
-        async with dispatcher.acquire() as slot:
-            assert slot.max_concurrent == sys.maxsize
-
-    def test_empty_configs_raises(self):
-        with pytest.raises(ValueError):
-            NullEndpointDispatcher([])
+            LeastLoadedDispatcher([])

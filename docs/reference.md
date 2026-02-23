@@ -701,9 +701,10 @@ class EndpointClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = {}
+    max_concurrent: int | None = None
 ```
 
-Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the same fields as `ClientConfig` except `endpoint_configs` itself, preventing recursive nesting.
+Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the same fields as `ClientConfig` except `endpoint_configs` itself, preventing recursive nesting. The optional `max_concurrent` field limits how many concurrent requests this variant handles; see [Per-Variant Concurrency](evaluation.md#concurrency).
 
 ### EvalConfig
 
@@ -733,11 +734,17 @@ class EvalConfig(BaseModel):
 ### Endpoint
 
 ```python
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+class Endpoint(TypedDict, total=False):
+    key: str          # required
+    url: str          # required
+    model: str        # required
+    api_client_type: ClientType
+    max_concurrent: int
+
 Endpoints = dict[str, list[Endpoint]]
 ```
 
-`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list. The optional `max_concurrent` field enables per-variant concurrency limiting with least-loaded dispatch.
 
 ---
 

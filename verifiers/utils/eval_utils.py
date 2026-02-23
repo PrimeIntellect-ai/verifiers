@@ -5,7 +5,6 @@ import importlib.util
 import logging
 import math
 import os
-import sys
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
@@ -33,10 +32,9 @@ from verifiers.types import (
     StartCallback,
 )
 from verifiers.utils.async_utils import (
-    EndpointDispatcher,
-    EndpointVariantSlot,
+    EndpointSlot,
     EventLoopLagMonitor,
-    NullEndpointDispatcher,
+    LeastLoadedDispatcher,
 )
 from verifiers.utils.client_utils import resolve_client_configs
 from verifiers.utils.import_utils import load_toml
@@ -584,22 +582,22 @@ def quiet_datasets():
 
 def _build_dispatchers(
     evals: list[EvalConfig],
-) -> dict[str | None, EndpointDispatcher | NullEndpointDispatcher]:
+) -> dict[str | None, LeastLoadedDispatcher]:
     """Build per-endpoint dispatchers from eval configs.
 
-    Groups evals by ``endpoint_id`` and, for each unique id that carries
-    ``endpoint_configs`` on its ``client_config``:
+    Groups evals by ``endpoint_id`` and, for each unique id where
+    variants have ``max_concurrent`` set, creates a
+    :class:`LeastLoadedDispatcher` with one :class:`EndpointSlot` per
+    variant.
 
-    * If **any** variant has ``max_concurrent`` set, create an
-      :class:`EndpointDispatcher` with one :class:`EndpointVariantSlot` per
-      variant (variants without ``max_concurrent`` get ``sys.maxsize``
-      capacity).
-    * Otherwise, create a :class:`NullEndpointDispatcher` for plain
-      round-robin.
+    Per-variant concurrency is all-or-nothing: if any variant in an
+    endpoint group sets ``max_concurrent``, every variant must.
+    Endpoint groups without ``max_concurrent`` use the default
+    semaphore + round-robin path in ``environment.generate()``.
 
     Returns a mapping from ``endpoint_id`` (or ``None``) to the dispatcher.
     """
-    dispatchers: dict[str | None, EndpointDispatcher | NullEndpointDispatcher] = {}
+    dispatchers: dict[str | None, LeastLoadedDispatcher] = {}
 
     # Collect unique endpoint_ids, take the first config as representative
     seen: dict[str | None, EvalConfig] = {}
@@ -611,25 +609,28 @@ def _build_dispatchers(
         if not ec.client_config.endpoint_configs:
             continue
 
-        resolved = resolve_client_configs(ec.client_config)
         endpoint_cfgs = ec.client_config.endpoint_configs
-        has_any_concurrency = any(ep.max_concurrent is not None for ep in endpoint_cfgs)
+        has_concurrency = [ep.max_concurrent is not None for ep in endpoint_cfgs]
 
-        if has_any_concurrency:
+        if any(has_concurrency):
+            if not all(has_concurrency):
+                missing = [
+                    i for i, has in enumerate(has_concurrency) if not has
+                ]
+                raise ValueError(
+                    f"Endpoint '{endpoint_id}': max_concurrent is set on some variants "
+                    f"but missing on variant(s) {missing}. Either set max_concurrent on "
+                    f"all variants or remove it entirely to use the global concurrency limit."
+                )
+            resolved = resolve_client_configs(ec.client_config)
             slots = [
-                EndpointVariantSlot(
+                EndpointSlot(
                     config=cfg,
-                    max_concurrent=(
-                        ep.max_concurrent
-                        if ep.max_concurrent is not None
-                        else sys.maxsize
-                    ),
+                    max_concurrent=ep.max_concurrent,
                 )
                 for cfg, ep in zip(resolved, endpoint_cfgs)
             ]
-            dispatchers[endpoint_id] = EndpointDispatcher(slots)
-        else:
-            dispatchers[endpoint_id] = NullEndpointDispatcher(resolved)
+            dispatchers[endpoint_id] = LeastLoadedDispatcher(slots)
 
     return dispatchers
 
@@ -640,7 +641,7 @@ async def run_evaluation(
     on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | list[ProgressCallback] | None = None,
     on_log: LogCallback | None = None,
-    dispatcher: EndpointDispatcher | NullEndpointDispatcher | None = None,
+    dispatcher: LeastLoadedDispatcher | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -675,29 +676,32 @@ async def run_evaluation(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
 
+        # Compute effective concurrency for generate().
         if dispatcher is not None:
-            # Dispatcher handles concurrency — skip per-eval semaphore
+            # LeastLoadedDispatcher handles concurrency per-variant;
+            # disable the generate-level semaphore.
             if config.max_concurrent > 0:
                 logger.debug(
                     "Endpoint-level dispatcher active; ignoring eval-level max_concurrent=%d",
                     config.max_concurrent,
                 )
-            effective_group_max_concurrent = -1  # disable semaphore
+            effective_max_concurrent = -1
         else:
-            effective_group_max_concurrent = config.max_concurrent
+            # Legacy semaphore + round-robin path. The semaphore limits
+            # concurrent groups, so convert rollout-level concurrency to
+            # group-level slots.
+            effective_max_concurrent = config.max_concurrent
             if (
                 not config.independent_scoring
                 and config.max_concurrent > 0
                 and config.rollouts_per_example > 1
             ):
-                # Grouped scoring applies the semaphore at group level. Convert
-                # rollout-level concurrency to group-level slots.
-                effective_group_max_concurrent = math.ceil(
+                effective_max_concurrent = math.ceil(
                     config.max_concurrent / config.rollouts_per_example
                 )
                 if config.num_examples > 0:
-                    effective_group_max_concurrent = min(
-                        effective_group_max_concurrent, config.num_examples
+                    effective_max_concurrent = min(
+                        effective_max_concurrent, config.num_examples
                     )
 
         outputs = await vf_env.evaluate(
@@ -706,7 +710,7 @@ async def run_evaluation(
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_group_max_concurrent,
+            max_concurrent=effective_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
@@ -802,7 +806,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     async def run_with_progress(
         env_config: EvalConfig,
         env_idx: int,
-        dispatcher: EndpointDispatcher | NullEndpointDispatcher | None = None,
+        dispatcher: LeastLoadedDispatcher | None = None,
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 

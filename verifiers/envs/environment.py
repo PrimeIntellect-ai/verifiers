@@ -65,8 +65,7 @@ from verifiers.types import (
     Tool,
 )
 from verifiers.utils.async_utils import (
-    EndpointDispatcher,
-    NullEndpointDispatcher,
+    LeastLoadedDispatcher,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -828,7 +827,7 @@ class Environment(ABC):
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
-        dispatcher: EndpointDispatcher | NullEndpointDispatcher | None = None,
+        dispatcher: LeastLoadedDispatcher | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -838,6 +837,9 @@ class Environment(ABC):
             on_progress: Progress callback(s). None uses the default tqdm progress bar.
                 A single callback replaces the default. A list of callbacks runs
                 alongside the default.
+            dispatcher: Optional LeastLoadedDispatcher for per-variant concurrency.
+                When provided, the dispatcher handles client selection and concurrency.
+                When None, falls back to semaphore + round-robin dispatch.
         """
         from datasets import Dataset
         from tqdm import tqdm
@@ -916,7 +918,6 @@ class Environment(ABC):
         elif isinstance(inputs, list):
             raw_inputs = inputs
 
-        # set up semaphores
         sem = await maybe_semaphore(max_concurrent)
 
         # set up sampling args
@@ -1007,7 +1008,7 @@ class Environment(ABC):
             tasks: dict[asyncio.Task, int] = {}
             try:
                 if dispatcher is not None:
-                    # ----- dispatcher-based path -----
+                    # Per-variant concurrency via LeastLoadedDispatcher
                     async def _dispatched_rollout(
                         rollout_input: RolloutInput,
                     ) -> RolloutOutput:
@@ -1050,11 +1051,12 @@ class Environment(ABC):
                         on_start(raw_inputs, filtered_group_inputs)
 
                         for i, group_input in enumerate(filtered_group_inputs):
-                            task = asyncio.create_task(_dispatched_group(group_input))
+                            task = asyncio.create_task(
+                                _dispatched_group(group_input)
+                            )
                             tasks[task] = i
                 else:
-                    # ----- legacy path (semaphore + round-robin) -----
-                    # create tasks based on mode
+                    # Legacy path: semaphore + round-robin
                     if independent_scoring:
                         on_start(raw_inputs, filtered_inputs)
                         for i, rollout_input in enumerate(filtered_inputs):
@@ -1083,7 +1085,7 @@ class Environment(ABC):
                         for i, group_input in enumerate(filtered_group_inputs):
                             # For grouped scoring, keep each group on one endpoint so
                             # rollouts in the same group can benefit from shared KV cache.
-                            group_client: Client | ClientConfig = get_client_for_group()
+                            group_client = get_client_for_group()
                             task = asyncio.create_task(
                                 with_sem(
                                     sem,
@@ -1210,7 +1212,7 @@ class Environment(ABC):
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
-        dispatcher: EndpointDispatcher | NullEndpointDispatcher | None = None,
+        dispatcher: LeastLoadedDispatcher | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
