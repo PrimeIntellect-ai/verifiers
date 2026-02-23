@@ -37,6 +37,24 @@ except ImportError:
     APIClient = None  # type: ignore[misc, assignment]
 
 
+_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+class CUASessionCreateError(vf.InfraError):
+    """Session creation failed in a way that may or may not be retryable."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = True,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+
+
 class CUAMode:
     """
     CUA-based browser mode supporting both local HTTP and sandbox execution.
@@ -80,6 +98,11 @@ class CUAMode:
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
+        session_create_max_retries: int | None = None,
+        session_create_base_delay: float | None = None,
+        session_create_backoff_factor: float | None = None,
+        session_create_max_backoff_seconds: float | None = None,
+        session_create_jitter: float | None = None,
         screenshot_dir: str | None = None,
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
@@ -149,7 +172,31 @@ class CUAMode:
         self.backoff_factor = backoff_factor
         self.max_backoff_seconds = max_backoff_seconds
         self.jitter = jitter
+        self.session_create_max_retries = (
+            max_retries
+            if session_create_max_retries is None
+            else session_create_max_retries
+        )
+        self.session_create_base_delay = (
+            base_delay
+            if session_create_base_delay is None
+            else session_create_base_delay
+        )
+        self.session_create_backoff_factor = (
+            backoff_factor
+            if session_create_backoff_factor is None
+            else session_create_backoff_factor
+        )
+        self.session_create_max_backoff_seconds = (
+            max_backoff_seconds
+            if session_create_max_backoff_seconds is None
+            else session_create_max_backoff_seconds
+        )
+        self.session_create_jitter = (
+            jitter if session_create_jitter is None else session_create_jitter
+        )
         self.retrying: AsyncRetrying | None = None
+        self.session_create_retrying: AsyncRetrying | None = None
 
         # Local mode specific
         self.server_url = server_url.rstrip("/")
@@ -230,6 +277,18 @@ class CUAMode:
             before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
         )
+        self.session_create_retrying = tc.AsyncRetrying(
+            retry=tc.retry_if_exception(self._should_retry_session_create_exception),
+            stop=tc.stop_after_attempt(max(1, self.session_create_max_retries)),
+            wait=tc.wait_exponential_jitter(
+                initial=self.session_create_base_delay,
+                exp_base=self.session_create_backoff_factor,
+                max=self.session_create_max_backoff_seconds,
+                jitter=self.session_create_jitter,
+            ),
+            before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
+            reraise=True,
+        )
 
         # Hide internal args from tool schema
         _skip = ["session_id", "sandbox_id", "tool_call_id"]
@@ -247,6 +306,43 @@ class CUAMode:
         # For local mode, verify server is reachable
         if self._execution_mode == "local":
             self.verify_server_connection()
+
+    @staticmethod
+    def _is_retryable_status_code(status_code: int | None) -> bool:
+        """Return True for transient HTTP statuses that should be retried."""
+        return status_code in _RETRYABLE_STATUS_CODES
+
+    @staticmethod
+    def _extract_error_message(raw_body: str) -> str:
+        """Extract a concise error message from a JSON or plain-text body."""
+        try:
+            payload = json.loads(raw_body)
+            if isinstance(payload, dict):
+                error = payload.get("error")
+                message = payload.get("message")
+                if isinstance(error, str) and error.strip():
+                    return error.strip()
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+        except json.JSONDecodeError:
+            pass
+        body = raw_body.strip()
+        return body if body else "unknown error"
+
+    @staticmethod
+    def _should_retry_session_create_exception(exc: BaseException) -> bool:
+        """Retry transient create-session failures only."""
+        if isinstance(exc, CUASessionCreateError):
+            return exc.retryable
+        return isinstance(
+            exc,
+            (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                TimeoutError,
+                OSError,
+            ),
+        )
 
     # ==================== Server Health Check (Local Mode) ====================
 
@@ -311,14 +407,43 @@ class CUAMode:
     async def _create_session_http(self) -> dict:
         """Create a new browser session via the CUA server (HTTP)."""
         client = await self._get_http_client()
-        async with client.post(
-            f"{self.server_url}/sessions",
-            json=self.session_config,
-        ) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                raise RuntimeError(f"Failed to create browser session: {error_text}")
-            return await resp.json()
+        try:
+            async with client.post(
+                f"{self.server_url}/sessions",
+                json=self.session_config,
+            ) as resp:
+                raw_body = await resp.text()
+                if resp.status != 200:
+                    message = self._extract_error_message(raw_body)
+                    raise CUASessionCreateError(
+                        f"Failed to create browser session (HTTP {resp.status}): {message}",
+                        status_code=resp.status,
+                        retryable=self._is_retryable_status_code(resp.status),
+                    )
+
+                try:
+                    payload = json.loads(raw_body)
+                except json.JSONDecodeError as e:
+                    raise CUASessionCreateError(
+                        f"Failed to parse browser session response: {raw_body[:500]}",
+                        status_code=resp.status,
+                        retryable=False,
+                    ) from e
+
+                if not isinstance(payload, dict):
+                    raise CUASessionCreateError(
+                        "Browser session response was not a JSON object",
+                        status_code=resp.status,
+                        retryable=False,
+                    )
+                return payload
+        except CUASessionCreateError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, OSError) as e:
+            raise CUASessionCreateError(
+                f"Failed to create browser session due to network error: {e}",
+                retryable=True,
+            ) from e
 
     async def _destroy_session_http(self, session_id: str) -> None:
         """Destroy a browser session via the CUA server (HTTP)."""
@@ -618,13 +743,62 @@ class CUAMode:
         )
 
         body, http_code = self._parse_curl_response(stdout)
+        status_code = int(http_code) if http_code.isdigit() else None
+
+        if status_code != 200:
+            retryable_from_payload: bool | None = None
+            error_message = self._extract_error_message(body)
+            try:
+                payload_obj = json.loads(body)
+                if isinstance(payload_obj, dict):
+                    if isinstance(payload_obj.get("error"), str):
+                        error_message = payload_obj["error"]
+                    if isinstance(payload_obj.get("retryable"), bool):
+                        retryable_from_payload = payload_obj["retryable"]
+            except json.JSONDecodeError:
+                pass
+            raise CUASessionCreateError(
+                f"Failed to create browser session in sandbox (HTTP {http_code}): {error_message}",
+                status_code=status_code,
+                retryable=(
+                    retryable_from_payload
+                    if retryable_from_payload is not None
+                    else (
+                        status_code is None
+                        or self._is_retryable_status_code(status_code)
+                    )
+                ),
+            )
 
         try:
-            return json.loads(body)
+            payload_obj = json.loads(body)
         except json.JSONDecodeError as e:
-            raise RuntimeError(
+            raise CUASessionCreateError(
                 f"Failed to parse session creation response (HTTP {http_code}): {body[:500]}"
             ) from e
+
+        if not isinstance(payload_obj, dict):
+            raise CUASessionCreateError(
+                "Session creation response is not a JSON object",
+                retryable=False,
+            )
+
+        if "sessionId" not in payload_obj:
+            retryable = status_code is None or self._is_retryable_status_code(
+                status_code
+            )
+            if isinstance(payload_obj.get("retryable"), bool):
+                retryable = payload_obj["retryable"]
+            error_message = "sessionId missing from response"
+            if isinstance(payload_obj.get("error"), str):
+                error_message = payload_obj["error"]
+            raise CUASessionCreateError(
+                f"Failed to create browser session in sandbox: {error_message}",
+                status_code=status_code,
+                retryable=retryable,
+            )
+
+        return payload_obj
 
     async def _destroy_session_curl(self, session_id: str, sandbox_id: str) -> None:
         """Destroy a browser session via curl inside the sandbox."""
@@ -769,12 +943,22 @@ class CUAMode:
         if self.keep_recent_screenshots is None:
             return messages
 
+        def _get_item_type(item):
+            if hasattr(item, "get"):
+                return item.get("type")
+            return getattr(item, "type", None)
+
+        def _get_message_content(msg):
+            if hasattr(msg, "get"):
+                return msg.get("content")
+            return getattr(msg, "content", None)
+
         screenshot_positions: list[tuple[int, int]] = []
         for msg_idx, msg in enumerate(messages):
-            content = msg.get("content")
+            content = _get_message_content(msg)
             if isinstance(content, list):
                 for content_idx, item in enumerate(content):
-                    if isinstance(item, dict) and item.get("type") == "image_url":
+                    if _get_item_type(item) == "image_url":
                         screenshot_positions.append((msg_idx, content_idx))
 
         if len(screenshot_positions) <= self.keep_recent_screenshots:
@@ -788,7 +972,7 @@ class CUAMode:
         filtered_messages = copy.deepcopy(messages)
 
         for msg_idx, content_idx in positions_to_replace:
-            content_list = filtered_messages[msg_idx]["content"]
+            content_list = _get_message_content(filtered_messages[msg_idx])
             if isinstance(content_list, list) and content_idx < len(content_list):
                 content_list[content_idx] = {
                     "type": "text",
@@ -799,16 +983,57 @@ class CUAMode:
 
     # ==================== Lifecycle Methods ====================
 
+    async def _cleanup_failed_sandbox_setup(
+        self,
+        sandbox_id: str | None,
+        session_id: str | None,
+        state: vf.State,
+    ) -> None:
+        """Best-effort cleanup for partially initialized sandbox-mode setup."""
+        if session_id and sandbox_id:
+            try:
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        await self._destroy_session_curl(session_id, sandbox_id)
+                with self._sessions_lock:
+                    self.active_sessions.discard(session_id)
+                state.pop("session_id", None)
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        f"Failed to destroy session {session_id} during setup cleanup: {e}"
+                    )
+
+        if sandbox_id:
+            sandbox_deleted = False
+            try:
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        await self._delete_sandbox(sandbox_id)
+                sandbox_deleted = True
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        f"Failed to delete sandbox {sandbox_id} during setup cleanup: {e}"
+                    )
+            if sandbox_deleted:
+                state.pop("cua_sandbox_id", None)
+
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Create a browser session (and sandbox if in sandbox mode)."""
+        session_retrying = self.session_create_retrying or self.retrying
+
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
-            async for attempt in self.retrying:  # type: ignore[union-attr]
+            async for attempt in session_retrying:  # type: ignore[union-attr]
                 with attempt:
                     result = await self._create_session_http()
             session_id = result.get("sessionId")
             if not session_id:
-                raise RuntimeError("Failed to get session ID from server response")
+                raise CUASessionCreateError(
+                    "Failed to get session ID from local CUA server response",
+                    retryable=False,
+                )
 
             with self._sessions_lock:
                 self.active_sessions.add(session_id)
@@ -817,44 +1042,69 @@ class CUAMode:
             state["browser_state"] = result.get("state", {})
         else:
             # Sandbox mode: create sandbox, set up server, create session
-            if self.use_prebuilt_image:
-                if self.logger:
-                    self.logger.debug(f"Using prebuilt image: {self.prebuilt_image}")
+            sandbox_id: str | None = None
+            session_id: str | None = None
+            try:
+                if self.use_prebuilt_image:
+                    if self.logger:
+                        self.logger.debug(
+                            f"Using prebuilt image: {self.prebuilt_image}"
+                        )
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    if sandbox_id is None:
+                        raise vf.SandboxError(
+                            "Failed to create CUA sandbox: no sandbox ID returned"
+                        )
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    await self._wait_for_server(sandbox_id)
+                else:
+                    if self.use_binary:
+                        await self._ensure_binary_exists()
+
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    if sandbox_id is None:
+                        raise vf.SandboxError(
+                            "Failed to create CUA sandbox: no sandbox ID returned"
+                        )
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    await self._upload_server_files(sandbox_id)
+                    await self._start_server(sandbox_id)
+                    await self._wait_for_server(sandbox_id)
+
+                if sandbox_id is None:
+                    raise vf.SandboxError(
+                        "Failed to create CUA sandbox: no sandbox ID returned"
+                    )
+                async for attempt in session_retrying:  # type: ignore[union-attr]
                     with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._wait_for_server(sandbox_id)
-            else:
-                if self.use_binary:
-                    await self._ensure_binary_exists()
+                        result = await self._create_session_curl(sandbox_id)
+                session_id = result.get("sessionId")
+                if not session_id:
+                    raise CUASessionCreateError(
+                        "Failed to get session ID from sandbox CUA server response "
+                        f"(keys: {list(result.keys())}, response: {str(result)[:500]})",
+                        retryable=False,
+                    )
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
-                    with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._upload_server_files(sandbox_id)
-                await self._start_server(sandbox_id)
-                await self._wait_for_server(sandbox_id)
+                with self._sessions_lock:
+                    self.active_sessions.add(session_id)
 
-            async for attempt in self.retrying:  # type: ignore[union-attr]
-                with attempt:
-                    result = await self._create_session_curl(sandbox_id)
-            session_id = result.get("sessionId")
-            if not session_id:
-                raise RuntimeError(
-                    f"Failed to get session ID from server response. "
-                    f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
-                )
-
-            with self._sessions_lock:
-                self.active_sessions.add(session_id)
-
-            state["session_id"] = session_id
-            state["browser_state"] = result.get("state", {})
+                state["session_id"] = session_id
+                state["browser_state"] = result.get("state", {})
+            except Exception as e:
+                await self._cleanup_failed_sandbox_setup(sandbox_id, session_id, state)
+                if isinstance(e, vf.Error):
+                    raise
+                raise vf.SandboxError(
+                    f"Failed to set up CUA sandbox session: {e}"
+                ) from e
 
         return state
 

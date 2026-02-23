@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import verifiers as vf
 
@@ -61,6 +61,11 @@ class BrowserEnv(vf.StatefulToolEnv):
         env: Literal["LOCAL", "BROWSERBASE"] = "BROWSERBASE",
         viewport_width: int = 1024,
         viewport_height: int = 768,
+        session_create_max_retries: int | None = None,
+        session_create_base_delay: float | None = None,
+        session_create_backoff_factor: float | None = None,
+        session_create_max_backoff_seconds: float | None = None,
+        session_create_jitter: float | None = None,
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
         proxies: bool = False,
@@ -97,6 +102,11 @@ class BrowserEnv(vf.StatefulToolEnv):
             env: Browser execution environment - "LOCAL" or "BROWSERBASE"
             viewport_width: Browser viewport width (default: 1024)
             viewport_height: Browser viewport height (default: 768)
+            session_create_max_retries: Retry attempts for browser session creation only
+            session_create_base_delay: Base delay for session creation retry backoff
+            session_create_backoff_factor: Exponential factor for session creation retries
+            session_create_max_backoff_seconds: Max backoff for session creation retries
+            session_create_jitter: Jitter for session creation retries
             save_screenshots: Save screenshots to disk (default: True)
             keep_recent_screenshots: Number of recent screenshots to keep in context (default: 2)
             proxies: Enable Browserbase proxies (default: False)
@@ -139,6 +149,11 @@ class BrowserEnv(vf.StatefulToolEnv):
                 browserbase_project_id=project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
+                session_create_max_retries=session_create_max_retries,
+                session_create_base_delay=session_create_base_delay,
+                session_create_backoff_factor=session_create_backoff_factor,
+                session_create_max_backoff_seconds=session_create_max_backoff_seconds,
+                session_create_jitter=session_create_jitter,
                 save_screenshots=save_screenshots,
                 keep_recent_screenshots=keep_recent_screenshots,
                 proxies=proxies,
@@ -183,6 +198,75 @@ class BrowserEnv(vf.StatefulToolEnv):
         return self._mode_impl.update_tool_args(
             tool_name, tool_args, messages, state, **kwargs
         )
+
+    @staticmethod
+    def _content_part_type(part: Any) -> str | None:
+        if isinstance(part, dict):
+            return part.get("type")
+        return getattr(part, "type", None)
+
+    @staticmethod
+    def _content_part_as_dict(part: Any) -> dict[str, Any] | None:
+        if isinstance(part, dict):
+            return part
+        if hasattr(part, "model_dump"):
+            dumped = part.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        return None
+
+    async def env_response(
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
+        # Some providers send empty tool args for zero-arg tools.
+        if self.mode == "cua":
+            last_msg = messages[-1]
+            tool_calls = getattr(last_msg, "tool_calls", None)
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    arguments = getattr(tool_call, "arguments", "")
+                    if isinstance(arguments, str) and not arguments.strip():
+                        tool_call.arguments = "{}"
+
+        result = await super().env_response(messages, state, **kwargs)
+
+        if self.mode != "cua":
+            return result
+
+        # OpenAI/Anthropic adapters flatten tool message multimodal content to text.
+        # Keep non-image parts in tool messages and re-attach screenshots as a user message.
+        screenshots: list[dict[str, Any]] = []
+        for msg in result:
+            if not isinstance(msg, vf.ToolMessage):
+                continue
+
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+
+            remaining_parts: list[Any] = []
+            has_image = False
+            for part in content:
+                part_type = self._content_part_type(part)
+                if part_type == "image_url":
+                    has_image = True
+                    part_dict = self._content_part_as_dict(part)
+                    if part_dict is not None:
+                        screenshots.append(part_dict)
+                    continue
+
+                remaining_parts.append(part)
+
+            if has_image:
+                msg.content = remaining_parts
+
+        if screenshots:
+            return [
+                *result,
+                vf.UserMessage(role="user", content=cast(Any, screenshots)),
+            ]
+
+        return result
 
     async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
         """Get prompt messages, filtering screenshots in CUA mode."""
