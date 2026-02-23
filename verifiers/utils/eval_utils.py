@@ -614,9 +614,7 @@ def _build_dispatchers(
 
         if any(has_concurrency):
             if not all(has_concurrency):
-                missing = [
-                    i for i, has in enumerate(has_concurrency) if not has
-                ]
+                missing = [i for i, has in enumerate(has_concurrency) if not has]
                 raise ValueError(
                     f"Endpoint '{endpoint_id}': max_concurrent is set on some variants "
                     f"but missing on variant(s) {missing}. Either set max_concurrent on "

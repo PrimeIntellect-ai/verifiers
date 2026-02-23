@@ -1051,9 +1051,7 @@ class Environment(ABC):
                         on_start(raw_inputs, filtered_group_inputs)
 
                         for i, group_input in enumerate(filtered_group_inputs):
-                            task = asyncio.create_task(
-                                _dispatched_group(group_input)
-                            )
+                            task = asyncio.create_task(_dispatched_group(group_input))
                             tasks[task] = i
                 else:
                     # Legacy path: semaphore + round-robin
