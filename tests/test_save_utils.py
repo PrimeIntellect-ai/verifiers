@@ -602,3 +602,31 @@ class TestComputePassAtK:
         assert metadata["pass_at_k"]["1"] == pytest.approx(0.25)
         # 1 of 4 correct at threshold=0.7: pass^1 = C(1,1)/C(4,1) = 0.25
         assert metadata["pass_all_k"]["1"] == pytest.approx(0.25)
+
+    def test_incomplete_groups_excluded(self):
+        """Examples with fewer outputs than rollouts_per_example are excluded."""
+        outputs = [
+            # Example 0: complete group (4 rollouts), all correct
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            # Example 1: incomplete group (only 2 of 4 rollouts)
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # Only example 0 contributes; example 1 is excluded entirely
+        assert pass_at_k["1"] == pytest.approx(1.0)
+        assert pass_all_k["1"] == pytest.approx(1.0)
+
+    def test_all_groups_incomplete_returns_empty(self):
+        """If no example has a complete group, return empty dicts."""
+        outputs = [
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(1, 1.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        assert pass_at_k == {}
+        assert pass_all_k == {}

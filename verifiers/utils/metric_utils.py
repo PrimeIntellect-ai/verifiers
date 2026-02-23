@@ -37,17 +37,23 @@ def compute_pass_at_k(
     for output in outputs:
         examples[output.get("example_id", 0)].append(output)
 
-    # Compute pass@k and pass^k for each example, then average
+    # Only include examples with complete rollout groups
+    complete_examples = {
+        eid: outs for eid, outs in examples.items() if len(outs) == rollouts_per_example
+    }
+    num_complete = len(complete_examples)
+
+    if num_complete == 0:
+        return {}, {}
+
+    # Compute pass@k and pass^k for each complete example, then average
     pass_at_k_sums: dict[str, float] = {str(kv): 0.0 for kv in k_values}
     pass_all_k_sums: dict[str, float] = {str(kv): 0.0 for kv in k_values}
-    num_examples = len(examples)
 
-    for example_outputs in examples.values():
+    for example_outputs in complete_examples.values():
         n = len(example_outputs)
         c = sum(1 for o in example_outputs if o.get("reward", 0.0) >= threshold)
         for kv in k_values:
-            if n < kv:
-                continue
             kv_str = str(kv)
             n_choose_k = math.comb(n, kv)
             # pass@k: P(at least one correct)
@@ -58,14 +64,6 @@ def compute_pass_at_k(
             # pass^k: P(all correct)
             pass_all_k_sums[kv_str] += math.comb(c, kv) / n_choose_k
 
-    pass_at_k = {
-        str(kv): pass_at_k_sums[str(kv)] / num_examples
-        for kv in k_values
-        if num_examples > 0
-    }
-    pass_all_k = {
-        str(kv): pass_all_k_sums[str(kv)] / num_examples
-        for kv in k_values
-        if num_examples > 0
-    }
+    pass_at_k = {str(kv): pass_at_k_sums[str(kv)] / num_complete for kv in k_values}
+    pass_all_k = {str(kv): pass_all_k_sums[str(kv)] / num_complete for kv in k_values}
     return pass_at_k, pass_all_k
