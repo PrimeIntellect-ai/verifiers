@@ -1083,9 +1083,7 @@ class Environment(ABC):
                         for i, group_input in enumerate(filtered_group_inputs):
                             # For grouped scoring, keep each group on one endpoint so
                             # rollouts in the same group can benefit from shared KV cache.
-                            group_client: Client | ClientConfig = (
-                                get_client_for_group()
-                            )
+                            group_client: Client | ClientConfig = get_client_for_group()
                             task = asyncio.create_task(
                                 with_sem(
                                     sem,

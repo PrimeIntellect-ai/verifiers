@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
-    from typing_extensions import NotRequired, TypedDict
+    from typing_extensions import TypedDict
 else:
-    from typing import NotRequired, TypedDict
+    from typing import TypedDict
 
 # Client / message type literals
 ClientType = Literal[
@@ -395,7 +395,6 @@ class _EndpointRequired(TypedDict):
 class Endpoint(_EndpointRequired, total=False):
     api_client_type: ClientType
     max_concurrent: int
-
 
 
 Endpoints = dict[str, list[Endpoint]]
