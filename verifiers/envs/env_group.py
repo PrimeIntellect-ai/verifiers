@@ -3,10 +3,14 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Mapping, final
 
-from openai import AsyncOpenAI
-
 import verifiers as vf
-from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
+from verifiers.clients import Client
+from verifiers.types import (
+    ClientConfig,
+    Messages,
+    RolloutInput,
+    SamplingArgs,
+)
 from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
@@ -193,14 +197,14 @@ class EnvGroup(vf.Environment):
         # wrap rubrics in EnvGroupRubric
         rubric = EnvGroupRubric(self.env_map)
 
-        # don't set oai_tools at the group level since different sub-environments
+        # don't set tool_defs at the group level since different sub-environments
         # may have different tools. Instead, set them per-task in rollout().
         # initialize parent Environment
         super().__init__(
             dataset=dataset,
             eval_dataset=eval_dataset,
             rubric=rubric,
-            oai_tools=None,
+            tool_defs=None,
             map_kwargs=map_kwargs,
             **kwargs,
         )
@@ -212,7 +216,7 @@ class EnvGroup(vf.Environment):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: vf.ChatMessages | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -268,7 +272,7 @@ class EnvGroup(vf.Environment):
     async def run_rollout(  # type: ignore[override]
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -285,7 +289,7 @@ class EnvGroup(vf.Environment):
     async def run_group(  # type: ignore[override]
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -308,7 +312,7 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
@@ -323,12 +327,6 @@ class EnvGroup(vf.Environment):
         self.max_seq_len = max_seq_len
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
-
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved_rollouts flag for this environment group and all sub-environments."""
-        self.interleaved_rollouts = interleaved_rollouts
-        for env in self.envs:
-            env.set_interleaved_rollouts(interleaved_rollouts)
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score_rollouts flag for this environment group and all sub-environments."""

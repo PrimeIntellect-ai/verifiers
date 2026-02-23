@@ -11,18 +11,15 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.utils.import_utils import load_toml
-
-if TYPE_CHECKING:
-    pass
 from verifiers.types import (
+    ClientType,
     Endpoint,
     Endpoints,
     EvalConfig,
@@ -42,6 +39,7 @@ from verifiers.utils.async_utils import (
     NullEndpointDispatcher,
 )
 from verifiers.utils.client_utils import resolve_client_configs
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -74,12 +72,49 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
+    endpoint = Endpoint(model=model, url=url, key=key)
+
+    # Parse optional max_concurrent
     max_concurrent = raw_endpoint_dict.get("max_concurrent")
     if max_concurrent is not None:
         if not isinstance(max_concurrent, int) or max_concurrent <= 0:
             raise ValueError(f"'max_concurrent' must be a positive integer in {source}")
-        return Endpoint(model=model, url=url, key=key, max_concurrent=max_concurrent)
-    return Endpoint(model=model, url=url, key=key)
+        endpoint["max_concurrent"] = max_concurrent
+
+    # Parse optional api_client_type
+    if "client_type" in raw_endpoint_dict:
+        raise ValueError(
+            f"Field 'client_type' is no longer supported in {source}. "
+            "Use 'type' or 'api_client_type'."
+        )
+
+    short_client_type = raw_endpoint_dict.get("type")
+    long_client_type = raw_endpoint_dict.get("api_client_type")
+    if (
+        short_client_type is not None
+        and long_client_type is not None
+        and short_client_type != long_client_type
+    ):
+        raise ValueError(
+            f"Conflicting values for 'type' and 'api_client_type' in {source}"
+        )
+
+    client_type = (
+        short_client_type if short_client_type is not None else long_client_type
+    )
+    if client_type is not None:
+        if client_type not in (
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ):
+            raise ValueError(
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+            )
+        endpoint["api_client_type"] = cast(ClientType, client_type)
+
+    return endpoint
 
 
 def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
@@ -290,8 +325,10 @@ def load_toml_config(path: Path) -> list[dict]:
         "endpoints_path",
         "extra_env_kwargs",
         # model/client
+        "provider",
         "endpoint_id",
         "model",
+        "api_client_type",
         "api_key_var",
         "api_base_url",
         "header",
@@ -601,7 +638,7 @@ async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
     on_log_file: Callable[[Path], None] | None = None,
-    on_progress: ProgressCallback | None = None,
+    on_progress: ProgressCallback | list[ProgressCallback] | None = None,
     on_log: LogCallback | None = None,
     dispatcher: EndpointDispatcher | NullEndpointDispatcher | None = None,
 ) -> GenerateOutputs:
@@ -695,18 +732,30 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
     dispatchers = _build_dispatchers(config.evals)
 
+    on_progress: list[ProgressCallback] | None = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+        on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]
+
     start_time = time.time()
     all_results = await asyncio.gather(
         *[
             run_evaluation(
                 eval_config,
+                on_progress=on_progress,
                 dispatcher=dispatchers.get(eval_config.endpoint_id),
             )
             for eval_config in config.evals
         ]
     )
     end_time = time.time()
-    event_loop_lags = event_loop_lag_monitor.get_lags()
+
+    if config.heartbeat_url is not None:
+        await heart.close()
+
+    event_loop_lags = event_loop_lag_monitor.lags
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
     for results in all_results:
@@ -742,6 +791,12 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     dispatchers = _build_dispatchers(config.evals)
 
+    heart = None
+    if config.heartbeat_url is not None:
+        from verifiers.utils.heartbeat import Heartbeat
+
+        heart = Heartbeat(config.heartbeat_url)
+
     display = EvalDisplay(config.evals, screen=tui_mode)
 
     async def run_with_progress(
@@ -767,7 +822,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        def on_progress(
+        def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             metadata: GenerateMetadata,
@@ -780,6 +835,10 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
             )
+
+        on_progress: list[ProgressCallback] = [on_display_progress]
+        if heart is not None:
+            on_progress.append(lambda *_a, **_kw: asyncio.create_task(heart.beat()))
 
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
@@ -846,6 +905,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
+    finally:
+        if heart is not None:
+            await heart.close()
 
     # print final summary after exit
     display.print_final_summary()

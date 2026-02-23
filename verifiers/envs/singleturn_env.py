@@ -13,3 +13,6 @@ class SingleTurnEnv(vf.MultiTurnEnv):
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
         raise NotImplementedError("env_response is not implemented for SingleTurnEnv")
+
+    async def render_completion(self, state: vf.State):
+        await super().render_completion(state)

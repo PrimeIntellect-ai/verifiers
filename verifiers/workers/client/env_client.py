@@ -21,11 +21,23 @@ from verifiers.workers.types import (
 class EnvClient(ABC):
     """Base class for environment clients."""
 
-    def __init__(self, address: str):
+    def __init__(
+        self,
+        address: str,
+        name: str | None = None,
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10min
+        recovery_timeout: float = 600.0,  # 10min
+    ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
+        self.name = f"{name} ({address})" if name is not None else address
 
-    async def health(self, timeout: float | None = 10) -> bool:
+        self.health_check_interval = health_check_interval
+        self.startup_timeout = startup_timeout
+        self.recovery_timeout = recovery_timeout
+
+    async def health(self, timeout: float | None = 1) -> bool:
         request = HealthRequest()
         response = await self.handle_health_request(request, timeout=timeout)
         return response.success
@@ -73,6 +85,14 @@ class EnvClient(ABC):
         response = await self.handle_run_group_request(request, timeout=None)
         assert response.outputs is not None
         return response.outputs
+
+    @abstractmethod
+    async def wait_for_server_startup(
+        self,
+        timeout: float | None = None,
+    ) -> None:
+        """Wait for server to become healthy on initial startup."""
+        ...
 
     @abstractmethod
     async def handle_health_request(

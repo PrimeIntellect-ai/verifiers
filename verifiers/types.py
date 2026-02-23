@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -11,46 +12,176 @@ from typing import (
     TypeAlias,
 )
 
-from verifiers.errors import Error
+from anthropic.types import RedactedThinkingBlock
+from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from datasets import Dataset
 
+    from verifiers.clients import Client
+    from verifiers.errors import Error
+
 if sys.version_info < (3, 12):
-    from typing_extensions import TypedDict
+    from typing_extensions import NotRequired, TypedDict
 else:
-    from typing import TypedDict
+    from typing import NotRequired, TypedDict
 
-from openai import AsyncOpenAI
-from openai.types.chat.chat_completion import ChatCompletion
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+# Client / message type literals
+ClientType = Literal[
+    "openai_completions",
+    "openai_chat_completions",
+    "openai_chat_completions_token",
+    "anthropic_messages",
+]
+MessageType = Literal["chat", "completion"]  # deprecated
 
-# openai types
-from openai.types.chat.chat_completion_message_tool_call import (
-    ChatCompletionMessageToolCall,  # noqa: F401
+
+# Provider-agnostic message + response types
+class CustomBaseModel(BaseModel):
+    """Allow extras and dict-like attribute access."""
+
+    model_config = ConfigDict(extra="allow")
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __contains__(self, key):
+        return hasattr(self, key)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return self.model_dump() == dict(other)
+        return super().__eq__(other)
+
+
+class TextMessage(CustomBaseModel):
+    role: Literal["text"] = "text"
+    content: str
+
+
+class TextContentPart(CustomBaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageUrlSource(CustomBaseModel):
+    url: str
+
+
+class ImageUrlContentPart(CustomBaseModel):
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageUrlSource
+
+
+class InputAudioSource(CustomBaseModel):
+    data: str
+    format: str
+
+
+class InputAudioContentPart(CustomBaseModel):
+    type: Literal["input_audio"] = "input_audio"
+    input_audio: InputAudioSource
+
+
+class GenericContentPart(CustomBaseModel):
+    type: str
+
+
+ContentPart: TypeAlias = (
+    TextContentPart
+    | ImageUrlContentPart
+    | InputAudioContentPart
+    | GenericContentPart
+    | dict[str, Any]
 )
-from openai.types.chat.chat_completion_role import ChatCompletionRole  # noqa: F401
-from openai.types.chat.chat_completion_tool_param import (
-    ChatCompletionToolParam,  # noqa: F401
+MessageContent: TypeAlias = str | list[ContentPart]
+
+
+class SystemMessage(CustomBaseModel):
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+
+class UserMessage(CustomBaseModel):
+    role: Literal["user"] = "user"
+    content: MessageContent
+
+
+class ToolCall(CustomBaseModel):
+    id: str
+    name: str
+    arguments: str
+
+
+ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
+
+
+class AssistantMessage(CustomBaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: MessageContent | None = None
+    reasoning_content: str | None = None
+    thinking_blocks: list[ThinkingBlock] | None = None
+    tool_calls: list[ToolCall] | None = None
+
+
+class ToolMessage(CustomBaseModel):
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    content: MessageContent
+
+
+Message: TypeAlias = (
+    SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage
 )
-from openai.types.completion import Completion
-from openai.types.shared_params import (  # noqa: F401
-    FunctionDefinition,
-    FunctionParameters,
-)
-from pydantic import BaseModel, Field, field_validator
+Messages = list[Message]
 
-# typing aliases
-ChatMessage = ChatCompletionMessageParam
-MessageType = Literal["chat", "completion"]
-ModelResponse = Completion | ChatCompletion | None
 
-ChatMessages = list[ChatMessage]
-Message = str | ChatMessage
+class Tool(CustomBaseModel):
+    name: str
+    description: str
+    parameters: dict[str, object]
+    strict: bool | None = None
 
-Messages = str | list[ChatMessage]
+
+class Usage(CustomBaseModel):
+    prompt_tokens: int
+    reasoning_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ResponseTokens(CustomBaseModel):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+
+
+FinishReason = Literal["stop", "length", "tool_calls"] | None
+
+
+class ResponseMessage(AssistantMessage):
+    finish_reason: FinishReason
+    is_truncated: bool | None
+    tokens: ResponseTokens | None = None
+
+
+class Response(CustomBaseModel):
+    id: str
+    created: int
+    model: str
+    usage: Usage | None = None
+    message: ResponseMessage  # can call tools
+
+
+# Core data types
 Info = dict[str, Any]
-
 SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
@@ -66,6 +197,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
 
 
 class TokenUsage(TypedDict):
@@ -83,7 +215,7 @@ class VersionInfo(TypedDict):
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
-    response: ModelResponse
+    response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
@@ -127,7 +259,7 @@ class RolloutOutput(dict):
 
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools,
+    Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage
     Additional fields: arbitrary serializable state_columns
     """
@@ -148,7 +280,7 @@ class RolloutOutput(dict):
     error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
-    oai_tools: list["ChatCompletionToolParam"]
+    tool_defs: list[Tool]
     token_usage: TokenUsage
 
 
@@ -156,14 +288,14 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI
+    client: Client
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
     is_truncated: bool
     stop_condition: str | None
-    oai_tools: list[ChatCompletionToolParam]
+    tool_defs: list[Tool]
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
@@ -230,7 +362,7 @@ class GenerateMetadata(TypedDict):
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
-    tools: list[ChatCompletionToolParam] | None
+    tools: list[Tool] | None
 
 
 class GenerateOutputs(TypedDict):
@@ -261,16 +393,19 @@ class _EndpointRequired(TypedDict):
 
 
 class Endpoint(_EndpointRequired, total=False):
+    api_client_type: ClientType
     max_concurrent: int
+
 
 
 Endpoints = dict[str, list[Endpoint]]
 
 
 class ClientConfig(BaseModel):
-    """Pydantic model for OpenAI client configuration."""
+    """Pydantic model for client configuration."""
 
     client_idx: int = 0
+    client_type: ClientType = "openai_chat_completions"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
@@ -372,3 +507,4 @@ class EvalRunConfig(BaseModel):
     """Pydantic model for evaluation run configuration."""
 
     evals: list[EvalConfig]
+    heartbeat_url: str | None = None

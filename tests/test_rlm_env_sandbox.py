@@ -1,7 +1,6 @@
 """Sandbox backend tests for RLMEnv (mocked)."""
 
 import ast
-import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,27 +41,15 @@ def _seed_rollout_dirs(state: dict, tmp_path: Path) -> None:
     state["rlm_paths"] = {}
 
 
-class TestSandboxBackendSelection:
-    def test_default_is_local_executor(self):
+class TestExecutorIsRLMExecutor:
+    def test_default_executor_is_rlm_executor(self):
         dataset = make_dataset({})
         env = build_env(dataset)
-        assert env._executor.__class__.__name__ == "LocalRLMExecutor"
-
-    def test_sandbox_executor_selected(self):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
-        dataset = make_dataset({})
-        env = build_env(dataset, execution_backend="sandbox")
-        assert env._executor.__class__.__name__ == "SandboxRLMExecutor"
+        assert env._executor.__class__.__name__ == "RLMExecutor"
 
 
-class TestSandboxWorkerScripts:
-    def test_rendered_sandbox_python_worker_is_valid(self, tmp_path: Path):
-        if (
-            "sandboxed"
-            not in inspect.signature(rlm_module._render_worker_script).parameters
-        ):
-            pytest.skip("sandboxed worker rendering not yet implemented")
+class TestWorkerScripts:
+    def test_rendered_python_worker_is_valid(self, tmp_path: Path):
         paths = RLMWorkerPaths(
             base_dir=str(tmp_path),
             command_fifo=str(tmp_path / "cmd"),
@@ -74,18 +61,11 @@ class TestSandboxWorkerScripts:
             answer_file=str(tmp_path / "answer.json"),
             log_file=str(tmp_path / "worker.log"),
         )
-        script = rlm_module._render_worker_script(
-            paths, repl_language="python", sandboxed=True
-        )
+        script = rlm_module._render_worker_script(paths, repl_language="python")
         ast.parse(script)
         assert "FilesystemJail" not in script
 
-    def test_rendered_sandbox_bash_worker_is_valid(self, tmp_path: Path):
-        if (
-            "sandboxed"
-            not in inspect.signature(rlm_module._render_worker_script).parameters
-        ):
-            pytest.skip("sandboxed worker rendering not yet implemented")
+    def test_rendered_bash_worker_is_valid(self, tmp_path: Path):
         paths = RLMWorkerPaths(
             base_dir=str(tmp_path),
             command_fifo=str(tmp_path / "cmd"),
@@ -97,21 +77,17 @@ class TestSandboxWorkerScripts:
             answer_file=str(tmp_path / "answer.json"),
             log_file=str(tmp_path / "worker.log"),
         )
-        script = rlm_module._render_worker_script(
-            paths, repl_language="bash", sandboxed=True
-        )
+        script = rlm_module._render_worker_script(paths, repl_language="bash")
         ast.parse(script)
         assert "FilesystemJail" not in script
         assert "import pty" not in script.lower()
 
 
-class TestSandboxTunnelRouting:
+class TestTunnelRouting:
     @pytest.mark.asyncio
     async def test_uses_tunnel_when_no_interception_url(self, tmp_path: Path):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
         dataset = make_dataset({})
-        env = build_env(dataset, execution_backend="sandbox", repl_language="bash")
+        env = build_env(dataset, repl_language="bash")
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -133,12 +109,9 @@ class TestSandboxTunnelRouting:
 
     @pytest.mark.asyncio
     async def test_skips_tunnel_when_interception_url_provided(self, tmp_path: Path):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            execution_backend="sandbox",
             interception_url="https://override.example/base",
             repl_language="bash",
         )
@@ -158,15 +131,12 @@ class TestSandboxTunnelRouting:
         assert result["root_tool_url"].startswith("https://override.example")
 
 
-class TestSandboxCleanupSemantics:
+class TestCleanupSemantics:
     @pytest.mark.asyncio
     async def test_cleanup_calls_executor(self, tmp_path: Path):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            execution_backend="sandbox",
             interception_url="https://override.example/base",
         )
         env._ensure_interception_server = AsyncMock()
@@ -188,14 +158,11 @@ class TestSandboxCleanupSemantics:
         env._executor.cleanup.assert_awaited_once()
 
 
-class TestSandboxFilesystemProvisioning:
+class TestFilesystemProvisioning:
     @pytest.mark.asyncio
     async def test_prepare_filesystem_uploads_and_sets_paths(self, tmp_path: Path):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
-
         dataset = make_dataset({})
-        env = build_env(dataset, execution_backend="sandbox", repl_language="bash")
+        env = build_env(dataset, repl_language="bash")
         state = {
             "rollout_id": "rlm_test",
             "model": "m",
@@ -227,11 +194,8 @@ class TestSandboxFilesystemProvisioning:
 
     @pytest.mark.asyncio
     async def test_write_sandbox_files_uploads_worker_and_context(self, tmp_path: Path):
-        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
-            pytest.skip("sandbox backend not yet implemented")
-
         dataset = make_dataset({})
-        env = build_env(dataset, execution_backend="sandbox", repl_language="python")
+        env = build_env(dataset, repl_language="python")
         state = {
             "rollout_id": "rlm_test",
             "rlm_fs_root": "/tmp/rlm_rlm_test/rlm_fs",

@@ -176,7 +176,7 @@ class EventLoopLagMonitor:
         self.logger = logger or logging.getLogger(
             f"{__name__}.{self.__class__.__name__}"
         )
-        self.lags = []
+        self.lags: list[float] = []
         self.logger.debug(
             f"Event loop lag monitor initialized with measure_interval={self.measure_interval} and max_measurements={self.max_measurements}"
         )
@@ -189,11 +189,7 @@ class EventLoopLagMonitor:
         lag = now - next_time
         return lag
 
-    def get_lags(self) -> list[float]:
-        """Get the list of measured event loop lags."""
-        return self.lags
-
-    def reset_lags(self):
+    def reset(self):
         """Reset the list of measured event loop lags."""
         self.lags = []
 

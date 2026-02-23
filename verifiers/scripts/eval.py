@@ -14,11 +14,12 @@ import importlib.resources
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from verifiers import setup_logging
 from verifiers.types import (
     ClientConfig,
+    ClientType,
     EndpointClientConfig,
     EvalConfig,
     EvalRunConfig,
@@ -42,8 +43,49 @@ DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
-DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+
+# Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
+PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
+    "prime": {
+        "url": "https://api.pinference.ai/api/v1",
+        "key": "PRIME_API_KEY",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1",
+        "key": "OPENROUTER_API_KEY",
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1",
+        "key": "OPENAI_API_KEY",
+    },
+    "anthropic": {
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
+        "client_type": "anthropic_messages",
+    },
+    "minimax": {
+        "url": "https://api.minimax.chat/v1",
+        "key": "MINIMAX_API_KEY",
+    },
+    "deepseek": {
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+    },
+    "glm": {
+        "url": "https://open.bigmodel.cn/api/paas/v4",
+        "key": "GLM_API_KEY",
+    },
+    "local": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+    "vllm": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+}
+DEFAULT_PROVIDER = "prime"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -108,10 +150,22 @@ def main():
     )
     parser.add_argument(
         "--env-dir-path",
-        "-p",
         type=str,
         default=DEFAULT_ENV_DIR_PATH,
         help="Path to environments directory",
+    )
+    parser.add_argument(
+        "--provider",
+        "-p",
+        type=str,
+        default=None,
+        choices=list(PROVIDER_CONFIGS.keys()),
+        help=(
+            "Inference provider shorthand. Resolves --api-base-url and --api-key-var "
+            "automatically. Explicit --api-base-url / --api-key-var take precedence. "
+            "Overrides endpoint registry when model is in registry. "
+            "Falls back to 'prime' when model is not in registry."
+        ),
     )
     parser.add_argument(
         "--endpoints-path",
@@ -128,24 +182,30 @@ def main():
         help="Name of model to evaluate",
     )
     parser.add_argument(
+        "--api-client-type",
+        type=str,
+        default=None,
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'anthropic_messages')",
+        choices=[
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ],
+    )
+    parser.add_argument(
         "--api-key-var",
         "-k",
         type=str,
         default=None,
-        help=(
-            "Environment variable name for API key "
-            "(defaults to PRIME_API_KEY when not set and not in registry)"
-        ),
+        help="Environment variable name for API key (overrides --provider)",
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
         default=None,
-        help=(
-            "Base URL for API. "
-            "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
-        ),
+        help="Base URL for API (overrides --provider)",
     )
     parser.add_argument(
         "--header",
@@ -278,6 +338,12 @@ def main():
         default=0,
         help="Max retries for transient infrastructure errors (default: 0)",
     )
+    parser.add_argument(
+        "--heartbeat-url",
+        type=str,
+        default=None,
+        help="Heartbeat URL for uptime monitoring",
+    )
     args = parser.parse_args()
 
     if args.debug:  # only set up console logging in debug mode
@@ -359,6 +425,7 @@ def main():
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
         )
+        raw_client_type = raw.get("api_client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
         if isinstance(raw_api_base_url, list):
@@ -367,8 +434,13 @@ def main():
                 "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
             )
 
+        # Provider resolution:
+        #   - model IN registry:  registry -> provider overrides -> CLI overrides
+        #   - model NOT in registry: provider (default: prime) -> CLI overrides
+        raw_provider = raw.get("provider")
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
+        client_type_override = raw_client_type is not None
         endpoint_group: list[dict[str, str]] | None = None
         resolved_endpoint_id: str | None = None
 
@@ -377,15 +449,10 @@ def main():
             resolved_endpoint_id = endpoint_lookup_id
             endpoint = endpoint_group[0]
 
-            if api_key_override:
-                api_key_var = raw_api_key_var
-            else:
-                api_key_var = endpoint["key"]
-
-            if api_base_url_override:
-                api_base_url = raw_api_base_url
-            else:
-                api_base_url = endpoint["url"]
+            # Start from registry values
+            api_key_var = endpoint["key"]
+            api_base_url = endpoint["url"]
+            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
 
             endpoint_models = {entry["model"] for entry in endpoint_group}
             if len(endpoint_models) > 1:
@@ -394,12 +461,35 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            if api_key_override or api_base_url_override:
+
+            # Provider overrides registry
+            if raw_provider is not None:
+                provider_cfg = PROVIDER_CONFIGS[raw_provider]
+                api_key_var = provider_cfg["key"]
+                api_base_url = provider_cfg["url"]
+                if "client_type" in provider_cfg:
+                    client_type = provider_cfg["client_type"]
+
+            # CLI overrides provider / registry
+            if api_key_override:
+                api_key_var = raw_api_key_var
+            if api_base_url_override:
+                api_base_url = raw_api_base_url
+            if client_type_override:
+                client_type = raw_client_type
+
+            if (
+                api_key_override
+                or api_base_url_override
+                or client_type_override
+                or raw_provider is not None
+            ):
                 logger.debug(
-                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s)",
+                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
                     model,
-                    "override" if api_key_override else "registry",
-                    "override" if api_base_url_override else "registry",
+                    "override" if api_key_override or raw_provider else "registry",
+                    "override" if api_base_url_override or raw_provider else "registry",
+                    "override" if client_type_override or raw_provider else "registry",
                 )
             else:
                 logger.debug(
@@ -412,14 +502,22 @@ def main():
                 raise ValueError(
                     f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
                 )
+            # Fall back to provider (default: prime)
+            provider_cfg = PROVIDER_CONFIGS[raw_provider or DEFAULT_PROVIDER]
             logger.debug(
-                "Model '%s' not found in endpoint registry, using defaults",
+                "Model '%s' not found in endpoint registry, using provider '%s'",
                 raw_model,
+                raw_provider or DEFAULT_PROVIDER,
             )
             model = raw_model
-            api_key_var = raw_api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+            api_key_var = raw_api_key_var if api_key_override else provider_cfg["key"]
             api_base_url = (
-                raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+                raw_api_base_url if api_base_url_override else provider_cfg["url"]
+            )
+            client_type = (
+                raw_client_type
+                if client_type_override
+                else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
             )
 
         # Merge sampling args
@@ -455,6 +553,7 @@ def main():
         if (
             endpoint_group is not None
             and not api_base_url_override
+            and raw_provider is None
             and (len(endpoint_group) > 1 or has_variant_concurrency)
         ):
             endpoint_configs = [
@@ -471,6 +570,7 @@ def main():
 
         assert primary_api_base_url is not None
         client_config = ClientConfig(
+            client_type=cast(ClientType, client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
@@ -551,7 +651,9 @@ def main():
     for config in eval_configs:
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
-    eval_run_config = EvalRunConfig(evals=eval_configs)
+    eval_run_config = EvalRunConfig(
+        evals=eval_configs, heartbeat_url=args.heartbeat_url
+    )
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:

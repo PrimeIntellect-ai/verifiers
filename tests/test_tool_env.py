@@ -81,9 +81,7 @@ def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
 
 class TestToolEnv:
     @pytest.mark.asyncio
-    async def test_tool_env_calls_tool(
-        self, mock_tool_env, mock_openai_client, make_input
-    ):
+    async def test_tool_env_calls_tool(self, mock_tool_env, mock_client, make_input):
         tool_call = _build_tool_call("square_tool", {"x": 4})
         assistant_message = {
             "role": "assistant",
@@ -92,12 +90,12 @@ class TestToolEnv:
         }
         user_message = ChatCompletionUserMessageParam(content="Square 4", role="user")
 
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[user_message],
             response="Using tool",
             tool_calls=[tool_call],
         )
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[
                 user_message,
                 assistant_message,
@@ -108,22 +106,20 @@ class TestToolEnv:
 
         state = await mock_tool_env.rollout(
             input=make_input(prompt=[user_message], answer="", task=""),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and tool_messages[0]["content"] == "16"
-        assert (
-            state["trajectory"][0]["response"].choices[0].message.tool_calls is not None
-        )
+        assert state["trajectory"][0]["response"].message.tool_calls is not None
 
     @pytest.mark.asyncio
     async def test_tool_env_completion_without_tool_calls(
-        self, mock_tool_env, mock_openai_client, make_input
+        self, mock_tool_env, mock_client, make_input
     ):
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Hello"}],
             response="Hi",
         )
@@ -132,7 +128,7 @@ class TestToolEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Hello"}], answer="", task=""
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         completion = state["completion"]
@@ -143,7 +139,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that ToolEnv stops rollout when tool call is not JSON-parsable."""
 
@@ -154,7 +150,7 @@ class TestToolEnv:
                 )
 
         env = TestToolEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             parser=vf.Parser(),
@@ -177,7 +173,7 @@ class TestToolEnv:
         )
 
         # First response triggers tool call with invalid JSON
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Square 4"}],
             response="Using tool",
             tool_calls=[tool_call_with_invalid_json_arguments],
@@ -187,7 +183,7 @@ class TestToolEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Square 4"}], answer="", task=""
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -207,7 +203,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_call_error(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that ToolEnv stops rollout when tool raises an exception."""
 
@@ -216,14 +212,14 @@ class TestToolEnv:
                 super().__init__(tools=[faulty_tool], stop_errors=[Exception], **kwargs)
 
         env = ErrorToolEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
 
         tool_call = _build_tool_call("faulty_tool", {})
 
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Invoke"}],
             response="Using tool",
             tool_calls=[tool_call],
@@ -233,7 +229,7 @@ class TestToolEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Invoke"}], answer="", task=""
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -251,11 +247,11 @@ class TestToolEnv:
         assert state["timing"] is not None
         assert state["completion"] is not None
 
-    def test_add_tool_no_duplicate(self, mock_openai_client, sample_chat_dataset):
+    def test_add_tool_no_duplicate(self, mock_client, sample_chat_dataset):
         """Test that add_tool doesn't add duplicate entries to tools list."""
         env = vf.ToolEnv(
             tools=[square_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -269,11 +265,11 @@ class TestToolEnv:
         assert env.tools.count(square_tool) == 1
         assert env.tools.count(offset_tool) == 1
 
-    def test_remove_tool_no_error(self, mock_openai_client, sample_chat_dataset):
+    def test_remove_tool_no_error(self, mock_client, sample_chat_dataset):
         """Test that remove_tool removes a tool exactly once."""
         env = vf.ToolEnv(
             tools=[square_tool, offset_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -287,12 +283,12 @@ class TestToolEnv:
         assert offset_tool in env.tools
 
     def test_add_tool_updates_tool_monitor_rubric(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that add_tool properly updates tool_monitor_rubric metrics."""
         env = vf.ToolEnv(
             tools=[square_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -307,7 +303,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_returns_valid_text_content_parts(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool preserves valid text content parts."""
 
@@ -316,7 +312,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[text_parts_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -326,7 +322,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_returns_valid_image_url_content_parts(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool preserves valid image_url content parts."""
 
@@ -337,7 +333,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[image_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -349,7 +345,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_returns_mixed_content_parts(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool preserves mixed valid content parts."""
 
@@ -364,7 +360,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[mixed_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -377,7 +373,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_casts_invalid_list_to_str(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool casts invalid lists (not content parts) to str."""
 
@@ -386,7 +382,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[list_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -396,7 +392,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_casts_list_missing_type_to_str(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool casts list with missing type keys to str."""
 
@@ -405,7 +401,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[bad_list_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -415,7 +411,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_call_tool_casts_list_with_invalid_type_to_str(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_client, sample_chat_dataset
     ):
         """Test that call_tool casts list with invalid type values to str."""
 
@@ -424,7 +420,7 @@ class TestToolEnv:
 
         env = vf.ToolEnv(
             tools=[invalid_type_tool],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )

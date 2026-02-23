@@ -1,8 +1,8 @@
 import re
-from typing import Any, cast
+from typing import Any
 
 import verifiers as vf
-from verifiers.types import ChatMessages
+from verifiers.types import Messages, UserMessage
 
 
 _TEXTARENA_ENV_ID_RE = re.compile(r"^[A-Za-z0-9_-]+-v\d+$")
@@ -38,7 +38,7 @@ def render_textarena_prompt(
     observation: Any,
     *,
     context: str = "reset",
-) -> ChatMessages:
+) -> Messages:
     if not isinstance(observation, dict):
         raise RuntimeError(
             f"openenv-textarena prompt renderer expected dict observation, got {type(observation).__name__}."
@@ -49,14 +49,14 @@ def render_textarena_prompt(
 
     if context == "step":
         if message_text is not None:
-            return cast(ChatMessages, [{"role": "user", "content": message_text}])
+            return [UserMessage(content=message_text)]
         if prompt_text is not None:
-            return cast(ChatMessages, [{"role": "user", "content": prompt_text}])
+            return [UserMessage(content=prompt_text)]
     else:
         if prompt_text is not None:
-            return cast(ChatMessages, [{"role": "user", "content": prompt_text}])
+            return [UserMessage(content=prompt_text)]
         if message_text is not None:
-            return cast(ChatMessages, [{"role": "user", "content": message_text}])
+            return [UserMessage(content=message_text)]
 
     raise RuntimeError(
         "openenv-textarena observation did not include renderable prompt text."

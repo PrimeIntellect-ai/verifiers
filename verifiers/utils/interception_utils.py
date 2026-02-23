@@ -15,13 +15,15 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
-    Choice as ChunkChoice,
     ChoiceDelta,
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
 )
+from openai.types.chat.chat_completion_chunk import (
+    Choice as ChunkChoice,
+)
 
-from verifiers.types import ModelResponse
+from verifiers.types import Response
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +71,6 @@ class InterceptionServer:
             self._app = app
             self._runner = runner
             self._site = site
-
-            # OS-assigned port if port=0
-            if self.port == 0:
-                server = getattr(site, "_server", None)
-                sockets = getattr(server, "sockets", None) if server else None
-                if sockets:
-                    self.port = sockets[0].getsockname()[1]
-            if self.port == 0:
-                raise RuntimeError("Failed to resolve OS-assigned port")
 
             # OS-assigned port if port=0
             if self.port == 0:
@@ -179,11 +172,7 @@ class InterceptionServer:
                 logger.error(f"Error processing intercepted request: {e}")
                 return web.json_response({"error": str(e)}, status=500)
 
-            response_dict = (
-                response.model_dump()
-                if hasattr(response, "model_dump")
-                else dict(response)
-            )
+            response_dict = serialize_intercept_response(response)
 
             _log_response(rollout_id, response_dict)
             return web.json_response(response_dict)
@@ -233,7 +222,9 @@ class InterceptionServer:
 
 
 def deliver_response(
-    intercept: dict, response: ModelResponse | None, error: BaseException | None = None
+    intercept: dict,
+    response: Response | ChatCompletion | None,
+    error: BaseException | None = None,
 ) -> None:
     future = intercept.get("response_future")
     if future and not future.done():
@@ -244,7 +235,7 @@ def deliver_response(
 
 
 async def synthesize_stream(
-    intercept: dict, response: ModelResponse | None, error: BaseException | None = None
+    intercept: dict, response: Response | None, error: BaseException | None = None
 ) -> None:
     """Deliver a complete ChatCompletion as synthetic SSE chunks to the agent.
 
@@ -254,8 +245,11 @@ async def synthesize_stream(
     Protocol (must match _handle_streaming_response):
       put chunk(s) on chunk_queue → put None (EOF) → resolve response_future.
     """
-    chunk_queue = intercept.get("chunk_queue")
-    future = intercept.get("response_future")
+    chunk_queue = cast(
+        asyncio.Queue[ChatCompletionChunk | None] | None,
+        intercept.get("chunk_queue"),
+    )
+    future = cast(asyncio.Future[Any] | None, intercept.get("response_future"))
 
     # Error / no-response: unblock queue reader, fail/resolve future
     if error is not None or response is None:
@@ -271,8 +265,10 @@ async def synthesize_stream(
                 future.set_result(None)
         return
 
-    choice = response.choices[0]
-    message = choice.message
+    if chunk_queue is None:
+        raise RuntimeError("Missing chunk_queue for streaming interception")
+
+    message = response.message
 
     # Chunk 1: content + tool_calls in delta
     delta_tool_calls = None
@@ -283,12 +279,29 @@ async def synthesize_stream(
                 id=tc.id,
                 type="function",
                 function=ChoiceDeltaToolCallFunction(
-                    name=tc.function.name,
-                    arguments=tc.function.arguments,
+                    name=tc.name,
+                    arguments=tc.arguments,
                 ),
             )
             for i, tc in enumerate(message.tool_calls)
         ]
+
+    delta_content: str | None
+    if isinstance(message.content, str):
+        delta_content = message.content
+    elif isinstance(message.content, list):
+        text_parts: list[str] = []
+        for part in message.content:
+            text = (
+                part.get("text")
+                if isinstance(part, dict)
+                else getattr(part, "text", None)
+            )
+            if isinstance(text, str):
+                text_parts.append(text)
+        delta_content = "".join(text_parts) if text_parts else None
+    else:
+        delta_content = None
 
     content_chunk = ChatCompletionChunk(
         id=response.id,
@@ -297,7 +310,7 @@ async def synthesize_stream(
                 index=0,
                 delta=ChoiceDelta(
                     role="assistant",
-                    content=message.content,
+                    content=delta_content,
                     tool_calls=delta_tool_calls,
                 ),
                 finish_reason=None,
@@ -316,7 +329,7 @@ async def synthesize_stream(
             ChunkChoice(
                 index=0,
                 delta=ChoiceDelta(),
-                finish_reason=choice.finish_reason,
+                finish_reason=message.finish_reason,
             )
         ],
         created=response.created,
@@ -348,6 +361,70 @@ def create_empty_completion(model: str) -> ChatCompletion:
 
 
 # Logging helpers
+
+
+def _response_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+            else:
+                text = getattr(part, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+        return "".join(text_parts)
+    return ""
+
+
+def serialize_intercept_response(response: Any) -> dict[str, Any]:
+    """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
+    if isinstance(response, Response):
+        message = response.message
+        tool_calls = []
+        for tc in message.tool_calls or []:
+            tool_calls.append(
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                }
+            )
+
+        message_payload: dict[str, Any] = {
+            "role": "assistant",
+            "content": _response_content_to_text(message.content),
+        }
+        if tool_calls:
+            message_payload["tool_calls"] = tool_calls
+
+        choice: dict[str, Any] = {
+            "index": 0,
+            "message": message_payload,
+            "finish_reason": message.finish_reason,
+        }
+
+        output = {
+            "id": response.id,
+            "object": "chat.completion",
+            "created": response.created,
+            "model": response.model,
+            "choices": [choice],
+        }
+
+        if response.usage is not None:
+            output["usage"] = response.usage.model_dump(exclude_none=True)
+
+        return output
+
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return dict(response)
 
 
 def _truncate(s: str, limit: int = 200) -> str:

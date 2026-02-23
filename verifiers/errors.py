@@ -9,13 +9,13 @@ class ModelError(Error):
 
 
 class InvalidModelResponseError(ModelError):
-    """Used to catch empty or invalid model responses (e.g. response.choices is None)."""
+    """Used to catch empty or invalid model responses."""
 
     pass
 
 
 class EmptyModelResponseError(InvalidModelResponseError):
-    """Used to catch empty model responses (e.g. response.choices is None)."""
+    """Used to catch empty model responses."""
 
     pass
 

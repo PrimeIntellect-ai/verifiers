@@ -14,7 +14,15 @@ import tenacity as tc
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.types import ChatMessage, ChatMessages
+from verifiers.types import (
+    AssistantMessage,
+    Message,
+    Messages,
+    Tool,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 try:
@@ -78,7 +86,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
         startup_timeout_seconds: int = 30,
@@ -155,10 +163,14 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
-        startup_timeout: float = 120.0,
+        # health check configs
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10m
+        recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         await super().start_server(
             address=address,
@@ -166,7 +178,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             log_level=log_level,
             log_file=log_file,
             log_file_level=log_file_level,
+            health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
         )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:
@@ -345,7 +359,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 state["openenv_mcp_client"] = mcp_client
                 if self._mcp_tools is None:
                     self._mcp_tools = await self._mcp_list_tools(mcp_client)
-                state["oai_tools"] = self._convert_mcp_tools(self._mcp_tools)
+                state["tool_defs"] = self._convert_mcp_tools(self._mcp_tools)
                 result = await self._invoke(cast(Any, mcp_client).reset, seed=seed)
                 state["openenv_done"] = bool(result.done)
                 state["prompt"] = self._require_prompt_messages(state)
@@ -362,14 +376,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             await self._cleanup_openenv_state(state)
             raise
 
-    def _make_user_message(self, content: str) -> ChatMessage:
-        return cast(ChatMessage, {"role": "user", "content": content})
+    def _make_user_message(self, content: str) -> Message:
+        return UserMessage(content=content)
 
-    def _make_tool_message(self, content: Any, tool_call_id: str) -> ChatMessage:
-        return cast(
-            ChatMessage,
-            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
-        )
+    def _make_tool_message(self, content: Any, tool_call_id: str) -> Message:
+        return ToolMessage(content=content, tool_call_id=tool_call_id)
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
@@ -384,10 +395,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     ) -> vf.Messages:
         assert isinstance(messages, list)
         last_msg = messages[-1]
-        if last_msg.get("role") != "assistant":
+        if not isinstance(last_msg, AssistantMessage):
             return [self._make_user_message("Expected assistant response.")]
 
-        raw_text = str(last_msg.get("content", "")).strip()
+        raw_text = str(last_msg.content or "").strip()
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
         action = self._parse_action(raw_text, action_schema)
 
@@ -404,7 +415,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             action_schema=action_schema if isinstance(action_schema, dict) else None,
             contract="gym",
         )
-        return obs_messages
+        return cast(vf.Messages, obs_messages)
 
     async def _mcp_env_response(
         self, messages: vf.Messages, state: vf.State
@@ -412,21 +423,20 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         last_msg = messages[-1]
         tool_calls = (
-            last_msg.get("tool_calls", []) if isinstance(last_msg, dict) else []
+            last_msg.tool_calls if isinstance(last_msg, AssistantMessage) else []
         )
         if not tool_calls:
-            return cast(ChatMessages, [])
+            return []
 
         mcp_client: Any = state["openenv_mcp_client"]
-        tool_messages: ChatMessages = []
+        tool_messages: Messages = []
         total_reward = 0.0
         done = False
         for tool_call in tool_calls:
-            tool_call_id = tool_call.get("id", "")
-            fn_payload = tool_call.get("function", {})
-            tool_name = str(fn_payload.get("name", "")).strip()
+            tool_call_id = tool_call.id
+            tool_name = str(tool_call.name).strip()
             try:
-                tool_args = json.loads(fn_payload.get("arguments", "{}"))
+                tool_args = json.loads(tool_call.arguments)
                 if not isinstance(tool_args, dict):
                     raise ValueError("tool arguments must be an object")
                 if not tool_name:
@@ -471,7 +481,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not state["trajectory"]:
             return False
         last_msg = state["trajectory"][-1]["completion"][-1]
-        return last_msg.get("role") == "assistant" and not last_msg.get("tool_calls")
+        return isinstance(last_msg, AssistantMessage) and not last_msg.tool_calls
 
     async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
@@ -1072,7 +1082,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         action_schema: dict[str, Any] | None = None,
         contract: str | None = None,
         seed: int | None = None,
-    ) -> ChatMessages:
+    ) -> Messages:
         normalized_obs = self._normalize_observation(obs)
         renderer_kwargs = {
             "context": context,
@@ -1104,42 +1114,60 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 f"OpenEnv prompt_renderer returned invalid output for {context}: "
                 "expected a non-empty chat messages list."
             )
-        messages = list(cast(list[dict[str, Any]], rendered))
+        messages: Messages = []
+        for raw_message in cast(list[Any], rendered):
+            if isinstance(raw_message, dict):
+                messages.append(from_raw_message(raw_message))
+                continue
+            if hasattr(raw_message, "role") and hasattr(raw_message, "content"):
+                messages.append(cast(Message, raw_message))
+                continue
+            raise RuntimeError(
+                f"OpenEnv prompt_renderer returned unsupported message type for {context}: "
+                f"{type(raw_message).__name__}."
+            )
         if not messages:
             raise RuntimeError(
                 f"OpenEnv prompt_renderer returned an empty messages list for {context}."
             )
         for idx, msg in enumerate(messages):
-            if msg.get("content") is None:
+            if msg.content is None:
                 raise RuntimeError(
                     "OpenEnv prompt_renderer returned a message with null content "
                     f"for {context} at index {idx}."
                 )
-        return cast(ChatMessages, messages)
+        return messages
 
     def _looks_like_messages(self, value: Any) -> bool:
         if not isinstance(value, list):
             return False
         for item in value:
-            if not isinstance(item, dict):
-                return False
-            if "role" not in item or "content" not in item:
-                return False
+            if isinstance(item, dict) and "role" in item and "content" in item:
+                continue
+            if hasattr(item, "role") and hasattr(item, "content"):
+                continue
+            return False
         return True
 
-    def _require_prompt_messages(self, state: vf.State) -> ChatMessages:
+    def _require_prompt_messages(self, state: vf.State) -> Messages:
         current_prompt = state.get("prompt")
         if self._looks_like_messages(current_prompt) and cast(
             list[Any], current_prompt
         ):
-            return cast(ChatMessages, list(cast(list[Any], current_prompt)))
+            messages: Messages = []
+            for raw_message in cast(list[Any], current_prompt):
+                if isinstance(raw_message, dict):
+                    messages.append(from_raw_message(raw_message))
+                elif hasattr(raw_message, "role") and hasattr(raw_message, "content"):
+                    messages.append(cast(Message, raw_message))
+            return messages
         raise RuntimeError(
             "OpenEnv dataset must include a non-empty `prompt`. "
             "No prompt fallback is supported."
         )
 
-    def _convert_mcp_tools(self, tools: Iterable[Any]) -> list[dict[str, Any]]:
-        oai_tools = []
+    def _convert_mcp_tools(self, tools: Iterable[Any]) -> list[Tool]:
+        tool_defs: list[Tool] = []
         for tool in tools:
             tool_dict: dict[str, Any] | None = None
             if hasattr(tool, "model_dump"):
@@ -1156,16 +1184,13 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                         "description": getattr(tool, "description", ""),
                         "input_schema": getattr(tool, "input_schema", None),
                     }
-            oai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool_dict.get("name", ""),
-                        "description": tool_dict.get("description", ""),
-                        "parameters": tool_dict.get("input_schema")
-                        or tool_dict.get("inputSchema")
-                        or {"type": "object", "properties": {}},
-                    },
-                }
+            tool_defs.append(
+                Tool(
+                    name=tool_dict.get("name", ""),
+                    description=tool_dict.get("description", ""),
+                    parameters=tool_dict.get("input_schema")
+                    or tool_dict.get("inputSchema")
+                    or {"type": "object", "properties": {}},
+                )
             )
-        return oai_tools
+        return tool_defs
