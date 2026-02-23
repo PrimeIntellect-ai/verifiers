@@ -196,20 +196,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
     async def fetch_trajectory(self, state: State) -> None:
         data = await self._gateway_get(state, "trajectory")
-        raw_trajectory = data.get("trajectory", [])
-
-        trajectory: list[TrajectoryStep] = []
-        # TODO: Pydantic response schema in gateway
-        for step in raw_trajectory:
-            step.setdefault("response", None)
-            step.setdefault("reward", None)
-            step.setdefault("advantage", None)
-            step.setdefault("is_truncated", False)
-            step.setdefault("trajectory_id", state["trajectory_id"])
-            step.setdefault("extras", {})
-            trajectory.append(cast(TrajectoryStep, step))
-
-        state["trajectory"] = trajectory
+        state["trajectory"] = cast(list[TrajectoryStep], data.get("trajectory", []))
         state["prompt"] = data.get("prompt")
         state["completion"] = data.get("completion")
         state["is_truncated"] = bool(
