@@ -222,6 +222,11 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    avg_error: float
+    pass_at_k: dict[str, float]
+    pass_all_k: dict[str, float]
+    pass_threshold: float
+    usage: TokenUsage | None
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
@@ -268,6 +273,8 @@ class Environment(ABC):
         env_id: str | None = None,
         env_args: dict | None = None,
         max_seq_len: int | None = None,
+        score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
         **kwargs,
     ): ...
 ```
