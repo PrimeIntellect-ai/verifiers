@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -18,7 +18,7 @@ from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.envs.multiturn_env import MultiTurnMonitorRubric
-from verifiers.types import RolloutInput, SamplingArgs, State, TrajectoryStep
+from verifiers.types import RolloutInput, SamplingArgs, State
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
         self._tunnel_lock = asyncio.Lock()
 
     def _resolve_tunnel_local_addr(self, state: State) -> str:
-        gateway_url = cast(str, state["gateway_url"])
+        gateway_url = state["gateway_url"]
         parsed = urlparse(gateway_url)
         host = parsed.hostname
         if host is None:
@@ -127,11 +127,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
                 )
                 url = await tunnel.start()
                 self._tunnels[local_addr] = tunnel
-                logger.debug(
-                    "Prime Tunnel started local_addr=%s url=%s",
-                    local_addr,
-                    url,
-                )
+                logger.debug(f"Prime Tunnel started local_addr={local_addr} url={url}")
                 return url
 
             assert tunnel.url is not None, "Tunnel started but URL is None"
@@ -172,14 +168,14 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             response.raise_for_status()
             if not response.content:
                 return {}
-            return cast(dict[str, Any], response.json())
+            return response.json()
 
     async def _gateway_get(self, state: State, suffix: str) -> dict[str, Any]:
         timeout = httpx.Timeout(self.timeout_seconds)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(self._rollout_endpoint(state, suffix))
             response.raise_for_status()
-            return cast(dict[str, Any], response.json())
+            return response.json()
 
     async def register_rollout(self, state: State) -> None:
         sampling_params = state.get("sampling_args") or {}
@@ -196,7 +192,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
     async def fetch_trajectory(self, state: State) -> None:
         data = await self._gateway_get(state, "trajectory")
-        state["trajectory"] = cast(list[TrajectoryStep], data.get("trajectory", []))
+        state["trajectory"] = data.get("trajectory", [])
         state["prompt"] = data.get("prompt")
         state["completion"] = data.get("completion")
         state["is_truncated"] = bool(
@@ -210,7 +206,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
-        env_vars["OPENAI_BASE_URL"] = cast(str, state["rollout_base_url"])
+        env_vars["OPENAI_BASE_URL"] = state["rollout_base_url"]
         env_vars.setdefault("OPENAI_TIMEOUT", "600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
         env_vars.setdefault("HTTPX_TIMEOUT", "600")
@@ -225,8 +221,8 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
     async def start_agent(self, state: State) -> None:
         """Start the agent command using background job."""
-        sandbox_id = cast(str, state["sandbox_id"])
-        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
+        sandbox_id = state["sandbox_id"]
+        background_job = await self.sandbox_client.start_background_job(
             sandbox_id,
             self.run_command,
         )
@@ -244,19 +240,12 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
         try:
             await asyncio.wait_for(
-                self.poll_job_completion(
-                    state,
-                    cast(str, sandbox_id),
-                    cast(BackgroundJob, background_job),
-                ),
+                self.poll_job_completion(state, sandbox_id, background_job),
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "rollout=%s sandbox=%s stage=wait_for_agent_completion timed out after %.1fs",
-                state.get("rollout_id"),
-                state.get("sandbox_id"),
-                self.timeout_seconds,
+                f"rollout={state.get('rollout_id')} sandbox={state.get('sandbox_id')} stage=wait_for_agent_completion timed out after {self.timeout_seconds:.1f}s"
             )
             state["agent_timed_out"] = True
         finally:
@@ -280,19 +269,11 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
                 state["agent_stderr"] = status.stderr
                 if status.exit_code not in (None, 0):
                     logger.warning(
-                        "rollout=%s sandbox=%s stage=agent_completed exit_code=%s stdout_tail=%r stderr_tail=%r",
-                        state.get("rollout_id"),
-                        sandbox_id,
-                        status.exit_code,
-                        self._tail_text(status.stdout),
-                        self._tail_text(status.stderr),
+                        f"rollout={state.get('rollout_id')} sandbox={sandbox_id} stage=agent_completed exit_code={status.exit_code} stdout_tail={self._tail_text(status.stdout)!r} stderr_tail={self._tail_text(status.stderr)!r}"
                     )
                 else:
                     logger.debug(
-                        "rollout=%s sandbox=%s stage=agent_completed exit_code=%s",
-                        state.get("rollout_id"),
-                        sandbox_id,
-                        status.exit_code,
+                        f"rollout={state.get('rollout_id')} sandbox={sandbox_id} stage=agent_completed exit_code={status.exit_code}"
                     )
                 return
             await asyncio.sleep(1)
@@ -317,25 +298,19 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
         rollout_id = state["rollout_id"]
         info = state.get("info") or {}
         logger.info(
-            "rollout=%s stage=start model=%s example_id=%s repo=%s",
-            rollout_id,
-            model,
-            info.get("instance_id") or info.get("example_id"),
-            info.get("repo_name"),
+            f"rollout={rollout_id} stage=start model={model} example_id={info.get('instance_id') or info.get('example_id')} repo={info.get('repo_name')}"
         )
 
         rollout_registered = False
         try:
             await self.register_rollout(state)
             rollout_registered = True
-            logger.debug("rollout=%s stage=register_rollout ok", rollout_id)
+            logger.debug(f"rollout={rollout_id} stage=register_rollout ok")
 
             tunnel_local_addr = self._resolve_tunnel_local_addr(state)
             state["tunnel_local_addr"] = tunnel_local_addr
             logger.debug(
-                "rollout=%s stage=resolve_tunnel_local_addr addr=%s",
-                rollout_id,
-                tunnel_local_addr,
+                f"rollout={rollout_id} stage=resolve_tunnel_local_addr addr={tunnel_local_addr}"
             )
 
             tunnel_url = await self.get_tunnel_url(local_addr=tunnel_local_addr)
@@ -343,12 +318,12 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             state["rollout_base_url"] = (
                 f"{tunnel_url.rstrip('/')}/v1/rollouts/{state['rollout_id']}"
             )
-            logger.debug("rollout=%s stage=start_tunnel url=%s", rollout_id, tunnel_url)
+            logger.debug(f"rollout={rollout_id} stage=start_tunnel url={tunnel_url}")
 
             env_vars = await self.build_env_vars(state)
             docker_image = await self.get_docker_image(state)
             sandbox_request = CreateSandboxRequest(
-                name=cast(str, state["rollout_id"]),
+                name=state["rollout_id"],
                 docker_image=docker_image,
                 start_command=self.start_command,
                 cpu_cores=self.cpu_cores,
@@ -367,55 +342,35 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             )
             await self.create_sandbox(state, sandbox_request)
             logger.info(
-                "rollout=%s stage=create_sandbox ok sandbox_id=%s docker_image=%s",
-                rollout_id,
-                state.get("sandbox_id"),
-                docker_image,
+                f"rollout={rollout_id} stage=create_sandbox ok sandbox_id={state.get('sandbox_id')} docker_image={docker_image}"
             )
 
             await self.start_agent(state)
             logger.debug(
-                "rollout=%s stage=start_agent ok sandbox_id=%s",
-                rollout_id,
-                state.get("sandbox_id"),
+                f"rollout={rollout_id} stage=start_agent ok sandbox_id={state.get('sandbox_id')}"
             )
             await self.wait_for_agent_completion(state)
             logger.debug(
-                "rollout=%s stage=wait_for_agent_completion ok exit_code=%s",
-                rollout_id,
-                state.get("agent_exit_code"),
+                f"rollout={rollout_id} stage=wait_for_agent_completion ok exit_code={state.get('agent_exit_code')}"
             )
             await self.fetch_trajectory(state)
-            trajectory = cast(list[Any], state.get("trajectory") or [])
+            trajectory = state.get("trajectory") or []
             logger.info(
-                "rollout=%s stage=fetch_trajectory ok turns=%d truncated=%s",
-                rollout_id,
-                len(trajectory),
-                state.get("is_truncated", False),
+                f"rollout={rollout_id} stage=fetch_trajectory ok turns={len(trajectory)} truncated={state.get('is_truncated', False)}"
             )
             if len(trajectory) == 0:
                 logger.warning(
-                    "rollout=%s stage=fetch_trajectory empty_trajectory agent_exit_code=%s stdout_tail=%r stderr_tail=%r",
-                    rollout_id,
-                    state.get("agent_exit_code"),
-                    self._tail_text(state.get("agent_stdout")),
-                    self._tail_text(state.get("agent_stderr")),
+                    f"rollout={rollout_id} stage=fetch_trajectory empty_trajectory agent_exit_code={state.get('agent_exit_code')} stdout_tail={self._tail_text(state.get('agent_stdout'))!r} stderr_tail={self._tail_text(state.get('agent_stderr'))!r}"
                 )
         except vf.Error as e:
             state["error"] = e
             logger.exception(
-                "rollout=%s stage=%s vf_error=%s message=%s",
-                rollout_id,
-                type(e).__name__,
-                e,
+                f"rollout={rollout_id} stage={type(e).__name__} vf_error={e}"
             )
         except Exception as e:
             state["error"] = vf.InfraError(str(e))
             logger.exception(
-                "rollout=%s stage=%s unhandled_error=%s message=%s",
-                rollout_id,
-                type(e).__name__,
-                e,
+                f"rollout={rollout_id} stage={type(e).__name__} unhandled_error={e}"
             )
         finally:
             if rollout_registered:
@@ -451,14 +406,9 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
                     state["stop_condition"] = "completed"
             state["is_completed"] = True
             self._render_timing(state)
+            error_name = type(state["error"]).__name__ if state.get("error") else None
             logger.info(
-                "rollout=%s stage=finish stop=%s sandbox_id=%s turns=%d agent_exit_code=%s error=%s",
-                rollout_id,
-                state.get("stop_condition"),
-                state.get("sandbox_id"),
-                len(state.get("trajectory", [])),
-                state.get("agent_exit_code"),
-                type(state["error"]).__name__ if state.get("error") else None,
+                f"rollout={rollout_id} stage=finish stop={state.get('stop_condition')} sandbox_id={state.get('sandbox_id')} turns={len(state.get('trajectory', []))} agent_exit_code={state.get('agent_exit_code')} error={error_name}"
             )
 
         return state
@@ -472,12 +422,10 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             for local_addr, tunnel in tunnels:
                 try:
                     tunnel.sync_stop()
-                    logger.debug("Prime Tunnel stopped local_addr=%s", local_addr)
+                    logger.debug(f"Prime Tunnel stopped local_addr={local_addr}")
                 except Exception as e:
                     logger.warning(
-                        "Error stopping Prime Tunnel local_addr=%s: %s",
-                        local_addr,
-                        e,
+                        f"Error stopping Prime Tunnel local_addr={local_addr}: {e}"
                     )
 
     async def post_rollout(self, state: State):
@@ -493,4 +441,4 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            await self.delete_sandbox(cast(str, sandbox_id))
+            await self.delete_sandbox(sandbox_id)
