@@ -95,7 +95,25 @@ api_client_type = "anthropic_messages"
 
 Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
 
-To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
+To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`. You can optionally set `max_concurrent` on each variant to limit how many requests it handles simultaneously:
+
+```toml
+[[endpoint]]
+endpoint_id = "my-model"
+model = "my-org/my-model"
+url = "https://fast-host.example.com/v1"
+key = "API_KEY"
+max_concurrent = 64
+
+[[endpoint]]
+endpoint_id = "my-model"
+model = "my-org/my-model"
+url = "https://slow-host.example.com/v1"
+key = "API_KEY"
+max_concurrent = 16
+```
+
+When any variant has `max_concurrent` set, the evaluator uses least-loaded dispatch: each request is routed to the variant with the most available capacity. Variants without `max_concurrent` have no limit. When no variant has `max_concurrent`, requests are distributed round-robin.
 
 Then use the alias directly:
 
@@ -144,6 +162,8 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
+
+When per-variant `max_concurrent` limits are configured in the endpoint registry, the endpoint dispatcher manages concurrency globally across all variants and the `--max-concurrent` flag is ignored.
 
 The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
 
