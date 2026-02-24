@@ -11,7 +11,7 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.types import ClientConfig, RolloutInput, SamplingArgs, State
+from verifiers.types import RolloutInput, SamplingArgs, State
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +235,7 @@ class RolloutGatewayMixin:
     async def rollout(
         self,
         input: RolloutInput,
-        client: Client | ClientConfig,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
