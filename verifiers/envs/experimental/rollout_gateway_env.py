@@ -277,7 +277,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
     async def _render_timing(self, state: State) -> None:
         start_time = state["timing"]["start_time"]
-        end_time = time.perf_counter()
+        end_time = time.time()
         generation_ms = (end_time - start_time) * 1000
         state["timing"]["generation_ms"] = generation_ms
         state["timing"]["total_ms"] = generation_ms
