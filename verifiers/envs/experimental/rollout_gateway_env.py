@@ -6,7 +6,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from openai import AsyncOpenAI
 from prime_sandboxes import (
     AdvancedConfigs,
     BackgroundJob,
@@ -16,11 +15,19 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.envs.multiturn_env import MultiTurnMonitorRubric
-from verifiers.types import RolloutInput, SamplingArgs, State
+from verifiers.types import ClientConfig, RolloutInput, SamplingArgs, State
 
 logger = logging.getLogger(__name__)
+
+
+def _tail_text(value: Any, max_chars: int = 1200) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    return text[-max_chars:] if len(text) > max_chars else text
 
 
 class RolloutGatewayEnv(SandboxMixin, vf.Environment):
@@ -93,6 +100,9 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(self.timeout_seconds)
+        )
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
 
@@ -141,15 +151,6 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             gateway_url = gateway_url[:-3]
         return gateway_url
 
-    @staticmethod
-    def _tail_text(value: Any, max_chars: int = 1200) -> str:
-        if value is None:
-            return ""
-        text = str(value)
-        if len(text) <= max_chars:
-            return text
-        return text[-max_chars:]
-
     def _rollout_endpoint(self, state: State, suffix: str) -> str:
         return f"{state['gateway_url']}/v1/rollouts/{state['rollout_id']}/{suffix.lstrip('/')}"
 
@@ -159,23 +160,19 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
         suffix: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        timeout = httpx.Timeout(self.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                self._rollout_endpoint(state, suffix),
-                json=payload,
-            )
-            response.raise_for_status()
-            if not response.content:
-                return {}
-            return response.json()
+        response = await self._http_client.post(
+            self._rollout_endpoint(state, suffix),
+            json=payload,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
 
     async def _gateway_get(self, state: State, suffix: str) -> dict[str, Any]:
-        timeout = httpx.Timeout(self.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(self._rollout_endpoint(state, suffix))
-            response.raise_for_status()
-            return response.json()
+        response = await self._http_client.get(self._rollout_endpoint(state, suffix))
+        response.raise_for_status()
+        return response.json()
 
     async def register_rollout(self, state: State) -> None:
         sampling_params = state.get("sampling_args") or {}
@@ -269,16 +266,16 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
                 state["agent_stderr"] = status.stderr
                 if status.exit_code not in (None, 0):
                     logger.warning(
-                        f"rollout={state.get('rollout_id')} sandbox={sandbox_id} stage=agent_completed exit_code={status.exit_code} stdout_tail={self._tail_text(status.stdout)!r} stderr_tail={self._tail_text(status.stderr)!r}"
+                        f"rollout={state.get('rollout_id')} sandbox={sandbox_id} stage=agent_completed exit_code={status.exit_code} stdout_tail={_tail_text(status.stdout)!r} stderr_tail={_tail_text(status.stderr)!r}"
                     )
                 else:
                     logger.debug(
                         f"rollout={state.get('rollout_id')} sandbox={sandbox_id} stage=agent_completed exit_code={status.exit_code}"
                     )
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.poll_interval)
 
-    def _render_timing(self, state: State) -> None:
+    async def _render_timing(self, state: State) -> None:
         start_time = state["timing"]["start_time"]
         end_time = time.perf_counter()
         generation_ms = (end_time - start_time) * 1000
@@ -288,7 +285,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -334,7 +331,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
                 environment_vars=env_vars,
                 team_id=self.team_id,
                 advanced_configs=self.advanced_configs,
-                labels=self.labels if self.labels else [],
+                labels=self.labels or [],
             )
             logger.debug(
                 f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
@@ -360,7 +357,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
             )
             if len(trajectory) == 0:
                 logger.warning(
-                    f"rollout={rollout_id} stage=fetch_trajectory empty_trajectory agent_exit_code={state.get('agent_exit_code')} stdout_tail={self._tail_text(state.get('agent_stdout'))!r} stderr_tail={self._tail_text(state.get('agent_stderr'))!r}"
+                    f"rollout={rollout_id} stage=fetch_trajectory empty_trajectory agent_exit_code={state.get('agent_exit_code')} stdout_tail={_tail_text(state.get('agent_stdout'))!r} stderr_tail={_tail_text(state.get('agent_stderr'))!r}"
                 )
         except vf.Error as e:
             state["error"] = e
@@ -385,7 +382,7 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
             if state.get("sandbox_id"):
                 try:
-                    await self.destroy_sandbox(state)
+                    await self._cleanup(state)
                 except Exception as e:
                     logger.warning(
                         f"Failed to destroy sandbox {state.get('sandbox_id')}: {e}"
@@ -395,17 +392,15 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
             if state.get("completion") is None:
                 state["completion"] = []
-            if state.get("error") is not None:
-                if state.get("stop_condition") is None:
+            if state.get("stop_condition") is None:
+                if state.get("error") is not None:
                     state["stop_condition"] = "has_error"
-            elif state.get("agent_timed_out", False):
-                if state.get("stop_condition") is None:
+                elif state.get("agent_timed_out", False):
                     state["stop_condition"] = "agent_timeout"
-            else:
-                if state.get("stop_condition") is None:
+                else:
                     state["stop_condition"] = "completed"
             state["is_completed"] = True
-            self._render_timing(state)
+            await self._render_timing(state)
             error_name = type(state["error"]).__name__ if state.get("error") else None
             logger.info(
                 f"rollout={rollout_id} stage=finish stop={state.get('stop_condition')} sandbox_id={state.get('sandbox_id')} turns={len(state.get('trajectory', []))} agent_exit_code={state.get('agent_exit_code')} error={error_name}"
@@ -415,7 +410,8 @@ class RolloutGatewayEnv(SandboxMixin, vf.Environment):
 
     @vf.teardown
     async def teardown_resources(self):
-        """Stop Prime Tunnel."""
+        """Stop Prime Tunnel and close HTTP client."""
+        await self._http_client.aclose()
         async with self._tunnel_lock:
             tunnels = list(self._tunnels.items())
             self._tunnels = {}
