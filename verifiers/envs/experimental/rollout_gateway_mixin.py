@@ -38,7 +38,7 @@ class RolloutGatewayMixin:
 
     def init_interception(self, *args, **kwargs):
         if not self.use_gateway:
-            super().init_interception(*args, **kwargs)
+            super().init_interception(*args, **kwargs)  # ty: ignore[unresolved-attribute]
 
     def init_gateway(
         self,
@@ -48,9 +48,7 @@ class RolloutGatewayMixin:
         """Initialize gateway resources. Call in __init__ when use_gateway=True."""
         self.gateway_port = gateway_port
         self._gateway_timeout_seconds = timeout_seconds
-        self._http_client: httpx.AsyncClient | None = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds)
-        )
+        self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
 
@@ -95,8 +93,8 @@ class RolloutGatewayMixin:
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Override to set OPENAI_BASE_URL from rollout_base_url in gateway mode."""
         if not self.use_gateway:
-            return await super().build_env_vars(state)
-        env_vars = dict(self.environment_vars) if self.environment_vars else {}
+            return await super().build_env_vars(state)  # ty: ignore[unresolved-attribute]
+        env_vars = dict(self.environment_vars) if self.environment_vars else {}  # ty: ignore[unresolved-attribute]
         env_vars["OPENAI_BASE_URL"] = state["rollout_base_url"]
         env_vars.setdefault("OPENAI_TIMEOUT", "600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
@@ -111,8 +109,8 @@ class RolloutGatewayMixin:
         payload = {
             "model": state["model"],
             "sampling_params": sampling_params,
-            "max_turns": self.max_turns,
-            "max_seq_len": self.max_seq_len,
+            "max_turns": self.max_turns,  # ty: ignore[unresolved-attribute]
+            "max_seq_len": self.max_seq_len,  # ty: ignore[unresolved-attribute]
         }
         await self._gateway_post(state, "register", payload)
 
@@ -160,11 +158,11 @@ class RolloutGatewayMixin:
     async def start_agent(self, state: State) -> None:
         """Start the agent command. In gateway mode, skip background completion task."""
         if not self.use_gateway:
-            return await super().start_agent(state)
+            return await super().start_agent(state)  # ty: ignore[unresolved-attribute]
         sandbox_id = state["sandbox_id"]
-        background_job = await self.sandbox_client.start_background_job(
+        background_job = await self.sandbox_client.start_background_job(  # ty: ignore[unresolved-attribute]
             sandbox_id,
-            self.run_command,
+            self.run_command,  # ty: ignore[unresolved-attribute]
         )
         state["background_job"] = background_job
         state["agent_start_time"] = time.time()
@@ -178,9 +176,9 @@ class RolloutGatewayMixin:
     ) -> None:
         """Poll until background job completes, capturing output."""
         if not self.use_gateway:
-            return await super().poll_job_completion(state, sandbox_id, background_job)
+            return await super().poll_job_completion(state, sandbox_id, background_job)  # ty: ignore[unresolved-attribute]
         while True:
-            status = await self.sandbox_client.get_background_job(
+            status = await self.sandbox_client.get_background_job(  # ty: ignore[unresolved-attribute]
                 sandbox_id,
                 background_job,
             )
@@ -201,7 +199,7 @@ class RolloutGatewayMixin:
                         f"stage=agent_completed exit_code={status.exit_code}"
                     )
                 return
-            await asyncio.sleep(self.poll_interval)
+            await asyncio.sleep(self.poll_interval)  # ty: ignore[unresolved-attribute]
 
     async def wait_for_agent_completion(self, state: State) -> None:
         """Poll for agent completion using background job API."""
@@ -240,9 +238,9 @@ class RolloutGatewayMixin:
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         if not self.use_gateway:
-            return await super().rollout(input, client, model, sampling_args)
+            return await super().rollout(input, client, model, sampling_args)  # ty: ignore[unresolved-attribute]
 
-        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.init_state(input, client, model, sampling_args)  # ty: ignore[unresolved-attribute]
         state["rollout_id"] = f"rollout_{uuid.uuid4().hex[:8]}"
         state["gateway_url"] = self._resolve_gateway_url(state)
         rollout_id = state["rollout_id"]
@@ -273,26 +271,26 @@ class RolloutGatewayMixin:
             logger.debug(f"rollout={rollout_id} stage=start_tunnel url={tunnel_url}")
 
             env_vars = await self.build_env_vars(state)
-            docker_image = await self.get_docker_image(state)
+            docker_image = await self.get_docker_image(state)  # ty: ignore[unresolved-attribute]
             sandbox_request = CreateSandboxRequest(
                 name=state["rollout_id"],
                 docker_image=docker_image,
-                start_command=self.start_command,
-                cpu_cores=self.cpu_cores,
-                memory_gb=self.memory_gb,
-                disk_size_gb=self.disk_size_gb,
-                gpu_count=self.gpu_count,
-                timeout_minutes=self.timeout_minutes,
+                start_command=self.start_command,  # ty: ignore[unresolved-attribute]
+                cpu_cores=self.cpu_cores,  # ty: ignore[unresolved-attribute]
+                memory_gb=self.memory_gb,  # ty: ignore[unresolved-attribute]
+                disk_size_gb=self.disk_size_gb,  # ty: ignore[unresolved-attribute]
+                gpu_count=self.gpu_count,  # ty: ignore[unresolved-attribute]
+                timeout_minutes=self.timeout_minutes,  # ty: ignore[unresolved-attribute]
                 environment_vars=env_vars,
-                team_id=self.team_id,
-                advanced_configs=self.advanced_configs,
-                labels=self.labels or [],
+                team_id=self.team_id,  # ty: ignore[unresolved-attribute]
+                advanced_configs=self.advanced_configs,  # ty: ignore[unresolved-attribute]
+                labels=self.labels or [],  # ty: ignore[unresolved-attribute]
             )
             logger.debug(
                 f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
                 f"docker_image={docker_image}"
             )
-            await self.create_sandbox(state, sandbox_request)
+            await self.create_sandbox(state, sandbox_request)  # ty: ignore[unresolved-attribute]
             logger.info(
                 f"rollout={rollout_id} stage=create_sandbox ok "
                 f"sandbox_id={state.get('sandbox_id')} docker_image={docker_image}"
@@ -351,7 +349,7 @@ class RolloutGatewayMixin:
 
             if state.get("sandbox_id"):
                 try:
-                    await self._cleanup(state)
+                    await self._cleanup(state)  # ty: ignore[unresolved-attribute]
                 except Exception as e:
                     logger.warning(
                         f"Failed to destroy sandbox {state.get('sandbox_id')}: {e}"
