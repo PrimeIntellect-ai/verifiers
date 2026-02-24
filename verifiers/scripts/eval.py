@@ -421,6 +421,19 @@ def main():
                 "Set endpoints_path to an endpoints.toml file."
             )
 
+        # Elastic mode validation
+        raw_elastic = raw.get("elastic", False)
+        if raw_elastic:
+            if raw_endpoint_id is None:
+                raise ValueError(
+                    "'elastic=true' requires 'endpoint_id' to be set."
+                )
+            if resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml":
+                raise ValueError(
+                    "'elastic=true' requires a TOML endpoints file. "
+                    "Set endpoints_path to an endpoints.toml file."
+                )
+
         raw_model = raw_model_field if raw_model_field is not None else DEFAULT_MODEL
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
@@ -547,11 +560,14 @@ def main():
         resolved_api_key_var = api_key_var
 
         endpoint_configs: list[EndpointClientConfig] = []
+        has_variant_concurrency = endpoint_group is not None and any(
+            ep.get("max_concurrent") is not None for ep in endpoint_group
+        )
         if (
             endpoint_group is not None
             and not api_base_url_override
             and raw_provider is None
-            and len(endpoint_group) > 1
+            and (len(endpoint_group) > 1 or has_variant_concurrency)
         ):
             endpoint_configs = [
                 EndpointClientConfig(
@@ -560,6 +576,7 @@ def main():
                     ),
                     api_base_url=endpoint["url"],
                     extra_headers=merged_headers,
+                    max_concurrent=endpoint.get("max_concurrent"),
                 )
                 for endpoint in endpoint_group
             ]
@@ -620,6 +637,9 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            elastic=raw.get("elastic", False),
+            elastic_poll_interval=raw.get("elastic_poll_interval", 10.0),
+            endpoints_path=str(endpoints_path),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),

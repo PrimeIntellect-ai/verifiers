@@ -31,7 +31,12 @@ from verifiers.types import (
     RolloutOutput,
     StartCallback,
 )
-from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.async_utils import (
+    EndpointSlot,
+    EventLoopLagMonitor,
+    LeastLoadedDispatcher,
+)
+from verifiers.utils.client_utils import resolve_client_configs
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
@@ -67,6 +72,14 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
 
     endpoint = Endpoint(model=model, url=url, key=key)
 
+    # Parse optional max_concurrent
+    max_concurrent = raw_endpoint_dict.get("max_concurrent")
+    if max_concurrent is not None:
+        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or max_concurrent <= 0:
+            raise ValueError(f"'max_concurrent' must be a positive integer in {source}")
+        endpoint["max_concurrent"] = max_concurrent
+
+    # Parse optional api_client_type
     if "client_type" in raw_endpoint_dict:
         raise ValueError(
             f"Field 'client_type' is no longer supported in {source}. "
@@ -327,6 +340,9 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        # elastic endpoint pool
+        "elastic",
+        "elastic_poll_interval",
         # logging
         "verbose",
         "debug",
@@ -567,12 +583,84 @@ def quiet_datasets():
         enable_progress_bar()
 
 
+def _build_dispatchers(
+    evals: list[EvalConfig],
+) -> tuple[dict[str | None, LeastLoadedDispatcher], list]:
+    """Build per-endpoint dispatchers (and optional elastic pools) from eval configs.
+
+    Groups evals by ``endpoint_id`` and, for each unique id where
+    variants have ``max_concurrent`` set, creates a
+    :class:`LeastLoadedDispatcher` with one :class:`EndpointSlot` per
+    variant.
+
+    Per-variant concurrency is all-or-nothing: if any variant in an
+    endpoint group sets ``max_concurrent``, every variant must.
+    Endpoint groups without ``max_concurrent`` use the default
+    semaphore + round-robin path in ``environment.generate()``.
+
+    When an eval has ``elastic=True``, an :class:`ElasticEndpointPool`
+    is created to poll the endpoints file and update the dispatcher.
+
+    Returns ``(dispatchers, pools)`` — a mapping from ``endpoint_id``
+    (or ``None``) to the dispatcher and a list of elastic pools.
+    """
+    from verifiers.utils.elastic import ElasticEndpointPool
+
+    dispatchers: dict[str | None, LeastLoadedDispatcher] = {}
+    pools: list[ElasticEndpointPool] = []
+
+    # Collect unique endpoint_ids, take the first config as representative
+    seen: dict[str | None, EvalConfig] = {}
+    for ec in evals:
+        if ec.endpoint_id not in seen:
+            seen[ec.endpoint_id] = ec
+
+    for endpoint_id, ec in seen.items():
+        if not ec.client_config.endpoint_configs:
+            continue
+
+        endpoint_cfgs = ec.client_config.endpoint_configs
+        has_concurrency = [ep.max_concurrent is not None for ep in endpoint_cfgs]
+
+        if any(has_concurrency):
+            if not all(has_concurrency):
+                missing = [i for i, has in enumerate(has_concurrency) if not has]
+                raise ValueError(
+                    f"Endpoint '{endpoint_id}': max_concurrent is set on some variants "
+                    f"but missing on variant(s) {missing}. Either set max_concurrent on "
+                    f"all variants or remove it entirely to use the global concurrency limit."
+                )
+            resolved = resolve_client_configs(ec.client_config)
+            slots = [
+                EndpointSlot(
+                    config=cfg,
+                    max_concurrent=ep.max_concurrent,
+                )
+                for cfg, ep in zip(resolved, endpoint_cfgs)
+            ]
+            dispatcher = LeastLoadedDispatcher(slots)
+            dispatchers[endpoint_id] = dispatcher
+
+            if ec.elastic and endpoint_id is not None:
+                pool = ElasticEndpointPool(
+                    dispatcher=dispatcher,
+                    endpoints_path=ec.endpoints_path,
+                    endpoint_id=endpoint_id,
+                    poll_interval=ec.elastic_poll_interval,
+                    base_client_config=ec.client_config,
+                )
+                pools.append(pool)
+
+    return dispatchers, pools
+
+
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
     on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | list[ProgressCallback] | None = None,
     on_log: LogCallback | None = None,
+    dispatcher: LeastLoadedDispatcher | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -607,21 +695,33 @@ async def run_evaluation(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
 
-        effective_group_max_concurrent = config.max_concurrent
-        if (
-            not config.independent_scoring
-            and config.max_concurrent > 0
-            and config.rollouts_per_example > 1
-        ):
-            # Grouped scoring applies the semaphore at group level. Convert
-            # rollout-level concurrency to group-level slots.
-            effective_group_max_concurrent = math.ceil(
-                config.max_concurrent / config.rollouts_per_example
-            )
-            if config.num_examples > 0:
-                effective_group_max_concurrent = min(
-                    effective_group_max_concurrent, config.num_examples
+        # Compute effective concurrency for generate().
+        if dispatcher is not None:
+            # LeastLoadedDispatcher handles concurrency per-variant;
+            # disable the generate-level semaphore.
+            if config.max_concurrent > 0:
+                logger.debug(
+                    "Endpoint-level dispatcher active; ignoring eval-level max_concurrent=%d",
+                    config.max_concurrent,
                 )
+            effective_max_concurrent = -1
+        else:
+            # Legacy semaphore + round-robin path. The semaphore limits
+            # concurrent groups, so convert rollout-level concurrency to
+            # group-level slots.
+            effective_max_concurrent = config.max_concurrent
+            if (
+                not config.independent_scoring
+                and config.max_concurrent > 0
+                and config.rollouts_per_example > 1
+            ):
+                effective_max_concurrent = math.ceil(
+                    config.max_concurrent / config.rollouts_per_example
+                )
+                if config.num_examples > 0:
+                    effective_max_concurrent = min(
+                        effective_max_concurrent, config.num_examples
+                    )
 
         outputs = await vf_env.evaluate(
             client=config.client_config,
@@ -629,7 +729,7 @@ async def run_evaluation(
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_group_max_concurrent,
+            max_concurrent=effective_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
@@ -640,6 +740,7 @@ async def run_evaluation(
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
+            dispatcher=dispatcher,
         )
     finally:
         await vf_env.stop_server()
@@ -652,6 +753,8 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
+    dispatchers, pools = _build_dispatchers(config.evals)
+
     on_progress: list[ProgressCallback] | None = None
     if config.heartbeat_url is not None:
         from verifiers.utils.heartbeat import Heartbeat
@@ -659,13 +762,25 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         heart = Heartbeat(config.heartbeat_url)
         on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]
 
+    for pool in pools:
+        pool.start()
+
     start_time = time.time()
-    all_results = await asyncio.gather(
-        *[
-            run_evaluation(eval_config, on_progress=on_progress)
-            for eval_config in config.evals
-        ]
-    )
+    try:
+        all_results = await asyncio.gather(
+            *[
+                run_evaluation(
+                    eval_config,
+                    on_progress=on_progress,
+                    dispatcher=dispatchers.get(eval_config.endpoint_id),
+                )
+                for eval_config in config.evals
+            ]
+        )
+    finally:
+        for pool in pools:
+            await pool.stop()
+
     end_time = time.time()
 
     if config.heartbeat_url is not None:
@@ -705,6 +820,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         await run_evaluations(config)
         return
 
+    dispatchers, pools = _build_dispatchers(config.evals)
+
     heart = None
     if config.heartbeat_url is not None:
         from verifiers.utils.heartbeat import Heartbeat
@@ -714,7 +831,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     display = EvalDisplay(config.evals, screen=tui_mode)
 
     async def run_with_progress(
-        env_config: EvalConfig, env_idx: int
+        env_config: EvalConfig,
+        env_idx: int,
+        dispatcher: LeastLoadedDispatcher | None = None,
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 
@@ -766,6 +885,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_progress=on_progress,
                 on_log=on_log,
                 on_log_file=register_log_file,
+                dispatcher=dispatcher,
             )
 
             # get save path if results were saved
@@ -790,13 +910,20 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             display.refresh()
             await asyncio.sleep(1)
 
+    for pool in pools:
+        pool.start()
+
     try:
         async with display:
             refresh_task = asyncio.create_task(refresh_loop())
             try:
                 await asyncio.gather(
                     *[
-                        run_with_progress(env_config, idx)
+                        run_with_progress(
+                            env_config,
+                            idx,
+                            dispatcher=dispatchers.get(env_config.endpoint_id),
+                        )
                         for idx, env_config in enumerate(config.evals)
                     ],
                     return_exceptions=True,
@@ -813,6 +940,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     except KeyboardInterrupt:
         pass  # exit on interrupt
     finally:
+        for pool in pools:
+            await pool.stop()
         if heart is not None:
             await heart.close()
 

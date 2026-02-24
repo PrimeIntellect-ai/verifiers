@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
-    from typing_extensions import NotRequired, TypedDict
+    from typing_extensions import TypedDict
 else:
-    from typing import NotRequired, TypedDict
+    from typing import TypedDict
 
 # Client / message type literals
 ClientType = Literal[
@@ -386,15 +386,17 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict(
-    "Endpoint",
-    {
-        "key": str,
-        "url": str,
-        "model": str,
-        "api_client_type": NotRequired[ClientType],
-    },
-)
+class _EndpointRequired(TypedDict):
+    key: str
+    url: str
+    model: str
+
+
+class Endpoint(_EndpointRequired, total=False):
+    api_client_type: ClientType
+    max_concurrent: int
+
+
 Endpoints = dict[str, list[Endpoint]]
 
 
@@ -465,6 +467,7 @@ class EndpointClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    max_concurrent: int | None = None
 
 
 ClientConfig.model_rebuild()
@@ -488,6 +491,10 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    # elastic endpoint pool
+    elastic: bool = False
+    elastic_poll_interval: float = 10.0
+    endpoints_path: str = ""
     # logging
     verbose: bool = False
     debug: bool = False
