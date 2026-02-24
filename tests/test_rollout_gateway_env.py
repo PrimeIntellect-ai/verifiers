@@ -9,7 +9,7 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
-import verifiers.envs.experimental.rollout_gateway_env as rollout_gateway_env
+import verifiers.envs.experimental.rollout_gateway_mixin as rollout_gateway_mixin
 
 pytestmark = [pytest.mark.integration, pytest.mark.environments]
 
@@ -40,7 +40,15 @@ class FakeTunnel:
         self.stop_calls += 1
 
 
-class GatewayCliAgentEnv(vf.RolloutGatewayEnv):
+class GatewayCliAgentEnv(vf.RolloutGatewayMixin, vf.CliAgentEnv):
+    def __init__(self, *, gateway_port=8000, use_gateway=True, **kwargs):
+        super().__init__(**kwargs)
+        self.use_gateway = use_gateway
+        if use_gateway:
+            self.init_gateway(
+                gateway_port=gateway_port, timeout_seconds=self.timeout_seconds
+            )
+
     async def post_rollout(self, state: vf.State):
         state["reward"] = 1.0
         state["test_output"] = "ok"
@@ -159,7 +167,7 @@ def _build_gateway_transport(tracker: dict) -> httpx.MockTransport:
 @pytest.mark.asyncio
 async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     FakeTunnel.instances.clear()
-    monkeypatch.setattr(rollout_gateway_env, "Tunnel", FakeTunnel)
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
 
     tracker = {
         "paths": [],
@@ -182,7 +190,7 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
         kwargs["transport"] = transport
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(rollout_gateway_env.httpx, "AsyncClient", _client_factory)
+    monkeypatch.setattr(rollout_gateway_mixin.httpx, "AsyncClient", _client_factory)
 
     dataset = Dataset.from_dict(
         {
@@ -258,17 +266,17 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     assert tunnel.local_port == 8000
     assert tunnel.local_addr == "gateway.internal"
     assert tunnel.start_calls == 1
-    assert await env.get_tunnel_url() == "https://unit-test.tunnel.prime.ai"
+    assert await env.get_gateway_tunnel_url() == "https://unit-test.tunnel.prime.ai"
     assert tunnel.start_calls == 1
 
-    await env.teardown_resources()
+    await env.teardown_gateway()
     assert tunnel.stop_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
     FakeTunnel.instances.clear()
-    monkeypatch.setattr(rollout_gateway_env, "Tunnel", FakeTunnel)
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
 
     dataset = Dataset.from_dict(
         {
@@ -284,9 +292,9 @@ async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
         gateway_port=8000,
     )
 
-    url_a = await env.get_tunnel_url(local_addr="10.20.0.58")
-    url_b = await env.get_tunnel_url(local_addr="10.20.0.59")
-    url_a_reuse = await env.get_tunnel_url(local_addr="10.20.0.58")
+    url_a = await env.get_gateway_tunnel_url(local_addr="10.20.0.58")
+    url_b = await env.get_gateway_tunnel_url(local_addr="10.20.0.59")
+    url_a_reuse = await env.get_gateway_tunnel_url(local_addr="10.20.0.58")
 
     assert url_a == "https://unit-test.tunnel.prime.ai"
     assert url_b == "https://unit-test.tunnel.prime.ai"
@@ -299,7 +307,7 @@ async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
     with pytest.raises(
         ValueError, match="local_addr is required when multiple tunnels are active"
     ):
-        await env.get_tunnel_url()
+        await env.get_gateway_tunnel_url()
 
-    await env.teardown_resources()
+    await env.teardown_gateway()
     assert sum(t.stop_calls for t in FakeTunnel.instances) == 2
