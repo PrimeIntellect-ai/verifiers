@@ -79,6 +79,8 @@ class BrowserEnv(vf.StatefulToolEnv):
         # Pre-built image configuration (default - fastest startup, skips binary upload)
         use_prebuilt_image: bool = True,
         prebuilt_image: str = "deepdream19/cua-server:latest",
+        # Error handling
+        stop_errors: list[type[Exception]] | None = None,
         # Common
         **kwargs: Any,
     ):
@@ -113,9 +115,13 @@ class BrowserEnv(vf.StatefulToolEnv):
             use_binary: Use pre-built SEA binary when use_prebuilt_image=False (default: True)
             use_prebuilt_image: Use pre-built Docker image for fastest startup (default: True)
             prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
+            stop_errors: List of exception types that should trigger cleanup (default: [vf.SandboxError])
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
-        super().__init__(**kwargs)
+        super().__init__(
+            stop_errors=stop_errors if stop_errors is not None else [vf.SandboxError],
+            **kwargs,
+        )
         self.mode = mode
         browserbase_api_key = os.getenv(browserbase_api_key_var)
         model_api_key = os.getenv(model_api_key_var)
