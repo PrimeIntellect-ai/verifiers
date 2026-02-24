@@ -149,6 +149,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                     step_prompt_messages
                 )
                 prefix_len = len(normalized_step_messages)
+                if prefix_len <= 0:
+                    continue
                 if prefix_len <= best_prefix_len:
                     continue
                 if prefix_len > len(normalized_prompt_messages):
