@@ -1,4 +1,5 @@
-from typing import Optional, cast
+from collections.abc import Mapping
+from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletion
@@ -64,6 +65,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools
             )
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        if prompt_ids is None:
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools
+            )
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
             model=model,
@@ -85,18 +90,61 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
-    ) -> list[int]:
+    ) -> list[int] | None:
         """
         Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
         that this method is called *before* making the model response from
         prompt_messages, i.e. the previous turn's prompt and completion do not yet
         include the environment response and next turn's model response.
+
+        Returns None when no trajectory step has a message-level prefix match with
+        prompt_messages.
         """
-        prev_turn_tokens = state["trajectory"][-1]["tokens"]
-        assert prev_turn_tokens is not None
-        prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
-        prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
-        prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
+
+        def normalize_for_comparison(value: Any) -> Any:
+            if hasattr(value, "model_dump"):
+                return normalize_for_comparison(value.model_dump())
+            if isinstance(value, Mapping):
+                return {
+                    str(key): normalize_for_comparison(val)
+                    for key, val in value.items()
+                }
+            if isinstance(value, list):
+                return [normalize_for_comparison(item) for item in value]
+            return value
+
+        async def find_largest_prefix_match_tokens() -> list[int] | None:
+            normalized_prompt_messages = normalize_for_comparison(prompt_messages)
+            best_prefix_len = -1
+            best_step_tokens = None
+            for step in reversed(state["trajectory"]):
+                step_tokens = step["tokens"]
+                if step_tokens is None:
+                    continue
+                step_messages = cast(Any, [*step["prompt"], *step["completion"]])
+                step_prompt_messages, _ = await self.to_native_prompt(step_messages)
+                normalized_step_messages = normalize_for_comparison(
+                    step_prompt_messages
+                )
+                prefix_len = len(normalized_step_messages)
+                if prefix_len <= best_prefix_len:
+                    continue
+                if prefix_len > len(normalized_prompt_messages):
+                    continue
+                if normalized_prompt_messages[:prefix_len] != normalized_step_messages:
+                    continue
+                best_prefix_len = prefix_len
+                best_step_tokens = step_tokens
+                if best_prefix_len == len(normalized_prompt_messages):
+                    break
+
+            if best_step_tokens is None:
+                return None
+            return best_step_tokens["prompt_ids"] + best_step_tokens["completion_ids"]
+
+        prev_turn_ids = await find_largest_prefix_match_tokens()
+        if prev_turn_ids is None:
+            return None
 
         def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
             """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
