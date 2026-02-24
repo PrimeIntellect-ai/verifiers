@@ -340,6 +340,9 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        # elastic endpoint pool
+        "elastic",
+        "elastic_poll_interval",
         # logging
         "verbose",
         "debug",
@@ -582,8 +585,8 @@ def quiet_datasets():
 
 def _build_dispatchers(
     evals: list[EvalConfig],
-) -> dict[str | None, LeastLoadedDispatcher]:
-    """Build per-endpoint dispatchers from eval configs.
+) -> tuple[dict[str | None, LeastLoadedDispatcher], list]:
+    """Build per-endpoint dispatchers (and optional elastic pools) from eval configs.
 
     Groups evals by ``endpoint_id`` and, for each unique id where
     variants have ``max_concurrent`` set, creates a
@@ -595,9 +598,16 @@ def _build_dispatchers(
     Endpoint groups without ``max_concurrent`` use the default
     semaphore + round-robin path in ``environment.generate()``.
 
-    Returns a mapping from ``endpoint_id`` (or ``None``) to the dispatcher.
+    When an eval has ``elastic=True``, an :class:`ElasticEndpointPool`
+    is created to poll the endpoints file and update the dispatcher.
+
+    Returns ``(dispatchers, pools)`` — a mapping from ``endpoint_id``
+    (or ``None``) to the dispatcher and a list of elastic pools.
     """
+    from verifiers.utils.elastic import ElasticEndpointPool
+
     dispatchers: dict[str | None, LeastLoadedDispatcher] = {}
+    pools: list[ElasticEndpointPool] = []
 
     # Collect unique endpoint_ids, take the first config as representative
     seen: dict[str | None, EvalConfig] = {}
@@ -628,9 +638,20 @@ def _build_dispatchers(
                 )
                 for cfg, ep in zip(resolved, endpoint_cfgs)
             ]
-            dispatchers[endpoint_id] = LeastLoadedDispatcher(slots)
+            dispatcher = LeastLoadedDispatcher(slots)
+            dispatchers[endpoint_id] = dispatcher
 
-    return dispatchers
+            if ec.elastic and endpoint_id is not None:
+                pool = ElasticEndpointPool(
+                    dispatcher=dispatcher,
+                    endpoints_path=ec.endpoints_path,
+                    endpoint_id=endpoint_id,
+                    poll_interval=ec.elastic_poll_interval,
+                    base_client_config=ec.client_config,
+                )
+                pools.append(pool)
+
+    return dispatchers, pools
 
 
 async def run_evaluation(
@@ -732,7 +753,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
-    dispatchers = _build_dispatchers(config.evals)
+    dispatchers, pools = _build_dispatchers(config.evals)
 
     on_progress: list[ProgressCallback] | None = None
     if config.heartbeat_url is not None:
@@ -741,17 +762,25 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         heart = Heartbeat(config.heartbeat_url)
         on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]
 
+    for pool in pools:
+        pool.start()
+
     start_time = time.time()
-    all_results = await asyncio.gather(
-        *[
-            run_evaluation(
-                eval_config,
-                on_progress=on_progress,
-                dispatcher=dispatchers.get(eval_config.endpoint_id),
-            )
-            for eval_config in config.evals
-        ]
-    )
+    try:
+        all_results = await asyncio.gather(
+            *[
+                run_evaluation(
+                    eval_config,
+                    on_progress=on_progress,
+                    dispatcher=dispatchers.get(eval_config.endpoint_id),
+                )
+                for eval_config in config.evals
+            ]
+        )
+    finally:
+        for pool in pools:
+            await pool.stop()
+
     end_time = time.time()
 
     if config.heartbeat_url is not None:
@@ -791,7 +820,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         await run_evaluations(config)
         return
 
-    dispatchers = _build_dispatchers(config.evals)
+    dispatchers, pools = _build_dispatchers(config.evals)
 
     heart = None
     if config.heartbeat_url is not None:
@@ -881,6 +910,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             display.refresh()
             await asyncio.sleep(1)
 
+    for pool in pools:
+        pool.start()
+
     try:
         async with display:
             refresh_task = asyncio.create_task(refresh_loop())
@@ -908,6 +940,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     except KeyboardInterrupt:
         pass  # exit on interrupt
     finally:
+        for pool in pools:
+            await pool.stop()
         if heart is not None:
             await heart.close()
 

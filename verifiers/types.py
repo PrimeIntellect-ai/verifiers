@@ -491,6 +491,10 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    # elastic endpoint pool
+    elastic: bool = False
+    elastic_poll_interval: float = 10.0
+    endpoints_path: str = ""
     # logging
     verbose: bool = False
     debug: bool = False

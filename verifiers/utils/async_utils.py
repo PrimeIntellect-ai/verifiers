@@ -130,6 +130,46 @@ class LeastLoadedDispatcher:
             # is cancelled (the shielded inner task keeps running).
             await asyncio.shield(self._notify())
 
+    async def update_variants(
+        self, new_variants: list[EndpointSlot]
+    ) -> tuple[int, int]:
+        """Replace the variant list, preserving in-flight slots.
+
+        Endpoints are keyed by ``api_base_url``.  Kept endpoints preserve
+        their existing :class:`EndpointSlot` (retaining the ``active``
+        count); ``max_concurrent`` is updated from the new slot.  New
+        endpoints get fresh slots and removed endpoints are dropped.
+
+        In-flight requests on removed endpoints continue normally — they
+        hold their own reference to the old slot object.
+
+        Returns ``(added_count, removed_count)``.
+        """
+        if not new_variants:
+            raise ValueError("update_variants requires at least one variant")
+
+        async with self._condition:
+            old_by_url = {v.config.api_base_url: v for v in self._variants}
+            new_by_url = {v.config.api_base_url: v for v in new_variants}
+
+            merged: list[EndpointSlot] = []
+            added = 0
+            for url, new_slot in new_by_url.items():
+                old_slot = old_by_url.get(url)
+                if old_slot is not None:
+                    # Preserve in-flight count, update capacity
+                    old_slot.max_concurrent = new_slot.max_concurrent
+                    merged.append(old_slot)
+                else:
+                    merged.append(new_slot)
+                    added += 1
+
+            removed = len(old_by_url) - (len(new_by_url) - added)
+            self._variants = merged
+            self._condition.notify_all()
+
+        return added, removed
+
 
 async def maybe_semaphore(
     limit: Optional[int] = None,

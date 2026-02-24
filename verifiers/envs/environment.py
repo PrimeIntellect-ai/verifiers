@@ -1008,7 +1008,10 @@ class Environment(ABC):
             tasks: dict[asyncio.Task, int] = {}
             try:
                 if dispatcher is not None:
-                    # Per-variant concurrency via LeastLoadedDispatcher
+                    # Per-variant concurrency via LeastLoadedDispatcher.
+                    # Retries are applied *outside* acquire() so each attempt
+                    # re-acquires a slot — critical when a server is preempted
+                    # and removed by the elastic pool.
                     async def _dispatched_rollout(
                         rollout_input: RolloutInput,
                     ) -> RolloutOutput:
@@ -1018,7 +1021,7 @@ class Environment(ABC):
                                 slot.config,
                                 model,
                                 sampling_args,
-                                max_retries=max_retries,
+                                max_retries=0,
                                 state_columns=state_columns,
                             )
 
@@ -1031,15 +1034,22 @@ class Environment(ABC):
                                 slot.config,
                                 model,
                                 sampling_args,
-                                max_retries=max_retries,
+                                max_retries=0,
                                 state_columns=state_columns,
                             )
+
+                    _retried_rollout = maybe_retry(
+                        _dispatched_rollout, max_retries=max_retries
+                    )
+                    _retried_group = maybe_retry(
+                        _dispatched_group, max_retries=max_retries
+                    )
 
                     if independent_scoring:
                         on_start(raw_inputs, filtered_inputs)
                         for i, rollout_input in enumerate(filtered_inputs):
                             task = asyncio.create_task(
-                                _dispatched_rollout(rollout_input)
+                                _retried_rollout(rollout_input)
                             )
                             tasks[task] = i
                     else:
@@ -1051,7 +1061,7 @@ class Environment(ABC):
                         on_start(raw_inputs, filtered_group_inputs)
 
                         for i, group_input in enumerate(filtered_group_inputs):
-                            task = asyncio.create_task(_dispatched_group(group_input))
+                            task = asyncio.create_task(_retried_group(group_input))
                             tasks[task] = i
                 else:
                     # Legacy path: semaphore + round-robin

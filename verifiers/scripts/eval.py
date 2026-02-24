@@ -421,6 +421,19 @@ def main():
                 "Set endpoints_path to an endpoints.toml file."
             )
 
+        # Elastic mode validation
+        raw_elastic = raw.get("elastic", False)
+        if raw_elastic:
+            if raw_endpoint_id is None:
+                raise ValueError(
+                    "'elastic=true' requires 'endpoint_id' to be set."
+                )
+            if resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml":
+                raise ValueError(
+                    "'elastic=true' requires a TOML endpoints file. "
+                    "Set endpoints_path to an endpoints.toml file."
+                )
+
         raw_model = raw_model_field if raw_model_field is not None else DEFAULT_MODEL
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
@@ -624,6 +637,9 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            elastic=raw.get("elastic", False),
+            elastic_poll_interval=raw.get("elastic_poll_interval", 10.0),
+            endpoints_path=str(endpoints_path),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
