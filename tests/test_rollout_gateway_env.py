@@ -42,8 +42,8 @@ class FakeTunnel:
 
 class GatewayCliAgentEnv(vf.RolloutGatewayMixin, vf.CliAgentEnv):
     def __init__(self, *, gateway_port=8000, use_gateway=True, **kwargs):
-        super().__init__(**kwargs)
         self.use_gateway = use_gateway
+        super().__init__(**kwargs)
         if use_gateway:
             self.init_gateway(
                 gateway_port=gateway_port, timeout_seconds=self.timeout_seconds
@@ -311,3 +311,40 @@ async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
 
     await env.teardown_gateway()
     assert sum(t.stop_calls for t in FakeTunnel.instances) == 2
+
+
+@pytest.mark.asyncio
+async def test_use_gateway_false_initializes_interception(monkeypatch):
+    """With use_gateway=False, interception server is created and gateway is not."""
+    FakeTunnel.instances.clear()
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        use_gateway=False,
+        timeout_seconds=30.0,
+    )
+
+    # Interception server should be initialized
+    assert env._interception_server is not None
+    assert env._tunnel is None
+    assert env._tunnel_lock is not None
+
+    # Gateway attributes should not exist (init_gateway was never called)
+    assert not hasattr(env, "_http_client")
+    assert not hasattr(env, "_tunnels")
+
+    # Teardowns should be safe no-ops for the inactive path
+    await env.teardown_gateway()  # early return via use_gateway=False
+    await env.teardown_resources()  # stops interception (which was never started)
+
+    assert len(FakeTunnel.instances) == 0

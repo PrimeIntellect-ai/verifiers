@@ -97,6 +97,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
+        self._interception_server: InterceptionServer | None = None
+        self._tunnel: Tunnel | None = None
+        self._tunnel_lock = asyncio.Lock()
+
         self.init_interception(interception_port, interception_url)
 
     def init_interception(
@@ -418,8 +422,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
-        if not hasattr(self, "_tunnel_lock"):
-            return
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
@@ -429,7 +431,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     logger.warning(f"Error stopping Prime Tunnel: {e}")
                 finally:
                     self._tunnel = None
-        await self._interception_server.stop()
+        if self._interception_server is not None:
+            await self._interception_server.stop()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -446,7 +449,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state.pop("background_job", None)
 
         rollout_id = state.get("rollout_id")
-        if rollout_id and hasattr(self, "_interception_server"):
+        if rollout_id and self._interception_server is not None:
             self._interception_server.unregister_rollout(rollout_id)
 
     @vf.stop

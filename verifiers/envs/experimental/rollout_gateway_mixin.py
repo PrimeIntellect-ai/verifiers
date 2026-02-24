@@ -36,6 +36,10 @@ class RolloutGatewayMixin:
 
     use_gateway: bool = True
 
+    def init_interception(self, *args, **kwargs):
+        if not self.use_gateway:
+            super().init_interception(*args, **kwargs)
+
     def init_gateway(
         self,
         gateway_port: int = 8000,
@@ -43,10 +47,12 @@ class RolloutGatewayMixin:
     ):
         """Initialize gateway resources. Call in __init__ when use_gateway=True."""
         self.gateway_port = gateway_port
-        self._gw_timeout_seconds = timeout_seconds
-        self._gw_http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
-        self._gw_tunnels: dict[str, Tunnel] = {}
-        self._gw_tunnel_lock = asyncio.Lock()
+        self._gateway_timeout_seconds = timeout_seconds
+        self._http_client: httpx.AsyncClient | None = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds)
+        )
+        self._tunnels: dict[str, Tunnel] = {}
+        self._tunnel_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Gateway URL resolution
@@ -80,7 +86,7 @@ class RolloutGatewayMixin:
         suffix: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        response = await self._gw_http_client.post(
+        response = await self._http_client.post(
             self._rollout_endpoint(state, suffix),
             json=payload,
         )
@@ -90,7 +96,7 @@ class RolloutGatewayMixin:
         return response.json()
 
     async def _gateway_get(self, state: State, suffix: str) -> dict[str, Any]:
-        response = await self._gw_http_client.get(self._rollout_endpoint(state, suffix))
+        response = await self._http_client.get(self._rollout_endpoint(state, suffix))
         response.raise_for_status()
         return response.json()
 
@@ -144,19 +150,19 @@ class RolloutGatewayMixin:
 
     async def get_gateway_tunnel_url(self, local_addr: str | None = None) -> str:
         """Get gateway tunnel URL, starting the tunnel if needed."""
-        async with self._gw_tunnel_lock:
+        async with self._tunnel_lock:
             if local_addr is None:
-                if len(self._gw_tunnels) == 1:
-                    tunnel = next(iter(self._gw_tunnels.values()))
+                if len(self._tunnels) == 1:
+                    tunnel = next(iter(self._tunnels.values()))
                     assert tunnel.url is not None, "Tunnel started but URL is None"
                     return tunnel.url
-                if len(self._gw_tunnels) == 0:
+                if len(self._tunnels) == 0:
                     raise ValueError("local_addr is required when starting tunnel")
                 raise ValueError(
                     "local_addr is required when multiple tunnels are active"
                 )
 
-            tunnel = self._gw_tunnels.get(local_addr)
+            tunnel = self._tunnels.get(local_addr)
             if tunnel is None:
                 tunnel = Tunnel(
                     local_port=self.gateway_port,
@@ -164,7 +170,7 @@ class RolloutGatewayMixin:
                     log_level="debug" if logger.isEnabledFor(logging.DEBUG) else "info",
                 )
                 url = await tunnel.start()
-                self._gw_tunnels[local_addr] = tunnel
+                self._tunnels[local_addr] = tunnel
                 logger.debug(f"Prime Tunnel started local_addr={local_addr} url={url}")
                 return url
 
@@ -232,12 +238,12 @@ class RolloutGatewayMixin:
         try:
             await asyncio.wait_for(
                 self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self._gw_timeout_seconds,
+                timeout=self._gateway_timeout_seconds,
             )
         except asyncio.TimeoutError:
             logger.warning(
                 f"rollout={state.get('rollout_id')} sandbox={state.get('sandbox_id')} "
-                f"stage=wait_for_agent_completion timed out after {self._gw_timeout_seconds:.1f}s"
+                f"stage=wait_for_agent_completion timed out after {self._gateway_timeout_seconds:.1f}s"
             )
             state["agent_timed_out"] = True
         finally:
@@ -413,12 +419,12 @@ class RolloutGatewayMixin:
     @vf.teardown
     async def teardown_gateway(self):
         """Close gateway HTTP client and stop gateway tunnels."""
-        if not hasattr(self, "_gw_http_client"):
+        if not self.use_gateway:
             return
-        await self._gw_http_client.aclose()
-        async with self._gw_tunnel_lock:
-            tunnels = list(self._gw_tunnels.items())
-            self._gw_tunnels = {}
+        await self._http_client.aclose()
+        async with self._tunnel_lock:
+            tunnels = list(self._tunnels.items())
+            self._tunnels = {}
             for local_addr, tunnel in tunnels:
                 try:
                     tunnel.sync_stop()
