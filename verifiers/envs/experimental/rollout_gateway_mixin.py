@@ -24,10 +24,10 @@ def _tail_text(value: Any, max_chars: int = 1200) -> str:
 
 
 class RolloutGatewayMixin:
-    """Opt-in mixin that replaces MultiTurnEnv's interception-based rollout
+    """Opt-in mixin that replaces CliAgentEnv's interception-based rollout
     with a server-side gateway path. Toggle via ``use_gateway`` attribute.
 
-    When gateway is active, the agent talks directly to vLLM's rollout
+    When gateway is active, the agent talks directly to prime-rl's rollout
     gateway through a prime tunnel. The env only manages sandbox lifecycle.
     When inactive, falls through to CliAgentEnv's interception path.
 
@@ -54,10 +54,6 @@ class RolloutGatewayMixin:
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Gateway URL resolution
-    # ------------------------------------------------------------------
-
     def _resolve_gateway_url(self, state: State) -> str:
         client = getattr(state["client"], "client", state["client"])
         gateway_url = str(client.base_url).rstrip("/")
@@ -75,10 +71,6 @@ class RolloutGatewayMixin:
 
     def _rollout_endpoint(self, state: State, suffix: str) -> str:
         return f"{state['gateway_url']}/v1/rollouts/{state['rollout_id']}/{suffix.lstrip('/')}"
-
-    # ------------------------------------------------------------------
-    # Gateway HTTP helpers
-    # ------------------------------------------------------------------
 
     async def _gateway_post(
         self,
@@ -100,10 +92,6 @@ class RolloutGatewayMixin:
         response.raise_for_status()
         return response.json()
 
-    # ------------------------------------------------------------------
-    # Env var override for gateway path
-    # ------------------------------------------------------------------
-
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Override to set OPENAI_BASE_URL from rollout_base_url in gateway mode."""
         if not self.use_gateway:
@@ -117,10 +105,6 @@ class RolloutGatewayMixin:
         if model:
             env_vars["OPENAI_MODEL"] = model
         return env_vars
-
-    # ------------------------------------------------------------------
-    # Rollout registration & trajectory
-    # ------------------------------------------------------------------
 
     async def register_rollout(self, state: State) -> None:
         sampling_params = state.get("sampling_args") or {}
@@ -143,10 +127,6 @@ class RolloutGatewayMixin:
         state["is_truncated"] = bool(
             data.get("is_truncated", state.get("is_truncated", False))
         )
-
-    # ------------------------------------------------------------------
-    # Gateway tunnel management
-    # ------------------------------------------------------------------
 
     async def get_gateway_tunnel_url(self, local_addr: str | None = None) -> str:
         """Get gateway tunnel URL, starting the tunnel if needed."""
@@ -176,10 +156,6 @@ class RolloutGatewayMixin:
 
             assert tunnel.url is not None, "Tunnel started but URL is None"
             return tunnel.url
-
-    # ------------------------------------------------------------------
-    # Agent start & completion polling
-    # ------------------------------------------------------------------
 
     async def start_agent(self, state: State) -> None:
         """Start the agent command. In gateway mode, skip background completion task."""
@@ -249,20 +225,12 @@ class RolloutGatewayMixin:
         finally:
             state["agent_completed"] = True
 
-    # ------------------------------------------------------------------
-    # Timing
-    # ------------------------------------------------------------------
-
     async def _render_timing(self, state: State) -> None:
         start_time = state["timing"]["start_time"]
         end_time = time.time()
         generation_ms = (end_time - start_time) * 1000
         state["timing"]["generation_ms"] = generation_ms
         state["timing"]["total_ms"] = generation_ms
-
-    # ------------------------------------------------------------------
-    # rollout() — gateway path with fallback
-    # ------------------------------------------------------------------
 
     async def rollout(
         self,
@@ -411,10 +379,6 @@ class RolloutGatewayMixin:
             )
 
         return state
-
-    # ------------------------------------------------------------------
-    # Teardown
-    # ------------------------------------------------------------------
 
     @vf.teardown
     async def teardown_gateway(self):
