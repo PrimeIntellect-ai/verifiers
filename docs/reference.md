@@ -744,7 +744,7 @@ class Endpoint(TypedDict, total=False):
 Endpoints = dict[str, list[Endpoint]]
 ```
 
-`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list. The optional `max_concurrent` field enables per-variant concurrency limiting with least-loaded dispatch.
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list. The `max_concurrent` field enables per-variant concurrency limiting with least-loaded dispatch; if set on any variant in a group, it must be set on all.
 
 ---
 

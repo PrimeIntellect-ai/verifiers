@@ -125,6 +125,36 @@ class TestLeastLoadedDispatcher:
         await asyncio.wait_for(oversize_task, timeout=2.0)
         await holder_task
 
+    @pytest.mark.asyncio
+    async def test_cancellation_does_not_leak_capacity(self):
+        """Cancelled tasks must release their slots."""
+        slot = EndpointSlot(config=_make_config(), max_concurrent=1)
+        dispatcher = LeastLoadedDispatcher([slot])
+
+        entered = asyncio.Event()
+
+        async def hold_then_wait():
+            async with dispatcher.acquire():
+                entered.set()
+                await asyncio.sleep(999)  # will be cancelled
+
+        task = asyncio.create_task(hold_then_wait())
+        await entered.wait()
+        assert slot.active == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Give the shielded notification task a chance to run
+        await asyncio.sleep(0)
+
+        assert slot.active == 0, "capacity leaked after cancellation"
+
+        # Verify the slot is actually usable again
+        async with dispatcher.acquire() as got:
+            assert got is slot
+
     def test_empty_variants_raises(self):
         with pytest.raises(ValueError):
             LeastLoadedDispatcher([])

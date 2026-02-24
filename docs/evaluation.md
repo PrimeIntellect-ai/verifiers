@@ -113,7 +113,7 @@ key = "API_KEY"
 max_concurrent = 16
 ```
 
-When any variant has `max_concurrent` set, the evaluator uses least-loaded dispatch: each request is routed to the variant with the most available capacity. Variants without `max_concurrent` have no limit. When no variant has `max_concurrent`, requests are distributed round-robin.
+When variants have `max_concurrent` set, the evaluator uses least-loaded dispatch: each request is routed to the variant with the most available capacity. Per-variant concurrency is all-or-nothing — either every variant in an endpoint group sets `max_concurrent`, or none does. When no variant has `max_concurrent`, requests are distributed round-robin and the global `--max-concurrent` flag controls concurrency.
 
 Then use the alias directly:
 

@@ -83,6 +83,11 @@ class LeastLoadedDispatcher:
         self._variants = variants
         self._condition = asyncio.Condition()
 
+    async def _notify(self) -> None:
+        """Wake all waiters under the condition lock."""
+        async with self._condition:
+            self._condition.notify_all()
+
     @asynccontextmanager
     async def acquire(self, count: int = 1) -> AsyncIterator[EndpointSlot]:
         """Acquire a slot on the least-loaded variant that can fit *count* concurrent items."""
@@ -114,9 +119,12 @@ class LeastLoadedDispatcher:
         try:
             yield variant
         finally:
-            async with self._condition:
-                variant.active -= count
-                self._condition.notify_all()
+            # Decrement synchronously — safe in asyncio's cooperative model
+            # since no other task can interleave between await points.
+            variant.active -= count
+            # Shield notification so waiters are woken even if our task
+            # is cancelled (the shielded inner task keeps running).
+            await asyncio.shield(self._notify())
 
 
 async def maybe_semaphore(
