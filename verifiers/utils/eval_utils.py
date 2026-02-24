@@ -75,7 +75,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
     # Parse optional max_concurrent
     max_concurrent = raw_endpoint_dict.get("max_concurrent")
     if max_concurrent is not None:
-        if not isinstance(max_concurrent, int) or max_concurrent <= 0:
+        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or max_concurrent <= 0:
             raise ValueError(f"'max_concurrent' must be a positive integer in {source}")
         endpoint["max_concurrent"] = max_concurrent
 
