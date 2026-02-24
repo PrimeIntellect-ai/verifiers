@@ -66,7 +66,7 @@ def is_tty() -> bool:
 class DisplayLogHandler(logging.Handler):
     """Custom log handler that captures log records for display."""
 
-    def __init__(self, max_lines: int = 3) -> None:
+    def __init__(self, max_lines: int = 10) -> None:
         super().__init__()
         self.logs: deque[str] = deque(maxlen=max_lines)
         self.setFormatter(logging.Formatter("%(name)s: %(message)s"))
@@ -141,7 +141,7 @@ class BaseDisplay:
         self.console = Console()
         self._live: Live | None = None
         self._old_terminal_settings: list | None = None
-        self._log_handler = DisplayLogHandler(max_lines=3)
+        self._log_handler = DisplayLogHandler(max_lines=10)
         self._old_handler_levels: dict[logging.Handler, int] = {}
         self._old_datasets_level: int | None = None
         self._old_stdout = None
