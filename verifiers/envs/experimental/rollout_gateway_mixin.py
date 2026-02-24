@@ -347,6 +347,13 @@ class RolloutGatewayMixin:
                     f"stdout_tail={_tail_text(state.get('agent_stdout'))!r} "
                     f"stderr_tail={_tail_text(state.get('agent_stderr'))!r}"
                 )
+        except asyncio.CancelledError:
+            if rollout_registered:
+                try:
+                    await self._gateway_post(state, "cancel")
+                except Exception:
+                    pass
+            raise
         except vf.Error as e:
             state["error"] = e
             logger.exception(
