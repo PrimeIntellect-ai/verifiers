@@ -98,32 +98,14 @@ class TestLeastLoadedDispatcher:
         assert slot.active == 0
 
     @pytest.mark.asyncio
-    async def test_oversize_count_waits_for_full_idle(self):
-        """When count exceeds every variant's max_concurrent, wait for idle."""
+    async def test_oversize_count_raises(self):
+        """count > every variant's max_concurrent is a config error."""
         slot = EndpointSlot(config=_make_config(), max_concurrent=2)
         dispatcher = LeastLoadedDispatcher([slot])
 
-        released = asyncio.Event()
-
-        async def holder():
-            async with dispatcher.acquire(count=1):
-                await released.wait()
-
-        holder_task = asyncio.create_task(holder())
-        await asyncio.sleep(0.05)
-
-        # count=5 exceeds max_concurrent=2 — must wait for full idle
-        async def oversize():
-            async with dispatcher.acquire(count=5) as got:
-                assert got is slot
-
-        oversize_task = asyncio.create_task(oversize())
-        await asyncio.sleep(0.05)
-        assert not oversize_task.done()
-
-        released.set()
-        await asyncio.wait_for(oversize_task, timeout=2.0)
-        await holder_task
+        with pytest.raises(ValueError, match="exceeds the largest variant"):
+            async with dispatcher.acquire(count=5):
+                pass
 
     @pytest.mark.asyncio
     async def test_cancellation_does_not_leak_capacity(self):

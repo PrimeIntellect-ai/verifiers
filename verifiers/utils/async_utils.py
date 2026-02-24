@@ -90,7 +90,19 @@ class LeastLoadedDispatcher:
 
     @asynccontextmanager
     async def acquire(self, count: int = 1) -> AsyncIterator[EndpointSlot]:
-        """Acquire a slot on the least-loaded variant that can fit *count* concurrent items."""
+        """Acquire a slot on the least-loaded variant that can fit *count* concurrent items.
+
+        Raises ValueError if count exceeds every variant's max_concurrent,
+        since allowing it would defeat the configured concurrency limit.
+        """
+        largest_cap = max(v.max_concurrent for v in self._variants)
+        if count > largest_cap:
+            raise ValueError(
+                f"Group size {count} exceeds the largest variant's "
+                f"max_concurrent ({largest_cap}). Each group must fit on a "
+                f"single variant. Increase max_concurrent or reduce "
+                f"rollouts_per_example."
+            )
         variant: EndpointSlot | None = None
         async with self._condition:
             while True:
@@ -103,14 +115,6 @@ class LeastLoadedDispatcher:
                         best = v
                 if best is not None:
                     variant = best
-                    variant.active += count
-                    break
-
-                # Edge case: count exceeds every variant's max_concurrent.
-                # Wait for the largest variant to be fully idle, then allow through.
-                largest = max(self._variants, key=lambda v: v.max_concurrent)
-                if count > largest.max_concurrent and largest.active == 0:
-                    variant = largest
                     variant.active += count
                     break
 
