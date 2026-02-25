@@ -113,13 +113,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
-        self._interception_server = InterceptionServer(port=interception_port)
+        self._interception_server: InterceptionServer | None = InterceptionServer(
+            port=interception_port
+        )
+
+    def _require_interception_server(self) -> InterceptionServer:
+        server = self._interception_server
+        if server is None:
+            raise RuntimeError("Interception server is not initialized")
+        return server
 
     async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed."""
         async with self._tunnel_lock:
             if self._tunnel is None:
-                port = self._interception_server.port
+                server = self._require_interception_server()
+                port = server.port
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
@@ -141,7 +150,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        await self._interception_server.start()
+        server = self._require_interception_server()
+        await server.start()
 
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
@@ -175,7 +185,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
-        request_id_queue = self._interception_server.register_rollout(rollout_id)
+        request_id_queue = server.register_rollout(rollout_id)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -276,7 +286,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
-                intercept = self._interception_server.intercepts[request_id]
+                server = self._require_interception_server()
+                intercept = server.intercepts[request_id]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
@@ -362,9 +373,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             )
 
         request_id = state.get("current_request_id")
-        intercept = (
-            self._interception_server.intercepts.get(request_id) if request_id else None
-        )
+        server = self._require_interception_server()
+        intercept = server.intercepts.get(request_id) if request_id else None
 
         if intercept:
             # Always use the configured model from state, not the intercepted model
@@ -431,8 +441,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     logger.warning(f"Error stopping Prime Tunnel: {e}")
                 finally:
                     self._tunnel = None
-        if self._interception_server is not None:
-            await self._interception_server.stop()
+        server = self._interception_server
+        if server is not None:
+            await server.stop()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -449,8 +460,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state.pop("background_job", None)
 
         rollout_id = state.get("rollout_id")
-        if rollout_id and self._interception_server is not None:
-            self._interception_server.unregister_rollout(rollout_id)
+        server = self._interception_server
+        if rollout_id and server is not None:
+            server.unregister_rollout(rollout_id)
 
     @vf.stop
     async def agent_completed(self, state: State) -> bool:
