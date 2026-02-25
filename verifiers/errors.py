@@ -54,3 +54,9 @@ class SandboxError(InfraError):
     """Used to catch errors while interacting with sandboxes."""
 
     pass
+
+
+class BrowserSandboxError(SandboxError):
+    """Used to catch errors while interacting with browser sandboxes."""
+
+    pass

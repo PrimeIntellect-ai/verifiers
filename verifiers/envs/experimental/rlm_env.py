@@ -37,7 +37,7 @@ import tempfile
 import textwrap
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Literal, cast
@@ -1167,6 +1167,21 @@ _SUB_LLM_SYSTEM_PROMPT_STORE = {
 
 
 # System prompt for RLM
+_RLM_MESSAGE_HISTORY_NOTE_PYTHON = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```python
+import json
+history = [json.loads(line) for line in open(".messages")]
+```
+"""
+
+_RLM_MESSAGE_HISTORY_NOTE_BASH = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```bash
+cat .messages  # one JSON object per line
+```
+"""
+
 _RLM_PYTHON_SYSTEM_PROMPT_STORE = {
     "light": """You have the `call_python_repl` tool and a filesystem available to you.
 
@@ -1905,6 +1920,179 @@ class RLMExecutor(SandboxMixin):
                     pass
 
 
+@dataclass
+class _PoolEntry:
+    """Shared interception server + tunnel for a given port."""
+
+    port: int
+    bind_host: str
+    server_app: web.Application | None = None
+    server_runner: web.AppRunner | None = None
+    server_site: web.TCPSite | None = None
+    tunnel: Tunnel | None = None
+    tunnel_url: str | None = None
+    refcount: int = 0
+    rollout_dispatch: dict[str, Any] = field(default_factory=dict)
+
+
+class _InterceptionPool:
+    """Shares interception servers and tunnels across RLMEnv instances on the same port.
+
+    When multiple RLMEnv instances use the same non-zero interception_port, they
+    share a single aiohttp server and tunnel instead of each creating their own.
+    Request dispatch is based on rollout_id.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, _PoolEntry] = {}
+        self._lock: asyncio.Lock | None = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    async def acquire_server(self, port: int, bind_host: str) -> None:
+        """Create or reuse server on this port. Increments refcount."""
+        async with self.lock:
+            if port in self._entries:
+                existing = self._entries[port]
+                if existing.bind_host != bind_host:
+                    logger.warning(
+                        f"InterceptionPool: bind_host mismatch on port {port}: "
+                        f"existing={existing.bind_host}, requested={bind_host}. "
+                        f"Reusing existing server."
+                    )
+                existing.refcount += 1
+                return
+
+            entry = _PoolEntry(port=port, bind_host=bind_host)
+
+            app = web.Application()
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/chat/completions",
+                self._make_dispatch_handler(port, "_handle_sub_llm_request"),
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/rlm/tools",
+                self._make_dispatch_handler(port, "_handle_root_tool_request"),
+            )
+
+            runner = web.AppRunner(app)
+            await runner.setup()
+            try:
+                site = web.TCPSite(runner, bind_host, port)
+                await site.start()
+            except BaseException:
+                await runner.cleanup()
+                raise
+
+            entry.server_app = app
+            entry.server_runner = runner
+            entry.server_site = site
+            entry.refcount = 1
+
+            self._entries[port] = entry
+            logger.debug(
+                f"InterceptionPool: started shared server on {bind_host}:{port}"
+            )
+
+    def _make_dispatch_handler(
+        self, port: int, handler_name: str
+    ) -> Callable[..., Any]:
+        """Create an aiohttp handler that dispatches to the correct RLMEnv instance."""
+
+        async def handler(request: web.Request) -> web.Response:
+            rollout_id = request.match_info["rollout_id"]
+            entry = self._entries.get(port)
+            if not entry:
+                return web.json_response({"error": "Pool entry not found"}, status=500)
+            env = entry.rollout_dispatch.get(rollout_id)
+            if not env:
+                return web.json_response({"error": "Rollout not found"}, status=404)
+            return await getattr(env, handler_name)(request)
+
+        return handler
+
+    async def get_tunnel_url(self, port: int, log_level: str = "info") -> str:
+        """Get tunnel URL for this port. Creates tunnel on first call."""
+        async with self.lock:
+            entry = self._entries.get(port)
+            if entry is None:
+                raise RuntimeError(
+                    f"No server on port {port}. Call acquire_server first."
+                )
+
+            if entry.tunnel is not None:
+                if entry.tunnel.is_running:
+                    assert entry.tunnel_url is not None
+                    return entry.tunnel_url
+                # Tunnel died, recreate
+                try:
+                    await entry.tunnel.stop()
+                except Exception:
+                    pass
+                entry.tunnel = None
+                entry.tunnel_url = None
+
+            tunnel = Tunnel(
+                local_port=port,
+                log_level=log_level,
+            )
+            url = await tunnel.start()
+            entry.tunnel = tunnel
+            entry.tunnel_url = url
+            logger.debug(f"InterceptionPool: started tunnel on port {port}: {url}")
+            return url
+
+    def register_rollout(self, port: int, rollout_id: str, env: Any) -> None:
+        """Register rollout for request dispatch."""
+        entry = self._entries.get(port)
+        if entry:
+            entry.rollout_dispatch[rollout_id] = env
+
+    def unregister_rollout(self, port: int, rollout_id: str) -> None:
+        """Unregister rollout from dispatch table."""
+        entry = self._entries.get(port)
+        if entry:
+            entry.rollout_dispatch.pop(rollout_id, None)
+
+    async def release(self, port: int) -> None:
+        """Decrement refcount. Destroy server+tunnel when refcount hits 0."""
+        async with self.lock:
+            entry = self._entries.get(port)
+            if entry is None:
+                return
+            entry.refcount -= 1
+            if entry.refcount <= 0:
+                await self._destroy_entry(entry)
+                del self._entries[port]
+
+    async def _destroy_entry(self, entry: _PoolEntry) -> None:
+        """Stop server and tunnel for a pool entry."""
+        if entry.tunnel is not None:
+            try:
+                await entry.tunnel.stop()
+                logger.debug(f"InterceptionPool: stopped tunnel on port {entry.port}")
+            except Exception as e:
+                logger.warning(f"Error stopping shared tunnel: {e}")
+        if entry.server_site is not None:
+            try:
+                await entry.server_site.stop()
+            except Exception:
+                pass
+        if entry.server_runner is not None:
+            try:
+                await entry.server_runner.cleanup()
+            except Exception:
+                pass
+        logger.debug(f"InterceptionPool: destroyed entry on port {entry.port}")
+
+
+_interception_pool = _InterceptionPool()
+
+
 class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
@@ -1981,6 +2169,10 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
+        expose_message_history: If True, the model's conversation history is
+                   written to `.messages` (JSONL) in the sandbox working directory
+                   and updated incrementally before each code execution. This lets
+                   the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
         filesystem_copy_max_bytes: Optional max bytes for context directory copy.
         local_repl_max_workers: Deprecated, has no effect. Sandbox execution is always used.
@@ -2029,6 +2221,7 @@ class RLMEnv(vf.StatefulToolEnv):
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
+        expose_message_history: bool = False,
         retain_filesystem_after_rollout: bool = False,
         filesystem_copy_max_bytes: int | None = 1_000_000_000,
         local_repl_max_workers: int | None = None,  # deprecated
@@ -2097,6 +2290,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
+        self.expose_message_history = expose_message_history
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
         self._interception_bind_host = self.interception_host
@@ -2161,6 +2355,8 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         # Interception server state (shared across rollouts)
+        self._use_shared_pool = interception_port != 0
+        self._has_pool_ref = False
         self._interception_server: Any = None
         self._server_lock = asyncio.Lock()
         self._server_runner: Any = None
@@ -2794,6 +2990,15 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _ensure_interception_server(self):
         """Start shared HTTP server for sub-LLM interception if needed."""
+        if self._use_shared_pool:
+            async with self._server_lock:
+                if not self._has_pool_ref:
+                    await _interception_pool.acquire_server(
+                        self.interception_port, self._interception_bind_host
+                    )
+                    self._has_pool_ref = True
+            return
+
         async with self._server_lock:
             if self._interception_server is not None:
                 return
@@ -2831,6 +3036,12 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed."""
+        if self._use_shared_pool:
+            log_level = "debug" if logger.isEnabledFor(logging.DEBUG) else "info"
+            return await _interception_pool.get_tunnel_url(
+                self.interception_port, log_level
+            )
+
         async with self._tunnel_lock:
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
@@ -3092,6 +3303,8 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
+        if self._use_shared_pool:
+            return  # Pool manages the server lifecycle
         async with self._server_lock:
             if self._server_site is not None:
                 try:
@@ -3112,6 +3325,12 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
+        if self._use_shared_pool:
+            async with self._server_lock:
+                if self._has_pool_ref:
+                    await _interception_pool.release(self.interception_port)
+                    self._has_pool_ref = False
+            return
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
@@ -3175,6 +3394,10 @@ class RLMEnv(vf.StatefulToolEnv):
             "sub_model": self.sub_model or state.get("model"),
             "state": state,
         }
+        if self._use_shared_pool:
+            _interception_pool.register_rollout(
+                self.interception_port, rollout_id, self
+            )
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
@@ -3234,8 +3457,18 @@ class RLMEnv(vf.StatefulToolEnv):
             packages_docs = self._generate_packages_documentation()
             root_tools_docs = self._generate_root_tools_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
+            message_history_docs = ""
+            if self.expose_message_history:
+                if self.repl_language == "bash":
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_BASH
+                else:
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_PYTHON
             state["rlm_system_prompt"] = (
-                base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+                base_system_prompt
+                + packages_docs
+                + root_tools_docs
+                + sub_tools_docs
+                + message_history_docs
             )
             state["rlm_packages_docs"] = packages_docs
             state["rlm_root_tools_docs"] = root_tools_docs
@@ -3264,6 +3497,9 @@ class RLMEnv(vf.StatefulToolEnv):
             # Initialize FIFO sequence counter for detecting stale responses
             state["_exec_seq"] = 0
 
+            # Initialize message history upload counter
+            state["_messages_uploaded_count"] = 0
+
             _ensure_rlm_metric_state(state)
 
             return state
@@ -3271,6 +3507,10 @@ class RLMEnv(vf.StatefulToolEnv):
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
             if rollout_id in self.active_rollouts:
                 del self.active_rollouts[rollout_id]
+            if self._use_shared_pool:
+                _interception_pool.unregister_rollout(
+                    self.interception_port, rollout_id
+                )
             try:
                 await self._executor.cleanup(state)
             except Exception:
@@ -3443,6 +3683,55 @@ class RLMEnv(vf.StatefulToolEnv):
         return output
 
     # =========================================================================
+    # Message History Upload
+    # =========================================================================
+
+    def _build_message_history(self, state: State) -> list[dict[str, Any]]:
+        """Build the full serialized message history from the trajectory."""
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is None:
+            return []
+        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+        serialized: list[dict[str, Any]] = []
+        for msg in messages:
+            if hasattr(msg, "model_dump"):
+                serialized.append(msg.model_dump(exclude_none=True))
+            elif isinstance(msg, dict):
+                serialized.append(dict(msg))
+        return serialized
+
+    async def _upload_message_history(self, state: State) -> None:
+        """Incrementally upload new messages to .messages (JSONL) in the sandbox."""
+        messages = self._build_message_history(state)
+        uploaded_count: int = state.get("_messages_uploaded_count", 0)
+        new_messages = messages[uploaded_count:]
+        if not new_messages and uploaded_count > 0:
+            return
+
+        session = self._executor._get_session(state)
+        assert session.sandbox_id is not None, "sandbox must be initialized"
+        fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
+        remote_path = f"{fs_root}/.messages"
+
+        if new_messages:
+            lines = [json.dumps(msg, ensure_ascii=False) for msg in new_messages]
+            delta = "\n".join(lines) + "\n"
+            delta_b64 = base64.b64encode(delta.encode("utf-8")).decode("ascii")
+            cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+        else:
+            cmd = f"touch {remote_path}"
+
+        try:
+            await self._executor._execute_sandbox_command(
+                session.sandbox_id,
+                f"bash -lc {shlex.quote(cmd)}",
+                timeout=30,
+            )
+            state["_messages_uploaded_count"] = len(messages)
+        except Exception as e:
+            logger.warning("Failed to upload message history: %s", e)
+
+    # =========================================================================
     # REPL Tool
     # =========================================================================
 
@@ -3457,6 +3746,9 @@ class RLMEnv(vf.StatefulToolEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        if self.expose_message_history:
+            await self._upload_message_history(state)
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
@@ -3756,6 +4048,8 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
+        if self._use_shared_pool and rollout_id:
+            _interception_pool.unregister_rollout(self.interception_port, rollout_id)
 
         try:
             await self._executor.cleanup(state)

@@ -1,6 +1,8 @@
+import json
 import logging
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.panel import Panel
@@ -15,12 +17,31 @@ from verifiers.utils.message_utils import format_messages
 LOGGER_NAME = "verifiers"
 
 
+class JsonFormatter(logging.Formatter):
+    """JSON formatter for structured logging."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
+
 def setup_logging(
     level: str | None = "INFO",
     log_format: str | None = None,
     date_format: str | None = None,
     log_file: str | None = None,
     log_file_level: str | None = None,
+    json_logging: bool = False,
 ) -> None:
     """
     Setup basic logging configuration for the verifiers package.
@@ -30,13 +51,17 @@ def setup_logging(
         log_format: Custom log format string. If None, uses default format.
         date_format: Custom date format string. If None, uses default format.
         log_file: Optional path to a log file. If specified, logs will be written to this file.
+        log_file_level: The logging level for the file handler. If None, uses the same level as console.
+        json_logging: If True, output logs as JSON. Defaults to False.
     """
-    if log_format is None:
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    if date_format is None:
-        date_format = "%Y-%m-%d %H:%M:%S"
-
-    formatter = logging.Formatter(fmt=log_format, datefmt=date_format)
+    if json_logging:
+        formatter = JsonFormatter()
+    else:
+        if log_format is None:
+            log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        if date_format is None:
+            date_format = "%Y-%m-%d %H:%M:%S"
+        formatter = logging.Formatter(fmt=log_format, datefmt=date_format)
 
     logger = logging.getLogger(LOGGER_NAME)
 
@@ -70,6 +95,19 @@ def setup_logging(
 
     # prevent the logger from propagating messages to the root logger
     logger.propagate = False
+
+    # when json_logging, also configure the root logger so environment code
+    # using logging.getLogger(__name__) emits JSON too
+    if json_logging:
+        root = logging.getLogger()
+        root.handlers = [
+            h for h in root.handlers if not isinstance(h.formatter, JsonFormatter)
+        ]
+        root.setLevel(console_level)
+        root_handler = logging.StreamHandler(sys.stderr)
+        root_handler.setFormatter(formatter)
+        root_handler.setLevel(console_level)
+        root.addHandler(root_handler)
 
 
 @contextmanager

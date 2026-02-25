@@ -26,6 +26,7 @@ from verifiers.envs.experimental.rlm_env import (
     RLMWorkerPaths,
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
+    _InterceptionPool,
 )
 
 # =============================================================================
@@ -1619,3 +1620,570 @@ class TestSubLLMEmptyModelResponseErrorRaised:
             with pytest.raises(SubLLMEmptyModelResponseError) as exc_info:
                 await rlm_env._call_sub_llm_api(state, MagicMock(), "gpt-4", messages)
             assert exc_info.value.__cause__ is original
+
+
+# =============================================================================
+# _InterceptionPool tests
+# =============================================================================
+
+
+class TestInterceptionPool:
+    """Tests for the shared _InterceptionPool."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_pool(self):
+        """Each test gets a fresh pool."""
+        self.pool = _InterceptionPool()
+
+    @pytest.mark.asyncio
+    async def test_acquire_creates_server(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        assert 0 in self.pool._entries
+        entry = self.pool._entries[0]
+        assert entry.refcount == 1
+        assert entry.server_app is not None
+        assert entry.server_site is not None
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_acquire_twice_increments_refcount(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.acquire_server(0, "127.0.0.1")
+        assert self.pool._entries[0].refcount == 2
+        await self.pool.release(0)
+        assert self.pool._entries[0].refcount == 1
+        await self.pool.release(0)
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_release_destroys_at_zero(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.release(0)
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_double_release_does_not_crash(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        await self.pool.release(0)
+        await self.pool.release(0)  # should not raise
+        assert 0 not in self.pool._entries
+
+    @pytest.mark.asyncio
+    async def test_register_and_unregister_rollout(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        sentinel = object()
+        self.pool.register_rollout(0, "roll_1", sentinel)
+        assert self.pool._entries[0].rollout_dispatch["roll_1"] is sentinel
+        self.pool.unregister_rollout(0, "roll_1")
+        assert "roll_1" not in self.pool._entries[0].rollout_dispatch
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_unregister_missing_rollout_does_not_crash(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        self.pool.unregister_rollout(0, "nonexistent")  # should not raise
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_to_correct_env(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        await self.pool.acquire_server(0, "127.0.0.1")
+        entry = self.pool._entries[0]
+
+        # Mock two env instances with different handlers
+        env_a = MagicMock()
+        env_a._handle_sub_llm_request = AsyncMock(
+            return_value=web.json_response({"from": "a"})
+        )
+        env_b = MagicMock()
+        env_b._handle_sub_llm_request = AsyncMock(
+            return_value=web.json_response({"from": "b"})
+        )
+
+        self.pool.register_rollout(0, "roll_a", env_a)
+        self.pool.register_rollout(0, "roll_b", env_b)
+
+        server = TestServer(entry.server_app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.post("/rollout/roll_a/v1/chat/completions", json={})
+            assert resp.status == 200
+            env_a._handle_sub_llm_request.assert_called_once()
+            env_b._handle_sub_llm_request.assert_not_called()
+        finally:
+            await client.close()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_returns_404_for_unknown_rollout(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        await self.pool.acquire_server(0, "127.0.0.1")
+        entry = self.pool._entries[0]
+
+        server = TestServer(entry.server_app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.post("/rollout/unknown/v1/chat/completions", json={})
+            assert resp.status == 404
+        finally:
+            await client.close()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_without_server_raises(self):
+        with pytest.raises(RuntimeError, match="No server on port"):
+            await self.pool.get_tunnel_url(9999)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_reuses_tunnel(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+        mock_tunnel = MagicMock()
+        mock_tunnel.is_running = True
+        mock_tunnel.url = "https://test-tunnel.example.com"
+        mock_tunnel.start = AsyncMock(return_value="https://test-tunnel.example.com")
+        mock_tunnel.stop = AsyncMock()
+
+        with patch(
+            "verifiers.envs.experimental.rlm_env.Tunnel",
+            return_value=mock_tunnel,
+        ):
+            url1 = await self.pool.get_tunnel_url(0)
+            url2 = await self.pool.get_tunnel_url(0)
+            assert url1 == url2
+            # Tunnel constructor called only once
+            mock_tunnel.start.assert_called_once()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_get_tunnel_url_recreates_dead_tunnel(self):
+        await self.pool.acquire_server(0, "127.0.0.1")
+
+        dead_tunnel = MagicMock()
+        dead_tunnel.is_running = False
+        dead_tunnel.stop = AsyncMock()
+
+        new_tunnel = MagicMock()
+        new_tunnel.is_running = True
+        new_tunnel.url = "https://new-tunnel.example.com"
+        new_tunnel.start = AsyncMock(return_value="https://new-tunnel.example.com")
+
+        # Inject a dead tunnel into the entry
+        entry = self.pool._entries[0]
+        entry.tunnel = dead_tunnel
+        entry.tunnel_url = "https://old-tunnel.example.com"
+
+        with patch(
+            "verifiers.envs.experimental.rlm_env.Tunnel",
+            return_value=new_tunnel,
+        ):
+            url = await self.pool.get_tunnel_url(0)
+            assert url == "https://new-tunnel.example.com"
+            dead_tunnel.stop.assert_called_once()
+            new_tunnel.start.assert_called_once()
+
+        await self.pool.release(0)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_acquire_no_double_increment(self):
+        """Verify that concurrent rollouts in one RLMEnv don't double-acquire."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            interception_port=18080,
+            interception_url="http://test.invalid",
+        )
+        # Replace the global pool with our fresh one
+        with patch("verifiers.envs.experimental.rlm_env._interception_pool", self.pool):
+            # Simulate concurrent _ensure_interception_server calls
+            import asyncio
+
+            await asyncio.gather(
+                env._ensure_interception_server(),
+                env._ensure_interception_server(),
+                env._ensure_interception_server(),
+            )
+            assert self.pool._entries[18080].refcount == 1
+            assert env._has_pool_ref is True
+            await self.pool.release(18080)
+
+
+# =============================================================================
+# Message History Upload
+# =============================================================================
+
+
+class TestMessageHistory:
+    """Tests for expose_message_history feature."""
+
+    @pytest.fixture
+    def env_with_history(self) -> RLMEnv:
+        dataset = make_dataset({})
+        return build_env(
+            dataset,
+            repl_language="python",
+            expose_message_history=True,
+            interception_url="http://test.invalid",
+        )
+
+    @pytest.fixture
+    def env_without_history(self) -> RLMEnv:
+        dataset = make_dataset({})
+        return build_env(
+            dataset,
+            repl_language="python",
+            expose_message_history=False,
+            interception_url="http://test.invalid",
+        )
+
+    def _make_state_with_trajectory(
+        self, env: RLMEnv, messages_per_step: int = 2, num_steps: int = 1
+    ) -> dict:
+        """Build a state dict with a realistic trajectory."""
+        trajectory_id = "main_traj"
+        trajectory = []
+        for step_idx in range(num_steps):
+            prompt_msgs = [
+                vf.UserMessage(content=f"Step {step_idx} user message {i}")
+                for i in range(messages_per_step)
+            ]
+            completion_msgs = [
+                vf.AssistantMessage(content=f"Step {step_idx} assistant response")
+            ]
+            trajectory.append(
+                {
+                    "prompt": prompt_msgs,
+                    "completion": completion_msgs,
+                    "response": None,
+                    "tokens": None,
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": False,
+                    "trajectory_id": trajectory_id,
+                    "extras": {},
+                }
+            )
+        return {
+            "trajectory": trajectory,
+            "trajectory_id": trajectory_id,
+            "_messages_uploaded_count": 0,
+        }
+
+    def test_build_message_history_empty_trajectory(self, env_with_history):
+        state = {
+            "trajectory": [],
+            "trajectory_id": "main",
+            "_messages_uploaded_count": 0,
+        }
+        result = env_with_history._build_message_history(state)
+        assert result == []
+
+    def test_build_message_history_one_step(self, env_with_history):
+        state = self._make_state_with_trajectory(
+            env_with_history, messages_per_step=1, num_steps=1
+        )
+        result = env_with_history._build_message_history(state)
+        # 1 prompt message + 1 completion message = 2 messages
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "Step 0 user message 0"
+        assert result[1]["role"] == "assistant"
+        assert result[1]["content"] == "Step 0 assistant response"
+
+    def test_build_message_history_multi_step(self, env_with_history):
+        state = self._make_state_with_trajectory(
+            env_with_history, messages_per_step=2, num_steps=3
+        )
+        result = env_with_history._build_message_history(state)
+        # Last step: 2 prompt messages + 1 completion = 3
+        assert len(result) == 3
+        # Should be from the last step
+        assert result[0]["content"] == "Step 2 user message 0"
+        assert result[1]["content"] == "Step 2 user message 1"
+        assert result[2]["content"] == "Step 2 assistant response"
+
+    def test_build_message_history_skips_sub_llm_steps(self, env_with_history):
+        main_id = "main_traj"
+        sub_id = "sub_batch_1"
+        trajectory = [
+            {
+                "prompt": [vf.UserMessage(content="main prompt")],
+                "completion": [vf.AssistantMessage(content="main response")],
+                "response": None,
+                "tokens": None,
+                "reward": None,
+                "advantage": None,
+                "is_truncated": False,
+                "trajectory_id": main_id,
+                "extras": {},
+            },
+            {
+                "prompt": [vf.UserMessage(content="sub prompt")],
+                "completion": [vf.AssistantMessage(content="sub response")],
+                "response": None,
+                "tokens": None,
+                "reward": None,
+                "advantage": None,
+                "is_truncated": False,
+                "trajectory_id": sub_id,
+                "extras": {"is_sub_llm_call": True},
+            },
+        ]
+        state = {
+            "trajectory": trajectory,
+            "trajectory_id": main_id,
+            "_messages_uploaded_count": 0,
+        }
+        result = env_with_history._build_message_history(state)
+        # Should only include the main step's messages
+        assert len(result) == 2
+        assert result[0]["content"] == "main prompt"
+        assert result[1]["content"] == "main response"
+
+    def test_incremental_delta_computation(self, env_with_history):
+        """Verify that only new messages are uploaded on subsequent calls."""
+        main_id = "main_traj"
+        # Step 0: 1 user + 1 assistant = 2 messages
+        step0 = {
+            "prompt": [vf.UserMessage(content="q0")],
+            "completion": [vf.AssistantMessage(content="a0")],
+            "response": None,
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": main_id,
+            "extras": {},
+        }
+        state = {
+            "trajectory": [step0],
+            "trajectory_id": main_id,
+            "_messages_uploaded_count": 0,
+        }
+
+        # First call: all messages are new
+        messages = env_with_history._build_message_history(state)
+        uploaded_count = state["_messages_uploaded_count"]
+        new_messages = messages[uploaded_count:]
+        assert len(new_messages) == 2
+
+        # Simulate upload completing
+        state["_messages_uploaded_count"] = len(messages)
+
+        # Step 1: prompt = [q0, a0, tool_result], completion = [a1] = 4 messages total
+        step1 = {
+            "prompt": [
+                vf.UserMessage(content="q0"),
+                vf.AssistantMessage(content="a0"),
+                vf.ToolMessage(tool_call_id="tc1", content="tool output"),
+            ],
+            "completion": [vf.AssistantMessage(content="a1")],
+            "response": None,
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": main_id,
+            "extras": {},
+        }
+        state["trajectory"].append(step1)
+
+        # Second call: only the new messages
+        messages = env_with_history._build_message_history(state)
+        new_messages = messages[state["_messages_uploaded_count"] :]
+        # Delta = 4 total - 2 already uploaded = 2 new messages
+        assert len(new_messages) == 2
+        assert new_messages[0]["role"] == "tool"
+        assert new_messages[1]["role"] == "assistant"
+        assert new_messages[1]["content"] == "a1"
+
+    @pytest.mark.asyncio
+    async def test_upload_creates_file_on_first_call_with_empty_trajectory(
+        self, env_with_history
+    ):
+        """First call with no trajectory should touch .messages to create it."""
+        state = {
+            "trajectory": [],
+            "trajectory_id": "main",
+            "_messages_uploaded_count": 0,
+            "rollout_id": "test_rollout",
+        }
+
+        mock_session = MagicMock()
+        mock_session.sandbox_id = "sandbox_123"
+        mock_session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
+        env_with_history._executor._get_session = MagicMock(return_value=mock_session)
+        env_with_history._executor._execute_sandbox_command = AsyncMock()
+
+        await env_with_history._upload_message_history(state)
+
+        env_with_history._executor._execute_sandbox_command.assert_called_once()
+        cmd = env_with_history._executor._execute_sandbox_command.call_args[0][1]
+        assert ".messages" in cmd
+        assert "touch" in cmd
+        assert state["_messages_uploaded_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_upload_message_history_calls_sandbox_command(self, env_with_history):
+        """Verify _upload_message_history sends base64-encoded JSONL via sandbox command."""
+        state = self._make_state_with_trajectory(
+            env_with_history, messages_per_step=1, num_steps=1
+        )
+        state["rollout_id"] = "test_rollout"
+
+        mock_session = MagicMock()
+        mock_session.sandbox_id = "sandbox_123"
+        mock_session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
+        env_with_history._executor._get_session = MagicMock(return_value=mock_session)
+        env_with_history._executor._execute_sandbox_command = AsyncMock()
+
+        await env_with_history._upload_message_history(state)
+
+        # Should have called sandbox command
+        env_with_history._executor._execute_sandbox_command.assert_called_once()
+        call_args = env_with_history._executor._execute_sandbox_command.call_args
+        assert call_args[0][0] == "sandbox_123"
+        cmd = call_args[0][1]
+        assert ".messages" in cmd
+        assert "base64" in cmd
+
+        # Counter should be updated
+        assert state["_messages_uploaded_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_when_no_new_messages(self, env_with_history):
+        """Verify no sandbox command when all messages already uploaded."""
+        state = self._make_state_with_trajectory(
+            env_with_history, messages_per_step=1, num_steps=1
+        )
+        state["rollout_id"] = "test_rollout"
+        state["_messages_uploaded_count"] = 2  # Already uploaded all 2 messages
+
+        mock_session = MagicMock()
+        mock_session.sandbox_id = "sandbox_123"
+        mock_session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
+        env_with_history._executor._get_session = MagicMock(return_value=mock_session)
+        env_with_history._executor._execute_sandbox_command = AsyncMock()
+
+        await env_with_history._upload_message_history(state)
+
+        # Should NOT have called sandbox command
+        env_with_history._executor._execute_sandbox_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_upload_failure_is_non_fatal(self, env_with_history):
+        """Verify that sandbox command failure doesn't raise."""
+        state = self._make_state_with_trajectory(
+            env_with_history, messages_per_step=1, num_steps=1
+        )
+        state["rollout_id"] = "test_rollout"
+
+        mock_session = MagicMock()
+        mock_session.sandbox_id = "sandbox_123"
+        mock_session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
+        env_with_history._executor._get_session = MagicMock(return_value=mock_session)
+        env_with_history._executor._execute_sandbox_command = AsyncMock(
+            side_effect=RuntimeError("sandbox down")
+        )
+
+        # Should not raise
+        await env_with_history._upload_message_history(state)
+
+        # Counter should NOT be updated
+        assert state["_messages_uploaded_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_includes_history_note_when_enabled(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            expose_message_history=True,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert ".messages" in prompt
+            assert "JSONL" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_excludes_history_note_when_disabled(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            expose_message_history=False,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert ".messages" not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_bash_history_note(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="bash",
+            expose_message_history=True,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert ".messages" in prompt
+            assert "cat .messages" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    def test_expose_message_history_defaults_to_false(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.expose_message_history is False
+
+    @pytest.mark.asyncio
+    async def test_setup_state_initializes_upload_counter(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            expose_message_history=True,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            assert result["_messages_uploaded_count"] == 0
+        finally:
+            await env.cleanup_rlm_state(result)

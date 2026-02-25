@@ -28,8 +28,9 @@ Run structured, interactive ideation that turns ambiguous research goals into co
 
 ## Required Grounding Sources
 1. Read local source before proposing workflows:
-- `~/dev/prime-cli`
-- `~/dev/prime-rl` (clone to `/tmp` only if needed)
+- optionally clone Prime Intellect repositories to `/tmp` only when needed, e.g.
+  - `git clone https://github.com/PrimeIntellect-ai/prime-cli /tmp/prime-cli`
+  - `git clone https://github.com/PrimeIntellect-ai/prime-rl /tmp/prime-rl`
 - current verifiers workspace docs/configs
 2. For literature and external eval ideas, browse web sources and prioritize mid-2025 onward unless the user asks otherwise.
 3. Include dates when discussing recent papers or benchmarks.

@@ -1,18 +1,56 @@
 import asyncio
+import multiprocessing as mp
 from typing import cast
 
 import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
     BaseResponse,
-    HealthRequest,
     RunGroupRequest,
     RunRolloutRequest,
 )
+
+
+def derive_health_address(address: str) -> str:
+    """Derive health check address from main address (port + 1)."""
+    prefix, port_str = address.rsplit(":", 1)
+    return f"{prefix}:{int(port_str) + 1}"
+
+
+def run_health_responder(address: str, stop_event) -> None:
+    """
+    Synchronous health check responder that runs in a dedicated process.
+
+    Completely isolated from the main server process's GIL, so health
+    pings always receive a prompt response regardless of env workload.
+    """
+    import msgpack
+    import zmq
+
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.REP)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout for clean shutdown
+    sock.bind(address)
+
+    resp = msgpack.packb({"success": True, "error": None}, use_bin_type=True)
+
+    while not stop_event.is_set():
+        try:
+            sock.recv()
+            sock.send(resp)
+        except zmq.Again:
+            continue
+        except zmq.ZMQError:
+            break
+
+    sock.close()
+    ctx.term()
 
 
 class ZMQEnvServer(EnvServer):
@@ -21,16 +59,38 @@ class ZMQEnvServer(EnvServer):
     def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)
         self.address = address
+        self.health_address = derive_health_address(address)
 
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        # require client to receive all messages
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+        self.socket.setsockopt(zmq.SNDHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.RCVHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
-    async def run(self, stop_event: asyncio.Event | None = None):
+        # Health check runs in a separate process (immune to env workload)
+        self.stop_health = mp.Event()
+        self.health_process: mp.Process | None = None
+
+    async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
+
+        # Start health responder in a daemon process
+        self.health_process = mp.Process(
+            target=run_health_responder,
+            args=(self.health_address, self.stop_health),
+            name="health-responder",
+            daemon=True,
+        )
+        self.health_process.start()
+        self.logger.info(f"Health check responder started on {self.health_address}")
+
+        lag_monitor_task = self.lag_monitor.run_in_background()
+
+        # Start statistics logger
+        log_stats_task = asyncio.create_task(self.log_stats_loop())
 
         # Use a poller to check for incoming data instead of asyncio.wait_for.
         # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
@@ -65,7 +125,7 @@ class ZMQEnvServer(EnvServer):
 
                     # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
-                        self._process_request(client_id, request_id, payload_bytes)
+                        self.process_request(client_id, request_id, payload_bytes)
                     )
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
@@ -76,9 +136,23 @@ class ZMQEnvServer(EnvServer):
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.socket)
+            for t in (log_stats_task, lag_monitor_task):
+                t.cancel()
+            await asyncio.gather(
+                log_stats_task, lag_monitor_task, return_exceptions=True
+            )
 
     async def close(self):
-        # cancel and await all pending tasks
+        # Stop health process
+        self.stop_health.set()
+        if self.health_process is not None:
+            self.health_process.join(timeout=5)
+            if self.health_process.is_alive():
+                self.health_process.terminate()
+                self.health_process.join(timeout=2)
+            self.health_process = None
+
+        # Cancel and await all pending tasks
         if self.pending_tasks:
             self.logger.info(f"Cancelling {len(self.pending_tasks)} pending tasks")
             for task in self.pending_tasks:
@@ -86,13 +160,30 @@ class ZMQEnvServer(EnvServer):
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
             self.pending_tasks.clear()
 
-        await self._close_cached_clients()
+        await self.close_cached_clients()
 
         self.socket.close()
         self.ctx.term()
         self.logger.info("Environment server shut down")
 
-    async def _process_request(
+    async def log_stats_loop(self, interval: float = 10.0):
+        """Periodically log statistics."""
+        while True:
+            await asyncio.sleep(interval)
+            pending = len(self.pending_tasks)
+            message = f"Pending tasks: {pending}"
+
+            lags = sorted(self.lag_monitor.lags)
+            self.lag_monitor.reset()
+            if lags:
+                mean_lag = sum(lags) / len(lags)
+                max_lag = lags[-1]
+                p99_lag = lags[int(len(lags) * 0.99)]
+                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={len(lags)})"
+
+            self.logger.info(message)
+
+    async def process_request(
         self,
         client_id: bytes,
         request_id_bytes: bytes,
@@ -107,16 +198,14 @@ class ZMQEnvServer(EnvServer):
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
-            # validate and route to handler
-            if request_type == "health":
-                request = HealthRequest.model_validate(raw)
-                response = await self._handle_health(request)
-            elif request_type == "run_rollout":
+            # Health requests are handled by the dedicated health process,
+            # so they should not arrive here.
+            if request_type == "run_rollout":
                 request = RunRolloutRequest.model_validate(raw)
-                response = await self._handle_run_rollout(request)
+                response = await self.handle_run_rollout(request)
             elif request_type == "run_group":
                 request = RunGroupRequest.model_validate(raw)
-                response = await self._handle_run_group(request)
+                response = await self.handle_run_group(request)
             else:
                 self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(
@@ -146,6 +235,12 @@ class ZMQEnvServer(EnvServer):
         )
 
         # send response: [client_id, request_id, response]
-        await self.socket.send_multipart(
-            [client_id, request_id.encode(), response_bytes]
-        )
+        try:
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(
+                f"Failed to send response for request {request_id[:7]}: {e} "
+                f"(client likely disconnected)"
+            )
