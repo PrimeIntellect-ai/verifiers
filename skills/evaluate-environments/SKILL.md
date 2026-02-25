@@ -43,6 +43,22 @@ model = "qwen/qwen3-32b-instruct"
 url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
 ```
+7. For multi-host setups, set `max_concurrent` on every variant to enable least-loaded dispatch:
+```toml
+[[endpoint]]
+endpoint_id = "qwen3-235b"
+model = "qwen/qwen3-235b"
+url = "https://fast-host.example/v1"
+key = "API_KEY"
+max_concurrent = 64
+
+[[endpoint]]
+endpoint_id = "qwen3-235b"
+model = "qwen/qwen3-235b"
+url = "https://slow-host.example/v1"
+key = "API_KEY"
+max_concurrent = 16
+```
 
 ## Publish Gate Before Large Runs
 1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
