@@ -628,6 +628,7 @@ class Environment(ABC):
         state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
 
         state["trajectory"] = []
+        state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
