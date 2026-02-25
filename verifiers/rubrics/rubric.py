@@ -401,16 +401,17 @@ class Rubric:
             if agent_rewards:
                 state["agent_rewards"] = agent_rewards
 
-            # Assign per-step rewards based on agent_id (for multi-agent)
+            # Assign per-step rewards and advantages based on agent_id (for multi-agent)
             for t in state["trajectory"]:
-                if t["advantage"] is None:
-                    t["advantage"] = state["advantage"]
                 if t["reward"] is None:
                     if agent_rewards:
                         agent_id = t.get("extras", {}).get("agent_id")
                         t["reward"] = agent_rewards.get(agent_id, state["reward"])
                     else:
                         t["reward"] = state["reward"]
+                # Compute per-agent advantage: agent's reward - shared baseline
+                if t["advantage"] is None:
+                    t["advantage"] = t["reward"] - avg_reward
 
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
