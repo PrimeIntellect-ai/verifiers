@@ -110,6 +110,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -145,6 +146,7 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_score_rollouts(score_rollouts)
+        self.pass_threshold = pass_threshold
 
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
@@ -626,6 +628,7 @@ class Environment(ABC):
         state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
 
         state["trajectory"] = []
+        state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
@@ -936,6 +939,7 @@ class Environment(ABC):
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
+            pass_threshold=self.pass_threshold,
         )
 
         single_client: Client | None = None

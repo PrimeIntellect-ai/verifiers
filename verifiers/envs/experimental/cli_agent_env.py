@@ -84,8 +84,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         self.run_command = run_command
         self.poll_interval = poll_interval
-        self.interception_port = interception_port
-        self.interception_url = interception_url
         self.timeout_seconds = timeout_seconds
         self.docker_image = docker_image
         self.start_command = start_command
@@ -99,7 +97,20 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
-        # Tunnel and interception server
+        self._interception_server: InterceptionServer | None = None
+        self._tunnel: Tunnel | None = None
+        self._tunnel_lock = asyncio.Lock()
+
+        self.init_interception(interception_port, interception_url)
+
+    def init_interception(
+        self,
+        interception_port: int = 8765,
+        interception_url: str | None = None,
+    ):
+        """Initialize interception server and tunnel resources. Call from __init__."""
+        self.interception_port = interception_port
+        self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._interception_server: InterceptionServer | None = InterceptionServer(
@@ -430,8 +441,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     logger.warning(f"Error stopping Prime Tunnel: {e}")
                 finally:
                     self._tunnel = None
-        server = self._require_interception_server()
-        await server.stop()
+        server = self._interception_server
+        if server is not None:
+            await server.stop()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -448,8 +460,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state.pop("background_job", None)
 
         rollout_id = state.get("rollout_id")
-        if rollout_id:
-            server = self._require_interception_server()
+        server = self._interception_server
+        if rollout_id and server is not None:
             server.unregister_rollout(rollout_id)
 
     @vf.stop
