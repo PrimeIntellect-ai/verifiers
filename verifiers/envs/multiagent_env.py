@@ -358,6 +358,8 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             handoff = self.parse_handoff(actor_id, last_msg, state)
         except vf.InvalidModelResponseError as e:
             env_response = self.on_invalid_handoff(actor_id, e, state)
+            if env_response is None:
+                return []
             return normalize_messages(
                 env_response, field_name="invalid_handoff_termination"
             )
