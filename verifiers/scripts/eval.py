@@ -10,7 +10,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
-import importlib.resources
+import importlib.util
 import json
 import logging
 from pathlib import Path
@@ -98,12 +98,24 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     module_name = env_id.replace("-", "_").split("/")[-1]
 
     try:
-        # read pyproject.toml from installed package
-        package_ref = importlib.resources.files(module_name)
-        pyproject_file = package_ref / "pyproject.toml"
+        spec = importlib.util.find_spec(module_name)
+        if spec is None:
+            raise ModuleNotFoundError(module_name)
+
+        if spec.submodule_search_locations:
+            base_dir = Path(next(iter(spec.submodule_search_locations)))
+        elif spec.origin:
+            base_dir = Path(spec.origin).parent
+        else:
+            logger.debug(
+                f"Could not determine module path for {module_name}; skipping eval defaults"
+            )
+            return defaults
+
+        pyproject_file = base_dir / "pyproject.toml"
 
         if not pyproject_file.is_file():
-            logger.debug(f"pyproject.toml not found in installed package {module_name}")
+            logger.debug(f"pyproject.toml not found for installed module {module_name}")
             return defaults
 
         with pyproject_file.open("rb") as f:

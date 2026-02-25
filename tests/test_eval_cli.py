@@ -1,5 +1,7 @@
 import argparse
+import importlib
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -114,6 +116,48 @@ def test_cli_single_env_id(monkeypatch, run_cli):
     configs = captured["configs"]
     assert len(configs) == 1
     assert configs[0].env_id == "env1"
+
+
+def test_get_env_eval_defaults_for_package_module(tmp_path: Path, monkeypatch):
+    module_name = f"pkg_env_{time.time_ns()}"
+    env_id = module_name.replace("_", "-")
+    package_dir = tmp_path / module_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "pyproject.toml").write_text(
+        "[tool.verifiers.eval]\nnum_examples = 20\nrollouts_per_example = 6\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        defaults = vf_eval.get_env_eval_defaults(env_id)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert defaults == {"num_examples": 20, "rollouts_per_example": 6}
+
+
+def test_get_env_eval_defaults_for_single_file_module(tmp_path: Path, monkeypatch):
+    module_name = f"single_file_env_{time.time_ns()}"
+    env_id = module_name.replace("_", "-")
+    (tmp_path / f"{module_name}.py").write_text(
+        "def load_environment():\n    return None\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.verifiers.eval]\nnum_examples = 20\nrollouts_per_example = 6\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        defaults = vf_eval.get_env_eval_defaults(env_id)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert defaults == {"num_examples": 20, "rollouts_per_example": 6}
 
 
 def test_cli_sampling_args_precedence_over_flags(monkeypatch, run_cli):
