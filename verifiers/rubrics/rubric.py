@@ -372,6 +372,16 @@ class Rubric:
                     score_value = scores[i]
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
+                    # Also add to each agent's rewards (for multi-agent compatibility)
+                    agent_ids = set(
+                        t.get("extras", {}).get("agent_id")
+                        for t in states[i]["trajectory"]
+                        if t.get("extras", {}).get("agent_id")
+                    )
+                    for agent_id in agent_ids:
+                        if agent_id not in aggregated_agent_rewards[i]:
+                            aggregated_agent_rewards[i][agent_id] = 0.0
+                        aggregated_agent_rewards[i][agent_id] += score_value * weight
             else:
                 reward_func = cast(RewardFunc, func)
                 score_tasks = [
@@ -387,6 +397,16 @@ class Rubric:
                     score_value = scores[i]
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
+                    # Also add to each agent's rewards (for multi-agent compatibility)
+                    agent_ids = set(
+                        t.get("extras", {}).get("agent_id")
+                        for t in states[i]["trajectory"]
+                        if t.get("extras", {}).get("agent_id")
+                    )
+                    for agent_id in agent_ids:
+                        if agent_id not in aggregated_agent_rewards[i]:
+                            aggregated_agent_rewards[i][agent_id] = 0.0
+                        aggregated_agent_rewards[i][agent_id] += score_value * weight
 
         # update states with aggregated results
         end_time = time.time()
