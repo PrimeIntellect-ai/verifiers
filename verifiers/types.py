@@ -489,6 +489,7 @@ class EvalConfig(BaseModel):
     rollouts_per_example: int
     max_concurrent: int
     independent_scoring: bool = False
+    human_debug: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
     # logging
