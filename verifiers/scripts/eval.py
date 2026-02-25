@@ -89,7 +89,7 @@ DEFAULT_PROVIDER = "prime"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
-    """Get eval config defaults from environment package's pyproject.toml.
+    """Get eval config defaults from the environment module's pyproject.toml.
 
     Returns dict with 'num_examples' and 'rollouts_per_example' keys if found,
     otherwise returns empty dict. All errors are silently handled.
@@ -136,7 +136,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
                 f"Loaded eval defaults from {module_name} pyproject.toml: {defaults}"
             )
     except ModuleNotFoundError:
-        logger.debug(f"Package {module_name} not installed")
+        logger.debug(f"Module {module_name} not installed")
     except Exception as e:
         logger.debug(
             f"Could not load eval defaults from {module_name} pyproject.toml: {e}"
