@@ -9,7 +9,11 @@ from typing import Any
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
 from verifiers.types import AssistantMessage, Messages, State, TrajectoryStep
-from verifiers.utils.message_utils import concat_messages, normalize_messages
+from verifiers.utils.message_utils import (
+    concat_messages,
+    content_to_text,
+    normalize_messages,
+)
 
 
 class MultiAgentEnv(vf.StatefulToolEnv):
@@ -98,12 +102,15 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         )
         return state
 
-    def _compose_system_prompt_with_handoff(
-        self, base_prompt: str, schema: dict[str, Any]
-    ) -> str:
+    def get_turn_contract_text(self, schema: dict[str, Any]) -> str:
+        """Return the instructional text appended to every actor's system prompt.
+
+        Override this to customize the turn-contract wording or to add extra
+        instructions (e.g. retry guidance, format hints) without replacing
+        the full system-prompt composition pipeline.
+        """
         schema_text = json.dumps(schema, indent=2, ensure_ascii=True, sort_keys=True)
         return (
-            f"{base_prompt}\n\n"
             "Turn contract:\n"
             "- You may call tools as needed during your turn.\n"
             "- To end your turn, output exactly one handoff block in this format:\n"
@@ -112,6 +119,11 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             "Handoff schema:\n"
             f"```json\n{schema_text}\n```"
         )
+
+    def _compose_system_prompt_with_handoff(
+        self, base_prompt: str, schema: dict[str, Any]
+    ) -> str:
+        return f"{base_prompt}\n\n{self.get_turn_contract_text(schema)}"
 
     def _normalize_handoff_schema(
         self, schema: dict[str, Any], actor_id: str
@@ -145,40 +157,12 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         return normalized
 
     def _schema_for_actor(self, actor_id: str, state: State) -> dict[str, Any]:
-        handoff_schemas = state.get("handoff_schemas", {})
-        if isinstance(handoff_schemas, dict):
-            schema = handoff_schemas.get(actor_id)
-            if isinstance(schema, dict):
-                return schema
-        schema = self._normalize_handoff_schema(
-            self.get_handoff_schema(actor_id, state), actor_id
-        )
-        if not isinstance(handoff_schemas, dict):
-            handoff_schemas = {}
-            state["handoff_schemas"] = handoff_schemas
-        handoff_schemas[actor_id] = schema
-        return schema
-
-    def _content_to_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text" and isinstance(part.get("text"), str):
-                        chunks.append(part["text"])
-                    continue
-                part_text = getattr(part, "text", None)
-                if isinstance(part_text, str):
-                    chunks.append(part_text)
-            return "\n".join(chunks).strip()
-        return ""
+        return state["handoff_schemas"][actor_id]
 
     def parse_handoff(
         self, actor_id: str, last_message: AssistantMessage, state: State
     ) -> dict[str, Any]:
-        message_text = self._content_to_text(last_message.content)
+        message_text = content_to_text(last_message.content)
         if message_text.strip() == "":
             raise vf.InvalidModelResponseError(
                 f"Actor '{actor_id}' produced no handoff block. Expected <handoff>{{...}}</handoff>."
@@ -204,12 +188,17 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             )
 
         schema = self._schema_for_actor(actor_id, state)
-        self._validate_handoff_payload(payload, schema, actor_id)
+        self.validate_handoff(payload, schema, actor_id)
         return payload
 
-    def _validate_handoff_payload(
+    def validate_handoff(
         self, payload: dict[str, Any], schema: dict[str, Any], actor_id: str
     ) -> None:
+        """Validate a parsed handoff *payload* against *schema*.
+
+        Override this to relax, extend, or replace the default JSON-schema
+        validation (e.g. to allow additional properties or custom constraints).
+        """
         properties = schema.get("properties", {})
         if not isinstance(properties, dict):
             raise vf.InvalidModelResponseError(
@@ -299,7 +288,8 @@ class MultiAgentEnv(vf.StatefulToolEnv):
                     f"Actor '{actor_id}' handoff key '{key}' must be <= {maximum}."
                 )
 
-    def _matches_json_type(self, value: Any, json_type: str) -> bool:
+    @staticmethod
+    def _matches_json_type(value: Any, json_type: str) -> bool:
         if json_type == "string":
             return isinstance(value, str)
         if json_type == "integer":
@@ -318,9 +308,15 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             return value is None
         return False
 
-    def _terminate_on_invalid_handoff(
+    def on_invalid_handoff(
         self, actor_id: str, error: vf.InvalidModelResponseError, state: State
     ) -> Messages | str | None:
+        """Handle an invalid handoff from *actor_id*.
+
+        The default implementation terminates the rollout and records the
+        failure in ``state``.  Subclasses can override this to retry, force a
+        default action, or apply custom recovery logic.
+        """
         reason = str(error)
         state["rollout_completed_cleanly"] = False
         state["malformed_handoff"] = {
@@ -361,23 +357,14 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         try:
             handoff = self.parse_handoff(actor_id, last_msg, state)
         except vf.InvalidModelResponseError as e:
-            env_response = self._terminate_on_invalid_handoff(actor_id, e, state)
+            env_response = self.on_invalid_handoff(actor_id, e, state)
             return normalize_messages(
                 env_response, field_name="invalid_handoff_termination"
             )
         env_response = await maybe_await(self.apply_handoff, actor_id, handoff, state)
 
-        handoff_history = state.get("handoff_history")
-        if not isinstance(handoff_history, list):
-            handoff_history = []
-            state["handoff_history"] = handoff_history
-        handoff_history.append({"actor": actor_id, "handoff": handoff})
-
-        last_handoff_by_actor = state.get("last_handoff_by_actor")
-        if not isinstance(last_handoff_by_actor, dict):
-            last_handoff_by_actor = {}
-            state["last_handoff_by_actor"] = last_handoff_by_actor
-        last_handoff_by_actor[actor_id] = handoff
+        state["handoff_history"].append({"actor": actor_id, "handoff": handoff})
+        state["last_handoff_by_actor"][actor_id] = handoff
 
         next_actor_id = self.get_next_actor_id(state)
         system_prompts = state.get("system_prompts", {})

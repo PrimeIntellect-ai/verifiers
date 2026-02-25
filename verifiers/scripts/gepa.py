@@ -559,7 +559,8 @@ def run_gepa_optimization(
             logger.debug(f"Results saved to {run_dir}")
 
         # Set result info for final summary
-        best_prompt = result.best_candidate.get("system_prompt", "")  # type: ignore[unresolved-attribute]
+        bc = result.best_candidate  # type: ignore[unresolved-attribute]
+        best_prompt = bc.get("system_prompt", "") if isinstance(bc, dict) else bc
         display.set_result(best_prompt=best_prompt, save_path=save_path)
 
     return result

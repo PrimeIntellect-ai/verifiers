@@ -19,6 +19,30 @@ from verifiers.types import (
 )
 
 
+def content_to_text(content: Any, *, separator: str = "\n") -> str:
+    """Extract plain text from message content (string, list of parts, or other).
+
+    Handles both raw dicts (``{"type": "text", "text": "..."}``)) and typed
+    Pydantic content-part objects that expose a ``text`` attribute.
+
+    *separator* is placed between text chunks when *content* is a list.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    chunks.append(part["text"])
+                continue
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str):
+                chunks.append(part_text)
+        return separator.join(chunks).strip()
+    return ""
+
+
 def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
     """Convert a raw content-part dict to a typed content part when possible."""
     part_type = part.get("type")

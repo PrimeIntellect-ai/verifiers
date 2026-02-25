@@ -24,6 +24,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from verifiers.types import Response
+from verifiers.utils.message_utils import content_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -363,22 +364,6 @@ def create_empty_completion(model: str) -> ChatCompletion:
 # Logging helpers
 
 
-def _response_content_to_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                text = part.get("text")
-            else:
-                text = getattr(part, "text", None)
-            if isinstance(text, str):
-                text_parts.append(text)
-        return "".join(text_parts)
-    return ""
-
-
 def serialize_intercept_response(response: Any) -> dict[str, Any]:
     """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
     if isinstance(response, Response):
@@ -398,7 +383,7 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
 
         message_payload: dict[str, Any] = {
             "role": "assistant",
-            "content": _response_content_to_text(message.content),
+            "content": content_to_text(message.content, separator=""),
         }
         if tool_calls:
             message_payload["tool_calls"] = tool_calls

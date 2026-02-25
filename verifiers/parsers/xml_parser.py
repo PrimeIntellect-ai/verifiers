@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import Messages
+from verifiers.utils.message_utils import content_to_text
 
 
 class XMLParser(Parser):
@@ -98,10 +99,11 @@ class XMLParser(Parser):
                 return getattr(parsed, self.answer_field)
         else:
             for msg in reversed(self.get_assistant_messages(completion)):
-                content = self._content_to_text(
+                content = content_to_text(
                     msg.get("content", "")
                     if isinstance(msg, dict)
-                    else (msg.content or "")
+                    else (msg.content or ""),
+                    separator=" ",
                 )
                 parsed = self.parse(content)
                 if (
@@ -144,10 +146,11 @@ class XMLParser(Parser):
             # Calculate format adherence for each message
             format_scores = []
             for msg in model_messages:
-                content = self._content_to_text(
+                content = content_to_text(
                     msg.get("content", "")
                     if isinstance(msg, dict)
-                    else (msg.content or "")
+                    else (msg.content or ""),
+                    separator=" ",
                 )
                 parsed = self.parse(content)
                 parsed_no_strip = self.parse(content, strip=False)

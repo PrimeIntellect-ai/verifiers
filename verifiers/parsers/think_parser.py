@@ -2,6 +2,7 @@ from typing import Callable
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import Messages
+from verifiers.utils.message_utils import content_to_text
 
 
 class ThinkParser(Parser):
@@ -46,10 +47,11 @@ class ThinkParser(Parser):
                 return 0.0
             return sum(
                 follows_format(
-                    self._content_to_text(
+                    content_to_text(
                         m.get("content", "")
                         if isinstance(m, dict)
-                        else (m.content or "")
+                        else (m.content or ""),
+                        separator=" ",
                     )
                 )
                 for m in messages

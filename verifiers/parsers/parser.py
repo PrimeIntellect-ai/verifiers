@@ -2,6 +2,7 @@ import logging
 from typing import Any, Callable
 
 from verifiers.types import Messages
+from verifiers.utils.message_utils import content_to_text
 
 
 class Parser:
@@ -24,25 +25,6 @@ class Parser:
         if isinstance(message, dict):
             return message.get(field, default)
         return getattr(message, field, default)
-
-    def _content_to_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    part_type = part.get("type")
-                    if part_type == "text":
-                        text = part.get("text")
-                        if isinstance(text, str):
-                            chunks.append(text)
-                    continue
-                text_attr = getattr(part, "text", None)
-                if isinstance(text_attr, str):
-                    chunks.append(text_attr)
-            return " ".join(chunks).strip()
-        return ""
 
     def get_assistant_messages(self, completion: Messages) -> Messages:
         """Helper function to extract assistant messages from a completion."""
@@ -72,7 +54,7 @@ class Parser:
             if not assistant_messages:
                 return None
             ans = self._message_field(assistant_messages[-1], "content", "") or ""
-            return self.parse(self._content_to_text(ans))
+            return self.parse(content_to_text(ans, separator=" "))
 
     def get_format_reward_func(self) -> Callable:
         """
