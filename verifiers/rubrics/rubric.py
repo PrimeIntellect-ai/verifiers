@@ -423,13 +423,16 @@ class Rubric:
         # DEBUG
         print(f"[DEBUG] has_multiagent={has_multiagent}, num_states={num_states}")
         print(f"[DEBUG] aggregated_agent_rewards={aggregated_agent_rewards[:3]}")
+        # DEBUG: check state keys
+        if states:
+            print(f"[DEBUG] state keys={list(states[0].keys())}")
         # DEBUG: inspect trajectory structure
         if states and states[0].get("trajectory"):
             traj = states[0]["trajectory"]
             print(f"[DEBUG] trajectory len={len(traj)}")
             for idx, t in enumerate(traj):
                 print(
-                    f"[DEBUG] step {idx}: agent_id={t.get('extras', {}).get('agent_id')}, completion={t.get('completion')}"
+                    f"[DEBUG] step {idx}: agent_id={t.get('extras', {}).get('agent_id')}, completion={t.get('completion')}, extras={t.get('extras')}"
                 )
 
         if has_multiagent:
