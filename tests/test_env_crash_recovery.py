@@ -4,6 +4,7 @@ import asyncio
 import time
 from unittest.mock import patch
 
+import msgpack
 import pytest
 
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
@@ -92,7 +93,16 @@ class TestRetryOnServerError:
 
         attempt_count = 0
 
-        async def mock_send(*args, **kwargs):
+        async def mock_send(frames, *args, **kwargs):
+            # Ignore cancel messages sent by send_cancel()
+            if len(frames) == 2:
+                try:
+                    payload = msgpack.unpackb(frames[1], raw=False)
+                    if payload.get("request_type") == "cancel":
+                        return
+                except Exception:
+                    pass
+
             nonlocal attempt_count
             attempt_count += 1
 

@@ -16,6 +16,7 @@ from verifiers.workers.server.zmq_env_server import derive_health_address
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponseT,
+    CancelRequest,
     HealthRequest,
     HealthResponse,
     PendingRequest,
@@ -167,6 +168,7 @@ class ZMQEnvClient(EnvClient):
 
             # Collect metadata before clearing
             cancelled_requests = list(self.pending_requests.values())
+            request_ids = [r.request_id for r in cancelled_requests]
 
             for pending_req in cancelled_requests:
                 if not pending_req.future.done():
@@ -178,7 +180,35 @@ class ZMQEnvClient(EnvClient):
             # Clear tracking dict
             self.pending_requests.clear()
 
+        # Notify server to stop work on these requests (best-effort)
+        await self.send_cancel(request_ids)
+
         return cancelled_requests
+
+    async def send_cancel(self, request_ids: list[str]) -> None:
+        """Send a cancel message to the server for the given request IDs.
+
+        Fire-and-forget: failures are logged but do not raise.
+        """
+        if not request_ids:
+            return
+        try:
+            cancel_req = CancelRequest(cancel_request_ids=request_ids)
+            payload = cast(
+                bytes,
+                msgpack.packb(
+                    cancel_req.model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
+            cancel_id = uuid.uuid4().hex
+            await self.socket.send_multipart([cancel_id.encode(), payload])
+            self.logger.debug(
+                f"Sent cancel for {len(request_ids)} request(s) to env server {self.name}"
+            )
+        except Exception as e:
+            self.logger.debug(f"Failed to send cancel to env server {self.name}: {e}")
 
     async def receive_loop(self):
         """Continuously receive responses from environment servers."""
@@ -290,6 +320,13 @@ class ZMQEnvClient(EnvClient):
 
             try:
                 raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
+            except asyncio.CancelledError:
+                # Task was cancelled externally (e.g. scheduler timeout).
+                # Clean up our pending entry and tell the server to stop work.
+                async with self.pending_lock:
+                    self.pending_requests.pop(request_id, None)
+                await self.send_cancel([request_id])
+                raise
             except asyncio.TimeoutError:
                 # Clean up on timeout
                 async with self.pending_lock:

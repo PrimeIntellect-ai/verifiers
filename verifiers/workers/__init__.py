@@ -3,6 +3,7 @@ from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponse,
+    CancelRequest,
     HealthRequest,
     HealthResponse,
     RunGroupRequest,
@@ -15,6 +16,7 @@ __all__ = [
     # types
     "BaseRequest",
     "BaseResponse",
+    "CancelRequest",
     "HealthRequest",
     "HealthResponse",
     "RunRolloutRequest",

@@ -11,6 +11,7 @@ from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
     BaseResponse,
+    CancelRequest,
     RunGroupRequest,
     RunRolloutRequest,
 )
@@ -70,6 +71,9 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
+        # Map request_id → asyncio.Task for cancel support
+        self.request_tasks: dict[str, asyncio.Task] = {}
+
         # Health check runs in a separate process (immune to env workload)
         self.stop_health = mp.Event()
         self.health_process: mp.Process | None = None
@@ -121,14 +125,34 @@ class ZMQEnvServer(EnvServer):
                         )
                         continue
 
-                    client_id, request_id, payload_bytes = frames
+                    client_id, request_id_bytes, payload_bytes = frames
+                    request_id = request_id_bytes.decode()
+
+                    # Peek at request type to handle cancels inline
+                    try:
+                        raw = msgpack.unpackb(payload_bytes, raw=False)
+                    except Exception:
+                        self.logger.warning(
+                            f"Failed to deserialize message {request_id[:7]}"
+                        )
+                        continue
+
+                    if raw.get("request_type") == "cancel":
+                        self._handle_cancel(raw)
+                        continue
 
                     # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
-                        self.process_request(client_id, request_id, payload_bytes)
+                        self.process_request(client_id, request_id, raw)
                     )
                     self.pending_tasks.add(task)
                     task.add_done_callback(self.pending_tasks.discard)
+
+                    # Track request_id → task for cancel support
+                    self.request_tasks[request_id] = task
+                    task.add_done_callback(
+                        lambda _t, _rid=request_id: self.request_tasks.pop(_rid, None)
+                    )
 
                 except asyncio.CancelledError:
                     break
@@ -159,6 +183,7 @@ class ZMQEnvServer(EnvServer):
                 task.cancel()
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
             self.pending_tasks.clear()
+            self.request_tasks.clear()
 
         await self.close_cached_clients()
 
@@ -183,18 +208,29 @@ class ZMQEnvServer(EnvServer):
 
             self.logger.info(message)
 
+    def _handle_cancel(self, raw: dict) -> None:
+        """Cancel server-side tasks for the given request IDs."""
+        try:
+            cancel_req = CancelRequest.model_validate(raw)
+        except Exception as e:
+            self.logger.warning(f"Invalid cancel request: {e}")
+            return
+
+        for rid in cancel_req.cancel_request_ids:
+            task = self.request_tasks.pop(rid, None)
+            if task is not None and not task.done():
+                task.cancel()
+                self.logger.debug(f"Cancelled server task for request {rid[:7]}")
+
     async def process_request(
         self,
         client_id: bytes,
-        request_id_bytes: bytes,
-        payload_bytes: bytes,
+        request_id: str,
+        raw: dict,
     ):
-        request_id = request_id_bytes.decode()
         response: BaseResponse
 
         try:
-            # deserialize request
-            raw = msgpack.unpackb(payload_bytes, raw=False)
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
