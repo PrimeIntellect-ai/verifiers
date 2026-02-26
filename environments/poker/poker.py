@@ -27,12 +27,16 @@ import random
 import re
 from collections import Counter
 from itertools import combinations
+
 from datasets import Dataset
 
-from verifiers import Actor, MultiAgentEnv, MultiAgentRubric, Protocol
+from verifiers.agent import Agent
+from verifiers.envs.multiagent_env import MultiAgentEnv
+from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
+from verifiers.taskset import TaskSet
 from verifiers.types import Messages, State
 from verifiers.utils.client_utils import get_actor_client
-import verifiers as vf
+
 
 # =============================================================================
 # Model Configuration
@@ -68,51 +72,35 @@ def create_deck() -> list[str]:
 
 
 def card_rank(card: str) -> int:
-    """Get numeric rank value (2-14)."""
     return RANK_VALUES[card[0]]
 
 
 def card_suit(card: str) -> str:
-    """Get suit character."""
     return card[1]
 
 
 def format_cards(cards: list[str]) -> str:
-    """Format cards for display."""
     return ", ".join(cards) if cards else "None"
 
 
 # =============================================================================
-# Hand Evaluation (Simple built-in evaluator)
+# Hand Evaluation
 # =============================================================================
 
-# Hand rankings (higher = better)
 HAND_RANKS = {
-    "high_card": 1,
-    "pair": 2,
-    "two_pair": 3,
-    "three_of_a_kind": 4,
-    "straight": 5,
-    "flush": 6,
-    "full_house": 7,
-    "four_of_a_kind": 8,
-    "straight_flush": 9,
-    "royal_flush": 10,
+    "high_card": 1, "pair": 2, "two_pair": 3, "three_of_a_kind": 4,
+    "straight": 5, "flush": 6, "full_house": 7, "four_of_a_kind": 8,
+    "straight_flush": 9, "royal_flush": 10,
 }
 
 
 def evaluate_five_cards(cards: list[str]) -> tuple[int, list[int]]:
-    """
-    Evaluate a 5-card hand.
-    Returns (hand_rank, tiebreakers) where higher is better.
-    """
     ranks = sorted([card_rank(c) for c in cards], reverse=True)
     suits = [card_suit(c) for c in cards]
     rank_counts = Counter(ranks)
 
     is_flush = len(set(suits)) == 1
 
-    # Check for straight (including A-2-3-4-5 wheel)
     unique_ranks = sorted(set(ranks), reverse=True)
     is_straight = False
     straight_high = 0
@@ -121,17 +109,14 @@ def evaluate_five_cards(cards: list[str]) -> tuple[int, list[int]]:
         if unique_ranks[0] - unique_ranks[4] == 4:
             is_straight = True
             straight_high = unique_ranks[0]
-        # Wheel: A-2-3-4-5
         elif unique_ranks == [14, 5, 4, 3, 2]:
             is_straight = True
-            straight_high = 5  # 5-high straight
+            straight_high = 5
 
-    # Get counts for pair/trips/etc detection
     counts = sorted(rank_counts.values(), reverse=True)
 
-    # Determine hand type
     if is_straight and is_flush:
-        if straight_high == 14 and 13 in ranks:  # Royal flush
+        if straight_high == 14 and 13 in ranks:
             return (HAND_RANKS["royal_flush"], [14])
         return (HAND_RANKS["straight_flush"], [straight_high])
 
@@ -170,20 +155,14 @@ def evaluate_five_cards(cards: list[str]) -> tuple[int, list[int]]:
 
 
 def evaluate_hand(hole_cards: list[str], community: list[str]) -> tuple[int, list[int], str]:
-    """
-    Find best 5-card hand from 7 cards.
-    Returns (hand_rank, tiebreakers, hand_name).
-    """
     all_cards = hole_cards + community
     best_score = (0, [])
     best_name = "high_card"
 
-    # Try all 21 combinations of 5 cards from 7
     for five_cards in combinations(all_cards, 5):
         score = evaluate_five_cards(list(five_cards))
         if score > best_score:
             best_score = score
-            # Find hand name
             for name, rank in HAND_RANKS.items():
                 if rank == score[0]:
                     best_name = name
@@ -195,10 +174,6 @@ def evaluate_hand(hole_cards: list[str], community: list[str]) -> tuple[int, lis
 def compare_hands(
     hole1: list[str], hole2: list[str], community: list[str]
 ) -> tuple[str, str, str]:
-    """
-    Compare two hands.
-    Returns (winner, hand1_name, hand2_name) where winner is "player1", "player2", or "tie".
-    """
     eval1 = evaluate_hand(hole1, community)
     eval2 = evaluate_hand(hole2, community)
 
@@ -214,7 +189,437 @@ def compare_hands(
 
 
 # =============================================================================
-# Actors
+# Rubric (Scoring)
+# =============================================================================
+
+def create_rubric() -> MultiAgentRubric:
+    """Create rubric based on chip profit/loss."""
+    rubric = MultiAgentRubric()
+
+    def player_reward(actor_id: str):
+        def reward_func(state: State, **kwargs) -> float:
+            extras = state.get("extras", {})
+            starting = extras.get("starting_chips", 1000)
+            final = extras.get("chips", {}).get(actor_id, starting)
+            return (final - starting) / starting
+        return reward_func
+
+    def hands_played_metric(state: State, **kwargs) -> float:
+        return float(state.get("extras", {}).get("hands_played", 0))
+
+    def showdowns_metric(state: State, **kwargs) -> float:
+        reason = state.get("extras", {}).get("win_reason", "")
+        return 0.0 if "fold" in reason else 1.0
+
+    rubric.add_actor_reward_func("player1", player_reward("player1"), weight=1.0)
+    rubric.add_actor_reward_func("player2", player_reward("player2"), weight=1.0)
+    rubric.add_reward_func(hands_played_metric, weight=0.0)
+    rubric.add_reward_func(showdowns_metric, weight=0.0)
+
+    return rubric
+
+
+# =============================================================================
+# TaskSet: the game
+# =============================================================================
+
+class PokerTask(TaskSet):
+    """
+    Heads-Up No-Limit Texas Hold'em.
+
+    All game logic lives here: dealing, betting, phases, showdown.
+    MultiAgentEnv just calls build_prompt / on_turn_complete / should_stop.
+    """
+
+    def __init__(
+        self,
+        num_hands: int = 1,
+        max_actions_per_hand: int = 20,
+        starting_chips: int = 1000,
+        small_blind: int = 5,
+        big_blind: int = 10,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.num_hands = num_hands
+        self.max_actions_per_hand = max_actions_per_hand
+        self.starting_chips = starting_chips
+        self.small_blind = small_blind
+        self.big_blind = big_blind
+
+    # ---- Turn Management ----
+
+    def get_initial_role(self, state: State) -> str:
+        return state["extras"]["dealer"]
+
+    def get_next_role(self, state: State) -> str:
+        current = state["extras"].get("current_actor_id")
+        next_player = "player2" if current == "player1" else "player1"
+        if next_player in state["extras"]["folded"]:
+            return current
+        return next_player
+
+    # ---- State Setup ----
+
+    async def setup_state(self, state: State) -> State:
+        state["extras"]["hands_played"] = 0
+        state["extras"]["starting_chips"] = self.starting_chips
+        state["extras"]["chips"] = {
+            "player1": self.starting_chips,
+            "player2": self.starting_chips,
+        }
+        state["extras"]["dealer"] = "player1"
+        await self._start_new_hand(state)
+        return state
+
+    async def _start_new_hand(self, state: State) -> None:
+        extras = state["extras"]
+        extras["deck"] = create_deck()
+        extras["hole_cards"] = {
+            "player1": [extras["deck"].pop(), extras["deck"].pop()],
+            "player2": [extras["deck"].pop(), extras["deck"].pop()],
+        }
+        extras["community_cards"] = []
+        extras["pot"] = 0
+        extras["current_bet"] = 0
+        extras["bets_this_round"] = {"player1": 0, "player2": 0}
+        extras["phase"] = "preflop"
+        extras["folded"] = []
+        extras["actions_this_hand"] = 0
+        extras["actions_this_round"] = {"player1": 0, "player2": 0}
+        extras["last_aggressor"] = None
+
+        dealer = extras["dealer"]
+        non_dealer = "player2" if dealer == "player1" else "player1"
+
+        sb_amount = min(self.small_blind, extras["chips"][dealer])
+        extras["chips"][dealer] -= sb_amount
+        extras["bets_this_round"][dealer] = sb_amount
+        extras["pot"] += sb_amount
+
+        bb_amount = min(self.big_blind, extras["chips"][non_dealer])
+        extras["chips"][non_dealer] -= bb_amount
+        extras["bets_this_round"][non_dealer] = bb_amount
+        extras["pot"] += bb_amount
+        extras["current_bet"] = bb_amount
+
+    # ---- Prompts ----
+
+    async def build_prompt(self, role: str, state: State) -> Messages:
+        extras = state["extras"]
+        my_cards = extras["hole_cards"][role]
+        community = extras["community_cards"]
+        pot = extras["pot"]
+        my_chips = extras["chips"][role]
+        opponent_id = "player2" if role == "player1" else "player1"
+        opponent_chips = extras["chips"][opponent_id]
+        to_call = extras["current_bet"] - extras["bets_this_round"][role]
+        phase = extras["phase"].upper()
+        hand_num = extras["hands_played"] + 1
+        position = "Dealer (Small Blind)" if role == extras["dealer"] else "Big Blind"
+
+        situation = (
+            f"=== HAND {hand_num} - {phase} ===\n"
+            f"Position: {position}\n\n"
+            f"Your hole cards: {format_cards(my_cards)}\n"
+            f"Community cards: {format_cards(community)}\n\n"
+            f"Pot: {pot}\n"
+            f"Your chips: {my_chips}\n"
+            f"Opponent chips: {opponent_chips}\n\n"
+            f"Current bet: {extras['current_bet']}\n"
+            f"Your bet this round: {extras['bets_this_round'][role]}\n"
+            f"To call: {to_call}\n\n"
+            f"Your action?"
+        )
+
+        return [{"role": "user", "content": situation}]
+
+    # ---- Action Parsing ----
+
+    def _parse_action(self, text: str, state: State, actor_id: str) -> dict:
+        try:
+            clean = text.strip()
+            if "```" in clean:
+                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, re.DOTALL)
+                if match:
+                    clean = match.group(1)
+
+            json_match = re.search(r"\{[^}]+\}", clean)
+            if json_match:
+                clean = json_match.group(0)
+
+            action = json.loads(clean)
+
+            if "action" not in action:
+                raise ValueError("Missing 'action' key")
+
+            action_type = action["action"].lower()
+            valid_actions = ["fold", "check", "call", "raise", "allin"]
+            if action_type not in valid_actions:
+                raise ValueError(f"Invalid action: {action_type}")
+
+            if action_type == "raise":
+                if "amount" not in action:
+                    raise ValueError("Raise requires 'amount'")
+                action["amount"] = int(action["amount"])
+
+            action["action"] = action_type
+            return action
+
+        except (json.JSONDecodeError, ValueError, KeyError):
+            return self._get_fallback_action(state, actor_id)
+
+    def _get_fallback_action(self, state: State, actor_id: str) -> dict:
+        to_call = state["extras"]["current_bet"] - state["extras"]["bets_this_round"][actor_id]
+        if to_call == 0:
+            return {"action": "check"}
+        else:
+            return {"action": "fold"}
+
+    def _validate_and_adjust_action(self, action: dict, state: State, actor_id: str) -> dict:
+        extras = state["extras"]
+        my_chips = extras["chips"][actor_id]
+        to_call = extras["current_bet"] - extras["bets_this_round"][actor_id]
+        action_type = action["action"]
+
+        if action_type == "check" and to_call > 0:
+            if my_chips >= to_call:
+                return {"action": "call"}
+            else:
+                return {"action": "allin"}
+
+        if action_type == "call":
+            if my_chips <= to_call:
+                return {"action": "allin"}
+            return action
+
+        if action_type == "raise":
+            amount = action.get("amount", 0)
+            min_raise = extras["current_bet"] + self.big_blind
+            max_raise = my_chips + extras["bets_this_round"][actor_id]
+
+            if amount >= max_raise:
+                return {"action": "allin"}
+            if amount < min_raise:
+                amount = min_raise
+            if amount > max_raise:
+                amount = max_raise
+
+            return {"action": "raise", "amount": amount}
+
+        return action
+
+    # ---- Game Logic ----
+
+    async def on_turn_complete(self, state: State) -> None:
+        if not state["trajectory"]:
+            return
+
+        last_step = state["trajectory"][-1]
+        last_completion = last_step.get("completion", [])
+        if not last_completion:
+            return
+
+        actor_id = last_step.get("extras", {}).get("actor_id")
+        if not actor_id:
+            return
+
+        content = last_completion[-1].get("content", "") if isinstance(last_completion[-1], dict) else str(last_completion[-1])
+        action = self._parse_action(content, state, actor_id)
+        action = self._validate_and_adjust_action(action, state, actor_id)
+
+        extras = state["extras"]
+        extras["actions_this_hand"] += 1
+        extras["actions_this_round"][actor_id] += 1
+
+        await self._process_action(action, state, actor_id)
+
+        if self._is_betting_round_complete(state):
+            await self._advance_phase(state)
+
+    async def _process_action(self, action: dict, state: State, actor_id: str) -> None:
+        extras = state["extras"]
+        action_type = action["action"]
+
+        if action_type == "fold":
+            extras["folded"].append(actor_id)
+            opponent = "player2" if actor_id == "player1" else "player1"
+            extras["chips"][opponent] += extras["pot"]
+            extras["pot"] = 0
+            extras["winner"] = opponent
+            extras["win_reason"] = "fold"
+            extras["phase"] = "complete"
+
+        elif action_type == "check":
+            pass
+
+        elif action_type == "call":
+            to_call = extras["current_bet"] - extras["bets_this_round"][actor_id]
+            call_amount = min(to_call, extras["chips"][actor_id])
+            extras["chips"][actor_id] -= call_amount
+            extras["bets_this_round"][actor_id] += call_amount
+            extras["pot"] += call_amount
+
+        elif action_type == "raise":
+            amount = action["amount"]
+            current_bet = extras["bets_this_round"][actor_id]
+            additional = amount - current_bet
+            additional = min(additional, extras["chips"][actor_id])
+
+            extras["chips"][actor_id] -= additional
+            extras["bets_this_round"][actor_id] += additional
+            extras["pot"] += additional
+            extras["current_bet"] = extras["bets_this_round"][actor_id]
+            extras["last_aggressor"] = actor_id
+
+            opponent = "player2" if actor_id == "player1" else "player1"
+            extras["actions_this_round"][opponent] = 0
+
+        elif action_type == "allin":
+            all_in_amount = extras["chips"][actor_id]
+            extras["bets_this_round"][actor_id] += all_in_amount
+            extras["pot"] += all_in_amount
+            extras["chips"][actor_id] = 0
+
+            if extras["bets_this_round"][actor_id] > extras["current_bet"]:
+                extras["current_bet"] = extras["bets_this_round"][actor_id]
+                extras["last_aggressor"] = actor_id
+                opponent = "player2" if actor_id == "player1" else "player1"
+                extras["actions_this_round"][opponent] = 0
+
+    def _is_betting_round_complete(self, state: State) -> bool:
+        extras = state["extras"]
+
+        if extras["phase"] == "complete" or extras["folded"]:
+            return False
+
+        p1_actions = extras["actions_this_round"]["player1"]
+        p2_actions = extras["actions_this_round"]["player2"]
+
+        if p1_actions == 0 or p2_actions == 0:
+            return False
+
+        p1_bet = extras["bets_this_round"]["player1"]
+        p2_bet = extras["bets_this_round"]["player2"]
+        p1_chips = extras["chips"]["player1"]
+        p2_chips = extras["chips"]["player2"]
+
+        bets_equal = p1_bet == p2_bet
+        p1_allin = p1_chips == 0
+        p2_allin = p2_chips == 0
+
+        return bets_equal or p1_allin or p2_allin
+
+    async def _advance_phase(self, state: State) -> None:
+        extras = state["extras"]
+        current_phase = extras["phase"]
+
+        extras["bets_this_round"] = {"player1": 0, "player2": 0}
+        extras["current_bet"] = 0
+        extras["actions_this_round"] = {"player1": 0, "player2": 0}
+        extras["last_aggressor"] = None
+
+        phase_order = ["preflop", "flop", "turn", "river", "showdown"]
+        current_idx = phase_order.index(current_phase)
+        next_phase = phase_order[current_idx + 1]
+        extras["phase"] = next_phase
+
+        if next_phase == "flop":
+            extras["deck"].pop()
+            extras["community_cards"].extend([
+                extras["deck"].pop(), extras["deck"].pop(), extras["deck"].pop(),
+            ])
+        elif next_phase == "turn":
+            extras["deck"].pop()
+            extras["community_cards"].append(extras["deck"].pop())
+        elif next_phase == "river":
+            extras["deck"].pop()
+            extras["community_cards"].append(extras["deck"].pop())
+        elif next_phase == "showdown":
+            await self._resolve_showdown(state)
+
+        if next_phase in ["flop", "turn", "river"]:
+            dealer = extras["dealer"]
+            non_dealer = "player2" if dealer == "player1" else "player1"
+            if non_dealer not in extras["folded"]:
+                extras["current_actor_id"] = non_dealer
+
+    async def _force_showdown(self, state: State) -> None:
+        extras = state["extras"]
+        while len(extras["community_cards"]) < 5:
+            if extras["deck"]:
+                extras["deck"].pop()
+            if extras["deck"]:
+                extras["community_cards"].append(extras["deck"].pop())
+        extras["phase"] = "showdown"
+        await self._resolve_showdown(state)
+
+    async def _resolve_showdown(self, state: State) -> None:
+        extras = state["extras"]
+        p1_hole = extras["hole_cards"]["player1"]
+        p2_hole = extras["hole_cards"]["player2"]
+        community = extras["community_cards"]
+
+        winner, p1_hand, p2_hand = compare_hands(p1_hole, p2_hole, community)
+
+        extras["player1_hand"] = {"hole_cards": p1_hole, "hand_name": p1_hand.replace("_", " ").title()}
+        extras["player2_hand"] = {"hole_cards": p2_hole, "hand_name": p2_hand.replace("_", " ").title()}
+
+        if winner == "tie":
+            half = extras["pot"] // 2
+            extras["chips"]["player1"] += half
+            extras["chips"]["player2"] += extras["pot"] - half
+            extras["winner"] = "tie"
+            extras["win_reason"] = "split pot"
+        else:
+            extras["chips"][winner] += extras["pot"]
+            extras["winner"] = winner
+            loser = "player2" if winner == "player1" else "player1"
+            winner_hand = extras[f"{winner}_hand"]["hand_name"]
+            loser_hand = extras[f"{loser}_hand"]["hand_name"]
+            extras["win_reason"] = f"{winner_hand} beats {loser_hand}"
+
+        extras["pot"] = 0
+        extras["hands_played"] += 1
+
+        if extras["hands_played"] < self.num_hands:
+            if extras["chips"]["player1"] > 0 and extras["chips"]["player2"] > 0:
+                extras["dealer"] = "player2" if extras["dealer"] == "player1" else "player1"
+                await self._start_new_hand(state)
+                return
+
+        extras["phase"] = "complete"
+
+    async def should_stop(self, state: State) -> bool:
+        extras = state.get("extras", {})
+        if len(extras.get("folded", [])) > 0:
+            return True
+        if extras.get("phase") == "complete":
+            return True
+        if extras.get("actions_this_hand", 0) >= self.max_actions_per_hand:
+            await self._force_showdown(state)
+            return True
+        return False
+
+    async def on_game_end(self, state: State) -> None:
+        extras = state["extras"]
+        p1_chips = extras["chips"]["player1"]
+        p2_chips = extras["chips"]["player2"]
+
+        if p1_chips > p2_chips:
+            extras["session_winner"] = "player1"
+        elif p2_chips > p1_chips:
+            extras["session_winner"] = "player2"
+        else:
+            extras["session_winner"] = "tie"
+
+        starting = extras["starting_chips"]
+        extras["player1_profit"] = p1_chips - starting
+        extras["player2_profit"] = p2_chips - starting
+
+
+# =============================================================================
+# Agents
 # =============================================================================
 
 AGGRESSIVE_PROMPT = """You are an AGGRESSIVE poker player in Heads-Up No-Limit Texas Hold'em.
@@ -263,18 +668,18 @@ On your turn, output ONLY a JSON object with your action:
 
 Output ONLY the JSON, nothing else."""
 
-PLAYER1 = Actor(
+PLAYER1 = Agent(
     id="player1",
-    system_prompt=CONSERVATIVE_PROMPT,  # Small model plays smart
+    system_prompt=CONSERVATIVE_PROMPT,
     max_tokens=50,
     is_trainable=True,
     model=player1_model,
     client=player1_client,
 )
 
-PLAYER2 = Actor(
+PLAYER2 = Agent(
     id="player2",
-    system_prompt=AGGRESSIVE_PROMPT,  # Big model plays aggressive
+    system_prompt=AGGRESSIVE_PROMPT,
     max_tokens=50,
     is_trainable=True,
     model=player2_model,
@@ -283,563 +688,10 @@ PLAYER2 = Actor(
 
 
 # =============================================================================
-# Environment
-# =============================================================================
-
-class PokerEnv(MultiAgentEnv):
-    """Heads-Up No-Limit Texas Hold'em."""
-
-    name = "poker"
-    actors = ["player1", "player2"]
-
-    def __init__(
-        self,
-        num_hands: int = 1,
-        max_actions_per_hand: int = 20,
-        starting_chips: int = 1000,
-        small_blind: int = 5,
-        big_blind: int = 10,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.num_hands = num_hands
-        self.max_actions_per_hand = max_actions_per_hand
-        self.starting_chips = starting_chips
-        self.small_blind = small_blind
-        self.big_blind = big_blind
-
-    # -------------------------------------------------------------------------
-    # Turn Management
-    # -------------------------------------------------------------------------
-
-    def get_initial_actor(self, state: State) -> str:
-        """Dealer (small blind) acts first preflop in heads-up."""
-        return state["extras"]["dealer"]
-
-    def get_next_actor(self, state: State) -> str:
-        """Alternate between players, skip folded."""
-        current = state["extras"]["current_actor_id"]
-        next_actor = "player2" if current == "player1" else "player1"
-
-        # Skip if folded
-        if next_actor in state["extras"]["folded"]:
-            return current
-        return next_actor
-
-    # -------------------------------------------------------------------------
-    # Stop Conditions
-    # -------------------------------------------------------------------------
-
-    @vf.stop
-    async def player_folded(self, state: State) -> bool:
-        """One player folded - hand over."""
-        return len(state["extras"]["folded"]) > 0
-
-    @vf.stop
-    async def hand_complete(self, state: State) -> bool:
-        """Showdown complete or all hands played."""
-        return state["extras"]["phase"] == "complete"
-
-    @vf.stop
-    async def max_actions_hit(self, state: State) -> bool:
-        """Safety limit - force showdown."""
-        if state["extras"]["actions_this_hand"] >= self.max_actions_per_hand:
-            await self._force_showdown(state)
-            return True
-        return False
-
-    # -------------------------------------------------------------------------
-    # State Setup
-    # -------------------------------------------------------------------------
-
-    async def setup_state(self, state: State) -> State:
-        """Initialize poker game state."""
-        state = await super().setup_state(state)
-
-        # Session tracking
-        state["extras"]["hands_played"] = 0
-        state["extras"]["starting_chips"] = self.starting_chips
-        state["extras"]["chips"] = {
-            "player1": self.starting_chips,
-            "player2": self.starting_chips,
-        }
-
-        # Start first hand
-        state["extras"]["dealer"] = "player1"  # Will rotate each hand
-        await self._start_new_hand(state)
-
-        return state
-
-    async def _start_new_hand(self, state: State) -> None:
-        """Initialize state for a new hand."""
-        extras = state["extras"]
-
-        # Create and shuffle deck
-        extras["deck"] = create_deck()
-
-        # Deal hole cards
-        extras["hole_cards"] = {
-            "player1": [extras["deck"].pop(), extras["deck"].pop()],
-            "player2": [extras["deck"].pop(), extras["deck"].pop()],
-        }
-
-        # Reset hand state
-        extras["community_cards"] = []
-        extras["pot"] = 0
-        extras["current_bet"] = 0
-        extras["bets_this_round"] = {"player1": 0, "player2": 0}
-        extras["phase"] = "preflop"
-        extras["folded"] = []
-        extras["actions_this_hand"] = 0
-        extras["actions_this_round"] = {"player1": 0, "player2": 0}
-        extras["last_aggressor"] = None
-
-        # Post blinds
-        dealer = extras["dealer"]
-        non_dealer = "player2" if dealer == "player1" else "player1"
-
-        # Dealer posts small blind
-        sb_amount = min(self.small_blind, extras["chips"][dealer])
-        extras["chips"][dealer] -= sb_amount
-        extras["bets_this_round"][dealer] = sb_amount
-        extras["pot"] += sb_amount
-
-        # Non-dealer posts big blind
-        bb_amount = min(self.big_blind, extras["chips"][non_dealer])
-        extras["chips"][non_dealer] -= bb_amount
-        extras["bets_this_round"][non_dealer] = bb_amount
-        extras["pot"] += bb_amount
-        extras["current_bet"] = bb_amount
-
-    # -------------------------------------------------------------------------
-    # Prompt Building
-    # -------------------------------------------------------------------------
-
-    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        """Build prompt showing only this player's hole cards."""
-        extras = state["extras"]
-
-        my_cards = extras["hole_cards"][actor_id]
-        community = extras["community_cards"]
-        pot = extras["pot"]
-        my_chips = extras["chips"][actor_id]
-        opponent_id = "player2" if actor_id == "player1" else "player1"
-        opponent_chips = extras["chips"][opponent_id]
-
-        to_call = extras["current_bet"] - extras["bets_this_round"][actor_id]
-
-        # Build situation description
-        phase = extras["phase"].upper()
-        hand_num = extras["hands_played"] + 1
-
-        position = "Dealer (Small Blind)" if actor_id == extras["dealer"] else "Big Blind"
-
-        situation = f"""=== HAND {hand_num} - {phase} ===
-Position: {position}
-
-Your hole cards: {format_cards(my_cards)}
-Community cards: {format_cards(community)}
-
-Pot: {pot}
-Your chips: {my_chips}
-Opponent chips: {opponent_chips}
-
-Current bet: {extras['current_bet']}
-Your bet this round: {extras['bets_this_round'][actor_id]}
-To call: {to_call}
-
-Your action?"""
-
-        actor = self.get_actor(actor_id)
-        return [
-            {"role": "system", "content": actor.system_prompt},
-            {"role": "user", "content": situation},
-        ]
-
-    # -------------------------------------------------------------------------
-    # Action Parsing
-    # -------------------------------------------------------------------------
-
-    def _parse_action(self, text: str, state: State, actor_id: str) -> dict:
-        """Parse JSON action from model output."""
-        try:
-            # Strip markdown code blocks if present
-            clean = text.strip()
-            if "```" in clean:
-                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, re.DOTALL)
-                if match:
-                    clean = match.group(1)
-
-            # Try to find JSON object in text
-            json_match = re.search(r"\{[^}]+\}", clean)
-            if json_match:
-                clean = json_match.group(0)
-
-            action = json.loads(clean)
-
-            # Validate required field
-            if "action" not in action:
-                raise ValueError("Missing 'action' key")
-
-            action_type = action["action"].lower()
-
-            # Validate action type
-            valid_actions = ["fold", "check", "call", "raise", "allin"]
-            if action_type not in valid_actions:
-                raise ValueError(f"Invalid action: {action_type}")
-
-            # Raise requires amount
-            if action_type == "raise":
-                if "amount" not in action:
-                    raise ValueError("Raise requires 'amount'")
-                action["amount"] = int(action["amount"])
-
-            action["action"] = action_type
-            return action
-
-        except (json.JSONDecodeError, ValueError, KeyError):
-            # FALLBACK: Safe default action
-            return self._get_fallback_action(state, actor_id)
-
-    def _get_fallback_action(self, state: State, actor_id: str) -> dict:
-        """When parsing fails, do the safest legal action."""
-        to_call = state["extras"]["current_bet"] - state["extras"]["bets_this_round"][actor_id]
-        if to_call == 0:
-            return {"action": "check"}
-        else:
-            return {"action": "fold"}
-
-    def _validate_and_adjust_action(self, action: dict, state: State, actor_id: str) -> dict:
-        """Validate action and adjust if needed (clamp raises, etc.)."""
-        extras = state["extras"]
-        my_chips = extras["chips"][actor_id]
-        to_call = extras["current_bet"] - extras["bets_this_round"][actor_id]
-
-        action_type = action["action"]
-
-        # Can't check if there's a bet to call
-        if action_type == "check" and to_call > 0:
-            # Convert to call or fold based on having chips
-            if my_chips >= to_call:
-                return {"action": "call"}
-            else:
-                return {"action": "allin"}
-
-        # Can't call more than we have
-        if action_type == "call":
-            if my_chips <= to_call:
-                return {"action": "allin"}
-            return action
-
-        # Handle raise
-        if action_type == "raise":
-            amount = action.get("amount", 0)
-            min_raise = extras["current_bet"] + self.big_blind  # Minimum raise
-            max_raise = my_chips + extras["bets_this_round"][actor_id]  # All-in
-
-            # Clamp to valid range
-            if amount >= max_raise:
-                return {"action": "allin"}
-            if amount < min_raise:
-                amount = min_raise
-            if amount > max_raise:
-                amount = max_raise
-
-            return {"action": "raise", "amount": amount}
-
-        # All-in is always valid
-        if action_type == "allin":
-            return action
-
-        # Fold is always valid
-        return action
-
-    # -------------------------------------------------------------------------
-    # Game Logic
-    # -------------------------------------------------------------------------
-
-    async def on_turn_complete(self, state: State) -> None:
-        """Process action after each turn."""
-        if not state["trajectory"]:
-            return
-
-        last_step = state["trajectory"][-1]
-        last_completion = last_step.get("completion", [])
-        if not last_completion:
-            return
-
-        # Get actor who just played
-        actor_id = last_step.get("extras", {}).get("actor_id")
-        if not actor_id:
-            return
-
-        # Parse action
-        content = last_completion[-1].get("content", "") if isinstance(last_completion[-1], dict) else str(last_completion[-1])
-        action = self._parse_action(content, state, actor_id)
-        action = self._validate_and_adjust_action(action, state, actor_id)
-
-        extras = state["extras"]
-        extras["actions_this_hand"] += 1
-        extras["actions_this_round"][actor_id] += 1
-
-        # Process action
-        await self._process_action(action, state, actor_id)
-
-        # Check if betting round is complete
-        if self._is_betting_round_complete(state):
-            await self._advance_phase(state)
-
-    async def _process_action(self, action: dict, state: State, actor_id: str) -> None:
-        """Process a validated action."""
-        extras = state["extras"]
-        action_type = action["action"]
-
-        if action_type == "fold":
-            extras["folded"].append(actor_id)
-            # Award pot to opponent
-            opponent = "player2" if actor_id == "player1" else "player1"
-            extras["chips"][opponent] += extras["pot"]
-            extras["pot"] = 0
-            extras["winner"] = opponent
-            extras["win_reason"] = "fold"
-            extras["phase"] = "complete"
-
-        elif action_type == "check":
-            pass  # No chip movement
-
-        elif action_type == "call":
-            to_call = extras["current_bet"] - extras["bets_this_round"][actor_id]
-            call_amount = min(to_call, extras["chips"][actor_id])
-            extras["chips"][actor_id] -= call_amount
-            extras["bets_this_round"][actor_id] += call_amount
-            extras["pot"] += call_amount
-
-        elif action_type == "raise":
-            amount = action["amount"]
-            # Amount is total bet, not additional
-            current_bet = extras["bets_this_round"][actor_id]
-            additional = amount - current_bet
-            additional = min(additional, extras["chips"][actor_id])
-
-            extras["chips"][actor_id] -= additional
-            extras["bets_this_round"][actor_id] += additional
-            extras["pot"] += additional
-            extras["current_bet"] = extras["bets_this_round"][actor_id]
-            extras["last_aggressor"] = actor_id
-
-            # Reset opponent's action count (they need to respond to raise)
-            opponent = "player2" if actor_id == "player1" else "player1"
-            extras["actions_this_round"][opponent] = 0
-
-        elif action_type == "allin":
-            all_in_amount = extras["chips"][actor_id]
-            extras["bets_this_round"][actor_id] += all_in_amount
-            extras["pot"] += all_in_amount
-            extras["chips"][actor_id] = 0
-
-            if extras["bets_this_round"][actor_id] > extras["current_bet"]:
-                extras["current_bet"] = extras["bets_this_round"][actor_id]
-                extras["last_aggressor"] = actor_id
-                # Reset opponent's action count
-                opponent = "player2" if actor_id == "player1" else "player1"
-                extras["actions_this_round"][opponent] = 0
-
-    def _is_betting_round_complete(self, state: State) -> bool:
-        """Check if current betting round is complete."""
-        extras = state["extras"]
-
-        # Hand already over
-        if extras["phase"] == "complete" or extras["folded"]:
-            return False
-
-        # Both players must have acted at least once this round
-        p1_actions = extras["actions_this_round"]["player1"]
-        p2_actions = extras["actions_this_round"]["player2"]
-
-        if p1_actions == 0 or p2_actions == 0:
-            return False
-
-        # Bets must be equal (or someone is all-in)
-        p1_bet = extras["bets_this_round"]["player1"]
-        p2_bet = extras["bets_this_round"]["player2"]
-        p1_chips = extras["chips"]["player1"]
-        p2_chips = extras["chips"]["player2"]
-
-        bets_equal = p1_bet == p2_bet
-        p1_allin = p1_chips == 0
-        p2_allin = p2_chips == 0
-
-        return bets_equal or p1_allin or p2_allin
-
-    async def _advance_phase(self, state: State) -> None:
-        """Move to next phase of the hand."""
-        extras = state["extras"]
-        current_phase = extras["phase"]
-
-        # Reset for new betting round
-        extras["bets_this_round"] = {"player1": 0, "player2": 0}
-        extras["current_bet"] = 0
-        extras["actions_this_round"] = {"player1": 0, "player2": 0}
-        extras["last_aggressor"] = None
-
-        # Determine next phase
-        phase_order = ["preflop", "flop", "turn", "river", "showdown"]
-        current_idx = phase_order.index(current_phase)
-        next_phase = phase_order[current_idx + 1]
-        extras["phase"] = next_phase
-
-        # Deal community cards
-        if next_phase == "flop":
-            # Burn and deal 3
-            extras["deck"].pop()  # Burn
-            extras["community_cards"].extend([
-                extras["deck"].pop(),
-                extras["deck"].pop(),
-                extras["deck"].pop(),
-            ])
-        elif next_phase == "turn":
-            # Burn and deal 1
-            extras["deck"].pop()  # Burn
-            extras["community_cards"].append(extras["deck"].pop())
-        elif next_phase == "river":
-            # Burn and deal 1
-            extras["deck"].pop()  # Burn
-            extras["community_cards"].append(extras["deck"].pop())
-        elif next_phase == "showdown":
-            await self._resolve_showdown(state)
-
-        # Update current actor for post-flop (non-dealer acts first)
-        if next_phase in ["flop", "turn", "river"]:
-            dealer = extras["dealer"]
-            non_dealer = "player2" if dealer == "player1" else "player1"
-            # Only change if non-dealer hasn't folded
-            if non_dealer not in extras["folded"]:
-                extras["current_actor_id"] = non_dealer
-
-    async def _force_showdown(self, state: State) -> None:
-        """Force showdown when max actions reached."""
-        extras = state["extras"]
-
-        # Deal remaining community cards
-        while len(extras["community_cards"]) < 5:
-            if extras["deck"]:
-                extras["deck"].pop()  # Burn
-            if extras["deck"]:
-                extras["community_cards"].append(extras["deck"].pop())
-
-        extras["phase"] = "showdown"
-        await self._resolve_showdown(state)
-
-    async def _resolve_showdown(self, state: State) -> None:
-        """Compare hands and award pot."""
-        extras = state["extras"]
-
-        p1_hole = extras["hole_cards"]["player1"]
-        p2_hole = extras["hole_cards"]["player2"]
-        community = extras["community_cards"]
-
-        winner, p1_hand, p2_hand = compare_hands(p1_hole, p2_hole, community)
-
-        extras["player1_hand"] = {
-            "hole_cards": p1_hole,
-            "hand_name": p1_hand.replace("_", " ").title(),
-        }
-        extras["player2_hand"] = {
-            "hole_cards": p2_hole,
-            "hand_name": p2_hand.replace("_", " ").title(),
-        }
-
-        if winner == "tie":
-            # Split pot
-            half = extras["pot"] // 2
-            extras["chips"]["player1"] += half
-            extras["chips"]["player2"] += extras["pot"] - half
-            extras["winner"] = "tie"
-            extras["win_reason"] = "split pot"
-        else:
-            extras["chips"][winner] += extras["pot"]
-            extras["winner"] = winner
-            loser = "player2" if winner == "player1" else "player1"
-            winner_hand = extras[f"{winner}_hand"]["hand_name"]
-            loser_hand = extras[f"{loser}_hand"]["hand_name"]
-            extras["win_reason"] = f"{winner_hand} beats {loser_hand}"
-
-        extras["pot"] = 0
-        extras["hands_played"] += 1
-
-        # Check if session continues
-        if extras["hands_played"] < self.num_hands:
-            # Check if both players have chips
-            if extras["chips"]["player1"] > 0 and extras["chips"]["player2"] > 0:
-                # Rotate dealer and start new hand
-                extras["dealer"] = "player2" if extras["dealer"] == "player1" else "player1"
-                await self._start_new_hand(state)
-                return
-
-        # Session complete
-        extras["phase"] = "complete"
-
-    async def on_game_end(self, state: State) -> None:
-        """Compute final session results."""
-        extras = state["extras"]
-
-        # Determine overall winner
-        p1_chips = extras["chips"]["player1"]
-        p2_chips = extras["chips"]["player2"]
-
-        if p1_chips > p2_chips:
-            extras["session_winner"] = "player1"
-        elif p2_chips > p1_chips:
-            extras["session_winner"] = "player2"
-        else:
-            extras["session_winner"] = "tie"
-
-        # Calculate profit/loss
-        starting = extras["starting_chips"]
-        extras["player1_profit"] = p1_chips - starting
-        extras["player2_profit"] = p2_chips - starting
-
-
-# =============================================================================
-# Rubric (Scoring)
-# =============================================================================
-
-def create_rubric() -> MultiAgentRubric:
-    """Create rubric based on chip profit/loss."""
-    rubric = MultiAgentRubric()
-
-    def player_reward(actor_id: str):
-        def reward_func(state: State, **kwargs) -> float:
-            extras = state.get("extras", {})
-            starting = extras.get("starting_chips", 1000)
-            final = extras.get("chips", {}).get(actor_id, starting)
-            # Normalize to [-1, 1] range (losing all = -1, doubling up = +1)
-            return (final - starting) / starting
-        return reward_func
-
-    def hands_played_metric(state: State, **kwargs) -> float:
-        return float(state.get("extras", {}).get("hands_played", 0))
-
-    def showdowns_metric(state: State, **kwargs) -> float:
-        # Count non-fold endings
-        winner = state.get("extras", {}).get("winner")
-        reason = state.get("extras", {}).get("win_reason", "")
-        return 0.0 if "fold" in reason else 1.0
-
-    rubric.add_actor_reward_func("player1", player_reward("player1"), weight=1.0)
-    rubric.add_actor_reward_func("player2", player_reward("player2"), weight=1.0)
-    rubric.add_reward_func(hands_played_metric, weight=0.0)
-    rubric.add_reward_func(showdowns_metric, weight=0.0)
-
-    return rubric
-
-
-# =============================================================================
 # Dataset
 # =============================================================================
 
 def create_dataset(num_games: int = 10) -> Dataset:
-    """Create dataset for poker games."""
     return Dataset.from_list([
         {
             "example_id": i,
@@ -862,23 +714,30 @@ def load_environment(
     small_blind: int = 5,
     big_blind: int = 10,
     num_examples: int = -1,
-) -> PokerEnv:
+) -> MultiAgentEnv:
     """Factory function to create a fully configured Poker environment."""
     dataset = create_dataset()
     if num_examples > 0:
         dataset = dataset.select(range(min(num_examples, len(dataset))))
 
-    env = PokerEnv(
+    task = PokerTask(
+        name="poker",
+        dataset=dataset,
+        rubric=create_rubric(),
+        roles=["player1", "player2"],
         num_hands=num_hands,
         max_actions_per_hand=max_actions_per_hand,
         starting_chips=starting_chips,
         small_blind=small_blind,
         big_blind=big_blind,
-        rubric=create_rubric(),
-        max_turns=num_hands * max_actions_per_hand + 10,
-        dataset=dataset,
     )
 
-    Protocol(actors=[PLAYER1, PLAYER2], envs=[env])
+    agents = {"player1": PLAYER1, "player2": PLAYER2}
+
+    env = MultiAgentEnv(
+        task=task,
+        agents=agents,
+        max_turns=num_hands * max_actions_per_hand + 10,
+    )
 
     return env

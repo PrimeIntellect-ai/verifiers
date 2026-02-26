@@ -6,7 +6,7 @@ Recreates the ARC-AGI solver pipeline using the verifiers multi-agent framework:
 - ObjectsPipelineEnv: Three actors in sequence (extract -> transform -> solve)
 - JudgeEnv: Evaluates candidate solutions
 
-All orchestrated via Protocol.spawn() for parallel execution.
+All orchestrated via Registry.spawn() for parallel execution.
 
 Usage:
     prime env install arc-multiagent
@@ -32,9 +32,9 @@ from typing import Any, List, Optional
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.envs.actor import Actor
+from verifiers.agent import Agent
 from verifiers.envs.multiagent_env import MultiAgentEnv
-from verifiers.envs.protocol import Protocol
+from verifiers.envs.registry import Registry
 from verifiers.types import Messages, State
 from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.utils.client_utils import get_actor_client
@@ -1591,7 +1591,7 @@ class SingleSolverEnv(MultiAgentEnv):
     The prompt variant (basic/deep/hint) is set per-rollout via the input's
     prompt field, not baked into the environment.
 
-    Each model gets its own env instance so Protocol routes to the right actor:
+    Each model gets its own env instance so Registry routes to the right agent:
         SingleSolverEnv(actor_id="solver_gpt")  -> name="solver_gpt"
         SingleSolverEnv(actor_id="solver_claude") -> name="solver_claude"
     """
@@ -2338,7 +2338,7 @@ def _build_candidates_for_judge(
 
 
 async def run_judges(
-    protocol: Protocol,
+    registry: Registry,
     candidates: dict[tuple, dict],
     reasoning_store: dict[str, str],
     train_pairs: list[dict],
@@ -2387,7 +2387,7 @@ async def run_judges(
         },
     ]
 
-    judge_states = await protocol.spawn(
+    judge_states = await registry.spawn(
         inputs=spawn_inputs,
         client=client,
         model=default_model,
@@ -2677,7 +2677,7 @@ class ArcPipelineEnv(MultiAgentEnv):
                     })
 
         if step1_inputs:
-            step1_states = await self.protocol.spawn(
+            step1_states = await self.registry.spawn(
                 inputs=step1_inputs, client=state["client"],
                 model=state["model"], sampling_args=state.get("sampling_args"),
                 score=False,
@@ -2691,7 +2691,7 @@ class ArcPipelineEnv(MultiAgentEnv):
             hint_entries = mc["hint"]
             first_hint_ep, _ = _parse_entry(hint_entries[0])
             hint_prompt = build_hint_extraction_prompt(train_pairs, test_input)
-            hint_states = await self.protocol.spawn(
+            hint_states = await self.registry.spawn(
                 inputs=[{
                     "task": f"hint_extractor{_ep_suffix(first_hint_ep)}",
                     "prompt": [{"role": "user", "content": hint_prompt}],
@@ -2712,7 +2712,7 @@ class ArcPipelineEnv(MultiAgentEnv):
                             "prompt": [{"role": "user", "content": hint_solve_prompt}],
                             "answer": answer_str, "example_id": idx, "info": info_dict,
                         })
-                hint_solve_states = await self.protocol.spawn(
+                hint_solve_states = await self.registry.spawn(
                     inputs=hint_inputs, client=state["client"],
                     model=state["model"], score=False,
                 )
@@ -2762,7 +2762,7 @@ class ArcPipelineEnv(MultiAgentEnv):
                         })
 
             if step3_inputs:
-                step3_states = await self.protocol.spawn(
+                step3_states = await self.registry.spawn(
                     inputs=step3_inputs, client=state["client"],
                     model=state["model"], sampling_args=state.get("sampling_args"),
                     score=False,
@@ -2823,7 +2823,7 @@ class ArcPipelineEnv(MultiAgentEnv):
                     })
 
         if step5_inputs:
-            step5_states = await self.protocol.spawn(
+            step5_states = await self.registry.spawn(
                 inputs=step5_inputs, client=state["client"],
                 model=state["model"], sampling_args=state.get("sampling_args"),
                 score=False,
@@ -2870,7 +2870,7 @@ class ArcPipelineEnv(MultiAgentEnv):
                  "answer": "", "info": {}}
                 for _ in range(council_size)
             ]
-            duo_states = await self.protocol.spawn(
+            duo_states = await self.registry.spawn(
                 inputs=duo_inputs, client=state["client"],
                 model=state["model"], score=False,
             )
@@ -2894,7 +2894,7 @@ class ArcPipelineEnv(MultiAgentEnv):
         if not picks and self._has_role("judge") and len(candidates) > 1:
             judge_ep, _ = _parse_entry(self.model_config["judge"][0])
             judge_scores = await run_judges(
-                protocol=self.protocol, candidates=candidates,
+                registry=self.registry, candidates=candidates,
                 reasoning_store=reasoning_store, train_pairs=train_pairs,
                 test_input=test_input, client=state["client"],
                 default_model=state["model"],
@@ -3018,26 +3018,26 @@ def create_arc_rubric(model_config: ModelConfig) -> MultiAgentRubric:
 
 
 # =============================================================================
-# Actor + Env Factory
+# Agent + Env Factory
 # =============================================================================
 
-def create_actors(model_config: ModelConfig) -> list[Actor]:
+def create_agents(model_config: ModelConfig) -> list[Agent]:
     """
-    Create actors for ARC pipeline from MODEL_CONFIG.
+    Create agents for ARC pipeline from MODEL_CONFIG.
 
-    One actor per (role, endpoint) pair. The first "shallow" endpoint
+    One agent per (role, endpoint) pair. The first "shallow" endpoint
     becomes the "orchestrator" (does Turn 1 in the pipeline).
     """
-    actors = []
+    agents = []
     seen_ids: set[str] = set()
 
-    def add_actor(actor_id: str, endpoint: str | None) -> None:
-        if actor_id in seen_ids:
+    def add_agent(agent_id: str, endpoint: str | None) -> None:
+        if agent_id in seen_ids:
             return
-        seen_ids.add(actor_id)
+        seen_ids.add(agent_id)
         client, model = get_actor_client(endpoint)
-        actors.append(Actor(
-            id=actor_id, model=model, client=client,
+        agents.append(Agent(
+            id=agent_id, model=model, client=client,
             max_tokens=16384, is_trainable=False,
         ))
 
@@ -3050,20 +3050,20 @@ def create_actors(model_config: ModelConfig) -> list[Actor]:
     # Orchestrator: always exists, uses first shallow endpoint (or None)
     shallow_entries = model_config.get("shallow", [None])
     orch_ep, _ = _parse_entry(shallow_entries[0])
-    add_actor("orchestrator", orch_ep)
+    add_agent("orchestrator", orch_ep)
 
     # Extra shallow solvers (2nd endpoint onward)
     for entry in shallow_entries[1:]:
         ep, _ = _parse_entry(entry)
-        add_actor(_actor_id_for("shallow", ep), ep)
+        add_agent(_actor_id_for("shallow", ep), ep)
 
-    # Standard roles: one actor per endpoint
+    # Standard roles: one agent per endpoint
     for role in ("deep", "codegen", "image", "duo_pick", "judge", "hint"):
         for entry in model_config.get(role, []):
             ep, _ = _parse_entry(entry)
-            add_actor(_actor_id_for(role, ep), ep)
+            add_agent(_actor_id_for(role, ep), ep)
 
-    # Objects: 3 sub-actors per endpoint
+    # Objects: 3 sub-agents per endpoint
     for entry in model_config.get("objects", []):
         ep, _ = _parse_entry(entry)
         suffix = _ep_suffix(ep)
@@ -3072,12 +3072,12 @@ def create_actors(model_config: ModelConfig) -> list[Actor]:
             aid = f"{sub_role}{suffix}"
             if aid not in seen_ids:
                 seen_ids.add(aid)
-                actors.append(Actor(
+                agents.append(Agent(
                     id=aid, model=model, client=client,
                     max_tokens=16384, is_trainable=False,
                 ))
 
-    return actors
+    return agents
 
 
 def create_envs(
@@ -3085,7 +3085,7 @@ def create_envs(
     model_config: ModelConfig,
 ) -> list:
     """
-    Create all environments for the Protocol routing table.
+    Create all environments for the Registry routing table.
 
     Each env's name becomes a route: spawn({"task": env.name}) → that env.
     Only pipeline_env has a dataset — the rest are workers that run when spawned.
@@ -3197,8 +3197,8 @@ def load_environment(
     # 2. Scoring: reward for every actor in config
     rubric = create_arc_rubric(mc)
 
-    # 3. Actors: one per (role, endpoint) pair
-    actors = create_actors(mc)
+    # 3. Agents: one per (role, endpoint) pair
+    agents = create_agents(mc)
 
     # 4. Pipeline env: the only env with a dataset — framework iterates over it
     pipeline_env = ArcPipelineEnv(
@@ -3208,8 +3208,8 @@ def load_environment(
         dataset=dataset,
     )
 
-    # 5. Worker envs + Protocol: routing table so spawn({"task": name}) works
+    # 5. Worker envs + Registry: routing table so spawn({"task": name}) works
     envs = create_envs(pipeline_env, mc)
-    Protocol(actors=actors, envs=envs)
+    Registry(agents=agents, envs=envs)
 
     return pipeline_env

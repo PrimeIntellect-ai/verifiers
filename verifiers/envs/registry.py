@@ -1,56 +1,53 @@
 """
-Protocol: Wires actors to environments and enables cross-environment spawning.
+Registry: Wires agents to environments and enables cross-environment spawning.
 
-Protocol is the glue that connects:
-- Actors (trainable entities with system prompts)
+Registry is the glue that connects:
+- Agents (entities with model config and system prompts)
 - Environments (where rollouts happen)
 
 Key functionality:
-- Actor registry: Look up actors by ID
+- Agent registry: Look up agents by ID
 - Env registry: Look up environments by name
-- spawn(): Run child rollouts in other environments (e.g., Proposer spawns Solvers)
+- spawn(): Run child rollouts in other environments (e.g., Orchestrator spawns Solvers)
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
-
-from openai import AsyncOpenAI
+from typing import TYPE_CHECKING, Any
 
 from verifiers.types import RolloutInput, SamplingArgs, State
-from verifiers.utils.async_utils import maybe_semaphore
-
-from .actor import Actor
 
 if TYPE_CHECKING:
     from .environment import Environment
 
 
-class Protocol:
+class Registry:
     """
-    Wires actors to environments. Enables spawn() for cross-env communication.
-
+    Wires agents to environments. Enables spawn() for cross-env communication.
     """
 
     def __init__(
         self,
-        actors: list[Actor],
+        agents: list[Any],
         envs: list["Environment"],
     ):
         """
-        Register actors and environments.
+        Register agents and environments.
+
+        Injects registry reference into each env (env.registry = self)
+        and shares agents with envs that support inject_agents().
 
         Args:
-            actors: List of Actor instances to register
+            agents: List of Agent instances to register
             envs: List of Environment instances to register
         """
-        # Register actors by ID
-        self._actors: dict[str, Actor] = {}
-        for actor in actors:
-            if actor.id in self._actors:
-                raise ValueError(f"Duplicate actor id: {actor.id}")
-            self._actors[actor.id] = actor
+        # Register agents by ID
+        self._agents: dict[str, Any] = {}
+        for agent in agents:
+            if agent.id in self._agents:
+                raise ValueError(f"Duplicate agent id: {agent.id}")
+            self._agents[agent.id] = agent
 
         # Register environments by name
         self._envs: dict[str, "Environment"] = {}
@@ -59,16 +56,19 @@ class Protocol:
             if name in self._envs:
                 raise ValueError(f"Duplicate environment name: {name}")
             self._envs[name] = env
-            # Inject protocol reference so env can call self.protocol.spawn()
-            env.protocol = self
+            # Inject registry reference so env can call self.registry.spawn()
+            env.registry = self
+            # Share agents with env so get_actor() works
+            if hasattr(env, "inject_agents"):
+                env.inject_agents(self._agents)
 
-    def get_actor(self, actor_id: str) -> Actor:
-        """Get actor by ID."""
-        if actor_id not in self._actors:
+    def get_agent(self, agent_id: str) -> Any:
+        """Get agent by ID."""
+        if agent_id not in self._agents:
             raise KeyError(
-                f"Actor '{actor_id}' not found. Available: {list(self._actors.keys())}"
+                f"Agent '{agent_id}' not found. Available: {list(self._agents.keys())}"
             )
-        return self._actors[actor_id]
+        return self._agents[agent_id]
 
     def get_env(self, name: str) -> "Environment":
         """Get environment by name."""
@@ -79,9 +79,9 @@ class Protocol:
         return self._envs[name]
 
     @property
-    def actors(self) -> dict[str, Actor]:
-        """All registered actors."""
-        return self._actors
+    def agents(self) -> dict[str, Any]:
+        """All registered agents."""
+        return self._agents
 
     @property
     def envs(self) -> dict[str, "Environment"]:
@@ -91,7 +91,7 @@ class Protocol:
     async def spawn(
         self,
         inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: Any,
         model: str,
         sampling_args: SamplingArgs | None = None,
         score: bool = True,
@@ -104,17 +104,14 @@ class Protocol:
 
         Args:
             inputs: List of rollout inputs, each with "task" field for routing
-            client: AsyncOpenAI client (required)
-            model: Model name (required)
+            client: Client instance
+            model: Model name
             sampling_args: Optional sampling parameters
             score: Whether to score rollouts with env's rubric (default True)
 
         Returns:
             List of completed states from child rollouts
-
-            )
         """
-        # Run all rollouts in parallel
         tasks = []
         for inp in inputs:
             env_name = inp.get("task")
@@ -132,19 +129,14 @@ class Protocol:
 
         all_states = await asyncio.gather(*tasks)
 
-        # Mark spawned states as children (for progress tracking)
+        # Mark spawned states as children
         for state in all_states:
             if "extras" not in state:
                 state["extras"] = {}
             state["extras"]["parent_episode_id"] = "spawned"
 
         # Score rollouts if requested
-        # Use score_group() instead of score_rollout() to properly handle:
-        # - MultiAgentRubric per-actor reward functions
-        # - GRPO advantage computation per-actor group
         if score:
-            score_sem = await maybe_semaphore(-1)
-            # Group states by environment for proper score_group() semantics
             states_by_env: dict[str, list[State]] = {}
             for inp, state in zip(inputs, all_states):
                 env_name = inp.get("task")
@@ -152,10 +144,9 @@ class Protocol:
                     states_by_env[env_name] = []
                 states_by_env[env_name].append(state)
 
-            # Score each group with its environment's rubric
             for env_name, env_states in states_by_env.items():
                 env = self.get_env(env_name)
                 if env.rubric:
-                    await env.rubric.score_group(env_states, score_sem=score_sem)
+                    await env.rubric.score_group(env_states)
 
         return list(all_states)

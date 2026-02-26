@@ -1,282 +1,240 @@
 """
-Rock-Paper-Scissors: Multi-agent environment with simultaneous moves.
+Rock Paper Scissors v2: New decomposition.
 
-This environment demonstrates:
-- Simultaneous moves via get_active_actors() returning both players
-- Per-actor reward functions (competitive scoring)
-- Round-based game with history tracking
+Old style: RockPaperScissorsEnv(MultiAgentEnv) — game logic, prompts, state,
+           rubric, actors, dataset all in one class.
 
-Game flow:
-1. Both players see the round number and previous results
-2. Both make their choice (simultaneously from game perspective)
-3. Round is resolved, scores updated
-4. Repeat for num_rounds
-5. Split into per-actor states for scoring
+New style: Game logic in RPSTask(TaskSet). Agents are separate.
+           MultiAgentEnv just runs the loop.
+
+What this shows about the abstractions:
+    - TaskSet controls information flow (build_prompt hides opponent's choice)
+    - Both players are simple Agents — one model call per turn
+    - Simple Agents — one model call per turn, no tools needed
+    - Turn order: alternating, but task creates simultaneous feel via hidden info
 """
+
+import random
 
 from datasets import Dataset
 
-from verifiers import Actor, MultiAgentEnv, MultiAgentRubric, Protocol
+from verifiers.agent import Agent
+from verifiers.envs.multiagent_env import MultiAgentEnv
+from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
+from verifiers.taskset import TaskSet
 from verifiers.types import Messages, State
-import verifiers as vf
+from verifiers.utils.client_utils import get_actor_client
 
 
 # =============================================================================
-# Actors
+# Model Configuration
 # =============================================================================
 
-PLAYER1 = Actor(
-    id="player1",
-    system_prompt="""You are Player 1 in Rock-Paper-Scissors.
+PLAYER1_ENDPOINT = "olmo3-7b-i"
+PLAYER2_ENDPOINT = "olmo3-7b-i"
 
-Choose ONE of: rock, paper, or scissors
+p1_client, p1_model = get_actor_client(PLAYER1_ENDPOINT)
+p2_client, p2_model = get_actor_client(PLAYER2_ENDPOINT)
 
-Output ONLY your choice (one word, lowercase). Nothing else.""",
-    max_tokens=10,
-    is_trainable=True,
-)
-
-PLAYER2 = Actor(
-    id="player2",
-    system_prompt="""You are Player 2 in Rock-Paper-Scissors.
-
-Choose ONE of: rock, paper, or scissors
-
-Output ONLY your choice (one word, lowercase). Nothing else.""",
-    max_tokens=10,
-    is_trainable=True,
-)
+BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
 
 
 # =============================================================================
-# Environment
-# =============================================================================
-
-class RockPaperScissorsEnv(MultiAgentEnv):
-    """Rock-Paper-Scissors with simultaneous moves."""
-
-    name = "rock_paper_scissors"
-    actors = ["player1", "player2"]
-
-    def __init__(self, num_rounds: int = 3, **kwargs):
-        super().__init__(**kwargs)
-        self.num_rounds = num_rounds
-
-    # -------------------------------------------------------------------------
-    # Turn Management
-    # -------------------------------------------------------------------------
-
-    def get_initial_actor(self, state: State) -> str:
-        return "player1"
-
-    def get_next_actor(self, state: State) -> str:
-        return "player1"  # Not really used since get_active_actors returns both
-
-    def get_active_actors(self, state: State) -> list[str]:
-        """Both players act simultaneously each round."""
-        return ["player1", "player2"]
-
-    # -------------------------------------------------------------------------
-    # Stop Condition
-    # -------------------------------------------------------------------------
-
-    @vf.stop
-    async def game_over(self, state: State) -> bool:
-        """Stop after all rounds played."""
-        return state.get("extras", {}).get("round", 0) >= self.num_rounds
-
-    # -------------------------------------------------------------------------
-    # State Setup
-    # -------------------------------------------------------------------------
-
-    async def setup_state(self, state: State) -> State:
-        """Initialize RPS-specific game state."""
-        state = await super().setup_state(state)
-        state["extras"]["round"] = 0
-        state["extras"]["p1_score"] = 0
-        state["extras"]["p2_score"] = 0
-        state["extras"]["history"] = []
-        state["extras"]["p1_choice"] = None
-        state["extras"]["p2_choice"] = None
-        return state
-
-    # -------------------------------------------------------------------------
-    # Prompt Building
-    # -------------------------------------------------------------------------
-
-    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        """Build fresh prompt for this player."""
-        actor = self.get_actor(actor_id)
-        round_num = state["extras"]["round"] + 1
-
-        # Build history from this player's perspective
-        history = state["extras"]["history"]
-        history_str = ""
-        if history:
-            history_str = "\n\nPrevious rounds:\n"
-            for i, (p1, p2, result) in enumerate(history, 1):
-                you = p1 if actor_id == "player1" else p2
-                opponent = p2 if actor_id == "player1" else p1
-                history_str += f"  Round {i}: You={you}, Opponent={opponent} -> {result}\n"
-
-        return [
-            {"role": "system", "content": actor.system_prompt},
-            {"role": "user", "content": f"Round {round_num} of {self.num_rounds}. Make your choice!{history_str}"}
-        ]
-
-    # -------------------------------------------------------------------------
-    # Game Logic
-    # -------------------------------------------------------------------------
-
-    async def on_turn_complete(self, state: State) -> None:
-        """
-        Process choice and resolve round if both players have chosen.
-        Called AFTER each turn completes.
-        """
-        if not state["trajectory"]:
-            return
-
-        last_step = state["trajectory"][-1]
-        last_completion = last_step.get("completion", [])
-        if not last_completion:
-            return
-
-        # Parse choice
-        content = last_completion[-1].get("content", "").lower().strip() if isinstance(last_completion[-1], dict) else str(last_completion[-1]).lower().strip()
-        choice = self._parse_choice(content)
-
-        # Store choice for the actor who just played
-        actor_id = last_step.get("extras", {}).get("actor_id")
-        if actor_id == "player1":
-            state["extras"]["p1_choice"] = choice
-        else:
-            state["extras"]["p2_choice"] = choice
-
-        # If both have chosen, resolve the round
-        p1_choice = state["extras"]["p1_choice"]
-        p2_choice = state["extras"]["p2_choice"]
-
-        if p1_choice and p2_choice:
-            winner = self._determine_winner(p1_choice, p2_choice)
-
-            if winner == "player1":
-                state["extras"]["p1_score"] += 1
-                result = "Player 1 wins"
-            elif winner == "player2":
-                state["extras"]["p2_score"] += 1
-                result = "Player 2 wins"
-            else:
-                result = "Tie"
-
-            state["extras"]["history"].append((p1_choice, p2_choice, result))
-            state["extras"]["round"] += 1
-            state["extras"]["p1_choice"] = None
-            state["extras"]["p2_choice"] = None
-
-    async def on_game_end(self, state: State) -> None:
-        """Declare final winner after all rounds complete."""
-        p1_score = state["extras"]["p1_score"]
-        p2_score = state["extras"]["p2_score"]
-
-        if p1_score > p2_score:
-            state["extras"]["winner"] = "player1"
-        elif p2_score > p1_score:
-            state["extras"]["winner"] = "player2"
-        else:
-            state["extras"]["winner"] = "tie"
-
-    # -------------------------------------------------------------------------
-    # Helper Functions
-    # -------------------------------------------------------------------------
-
-    def _parse_choice(self, text: str) -> str:
-        """Extract rock/paper/scissors from model output."""
-        text = text.lower()
-        if "rock" in text:
-            return "rock"
-        elif "paper" in text:
-            return "paper"
-        elif "scissors" in text:
-            return "scissors"
-        return "rock"
-
-    def _determine_winner(self, p1: str, p2: str) -> str | None:
-        """Determine winner. Returns None for tie."""
-        if p1 == p2:
-            return None
-        wins = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
-        if wins.get(p1) == p2:
-            return "player1"
-        return "player2"
-
-
-# =============================================================================
-# Rubric (Scoring)
+# Rubric
 # =============================================================================
 
 def create_rubric() -> MultiAgentRubric:
-    """Create competitive rubric with per-actor rewards."""
     rubric = MultiAgentRubric()
 
-    def player1_reward(state: State, **kwargs) -> float:
+    def player1_reward(state, **kwargs) -> float:
         extras = state.get("extras", {})
-        p1_score = extras.get("p1_score", 0)
-        total_rounds = extras.get("round", 1)
-        return p1_score / total_rounds if total_rounds > 0 else 0.0
+        total = extras.get("round", 1)
+        return extras.get("p1_score", 0) / total if total > 0 else 0.0
 
-    def player2_reward(state: State, **kwargs) -> float:
+    def player2_reward(state, **kwargs) -> float:
         extras = state.get("extras", {})
-        p2_score = extras.get("p2_score", 0)
-        total_rounds = extras.get("round", 1)
-        return p2_score / total_rounds if total_rounds > 0 else 0.0
-
-    def rounds_played_metric(state: State, **kwargs) -> float:
-        return float(state.get("extras", {}).get("round", 0))
+        total = extras.get("round", 1)
+        return extras.get("p2_score", 0) / total if total > 0 else 0.0
 
     rubric.add_actor_reward_func("player1", player1_reward, weight=1.0)
     rubric.add_actor_reward_func("player2", player2_reward, weight=1.0)
-    rubric.add_reward_func(rounds_played_metric, weight=0.0)
-
     return rubric
 
 
 # =============================================================================
-# Dataset
+# TaskSet: ALL game logic lives here
 # =============================================================================
 
-def create_dataset() -> Dataset:
-    """Create dataset for RPS games."""
-    return Dataset.from_list([
-        {
-            "example_id": i,
-            "prompt": [{"role": "user", "content": "play"}],
-            "answer": "",
-            "task": "rock_paper_scissors"
-        }
-        for i in range(10)
-    ])
+class RPSTask(TaskSet):
+    """
+    Rock Paper Scissors — best of N rounds.
+
+    Simultaneous moves via information hiding:
+    player1 goes first, player2 goes second, but build_prompt
+    hides player1's current-round choice from player2.
+
+    Compare with old RockPaperScissorsEnv:
+    - BEFORE: get_active_actors, build_actor_prompt, on_turn_complete,
+              setup_state, game_over stop — all in the env subclass
+    - AFTER:  All of that is here in the TaskSet. Env is generic.
+    """
+
+    def __init__(self, num_rounds: int = 3, num_examples: int = -1):
+        dataset = self._create_dataset()
+        if num_examples > 0:
+            dataset = dataset.select(range(min(num_examples, len(dataset))))
+
+        super().__init__(
+            name="rock_paper_scissors",
+            dataset=dataset,
+            rubric=create_rubric(),
+            roles=["player1", "player2"],
+        )
+        self.num_rounds = num_rounds
+
+    @staticmethod
+    def _create_dataset() -> Dataset:
+        return Dataset.from_list([
+            {
+                "prompt": [{"role": "user", "content": "play"}],
+                "answer": "",
+                "info": {"seed": i},
+                "example_id": i,
+                "task": "rock_paper_scissors",
+            }
+            for i in range(10)
+        ])
+
+    # ---- State ----
+
+    async def setup_state(self, state: State) -> State:
+        state["extras"]["round"] = 0
+        state["extras"]["p1_score"] = 0
+        state["extras"]["p2_score"] = 0
+        state["extras"]["history"] = []        # [(p1_choice, p2_choice, result), ...]
+        state["extras"]["p1_pending"] = None   # player1's choice waiting for player2
+        return state
+
+    # ---- Prompts ----
+
+    async def build_prompt(self, role: str, state: State) -> Messages:
+        round_num = state["extras"]["round"] + 1
+        history = state["extras"]["history"]
+
+        system = (
+            f"You are {role} in Rock Paper Scissors. Best of {self.num_rounds} rounds.\n\n"
+            "Respond with EXACTLY one word: rock, paper, or scissors\n"
+            "Nothing else. Just the word."
+        )
+
+        if not history:
+            history_str = "No rounds played yet."
+        else:
+            lines = []
+            for i, (p1, p2, result) in enumerate(history, 1):
+                you = p1 if role == "player1" else p2
+                opp = p2 if role == "player1" else p1
+                lines.append(f"Round {i}: You={you}, Opponent={opp} → {result}")
+            history_str = "\n".join(lines)
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Round {round_num} of {self.num_rounds}.\n\nHistory:\n{history_str}\n\nMake your choice:"},
+        ]
+
+    # ---- Turn Management ----
+    # Default alternating (player1 → player2 → player1 → ...) works perfectly.
+    # No need to override get_initial_role or get_next_role.
+
+    # ---- Game Logic ----
+
+    async def on_turn_complete(self, state: State) -> None:
+        if not state["trajectory"]:
+            return
+
+        last_step = state["trajectory"][-1]
+        actor_id = last_step.get("extras", {}).get("actor_id", "")
+        choice = self._extract_choice(last_step)
+
+        if actor_id == "player1":
+            # Stash choice, wait for player2
+            state["extras"]["p1_pending"] = choice
+
+        elif actor_id == "player2":
+            # Both moved — resolve
+            p1_choice = state["extras"]["p1_pending"]
+            p2_choice = choice
+            state["extras"]["p1_pending"] = None
+
+            if p1_choice == p2_choice:
+                result = "draw"
+            elif BEATS.get(p1_choice) == p2_choice:
+                result = "player1 wins"
+                state["extras"]["p1_score"] += 1
+            else:
+                result = "player2 wins"
+                state["extras"]["p2_score"] += 1
+
+            state["extras"]["history"].append((p1_choice, p2_choice, result))
+            state["extras"]["round"] += 1
+
+    async def should_stop(self, state: State) -> bool:
+        return state["extras"].get("round", 0) >= self.num_rounds
+
+    async def on_game_end(self, state: State) -> None:
+        p1 = state["extras"]["p1_score"]
+        p2 = state["extras"]["p2_score"]
+        if p1 > p2:
+            state["extras"]["winner"] = "player1"
+        elif p2 > p1:
+            state["extras"]["winner"] = "player2"
+        else:
+            state["extras"]["winner"] = "tie"
+
+    # ---- Helpers ----
+
+    def _extract_choice(self, step) -> str:
+        completion = step.get("completion", [])
+        if not completion:
+            return "rock"
+        text = completion[-1].get("content", "").lower().strip()
+        for c in ["rock", "paper", "scissors"]:
+            if c in text:
+                return c
+        return random.choice(["rock", "paper", "scissors"])
 
 
 # =============================================================================
 # Environment Loader
 # =============================================================================
 
-def load_environment(
-    num_rounds: int = 3,
-    num_examples: int = -1,
-) -> RockPaperScissorsEnv:
-    """Factory function to create a fully configured RPS environment."""
-    dataset = create_dataset()
-    if num_examples > 0:
-        dataset = dataset.select(range(min(num_examples, len(dataset))))
+def load_environment(num_rounds: int = 3, num_examples: int = -1):
+    """
+    Composition:
+        Task   = RPSTask (rules + prompts + scoring)
+        Agents = {player1, player2} with SingleTurnHarness
+        Env    = MultiAgentEnv(task, agents)
+    """
+    task = RPSTask(num_rounds=num_rounds, num_examples=num_examples)
 
-    env = RockPaperScissorsEnv(
-        num_rounds=num_rounds,
-        rubric=create_rubric(),
-        max_turns=num_rounds * 2 + 2,
-        dataset=dataset,
+    player1 = Agent(
+        id="player1",
+        max_tokens=10,
+        is_trainable=True,
+        model=p1_model,
+        client=p1_client,
     )
 
-    Protocol(actors=[PLAYER1, PLAYER2], envs=[env])
+    player2 = Agent(
+        id="player2",
+        max_tokens=10,
+        is_trainable=True,
+        model=p2_model,
+        client=p2_client,
+    )
 
-    return env
+    return MultiAgentEnv(
+        task=task,
+        agents={"player1": player1, "player2": player2},
+        max_turns=num_rounds * 2 + 2,
+    )

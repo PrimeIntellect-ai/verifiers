@@ -28,10 +28,13 @@ from .clients.openai_chat_completions_token_client import (
 from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
 # Multi-agent support
-from .envs.actor import Actor  # noqa # isort: skip
-from .envs.protocol import Protocol  # noqa # isort: skip
 from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
+from .envs.registry import Registry  # noqa # isort: skip
 from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
+
+# Core abstractions
+from .taskset import TaskSet  # noqa # isort: skip
+from .agent import Agent  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup
@@ -71,9 +74,11 @@ __all__ = [
     "MathRubric",
     "MultiAgentRubric",
     # Multi-agent support
-    "Actor",
-    "Protocol",
     "MultiAgentEnv",
+    "Registry",
+    # Core abstractions
+    "TaskSet",
+    "Agent",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",

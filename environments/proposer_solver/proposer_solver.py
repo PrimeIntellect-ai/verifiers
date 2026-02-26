@@ -1,308 +1,194 @@
 """
-Proposer-Solver: Hierarchical episode spawning with parent-child relationships.
+Proposer-Solver v2: New decomposition.
 
-This environment demonstrates:
-- Hierarchical spawning: Proposer generates problems, spawns Solver children
-- Cross-environment communication via Protocol.spawn()
-- Parent reward derived from child performance (solve_rate)
-- Both actors trainable with per-actor GRPO advantages
+Old style: ProposerSolverEnv(MultiAgentEnv) + SolverEnv(MultiAgentEnv) + Protocol
+           Direct subclasses, Actor objects, hierarchical spawning.
 
-Game flow:
-1. Proposer generates a math problem (e.g., "What is 7 + 5?")
-2. Multiple Solver instances are spawned as child episodes
-3. Each Solver attempts to answer independently
-4. Proposer's reward = solver success rate (incentivizes good problems)
-5. Solver rewards = correctness (1.0 if right, 0.0 if wrong)
+New style: Game logic in ProposerSolverTask(TaskSet). Agents are separate.
+           MultiAgentEnv just runs the loop.
 
-Training dynamics:
-- Proposer learns to generate problems that solvers can solve (not too hard)
-- Solvers learn to solve arithmetic problems correctly
-- GRPO advantages computed per-actor (proposers vs proposers, solvers vs solvers)
+Two roles:
+    proposer — generates a simple arithmetic problem
+    solver   — solves the problem, outputs a numeric answer
+
+What this demonstrates:
+    - TaskSet owns game logic (prompts, turn order, scoring)
+    - Simple 2-role sequential pipeline (proposer -> solver)
+    - Proposer rewarded by solver success (collaborative incentive)
+    - Both roles trainable with per-actor GRPO advantages
+
+Compare with proposer_code_solver (same pipeline but with tools):
+    - BEFORE: solver uses run_code() tool to compute answers
+    - HERE:   solver answers directly (no tools)
 """
 
 import re
+
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers import Actor, MultiAgentEnv, MultiAgentRubric, Protocol
+from verifiers.agent import Agent
+from verifiers.envs.multiagent_env import MultiAgentEnv
+from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
+from verifiers.taskset import TaskSet
 from verifiers.types import Messages, State
+from verifiers.utils.client_utils import get_actor_client
 
 
 # =============================================================================
-# Actors
+# Model Configuration
 # =============================================================================
 
-PROPOSER = Actor(
-    id="proposer",
-    system_prompt="""You are a Math Problem Proposer. Generate a simple arithmetic problem.
+PROPOSER_ENDPOINT = "qwen3-235b-i"
+SOLVER_ENDPOINT = "qwen3-30b-i"
 
-Rules:
-1. Create a problem using +, -, or * with two numbers between 1-20
-2. Format: Just state the problem, e.g., "What is 7 + 5?"
-3. Make it solvable but not trivial
-
-Output only the problem, nothing else.""",
-    max_tokens=50,
-    is_trainable=True,
-)
-
-SOLVER = Actor(
-    id="solver",
-    system_prompt="""You are a Math Solver. Solve the given problem.
-
-Rules:
-1. Calculate the answer
-2. Output ONLY the numeric answer, nothing else
-3. Example: If asked "What is 3 + 4?", output just: 7""",
-    max_tokens=20,
-    is_trainable=True,
-)
+proposer_client, proposer_model = get_actor_client(PROPOSER_ENDPOINT)
+solver_client, solver_model = get_actor_client(SOLVER_ENDPOINT)
 
 
 # =============================================================================
-# Solver Environment (child episodes)
+# Rubric
 # =============================================================================
 
-class SolverEnv(MultiAgentEnv):
+def create_rubric() -> MultiAgentRubric:
+    """Both roles rewarded if solver gets the right answer."""
+    rubric = MultiAgentRubric()
+
+    def proposer_reward(state, **kwargs) -> float:
+        return 1.0 if state.get("extras", {}).get("correct", False) else 0.0
+
+    def solver_reward(state, **kwargs) -> float:
+        return 1.0 if state.get("extras", {}).get("correct", False) else 0.0
+
+    rubric.add_actor_reward_func("proposer", proposer_reward, weight=1.0)
+    rubric.add_actor_reward_func("solver", solver_reward, weight=1.0)
+    return rubric
+
+
+# =============================================================================
+# TaskSet: ALL game logic lives here
+# =============================================================================
+
+class ProposerSolverTask(TaskSet):
     """
-    Single-turn solver environment using MultiAgentEnv for proper actor_id tagging.
+    Proposer generates math problems, Solver answers them.
 
-    Why MultiAgentEnv instead of SingleTurnEnv?
-    - MultiAgentEnv automatically tags trajectory steps with actor_id
-    - This enables per-actor GRPO advantages in MultiAgentRubric
-    - Consistent state structure with parent ProposerSolverEnv
+    Compare with old ProposerSolverEnv + SolverEnv + Protocol:
+    - BEFORE: Two MultiAgentEnv subclasses, Actor objects, Protocol for
+              hierarchical spawning between parent and child environments
+    - AFTER:  All game logic in this TaskSet. Single MultiAgentEnv.
+              Proposer and solver are just roles taking turns.
 
-    With max_turns=1, this behaves like SingleTurnEnv but with full
-    multi-agent integration.
-
-    Note: We compute reward directly in on_turn_complete instead of using
-    a Rubric with funcs=[] to avoid metric name collisions when results
-    are collected across mixed proposer/solver states.
+    Turn 1 (proposer): Generate a simple arithmetic problem.
+    Turn 2 (solver):   Solve the problem, output numeric answer.
+    Evaluate:          Check if solver's answer matches expected.
     """
 
-    name = "solver"
-    actors = ["solver"]  # Single actor for this env
-
-    def __init__(self, **kwargs):
-        # Dummy dataset - actual problems come from spawn()
-        dummy_ds = Dataset.from_dict({
-            "prompt": [[{"role": "user", "content": "dummy"}]],
-            "answer": ["0"],
-            "example_id": [0],
-            "task": ["solver"],
-        })
+    def __init__(self, num_examples: int = -1):
+        dataset = self._create_dataset()
+        if num_examples > 0:
+            dataset = dataset.select(range(min(num_examples, len(dataset))))
 
         super().__init__(
-            dataset=dummy_ds,
-            max_turns=1,  # Single turn - just answer the problem
-            **kwargs
+            name="proposer_solver",
+            dataset=dataset,
+            rubric=create_rubric(),
+            roles=["proposer", "solver"],
         )
 
-    # --- Turn Management ---
+    @staticmethod
+    def _create_dataset() -> Dataset:
+        """Seed prompts for the proposer to generate problems."""
+        return Dataset.from_list([
+            {
+                "prompt": [{"role": "user", "content": "Generate a math problem."}],
+                "answer": "",
+                "info": {"seed": i},
+                "example_id": i,
+                "task": "proposer_solver",
+            }
+            for i in range(10)
+        ])
 
-    def get_initial_actor(self, state: State) -> str:
-        """Solver is the only actor."""
-        return "solver"
-
-    def get_next_actor(self, state: State) -> str:
-        """Never called (max_turns=1), but required by ABC."""
-        return "solver"
-
-    # --- The Two Hooks ---
-
-    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        """
-        Build prompt for solver.
-
-        The prompt comes from the spawn() input - it contains the problem
-        generated by the proposer.
-        """
-        return list(state["prompt"])
-
-    async def on_turn_complete(self, state: State) -> None:
-        """
-        Compute solver's reward based on correctness.
-
-        We compute reward here instead of using a Rubric to avoid
-        metric name collisions in results collection.
-        """
-        if not state["trajectory"]:
-            return
-
-        # Get completion text
-        last_step = state["trajectory"][-1]
-        completion = last_step.get("completion", [])
-        if not completion:
-            state["reward"] = 0.0
-            return
-
-        last_msg = completion[-1]
-        answer_text = last_msg.get("content", "") if isinstance(last_msg, dict) else str(last_msg)
-
-        # Get expected answer
-        expected = str(state.get("answer", ""))
-
-        # Check correctness
-        numbers = re.findall(r'-?\d+', str(answer_text))
-        if numbers and numbers[0] == expected:
-            state["reward"] = 1.0
-        else:
-            state["reward"] = 0.0
-
-
-# =============================================================================
-# Proposer Environment (parent, spawns solvers)
-# =============================================================================
-
-class ProposerSolverEnv(MultiAgentEnv):
-    """
-    Proposer environment that generates problems and spawns solver children.
-
-    Flow:
-    1. Proposer generates a math problem (one turn)
-    2. on_turn_complete() parses problem and spawns N solver episodes
-    3. Solver children run in parallel, get scored by SolverEnv.rubric
-    4. Proposer's solve_rate computed from child rewards
-    5. Stop condition triggers, rollout complete
-
-    The proposer is rewarded based on how well solvers do - this creates
-    an incentive to generate problems that are solvable but challenging.
-    """
-
-    name = "proposer_solver"
-    actors = ["proposer"]  # Only proposer takes turns here; solver is separate env
-
-    def __init__(self, num_solvers: int = 3, **kwargs):
-        """
-        Args:
-            num_solvers: How many solver instances to spawn per problem
-        """
-        super().__init__(**kwargs)
-        self.num_solvers = num_solvers
-
-    # --- Turn Management ---
-
-    def get_initial_actor(self, state: State) -> str:
-        return "proposer"
-
-    def get_next_actor(self, state: State) -> str:
-        # After proposer generates, on_turn_complete handles spawning
-        # Then stop condition triggers - this won't be called
-        return "proposer"
-
-    # --- Stop Condition ---
-
-    @vf.stop
-    async def problem_generated(self, state: State) -> bool:
-        """Stop after proposer generates and solvers complete."""
-        return state.get("extras", {}).get("solvers_done", False)
-
-    # --- State Setup ---
+    # ---- State ----
 
     async def setup_state(self, state: State) -> State:
-        """Initialize proposer-solver specific state fields."""
-        state = await super().setup_state(state)
-        state["extras"]["solvers_done"] = False
-        state["extras"]["solver_results"] = []  # Individual solver rewards
-        state["extras"]["solve_rate"] = 0.0     # Fraction of solvers correct
-        state["extras"]["problem"] = ""          # Generated problem text
-        state["extras"]["expected_answer"] = ""  # Computed answer
+        state["extras"]["problem"] = ""
+        state["extras"]["expected_answer"] = ""
+        state["extras"]["solver_answer"] = ""
+        state["extras"]["correct"] = False
         return state
 
-    # --- The Two Hooks ---
+    # ---- Prompts ----
 
-    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        """
-        Build prompt for proposer.
+    async def build_prompt(self, role: str, state: State) -> Messages:
+        if role == "proposer":
+            return [
+                {"role": "system", "content": (
+                    "You are a Math Problem Proposer. Generate a simple arithmetic problem.\n\n"
+                    "Rules:\n"
+                    "1. Create a problem using +, -, or * with two numbers between 1-20\n"
+                    "2. Format: Just state the problem, e.g., \"What is 7 + 5?\"\n"
+                    "3. Make it solvable but not trivial\n\n"
+                    "Output only the problem, nothing else."
+                )},
+                {"role": "user", "content": "Generate a math problem."},
+            ]
 
-        Uses the prompt from the dataset which asks proposer to generate
-        a math problem.
-        """
-        return list(state["prompt"])
+        else:  # solver
+            problem = state["extras"]["problem"]
+            return [
+                {"role": "system", "content": (
+                    "You are a Math Solver. Solve the given problem.\n\n"
+                    "Rules:\n"
+                    "1. Calculate the answer\n"
+                    "2. Output ONLY the numeric answer, nothing else\n"
+                    "3. Example: If asked \"What is 3 + 4?\", output just: 7"
+                )},
+                {"role": "user", "content": problem},
+            ]
+
+    # ---- Game Logic ----
 
     async def on_turn_complete(self, state: State) -> None:
-        """
-        After proposer generates a problem, spawn solver episodes.
-
-        This is where the hierarchical spawning happens:
-        1. Parse proposer's generated problem
-        2. Compute the expected answer
-        3. Create N solver inputs with the problem
-        4. Spawn via Protocol.spawn() - runs in parallel
-        5. Collect results and compute solve_rate
-        """
         if not state["trajectory"]:
             return
 
-        # --- Extract proposer's problem ---
         last_step = state["trajectory"][-1]
-        last_completion = last_step.get("completion", [])
-        if not last_completion:
+        actor_id = last_step.get("extras", {}).get("actor_id", "")
+        completion = last_step.get("completion", [])
+        if not completion:
             return
+        content = completion[-1].get("content", "") or ""
 
-        last_msg = last_completion[-1]
-        problem = last_msg.get("content", "") if isinstance(last_msg, dict) else str(last_msg)
-        state["extras"]["problem"] = problem
+        if actor_id == "proposer":
+            state["extras"]["problem"] = content
+            answer = self._solve_problem(content)
+            state["extras"]["expected_answer"] = str(answer) if answer is not None else ""
 
-        # --- Compute expected answer ---
-        answer = self._solve_problem(problem)
-        answer_str = str(answer) if answer is not None else ""
-        state["extras"]["expected_answer"] = answer_str
+        elif actor_id == "solver":
+            state["extras"]["solver_answer"] = content
+            expected = state["extras"]["expected_answer"]
+            numbers = re.findall(r'-?\d+', content)
+            state["extras"]["correct"] = bool(numbers and numbers[0] == expected)
 
-        # --- Build solver inputs ---
-        solver_inputs = []
-        for i in range(self.num_solvers):
-            solver_inputs.append({
-                "prompt": [
-                    {"role": "system", "content": SOLVER.system_prompt},
-                    {"role": "user", "content": problem}
-                ],
-                "answer": answer_str,
-                "example_id": state["input"]["example_id"],
-                "task": "solver",  # Routes to SolverEnv
-            })
+    async def should_stop(self, state: State) -> bool:
+        actor_history = state.get("extras", {}).get("actor_history", [])
+        proposer_turns = sum(1 for aid, _ in actor_history if aid == "proposer")
+        solver_turns = sum(1 for aid, _ in actor_history if aid == "solver")
+        return proposer_turns >= 1 and solver_turns >= 1
 
-        # --- Spawn child episodes ---
-        # Protocol.spawn() runs rollouts in parallel
-        # Reward is computed by SolverEnv.on_turn_complete (not rubric)
-        solver_states = await self.protocol.spawn(
-            solver_inputs,
-            client=state["client"],
-            model=state["model"],
-            sampling_args=state.get("sampling_args"),
-            score=False,  # Reward already computed in on_turn_complete
-        )
+    async def on_game_end(self, state: State) -> None:
+        pass
 
-        # --- Collect results ---
-        solver_rewards = []
-        for solver_state in solver_states:
-            reward = solver_state.get("reward")
-            reward = float(reward) if reward is not None else 0.0
-            solver_rewards.append(reward)
-            # Add as child for flattening later
-            state["child_states"].append(solver_state)
+    # ---- Helpers ----
 
-        state["extras"]["solver_results"] = solver_rewards
-        state["extras"]["solve_rate"] = (
-            sum(solver_rewards) / len(solver_rewards) if solver_rewards else 0.0
-        )
-        state["extras"]["num_solvers"] = len(solver_rewards)  # Store count for metrics
-        state["extras"]["solvers_done"] = True
-
-    # --- Helper: Parse and Solve Math Problem ---
-
-    def _solve_problem(self, problem: str) -> int | None:
-        """
-        Parse a simple arithmetic problem and compute the answer.
-
-        Handles: "What is 7 + 5?", "Calculate 12 * 3", "7+5", etc.
-        """
+    @staticmethod
+    def _solve_problem(problem: str) -> int | None:
+        """Parse a simple arithmetic problem and compute the answer."""
         match = re.search(r'(\d+)\s*([+\-*])\s*(\d+)', problem)
         if not match:
             return None
-
         a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
-
         if op == '+':
             return a + b
         elif op == '-':
@@ -313,148 +199,36 @@ class ProposerSolverEnv(MultiAgentEnv):
 
 
 # =============================================================================
-# Rubric
-# =============================================================================
-
-def create_rubric() -> MultiAgentRubric:
-    """
-    Create rubric with per-actor reward functions.
-
-    Scoring strategy:
-    - Proposer: Rewarded based on solver success rate (solve_rate)
-      - This incentivizes generating solvable problems
-      - solve_rate is computed during on_turn_complete from child rewards
-    - Solver: Already scored by SolverEnv.rubric during spawn()
-      - We preserve that reward (don't re-score)
-
-    GRPO advantages are computed per-actor group:
-    - Proposers compared to other proposers (across batch)
-    - Solvers compared to other solvers (across batch)
-    """
-    rubric = MultiAgentRubric()
-
-    # --- Proposer Reward ---
-    def proposer_reward(state: State, **kwargs) -> float:
-        """
-        Proposer reward = solver success rate.
-
-        This creates interesting training dynamics:
-        - Too easy problems: solvers always win, proposer gets 1.0
-        - Too hard problems: solvers fail, proposer gets 0.0
-        - Optimal: challenging but solvable problems
-        """
-        extras = state.get("extras") or {}
-        solve_rate = extras.get("solve_rate")
-        return float(solve_rate) if solve_rate is not None else 0.0
-
-    # --- Solver Reward (for states that weren't pre-scored) ---
-    def solver_reward(state: State, **kwargs) -> float:
-        """
-        Solver reward - returns existing reward if already scored.
-
-        Solver states are scored by SolverEnv.rubric during spawn().
-        This function is a fallback for edge cases.
-        """
-        # Return existing reward if present (don't re-compute)
-        reward = state.get("reward")
-        return float(reward) if reward is not None else 0.0
-
-    # --- Proposer Metrics (weight=0, for logging only) ---
-    def solve_rate_metric(state: State, **kwargs) -> float:
-        """Track solve rate (only meaningful for proposer states)."""
-        extras = state.get("extras") or {}
-        solve_rate = extras.get("solve_rate")
-        return float(solve_rate) if solve_rate is not None else 0.0
-
-    def num_solvers_metric(state: State, **kwargs) -> float:
-        """Track number of solver children (stored in extras during on_turn_complete)."""
-        extras = state.get("extras") or {}
-        return float(extras.get("num_solvers", 0))
-
-    # Register reward functions (weight=1.0 for actual rewards)
-    rubric.add_actor_reward_func("proposer", proposer_reward, weight=1.0)
-    rubric.add_actor_reward_func("solver", solver_reward, weight=1.0)
-
-    # Register proposer-specific metrics (weight=0 = tracked but not in reward)
-    # Using add_actor_reward_func so they only apply to proposer states
-    rubric.add_actor_reward_func("proposer", solve_rate_metric, weight=0.0)
-    rubric.add_actor_reward_func("proposer", num_solvers_metric, weight=0.0)
-
-    return rubric
-
-
-# =============================================================================
-# Dataset
-# =============================================================================
-
-def create_dataset() -> Dataset:
-    """
-    Create dataset for proposer-solver games.
-
-    Each row is a seed for the proposer to generate a problem.
-    The actual problem content is generated by the proposer model.
-    """
-    items = [
-        {
-            "prompt": [
-                {"role": "system", "content": PROPOSER.system_prompt},
-                {"role": "user", "content": "Generate a math problem."}
-            ],
-            "answer": "",  # Not used - proposer generates the problem
-            "example_id": i,
-            "task": "proposer_solver",
-        }
-        for i in range(10)
-    ]
-    return Dataset.from_list(items)
-
-
-# =============================================================================
 # Environment Loader
 # =============================================================================
 
-def load_environment(
-    num_solvers: int = 3,
-    num_examples: int = -1,
-) -> ProposerSolverEnv:
+def load_environment(num_examples: int = -1):
     """
-    Factory function to create a fully configured Proposer-Solver environment.
-
-    Args:
-        num_solvers: Number of solver instances to spawn per problem (default 3)
-        num_examples: Number of problems to generate (-1 = all 10)
-
-    Returns:
-        Ready-to-use ProposerSolverEnv with Protocol wired up
-
-    Example:
-        env = load_environment(num_solvers=3, num_examples=5)
-        results = await env.evaluate(client, model, num_examples=5)
+    Composition:
+        Task   = ProposerSolverTask (problem generation + solving pipeline)
+        Agents = {proposer: generator, solver: answerer}
+        Env    = MultiAgentEnv(task, agents)
     """
-    dataset = create_dataset()
-    if num_examples > 0:
-        dataset = dataset.select(range(min(num_examples, len(dataset))))
+    task = ProposerSolverTask(num_examples=num_examples)
 
-    rubric = create_rubric()
-
-    # Create proposer environment (parent)
-    proposer_env = ProposerSolverEnv(
-        num_solvers=num_solvers,
-        rubric=rubric,
-        max_turns=2,  # Proposer turn + potential continuation
-        dataset=dataset,
+    proposer = Agent(
+        id="proposer",
+        max_tokens=50,
+        is_trainable=True,
+        model=proposer_model,
+        client=proposer_client,
     )
 
-    # Create solver environment (children spawned here)
-    solver_env = SolverEnv()
-
-    # Wire everything together via Protocol
-    # - Registers both actors (PROPOSER, SOLVER)
-    # - Registers both environments
-    # - Injects protocol reference into each env
-    Protocol(
-        actors=[PROPOSER, SOLVER],
-        envs=[proposer_env, solver_env],
+    solver = Agent(
+        id="solver",
+        max_tokens=20,
+        is_trainable=True,
+        model=solver_model,
+        client=solver_client,
     )
 
-    return proposer_env
+    return MultiAgentEnv(
+        task=task,
+        agents={"proposer": proposer, "solver": solver},
+        max_turns=4,
+    )
