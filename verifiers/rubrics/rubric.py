@@ -420,6 +420,10 @@ class Rubric:
             str, dict[str, float]
         ] = {}  # {agent_id: {opponent_sig: baseline}}
 
+        # DEBUG
+        print(f"[DEBUG] has_multiagent={has_multiagent}, num_states={num_states}")
+        print(f"[DEBUG] aggregated_agent_rewards={aggregated_agent_rewards[:3]}")
+
         if has_multiagent:
             # Build opponent-conditioned baselines for each agent
             # For each agent, group rollouts by what the opponent(s) did
@@ -457,6 +461,14 @@ class Rubric:
                         baseline = sum(r for _, r in rewards_list) / len(rewards_list)
                         opponent_baselines[agent_id][opponent_sig] = baseline
 
+                # DEBUG
+                print(
+                    f"[DEBUG] agent_id={agent_id}, opponent_groups keys={list(opponent_groups.keys())[:3]}"
+                )
+                print(
+                    f"[DEBUG] opponent_baselines[{agent_id}]={opponent_baselines[agent_id]}"
+                )
+
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
@@ -491,8 +503,17 @@ class Rubric:
                             opponent_sig, avg_reward
                         )
                         t["advantage"] = t["reward"] - baseline
+                        # DEBUG (only first few)
+                        if i < 2:
+                            print(
+                                f"[DEBUG] i={i} agent={agent_id} reward={t['reward']} baseline={baseline} adv={t['advantage']}"
+                            )
                     else:
                         t["advantage"] = t["reward"] - avg_reward
+                        if i < 2:
+                            print(
+                                f"[DEBUG] i={i} agent={agent_id} NOT in opponent_baselines, using avg_reward"
+                            )
 
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
