@@ -412,6 +412,51 @@ class Rubric:
         end_time = time.time()
         scoring_ms = (end_time - start_time) * 1000
         avg_reward = sum(aggregated_rewards) / num_states
+
+        # For multi-agent: compute opponent-conditioned baselines
+        # Group states by opponent behavior to isolate each agent's learning signal
+        has_multiagent = any(aggregated_agent_rewards[i] for i in range(num_states))
+        opponent_baselines: dict[
+            str, dict[str, float]
+        ] = {}  # {agent_id: {opponent_sig: baseline}}
+
+        if has_multiagent:
+            # Build opponent-conditioned baselines for each agent
+            # For each agent, group rollouts by what the opponent(s) did
+            agent_ids_in_group: set[str] = set()
+            for agent_rewards in aggregated_agent_rewards:
+                agent_ids_in_group.update(agent_rewards.keys())
+
+            for agent_id in agent_ids_in_group:
+                # For each state, extract opponent's actions (actions by agents != agent_id)
+                opponent_groups: dict[
+                    str, list[tuple[int, float]]
+                ] = {}  # {opponent_signature: [(state_idx, agent_reward)]}
+                for i, state in enumerate(states):
+                    # Get opponent's action signature from trajectory
+                    opponent_actions = []
+                    for t in state["trajectory"]:
+                        step_agent_id = t.get("extras", {}).get("agent_id")
+                        if step_agent_id and step_agent_id != agent_id:
+                            # Use completion content as opponent action signature
+                            opponent_actions.append(str(t.get("completion", "")))
+                    opponent_sig = "|".join(opponent_actions)
+
+                    # Get this agent's reward for this state
+                    agent_reward = aggregated_agent_rewards[i].get(
+                        agent_id, aggregated_rewards[i]
+                    )
+                    if opponent_sig not in opponent_groups:
+                        opponent_groups[opponent_sig] = []
+                    opponent_groups[opponent_sig].append((i, agent_reward))
+
+                # Compute baseline for each opponent behavior group
+                opponent_baselines[agent_id] = {}
+                for opponent_sig, rewards_list in opponent_groups.items():
+                    if rewards_list:
+                        baseline = sum(r for _, r in rewards_list) / len(rewards_list)
+                        opponent_baselines[agent_id][opponent_sig] = baseline
+
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
@@ -429,9 +474,25 @@ class Rubric:
                         t["reward"] = agent_rewards.get(agent_id, state["reward"])
                     else:
                         t["reward"] = state["reward"]
-                # Compute per-agent advantage: agent's reward - shared baseline
+
+                # Compute per-agent advantage with opponent-conditioned baseline
                 if t["advantage"] is None:
-                    t["advantage"] = t["reward"] - avg_reward
+                    agent_id = t.get("extras", {}).get("agent_id")
+                    if agent_id and agent_id in opponent_baselines:
+                        # Get opponent's action signature for this state
+                        opponent_actions = []
+                        for t2 in state["trajectory"]:
+                            step_agent_id = t2.get("extras", {}).get("agent_id")
+                            if step_agent_id and step_agent_id != agent_id:
+                                opponent_actions.append(str(t2.get("completion", "")))
+                        opponent_sig = "|".join(opponent_actions)
+                        # Use opponent-conditioned baseline
+                        baseline = opponent_baselines[agent_id].get(
+                            opponent_sig, avg_reward
+                        )
+                        t["advantage"] = t["reward"] - baseline
+                    else:
+                        t["advantage"] = t["reward"] - avg_reward
 
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
