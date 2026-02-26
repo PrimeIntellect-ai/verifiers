@@ -423,6 +423,14 @@ class Rubric:
         # DEBUG
         print(f"[DEBUG] has_multiagent={has_multiagent}, num_states={num_states}")
         print(f"[DEBUG] aggregated_agent_rewards={aggregated_agent_rewards[:3]}")
+        # DEBUG: inspect trajectory structure
+        if states and states[0].get("trajectory"):
+            traj = states[0]["trajectory"]
+            print(f"[DEBUG] trajectory len={len(traj)}")
+            for idx, t in enumerate(traj):
+                print(
+                    f"[DEBUG] step {idx}: agent_id={t.get('extras', {}).get('agent_id')}, completion={t.get('completion')}"
+                )
 
         if has_multiagent:
             # Build opponent-conditioned baselines for each agent
