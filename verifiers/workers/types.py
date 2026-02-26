@@ -68,6 +68,11 @@ class RunGroupRequest(BaseRequest):
     state_columns: list[str] | None
 
 
+class CancelRequest(BaseRequest):
+    request_type: Literal["cancel"] = "cancel"
+    cancel_request_ids: list[str]
+
+
 class RunGroupResponse(BaseResponse):
     outputs: list[CoercedRolloutOutput] | None = None
 
