@@ -38,6 +38,10 @@ class MultiAgentRubric(Rubric):
         # Per-actor reward functions: actor_id -> [(func, weight), ...]
         self.actor_reward_funcs: dict[str, list[tuple[RewardFunc, float]]] = defaultdict(list)
 
+        # Actor metadata: actor_id -> {"is_trainable": bool}
+        # Populated by MultiAgentEnv.register_actor() during setup
+        self.actors: dict[str, dict] = {}
+
     def add_actor_reward_func(
         self,
         actor_id: str,
@@ -54,6 +58,13 @@ class MultiAgentRubric(Rubric):
     ) -> None:
         """Add a metric (zero-weight reward) for logging without affecting reward."""
         self.add_actor_reward_func(actor_id, func, weight=0.0)
+
+    def register_actor(self, actor_id: str, is_trainable: bool = True) -> None:
+        """Register an actor with trainability metadata.
+
+        Called automatically by MultiAgentEnv during setup.
+        """
+        self.actors[actor_id] = {"is_trainable": is_trainable}
 
     def get_actor_id_from_state(self, state: State) -> str | None:
         """Extract actor ID from state (checks extras, actor_history, trajectory)."""

@@ -22,15 +22,20 @@ from datasets import Dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.clients import Client, OpenAIChatCompletionsClient
+from verifiers.clients import Client, OpenAIChatCompletionsClient, resolve_client
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.types import (
+    ClientConfig,
     Messages,
     RolloutInput,
+    RolloutOutput,
     SamplingArgs,
     State,
     TrajectoryStep,
 )
+from verifiers.utils.async_utils import maybe_retry
+from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.save_utils import state_to_output
 
 
 class MultiAgentEnv(MultiTurnEnv):
@@ -87,6 +92,9 @@ class MultiAgentEnv(MultiTurnEnv):
 
         super().__init__(**kwargs)
 
+        # Auto-register actors with MultiAgentRubric for training support
+        self._register_actors_with_rubric()
+
     # -------------------------------------------------------------------------
     # Actor / Agent Lookup
     # -------------------------------------------------------------------------
@@ -105,6 +113,17 @@ class MultiAgentEnv(MultiTurnEnv):
         for aid, agent in agents.items():
             if aid not in self._agents:
                 self._agents[aid] = agent
+        self._register_actors_with_rubric()
+
+    def _register_actors_with_rubric(self) -> None:
+        """Register all agents with MultiAgentRubric for training support."""
+        from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
+
+        if hasattr(self, "rubric") and isinstance(self.rubric, MultiAgentRubric):
+            for agent_id, agent in self._agents.items():
+                self.rubric.register_actor(
+                    agent_id, is_trainable=agent.is_trainable
+                )
 
     # -------------------------------------------------------------------------
     # Turn Management (delegates to TaskSet, or subclass overrides)
@@ -408,11 +427,95 @@ class MultiAgentEnv(MultiTurnEnv):
         return actor_states
 
     # -------------------------------------------------------------------------
-    # run_group — pass through to parent
+    # Training Support
     # -------------------------------------------------------------------------
-    # For training (actor-level states for GRPO), use create_actor_states()
-    # on raw game states directly. The parent's run_group handles:
-    # rollouts → scoring → state_to_output conversion.
+
+    @property
+    def outputs_per_input(self) -> int:
+        """Number of RolloutOutputs produced per rollout input.
+
+        For multi-agent: one output per trainable actor per game.
+        Prime-rl reads this to determine how many game inputs to create.
+        """
+        trainable = [a for a in self._agents.values() if a.is_trainable]
+        return len(trainable) or 1
+
+    async def run_group(
+        self,
+        group_inputs: list[RolloutInput],
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client=None,
+        **kwargs,
+    ) -> list[RolloutOutput]:
+        """Run a group of rollouts, splitting into per-actor outputs.
+
+        Each game is split into per-actor states (trainable only) before
+        scoring, so the rubric sees correct actor IDs and each actor gets
+        its own reward. Non-trainable actors are excluded entirely.
+        """
+        # Server mode: delegate (server has the same override)
+        env_client = env_client or getattr(self, "env_client", None)
+        if env_client is not None:
+            resolved_config = (
+                resolve_client_config(client)
+                if isinstance(client, ClientConfig)
+                else None
+            )
+            if resolved_config is None:
+                raise ValueError(
+                    f"client must be ClientConfig in server mode, got {type(client)}"
+                )
+            return await env_client.run_group(
+                group_inputs,
+                resolved_config,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+            )
+
+        resolved_client = resolve_client(client)
+        state_columns = list(state_columns or [])
+
+        trainable_ids = [
+            aid for aid, a in self._agents.items() if a.is_trainable
+        ]
+        num_trainable = len(trainable_ids) or 1
+
+        # Run fewer games when multiple actors are trainable,
+        # so total outputs = len(group_inputs)
+        games_count = max(1, len(group_inputs) // num_trainable)
+        game_inputs = group_inputs[:games_count]
+
+        async def attempt() -> list[State]:
+            game_states = await asyncio.gather(*[
+                self.rollout(inp, resolved_client, model, sampling_args)
+                for inp in game_inputs
+            ])
+            # Split each game into per-actor states (trainable only)
+            actor_states = []
+            for state in game_states:
+                for astate in self.create_actor_states(
+                    state, actor_ids=trainable_ids
+                ):
+                    actor_states.append(astate)
+
+            if self.score_rollouts:
+                await self.rubric.score_group(actor_states)
+            else:
+                await self.rubric.dummy_score_group(actor_states)
+            return actor_states
+
+        actor_states = await maybe_retry(
+            attempt, max_retries=max_retries
+        )()
+        return [
+            state_to_output(s, state_columns) for s in actor_states
+        ]
 
     # -------------------------------------------------------------------------
     # Result Building (for generate/eval)
