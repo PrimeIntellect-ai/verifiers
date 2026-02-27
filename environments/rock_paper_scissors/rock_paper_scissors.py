@@ -225,7 +225,7 @@ def load_environment(num_rounds: int = 3, num_examples: int = -1):
 
     player1 = Agent(
         id="player1",
-        max_tokens=10,
+        max_tokens=20,
         is_trainable=True,
         model=p1_model,
         client=p1_client,
@@ -233,7 +233,7 @@ def load_environment(num_rounds: int = 3, num_examples: int = -1):
 
     player2 = Agent(
         id="player2",
-        max_tokens=10,
+        max_tokens=20,
         is_trainable=True,
         model=p2_model,
         client=p2_client,
