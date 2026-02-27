@@ -1,0 +1,17 @@
+[project]
+name = "proposer-solver-v2"
+description = "Proposer-Solver v2: multi-agent with TaskSet/Agent pattern"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers>=0.1.9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["proposer_solver_v2.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
