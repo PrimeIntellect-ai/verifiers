@@ -121,8 +121,14 @@ class RPSTask(TaskSet):
         round_num = state["extras"]["round"] + 1
         history = state["extras"]["history"]
 
+        if role == "player1":
+            strategy_hint = "You like to play aggressively and switch moves often to keep your opponent guessing."
+        else:
+            strategy_hint = "You like to play defensively and try to predict what your opponent will do next."
+
         system = (
-            f"You are {role} in Rock Paper Scissors. Best of {self.num_rounds} rounds.\n\n"
+            f"You are {role} in Rock Paper Scissors. Best of {self.num_rounds} rounds.\n"
+            f"{strategy_hint}\n\n"
             "Respond with EXACTLY one word: rock, paper, or scissors\n"
             "Nothing else. Just the word."
         )
