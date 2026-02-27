@@ -116,8 +116,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._interception_server = InterceptionServer(port=interception_port)
 
     async def get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                frpc_output = "\n".join(self._tunnel.recent_output)
+                logger.warning(
+                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
                 port = self._interception_server.port
                 if logger.isEnabledFor(logging.DEBUG):
@@ -280,7 +288,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
-                # No request yet, check if agent finished or timed out
+                # No request yet — check tunnel liveness first
+                if self._tunnel is not None and not self._tunnel.is_running:
+                    frpc_output = "\n".join(self._tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
                     return []

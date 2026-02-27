@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,6 +17,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.environments]
 
 class FakeTunnel:
     instances: list["FakeTunnel"] = []
+    _next_id: int = 0
 
     def __init__(
         self,
@@ -27,17 +29,35 @@ class FakeTunnel:
         self.local_addr = local_addr
         self.log_level = log_level
         self.url: str | None = None
+        FakeTunnel._next_id += 1
+        self.tunnel_id: str = f"fake-tunnel-{FakeTunnel._next_id}"
+        self._is_running: bool = True
+        self._recent_output: list[str] = ["frpc log line 1", "frpc log line 2"]
         self.start_calls = 0
         self.stop_calls = 0
         FakeTunnel.instances.append(self)
 
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
+
+    @property
+    def recent_output(self) -> list[str]:
+        return list(self._recent_output)
+
     async def start(self) -> str:
         self.start_calls += 1
+        self._is_running = True
         self.url = "https://unit-test.tunnel.prime.ai"
         return self.url
 
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        self._is_running = False
+
     def sync_stop(self) -> None:
         self.stop_calls += 1
+        self._is_running = False
 
 
 class GatewayCliAgentEnv(vf.RolloutGatewayMixin, vf.CliAgentEnv):
@@ -167,6 +187,7 @@ def _build_gateway_transport(tracker: dict) -> httpx.MockTransport:
 @pytest.mark.asyncio
 async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
     monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
 
     tracker = {
@@ -276,6 +297,7 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
 @pytest.mark.asyncio
 async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
     FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
     monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
 
     dataset = Dataset.from_dict(
@@ -317,6 +339,7 @@ async def test_cli_agent_env_maintains_tunnel_per_local_addr(monkeypatch):
 async def test_use_gateway_false_initializes_interception(monkeypatch):
     """With use_gateway=False, interception server is created and gateway is not."""
     FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
     monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
 
     dataset = Dataset.from_dict(
@@ -348,3 +371,180 @@ async def test_use_gateway_false_initializes_interception(monkeypatch):
     await env.teardown_resources()  # stops interception (which was never started)
 
     assert len(FakeTunnel.instances) == 0
+
+
+@pytest.mark.asyncio
+async def test_dead_tunnel_recreated_on_get_gateway_tunnel_url(monkeypatch):
+    """Dead tunnel is stopped and replaced when get_gateway_tunnel_url is called."""
+    FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        gateway_port=8000,
+    )
+
+    # Start a tunnel
+    await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
+    assert len(FakeTunnel.instances) == 1
+    original_tunnel = FakeTunnel.instances[0]
+    assert original_tunnel.start_calls == 1
+
+    # Kill the tunnel
+    original_tunnel._is_running = False
+
+    # Requesting URL again should recreate
+    url2 = await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
+    assert url2 == "https://unit-test.tunnel.prime.ai"
+    assert len(FakeTunnel.instances) == 2
+    assert original_tunnel.stop_calls == 1
+    new_tunnel = FakeTunnel.instances[1]
+    assert new_tunnel.start_calls == 1
+    assert new_tunnel._is_running is True
+
+    await env.teardown_gateway()
+
+
+@pytest.mark.asyncio
+async def test_poll_job_completion_raises_tunnel_error_on_dead_tunnel(monkeypatch):
+    """poll_job_completion raises TunnelError when the tunnel dies mid-rollout."""
+    FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        gateway_port=8000,
+    )
+
+    # Start a tunnel
+    await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
+    tunnel = FakeTunnel.instances[0]
+
+    # Mock sandbox_client.get_background_job to never complete
+    env.sandbox_client = SimpleNamespace(
+        get_background_job=AsyncMock(return_value=SimpleNamespace(completed=False)),
+    )
+
+    state = {
+        "rollout_id": "rollout_test123",
+        "tunnel_local_addr": "10.0.0.1",
+    }
+    background_job = SimpleNamespace(id="job-1")
+
+    # Kill tunnel after a brief delay
+    async def kill_tunnel():
+        await asyncio.sleep(0.05)
+        tunnel._is_running = False
+
+    asyncio.create_task(kill_tunnel())
+
+    with pytest.raises(vf.TunnelError, match="Tunnel process died"):
+        await env.poll_job_completion(state, "sb-123", background_job)
+
+    await env.teardown_gateway()
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_restarts_dead_tunnels(monkeypatch):
+    """Background health monitor detects and restarts dead tunnels."""
+    FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        gateway_port=8000,
+    )
+
+    # Start a tunnel (this also starts the health monitor)
+    await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
+    assert env._tunnel_monitor_task is not None
+    assert not env._tunnel_monitor_task.done()
+
+    original_tunnel = FakeTunnel.instances[0]
+    original_tunnel._is_running = False
+
+    # Run the health monitor with a short interval
+    # Cancel the default one and start one with a short interval
+    env._tunnel_monitor_task.cancel()
+    try:
+        await env._tunnel_monitor_task
+    except asyncio.CancelledError:
+        pass
+
+    env._tunnel_monitor_task = asyncio.create_task(
+        env._tunnel_health_monitor(interval=0.05)
+    )
+
+    # Wait for the monitor to detect and restart
+    await asyncio.sleep(0.2)
+
+    assert len(FakeTunnel.instances) == 2
+    assert original_tunnel.stop_calls == 1
+    new_tunnel = FakeTunnel.instances[1]
+    assert new_tunnel.start_calls == 1
+    assert new_tunnel._is_running is True
+
+    await env.teardown_gateway()
+
+
+@pytest.mark.asyncio
+async def test_teardown_gateway_cancels_health_monitor(monkeypatch):
+    """teardown_gateway cancels the health monitor task."""
+    FakeTunnel.instances.clear()
+    FakeTunnel._next_id = 0
+    monkeypatch.setattr(rollout_gateway_mixin, "Tunnel", FakeTunnel)
+
+    dataset = Dataset.from_dict(
+        {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": [""],
+            "example_id": [0],
+        }
+    )
+    env = GatewayCliAgentEnv(
+        run_command="echo run-agent",
+        dataset=dataset,
+        rubric=vf.Rubric(),
+        gateway_port=8000,
+    )
+
+    # Start a tunnel to create the health monitor
+    await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
+    monitor_task = env._tunnel_monitor_task
+    assert monitor_task is not None
+    assert not monitor_task.done()
+
+    await env.teardown_gateway()
+
+    assert monitor_task.done()
+    assert env._tunnel_monitor_task is None
