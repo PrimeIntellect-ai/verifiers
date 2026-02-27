@@ -253,8 +253,8 @@ Rules:
 
 Good strategy: Start broad (Is it alive? Is it man-made?) then narrow down.
 
-Format: Just ask your question directly.""",
-    max_tokens=50,
+Format: Just ask your question directly. Do not use <think> tags or internal reasoning. Respond with only your question.""",
+    max_tokens=100,
     is_trainable=True,
     model=guesser_model,
     client=guesser_client,
