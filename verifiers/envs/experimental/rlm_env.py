@@ -1952,7 +1952,7 @@ class RLMEnv(vf.StatefulToolEnv):
                    then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
                    Each list is deduplicated by tool name. If two different tools
                    share a name within a list, initialization raises an error.
-        sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        sub_llm_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
         root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "heavy"
@@ -2000,7 +2000,7 @@ class RLMEnv(vf.StatefulToolEnv):
         tools: list[Callable] | None = None,
         root_tools: list[Callable] | None = None,
         sub_tools: list[Callable] | None = None,
-        sub_tool_max_turns: int = 5,
+        sub_llm_max_turns: int = 5,
         sub_model: str | None = None,
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
@@ -2047,7 +2047,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.shared_tools = tools or []
         self.root_only_tools = root_tools or []
         self.sub_only_tools = sub_tools or []
-        self.sub_tool_max_turns = sub_tool_max_turns
+        self.sub_llm_max_turns = sub_llm_max_turns
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
         self.custom_system_prompt = system_prompt
@@ -2475,7 +2475,7 @@ class RLMEnv(vf.StatefulToolEnv):
         turns: list[SubLLMTurn] = []
         tools = self.sub_tool_defs if self.sub_tool_defs else None
 
-        for _ in range(self.sub_tool_max_turns):
+        for _ in range(self.sub_llm_max_turns):
             num_turns += 1
             prompt_snapshot = _clone_messages(current_messages)
 
@@ -2751,7 +2751,7 @@ class RLMEnv(vf.StatefulToolEnv):
         messages_with_system: Messages = [
             SystemMessage(
                 content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
-                    num_turns=self.sub_tool_max_turns
+                    num_turns=self.sub_llm_max_turns
                 )
             ),
             *messages,

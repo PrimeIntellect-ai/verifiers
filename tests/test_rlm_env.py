@@ -90,7 +90,7 @@ def rlm_env_with_sub_tools() -> RLMEnv:
     return build_env(
         dataset,
         sub_tools=[sample_tool, another_tool],
-        sub_tool_max_turns=3,
+        sub_llm_max_turns=3,
         repl_language="python",
         interception_url="http://test.invalid",
     )
@@ -500,7 +500,7 @@ class TestPromptVerbosity:
     async def test_sub_prompt_verbosity(self, verbosity: str, rlm_env: RLMEnv):
         env = rlm_env
         env.sub_prompt_verbosity = verbosity
-        env.sub_tool_max_turns = 7
+        env.sub_llm_max_turns = 7
 
         captured: dict[str, Any] = {}
 
@@ -535,7 +535,7 @@ class TestPromptVerbosity:
         )
 
         expected = rlm_module._SUB_LLM_SYSTEM_PROMPT_STORE[verbosity].format(
-            num_turns=env.sub_tool_max_turns
+            num_turns=env.sub_llm_max_turns
         )
         assert captured["messages"][0]["role"] == "system"
         assert captured["messages"][0]["content"] == expected
