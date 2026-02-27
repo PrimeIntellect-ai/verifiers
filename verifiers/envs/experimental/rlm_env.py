@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import pickle
-import random
 import re
 import shlex
 import shutil
@@ -37,7 +36,7 @@ import tempfile
 import textwrap
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Literal, cast
@@ -470,7 +469,6 @@ def _build_python_worker_script_template() -> str:
             "        answer = json.load(f)",
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
-            'ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
@@ -480,14 +478,11 @@ def _build_python_worker_script_template() -> str:
             "def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):",
             "    if not ROOT_TOOL_URL:",
             '        raise RuntimeError("Root tool URL not configured")',
-            '    if ROOT_TOOL_SERIALIZATION != "pickle":',
-            '        raise RuntimeError("Only pickle serialization is supported")',
             "",
             '    args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")',
             '    kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")',
             f"    payload = {dict_open}",
             '        "tool_name": tool_name,',
-            '        "serialization": "pickle",',
             '        "args": args_payload,',
             '        "kwargs": kwargs_payload,',
             f"    {dict_close}",
@@ -626,7 +621,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     import urllib.request
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
-    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
@@ -642,14 +636,11 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
         if not ROOT_TOOL_URL:
             raise RuntimeError("Root tool URL not configured")
-        if ROOT_TOOL_SERIALIZATION != "pickle":
-            raise RuntimeError("Only pickle serialization is supported")
 
         args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
         kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
         payload = {
             "tool_name": tool_name,
-            "serialization": "pickle",
             "args": args_payload,
             "kwargs": kwargs_payload,
         }
@@ -1296,9 +1287,9 @@ class RLMExecutor(SandboxMixin):
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
         self.init_sandbox_client(
-            sandbox_client_max_workers=env.sandbox_client_max_workers,
-            sandbox_client_max_connections=env.sandbox_client_max_connections,
-            sandbox_client_max_keepalive_connections=env.sandbox_client_max_keepalive_connections,
+            sandbox_client_max_workers=50,
+            sandbox_client_max_connections=100,
+            sandbox_client_max_keepalive_connections=50,
         )
 
     def create_rollout_dirs(self, state: State) -> None:
@@ -1579,7 +1570,7 @@ class RLMExecutor(SandboxMixin):
         result = await self._execute_sandbox_command(
             sandbox_id,
             cmd,
-            timeout=self.env._compute_install_wait_seconds(),
+            timeout=self.env.max_startup_wait_seconds,
         )
         self._raise_on_command_error(result, "pip install")
 
@@ -1920,184 +1911,11 @@ class RLMExecutor(SandboxMixin):
                     pass
 
 
-@dataclass
-class _PoolEntry:
-    """Shared interception server + tunnel for a given port."""
-
-    port: int
-    bind_host: str
-    server_app: web.Application | None = None
-    server_runner: web.AppRunner | None = None
-    server_site: web.TCPSite | None = None
-    tunnel: Tunnel | None = None
-    tunnel_url: str | None = None
-    refcount: int = 0
-    rollout_dispatch: dict[str, Any] = field(default_factory=dict)
-
-
-class _InterceptionPool:
-    """Shares interception servers and tunnels across RLMEnv instances on the same port.
-
-    When multiple RLMEnv instances use the same non-zero interception_port, they
-    share a single aiohttp server and tunnel instead of each creating their own.
-    Request dispatch is based on rollout_id.
-    """
-
-    def __init__(self) -> None:
-        self._entries: dict[int, _PoolEntry] = {}
-        self._lock: asyncio.Lock | None = None
-
-    @property
-    def lock(self) -> asyncio.Lock:
-        if self._lock is None:
-            self._lock = asyncio.Lock()
-        return self._lock
-
-    async def acquire_server(self, port: int, bind_host: str) -> None:
-        """Create or reuse server on this port. Increments refcount."""
-        async with self.lock:
-            if port in self._entries:
-                existing = self._entries[port]
-                if existing.bind_host != bind_host:
-                    logger.warning(
-                        f"InterceptionPool: bind_host mismatch on port {port}: "
-                        f"existing={existing.bind_host}, requested={bind_host}. "
-                        f"Reusing existing server."
-                    )
-                existing.refcount += 1
-                return
-
-            entry = _PoolEntry(port=port, bind_host=bind_host)
-
-            app = web.Application()
-            app.router.add_post(
-                "/rollout/{rollout_id}/v1/chat/completions",
-                self._make_dispatch_handler(port, "_handle_sub_llm_request"),
-            )
-            app.router.add_post(
-                "/rollout/{rollout_id}/v1/rlm/tools",
-                self._make_dispatch_handler(port, "_handle_root_tool_request"),
-            )
-
-            runner = web.AppRunner(app)
-            await runner.setup()
-            try:
-                site = web.TCPSite(runner, bind_host, port)
-                await site.start()
-            except BaseException:
-                await runner.cleanup()
-                raise
-
-            entry.server_app = app
-            entry.server_runner = runner
-            entry.server_site = site
-            entry.refcount = 1
-
-            self._entries[port] = entry
-            logger.debug(
-                f"InterceptionPool: started shared server on {bind_host}:{port}"
-            )
-
-    def _make_dispatch_handler(
-        self, port: int, handler_name: str
-    ) -> Callable[..., Any]:
-        """Create an aiohttp handler that dispatches to the correct RLMEnv instance."""
-
-        async def handler(request: web.Request) -> web.Response:
-            rollout_id = request.match_info["rollout_id"]
-            entry = self._entries.get(port)
-            if not entry:
-                return web.json_response({"error": "Pool entry not found"}, status=500)
-            env = entry.rollout_dispatch.get(rollout_id)
-            if not env:
-                return web.json_response({"error": "Rollout not found"}, status=404)
-            return await getattr(env, handler_name)(request)
-
-        return handler
-
-    async def get_tunnel_url(self, port: int, log_level: str = "info") -> str:
-        """Get tunnel URL for this port. Creates tunnel on first call."""
-        async with self.lock:
-            entry = self._entries.get(port)
-            if entry is None:
-                raise RuntimeError(
-                    f"No server on port {port}. Call acquire_server first."
-                )
-
-            if entry.tunnel is not None:
-                if entry.tunnel.is_running:
-                    assert entry.tunnel_url is not None
-                    return entry.tunnel_url
-                # Tunnel died, recreate
-                try:
-                    await entry.tunnel.stop()
-                except Exception:
-                    pass
-                entry.tunnel = None
-                entry.tunnel_url = None
-
-            tunnel = Tunnel(
-                local_port=port,
-                log_level=log_level,
-            )
-            url = await tunnel.start()
-            entry.tunnel = tunnel
-            entry.tunnel_url = url
-            logger.debug(f"InterceptionPool: started tunnel on port {port}: {url}")
-            return url
-
-    def register_rollout(self, port: int, rollout_id: str, env: Any) -> None:
-        """Register rollout for request dispatch."""
-        entry = self._entries.get(port)
-        if entry:
-            entry.rollout_dispatch[rollout_id] = env
-
-    def unregister_rollout(self, port: int, rollout_id: str) -> None:
-        """Unregister rollout from dispatch table."""
-        entry = self._entries.get(port)
-        if entry:
-            entry.rollout_dispatch.pop(rollout_id, None)
-
-    async def release(self, port: int) -> None:
-        """Decrement refcount. Destroy server+tunnel when refcount hits 0."""
-        async with self.lock:
-            entry = self._entries.get(port)
-            if entry is None:
-                return
-            entry.refcount -= 1
-            if entry.refcount <= 0:
-                await self._destroy_entry(entry)
-                del self._entries[port]
-
-    async def _destroy_entry(self, entry: _PoolEntry) -> None:
-        """Stop server and tunnel for a pool entry."""
-        if entry.tunnel is not None:
-            try:
-                await entry.tunnel.stop()
-                logger.debug(f"InterceptionPool: stopped tunnel on port {entry.port}")
-            except Exception as e:
-                logger.warning(f"Error stopping shared tunnel: {e}")
-        if entry.server_site is not None:
-            try:
-                await entry.server_site.stop()
-            except Exception:
-                pass
-        if entry.server_runner is not None:
-            try:
-                await entry.server_runner.cleanup()
-            except Exception:
-                pass
-        logger.debug(f"InterceptionPool: destroyed entry on port {entry.port}")
-
-
-_interception_pool = _InterceptionPool()
-
-
 class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
 
-    Extends StatefulToolEnv to provide a Python REPL environment where the model can:
+    Extends StatefulToolEnv to provide a REPL environment where the model can:
     - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
@@ -2110,10 +1928,10 @@ class RLMEnv(vf.StatefulToolEnv):
     - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
     Works with any dataset that has a normal prompt. Input data can optionally
-    be provided via info[context_dir_key] (directory path) or info[context_key]
-    (legacy builtin data written to a file).
-    When using the sandbox backend, the sandbox and worker are started eagerly
-    during setup_state. Environments that need the worker to start in an existing
+    be provided via info["context_dir"] (directory path) or info["context"]
+    (JSON-serializable data written to a file).
+    The sandbox and worker are started eagerly during setup_state.
+    Environments that need the worker to start in an existing
     sandbox path can set state["rlm_fs_root_remote"] (and optionally
     state["rlm_control_dir_remote"]) before calling super().setup_state; otherwise
     the default remote paths are /tmp/rlm_<id>/rlm_fs and /tmp/rlm_<id>/rlm_control.
@@ -2123,6 +1941,7 @@ class RLMEnv(vf.StatefulToolEnv):
     executor implementation.
 
     Args:
+        max_turns: Maximum number of root-model turns (default: 50).
         tools: List of tools shared by both the root REPL and sub-LLMs.
                    These are added first in the tool documentation order.
         root_tools: List of tools available only to the root REPL.
@@ -2133,24 +1952,14 @@ class RLMEnv(vf.StatefulToolEnv):
                    then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
                    Each list is deduplicated by tool name. If two different tools
                    share a name within a list, initialization raises an error.
-        sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        sub_llm_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
-        sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "high"
-        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "high"
-        max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
+        sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
+        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "heavy"
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
-        sub_llm_stagger_ms: Optional fixed per-call stagger delay (ms) within llm_batch.
-        sub_llm_stagger_jitter_ms: Optional random jitter (ms) added to stagger delay.
-        context_key: Key in info containing legacy context data (default: "context")
-        context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
         repl_language: REPL language to use: "bash" or "python" (default: "bash")
-        execution_backend: Deprecated, has no effect. Sandbox execution is always used.
-        interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
-        interception_port: Port for interception server (default: 0, i.e. ephemeral)
-        interception_url: Optional base URL for interception (sandbox only). If set,
-                   tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
@@ -2174,47 +1983,31 @@ class RLMEnv(vf.StatefulToolEnv):
                    and updated incrementally before each code execution. This lets
                    the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
-        filesystem_copy_max_bytes: Optional max bytes for context directory copy.
-        local_repl_max_workers: Deprecated, has no effect. Sandbox execution is always used.
         sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
-        sandbox_start_command: Start command for sandbox backend (default: tail -f /dev/null)
         sandbox_cpu_cores: Sandbox CPU cores (default: 1)
         sandbox_memory_gb: Sandbox memory in GB (default: 2)
         sandbox_disk_size_gb: Sandbox disk size in GB (default: 5)
         sandbox_gpu_count: Sandbox GPU count (default: 0)
         sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
         sandbox_environment_vars: Extra environment vars for sandbox (default: None)
-        sandbox_team_id: Optional team id for sandbox (default: None)
-        sandbox_advanced_configs: Optional advanced configs for sandbox (default: None)
         sandbox_labels: Optional labels for sandbox (default: None)
-        sandbox_client_max_workers: Sandbox client pool size (default: 10)
-        sandbox_client_max_connections: Sandbox client max connections (default: 100)
-        sandbox_client_max_keepalive_connections: Sandbox client keepalive conns (default: 50)
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
     def __init__(
         self,
+        max_turns: int = 50,
         tools: list[Callable] | None = None,
         root_tools: list[Callable] | None = None,
         sub_tools: list[Callable] | None = None,
-        sub_tool_max_turns: int = 5,
+        sub_llm_max_turns: int = 5,
         sub_model: str | None = None,
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
-        max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
-        sub_llm_stagger_ms: int = 200,
-        sub_llm_stagger_jitter_ms: int = 50,
-        context_key: str = "context",
-        context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
         repl_language: Literal["bash", "python"] = "bash",
-        execution_backend: Literal["local", "sandbox"] | None = None,
-        interception_host: str | None = None,
-        interception_port: int = 0,
-        interception_url: str | None = None,
         pip_install_packages: str = "",
         include_sub_llm_in_trajectory: bool = False,
         context_warning_threshold: float = 0.80,
@@ -2223,36 +2016,19 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: bool = False,
         expose_message_history: bool = False,
         retain_filesystem_after_rollout: bool = False,
-        filesystem_copy_max_bytes: int | None = 1_000_000_000,
-        local_repl_max_workers: int | None = None,  # deprecated
         sandbox_docker_image: str = "python:3.11-slim",
-        sandbox_start_command: str = "tail -f /dev/null",
         sandbox_cpu_cores: int = 1,
         sandbox_memory_gb: int = 2,
         sandbox_disk_size_gb: int = 5,
         sandbox_gpu_count: int = 0,
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
-        sandbox_team_id: str | None = None,
-        sandbox_advanced_configs: Any | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
-        sandbox_client_max_connections: int = 100,
-        sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
         if repl_language not in {"bash", "python"}:
             raise ValueError(
                 f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
-            )
-        if execution_backend is not None:
-            import warnings
-
-            warnings.warn(
-                "The 'execution_backend' parameter is deprecated and has no effect. "
-                "RLMEnv now always uses sandbox execution.",
-                DeprecationWarning,
-                stacklevel=2,
             )
         if sub_prompt_verbosity not in {"light", "medium", "heavy"}:
             raise ValueError(
@@ -2267,23 +2043,16 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
         self.repl_language = repl_language
-        self.execution_backend = "sandbox"
         self.sub_model = sub_model
         self.shared_tools = tools or []
         self.root_only_tools = root_tools or []
         self.sub_only_tools = sub_tools or []
-        self.sub_tool_max_turns = sub_tool_max_turns
-        self.max_iterations = max_iterations
+        self.sub_llm_max_turns = sub_llm_max_turns
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
-        self.sub_llm_stagger_ms = sub_llm_stagger_ms
-        self.sub_llm_stagger_jitter_ms = sub_llm_stagger_jitter_ms
-        self.context_key = context_key
-        self.context_dir_key = context_dir_key
         self.custom_system_prompt = system_prompt
-        self.interception_host = interception_host or "127.0.0.1"
-        self.interception_port = interception_port
-        self.interception_url_override = interception_url
+        self.interception_port = 0
+        self._interception_url_override: str | None = None
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
@@ -2292,39 +2061,16 @@ class RLMEnv(vf.StatefulToolEnv):
         self.abort_on_code_timeout = abort_on_code_timeout
         self.expose_message_history = expose_message_history
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
-        self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
-        self._interception_bind_host = self.interception_host
+        self._interception_bind_host = "127.0.0.1"
         self.sandbox_docker_image = sandbox_docker_image
-        self.sandbox_start_command = sandbox_start_command
         self.sandbox_cpu_cores = sandbox_cpu_cores
         self.sandbox_memory_gb = sandbox_memory_gb
         self.sandbox_disk_size_gb = sandbox_disk_size_gb
         self.sandbox_gpu_count = sandbox_gpu_count
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
         self.sandbox_environment_vars = sandbox_environment_vars
-        self.sandbox_team_id = sandbox_team_id
-        self.sandbox_advanced_configs = sandbox_advanced_configs
         self.sandbox_labels = sandbox_labels
-        self.sandbox_client_max_workers = sandbox_client_max_workers
-        self.sandbox_client_max_connections = sandbox_client_max_connections
-        self.sandbox_client_max_keepalive_connections = (
-            sandbox_client_max_keepalive_connections
-        )
-        if local_repl_max_workers is not None:
-            import warnings
-
-            warnings.warn(
-                "The 'local_repl_max_workers' parameter is deprecated and has no effect. "
-                "RLMEnv now always uses sandbox execution.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        # Server-side timeout for LLM API calls (shorter than worker HTTP timeout)
-        # This ensures server responds before the worker request times out
-        (
-            self.sub_llm_api_timeout,
-            self.sub_llm_timeout,
-        ) = self._compute_sub_llm_timeouts()
+        self.sub_llm_timeout = max(1, code_execution_timeout - 5)
 
         fixed_root_tools = self._build_fixed_root_tools()
         self.root_tools, self.root_tool_map = _merge_tool_lists(
@@ -2349,14 +2095,11 @@ class RLMEnv(vf.StatefulToolEnv):
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
         self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
-        self.root_tool_serialization = "pickle"
         self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
             contextvars.ContextVar("rlm_root_tool_context", default=None)
         )
 
         # Interception server state (shared across rollouts)
-        self._use_shared_pool = interception_port != 0
-        self._has_pool_ref = False
         self._interception_server: Any = None
         self._server_lock = asyncio.Lock()
         self._server_runner: Any = None
@@ -2369,7 +2112,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         super().__init__(
             tools=[],
-            max_turns=max_iterations,
+            max_turns=max_turns,
             **kwargs,
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
@@ -2391,15 +2134,13 @@ class RLMEnv(vf.StatefulToolEnv):
         return CreateSandboxRequest(
             name=f"rlm-{state.get('rollout_id', 'unknown')}",
             docker_image=self.sandbox_docker_image,
-            start_command=self.sandbox_start_command,
+            start_command="tail -f /dev/null",
             cpu_cores=self.sandbox_cpu_cores,
             memory_gb=self.sandbox_memory_gb,
             disk_size_gb=self.sandbox_disk_size_gb,
             gpu_count=self.sandbox_gpu_count,
             timeout_minutes=self.sandbox_timeout_minutes,
             environment_vars=env_vars,
-            team_id=self.sandbox_team_id,
-            advanced_configs=self.sandbox_advanced_configs,
             labels=self.sandbox_labels or [],
         )
 
@@ -2424,27 +2165,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # Sub-Agent Tool Infrastructure
     # =========================================================================
 
-    def _compute_sub_llm_timeouts(self) -> tuple[int, int]:
-        """Compute sub-LLM timeouts based on the overall code execution timeout."""
-        code_timeout = max(1, int(self.code_execution_timeout))
-        min_timeout = min(10, max(1, code_timeout - 1))
-
-        api_timeout = max(min_timeout, int(code_timeout * 0.8))
-        worker_timeout = max(min_timeout, int(code_timeout * 0.9))
-
-        if code_timeout > 1:
-            api_timeout = min(api_timeout, code_timeout - 1)
-            worker_timeout = min(worker_timeout, code_timeout - 1)
-
-        api_timeout = min(api_timeout, worker_timeout)
-
-        if code_timeout < 10:
-            logger.warning(
-                f"code_execution_timeout={code_timeout}s is low; sub-LLM calls may be unreliable"
-            )
-
-        return api_timeout, worker_timeout
-
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
 
@@ -2468,26 +2188,13 @@ class RLMEnv(vf.StatefulToolEnv):
         llm_batch.__name__ = "llm_batch"
         return [llm_batch]
 
-    def _compute_install_wait_seconds(self) -> int:
-        """Estimate how long to wait for pip installs based on package count."""
-        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
-        package_count = len(packages) + 1  # Always includes requests
-        estimated_seconds = 30 * package_count
-        return max(self.max_startup_wait_seconds, estimated_seconds)
-
     def _build_worker_env_vars(self, state: State) -> dict[str, str]:
-        env_vars = {
+        return {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
-            "RLM_ROOT_TOOL_SERIALIZATION": self.root_tool_serialization,
-            "RLM_SUB_MODEL": self.sub_model or state.get("model", ""),
-            "RLM_MAX_SUB_LLM_PARALLELISM": str(self.max_sub_llm_parallelism),
-            "RLM_SUB_LLM_STAGGER_MS": str(self.sub_llm_stagger_ms),
-            "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.sub_llm_stagger_jitter_ms),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
-        return env_vars
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
@@ -2619,22 +2326,19 @@ class RLMEnv(vf.StatefulToolEnv):
         }
 
     def _copy_context_directory(self, src: str, dst: str) -> None:
+        _FILESYSTEM_COPY_MAX_BYTES = 1_000_000_000
         src_path = os.fspath(src)
         if not os.path.isdir(src_path):
             raise ValueError(f"context_dir must be a directory: {src_path}")
-        size_limit = self.filesystem_copy_max_bytes
         if os.path.islink(src_path):
             raise ValueError(f"context_dir cannot be a symlink: {src_path}")
-        if size_limit is not None:
-            metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
-            total_size = metadata.get("total_size", 0)
-            if total_size > size_limit:
-                raise ValueError(
-                    "Context directory exceeds size limit: "
-                    f"{total_size} bytes > {size_limit} bytes."
-                )
-        else:
-            self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        total_size = metadata.get("total_size", 0)
+        if total_size > _FILESYSTEM_COPY_MAX_BYTES:
+            raise ValueError(
+                "Context directory exceeds size limit: "
+                f"{total_size} bytes > {_FILESYSTEM_COPY_MAX_BYTES} bytes."
+            )
         shutil.copytree(src_path, dst, dirs_exist_ok=True)
 
     def _write_builtin_context(self, context_data: Any, fs_root: str) -> None:
@@ -2704,12 +2408,10 @@ class RLMEnv(vf.StatefulToolEnv):
                     model=model,
                     tool_defs=tools,
                 ),
-                timeout=self.sub_llm_api_timeout,
+                timeout=self.sub_llm_timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-            )
+            logger.warning(f"Sub-LLM API call timed out after {self.sub_llm_timeout}s")
             return None
         except vf.EmptyModelResponseError as e:
             raise SubLLMEmptyModelResponseError(str(e)) from e
@@ -2726,7 +2428,7 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> SubLLMResult:
         """Create a SubLLMResult for timeout cases."""
         return SubLLMResult(
-            final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+            final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_timeout}s",
             turns=turns,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
@@ -2773,7 +2475,7 @@ class RLMEnv(vf.StatefulToolEnv):
         turns: list[SubLLMTurn] = []
         tools = self.sub_tool_defs if self.sub_tool_defs else None
 
-        for _ in range(self.sub_tool_max_turns):
+        for _ in range(self.sub_llm_max_turns):
             num_turns += 1
             prompt_snapshot = _clone_messages(current_messages)
 
@@ -2910,15 +2612,6 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
         async def _call_one(index: int, prompt: Any) -> None:
-            jitter_ms = (
-                random.random() * self.sub_llm_stagger_jitter_ms
-                if self.sub_llm_stagger_jitter_ms > 0
-                else 0.0
-            )
-            delay_s = max(0.0, (index * self.sub_llm_stagger_ms + jitter_ms) / 1000.0)
-            if delay_s:
-                await asyncio.sleep(delay_s)
-
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
                 start_time = perf_counter()
@@ -2990,15 +2683,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _ensure_interception_server(self):
         """Start shared HTTP server for sub-LLM interception if needed."""
-        if self._use_shared_pool:
-            async with self._server_lock:
-                if not self._has_pool_ref:
-                    await _interception_pool.acquire_server(
-                        self.interception_port, self._interception_bind_host
-                    )
-                    self._has_pool_ref = True
-            return
-
         async with self._server_lock:
             if self._interception_server is not None:
                 return
@@ -3036,12 +2720,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed."""
-        if self._use_shared_pool:
-            log_level = "debug" if logger.isEnabledFor(logging.DEBUG) else "info"
-            return await _interception_pool.get_tunnel_url(
-                self.interception_port, log_level
-            )
-
         async with self._tunnel_lock:
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
@@ -3073,7 +2751,7 @@ class RLMEnv(vf.StatefulToolEnv):
         messages_with_system: Messages = [
             SystemMessage(
                 content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
-                    num_turns=self.sub_tool_max_turns
+                    num_turns=self.sub_llm_max_turns
                 )
             ),
             *messages,
@@ -3168,7 +2846,6 @@ class RLMEnv(vf.StatefulToolEnv):
             return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
         tool_name = request_body.get("tool_name", "")
-        serialization = request_body.get("serialization", "pickle")
         if not tool_name:
             return web.json_response({"error": "Tool name not provided"}, status=400)
         if tool_name not in self.root_tool_map:
@@ -3181,8 +2858,6 @@ class RLMEnv(vf.StatefulToolEnv):
             return web.json_response({"error": "State not available"}, status=500)
 
         try:
-            if serialization != "pickle":
-                raise ValueError("Only pickle serialization is supported.")
             args = pickle.loads(base64.b64decode(request_body.get("args", "")))
             kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
             if not isinstance(args, tuple):
@@ -3303,8 +2978,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
-        if self._use_shared_pool:
-            return  # Pool manages the server lifecycle
         async with self._server_lock:
             if self._server_site is not None:
                 try:
@@ -3325,12 +2998,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
-        if self._use_shared_pool:
-            async with self._server_lock:
-                if self._has_pool_ref:
-                    await _interception_pool.release(self.interception_port)
-                    self._has_pool_ref = False
-            return
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
@@ -3378,8 +3045,8 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> State:
         """Start interception server and register rollout."""
         await self._ensure_interception_server()
-        if self.interception_url_override:
-            base_url = self.interception_url_override.rstrip("/")
+        if self._interception_url_override:
+            base_url = self._interception_url_override.rstrip("/")
         else:
             base_url = await self._get_tunnel_url()
         interception_url = f"{base_url}/rollout/{rollout_id}/v1/chat/completions"
@@ -3394,10 +3061,6 @@ class RLMEnv(vf.StatefulToolEnv):
             "sub_model": self.sub_model or state.get("model"),
             "state": state,
         }
-        if self._use_shared_pool:
-            _interception_pool.register_rollout(
-                self.interception_port, rollout_id, self
-            )
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
@@ -3426,13 +3089,13 @@ class RLMEnv(vf.StatefulToolEnv):
             fs_has_data = False
             fs_source: str | None = None
 
-            context_dir = info.get(self.context_dir_key)
+            context_dir = info.get("context_dir")
             if context_dir:
                 fs_source = str(context_dir)
                 self._copy_context_directory(fs_source, fs_root)
                 fs_has_data = True
             else:
-                context_data = info.get(self.context_key, None)
+                context_data = info.get("context", None)
                 if context_data is not None:
                     fs_has_data = True
                     self._write_builtin_context(context_data, fs_root)
@@ -3507,10 +3170,6 @@ class RLMEnv(vf.StatefulToolEnv):
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
             if rollout_id in self.active_rollouts:
                 del self.active_rollouts[rollout_id]
-            if self._use_shared_pool:
-                _interception_pool.unregister_rollout(
-                    self.interception_port, rollout_id
-                )
             try:
                 await self._executor.cleanup(state)
             except Exception:
@@ -4048,9 +3707,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
-        if self._use_shared_pool and rollout_id:
-            _interception_pool.unregister_rollout(self.interception_port, rollout_id)
-
         try:
             await self._executor.cleanup(state)
         finally:

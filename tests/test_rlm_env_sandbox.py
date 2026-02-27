@@ -25,8 +25,12 @@ def make_dataset(info: dict) -> Dataset:
 
 
 def build_env(dataset: Dataset, **kwargs) -> RLMEnv:
+    interception_url = kwargs.pop("interception_url", None)
     with patch("verifiers.envs.environment.signal.signal"):
-        return RLMEnv(dataset=dataset, **kwargs)
+        env = RLMEnv(dataset=dataset, **kwargs)
+    if interception_url is not None:
+        env._interception_url_override = interception_url
+    return env
 
 
 def _seed_rollout_dirs(state: dict, tmp_path: Path) -> None:

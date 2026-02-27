@@ -20,22 +20,4 @@ Environment for running custom agent code inside sandboxes. Intercepts the agent
 
 ## RLMEnv
 
-Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a REPL (`repl_language="bash"` by default, or `repl_language="python"` for the Python REPL) and can spawn sub-LLM calls to process chunks of the context recursively. Code execution runs inside a Prime Sandbox. Extra context is provided as a filesystem (either a copied `context_dir` or JSON-serializable `context` written to `context.json`/`context.txt`). The RLM scaffolding prompt is injected into the first user message; the model-visible prompt is stored in `state["prompt"]`, while the original input prompt is preserved in `state["raw_prompt"]`. Interception for sub-LLM/root-tool calls is routed through a Prime Tunnel unless `interception_url` is provided. When multiple RLMEnv instances share the same non-zero `interception_port`, they automatically share a single server and tunnel.
-
-Notes:
-- The sandbox and worker are started eagerly during `setup_state`.
-  Environments can pre-set `state["rlm_fs_root_remote"]` (and optionally `state["rlm_control_dir_remote"]`)
-  before calling `super().setup_state` to point the worker at an existing filesystem path in the sandbox.
-  You can also override `get_sandbox_request`, `on_sandbox_ready`, and `customize_worker_script` on `RLMEnv`
-  to customize sandbox creation, run setup steps (e.g., repo initialization), or tweak the worker script.
-- Package installation in sandboxes is best-effort: packages are only installed if they are not importable, which avoids unnecessary installs on images that already include them.
-
-Tool split:
-
-- `tools`: shared between root and sub-LLMs
-- `root_tools`: REPL-only tools (host-executed)
-- `sub_tools`: tools exposed to sub-LLMs
-
-`llm_batch` is a fixed root tool and always available (callable as a shell command in Bash mode, or a Python function in Python mode).
-
-When `expose_message_history=True`, the model's conversation history is written to `.messages` (JSONL, one message object per line) in the sandbox working directory and updated incrementally before each code execution. This lets the model read or forward parts of its own conversation to sub-LLMs for context.
+Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments.
