@@ -30,3 +30,7 @@ def convert_func_to_tool_def(func: Any) -> Tool:
         description=function_schema_obj.description or "",
         parameters=function_schema_obj.params_json_schema,
     )
+
+
+# Alias used by multiagent_stateful_tool_env
+convert_func_to_oai_tool = convert_func_to_tool_def

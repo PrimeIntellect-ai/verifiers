@@ -721,6 +721,7 @@ class EvalDisplay(BaseDisplay):
                     title="[dim]example 0 — prompt[/dim]",
                     border_style="dim",
                 )
+            )
 
             # Completion panel (with error if any)
             completion_text = format_messages(completion)
@@ -742,6 +743,7 @@ class EvalDisplay(BaseDisplay):
                     title="[dim]example 0 — completion[/dim]",
                     border_style="dim",
                 )
+            )
 
         # Reward distribution
         rewards = [o["reward"] for o in outputs]

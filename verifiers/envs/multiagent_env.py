@@ -354,6 +354,7 @@ class MultiAgentEnv(MultiTurnEnv):
         "client",
         "model",
         "trajectory_id",
+        "sampling_args",
     }
 
     def create_actor_state(

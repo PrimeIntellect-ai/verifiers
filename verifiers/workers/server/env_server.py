@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -95,8 +96,11 @@ class EnvServer(ABC):
             stop_event.set()
 
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        try:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        except NotImplementedError:
+            pass  # Windows doesn't support add_signal_handler
 
         try:
             await self.serve(stop_event=stop_event)
@@ -105,6 +109,8 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())
 

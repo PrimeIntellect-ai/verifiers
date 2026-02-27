@@ -114,6 +114,10 @@ def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
     return _setup_openai_client_from_resolved(resolved_config)
 
 
+# Alias used by workers.server.env_server
+setup_client = setup_openai_client
+
+
 def _setup_anthropic_client_from_resolved(config: ClientConfig) -> AsyncAnthropic:
     headers, api_key = _build_headers_and_api_key(config)
     return AsyncAnthropic(
