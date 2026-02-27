@@ -1915,7 +1915,7 @@ class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
 
-    Extends StatefulToolEnv to provide a Python REPL environment where the model can:
+    Extends StatefulToolEnv to provide a REPL environment where the model can:
     - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
@@ -1929,9 +1929,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
     Works with any dataset that has a normal prompt. Input data can optionally
     be provided via info["context_dir"] (directory path) or info["context"]
-    (legacy builtin data written to a file).
-    When using the sandbox backend, the sandbox and worker are started eagerly
-    during setup_state. Environments that need the worker to start in an existing
+    (JSON-serializable data written to a file).
+    The sandbox and worker are started eagerly during setup_state.
+    Environments that need the worker to start in an existing
     sandbox path can set state["rlm_fs_root_remote"] (and optionally
     state["rlm_control_dir_remote"]) before calling super().setup_state; otherwise
     the default remote paths are /tmp/rlm_<id>/rlm_fs and /tmp/rlm_<id>/rlm_control.
