@@ -30,8 +30,8 @@ from verifiers.utils.client_utils import get_actor_client
 # Model Configuration
 # =============================================================================
 
-PLAYER1_ENDPOINT = "olmo3-7b-i"
-PLAYER2_ENDPOINT = "olmo3-7b-i"
+PLAYER1_ENDPOINT = None
+PLAYER2_ENDPOINT = None
 
 p1_client, p1_model = get_actor_client(PLAYER1_ENDPOINT)
 p2_client, p2_model = get_actor_client(PLAYER2_ENDPOINT)
