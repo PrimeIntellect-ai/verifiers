@@ -33,6 +33,22 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             base_url = base_url[:-3]
         return self.client.with_options(base_url=base_url)
 
+    @staticmethod
+    def _find_actor_prev_turn(state: State) -> dict | None:
+        """Find the previous trajectory step for the current actor.
+
+        Multi-agent: walks backward to find the last step with the same actor_id.
+        Single-agent: returns the last step.
+        Returns None if the actor has no previous turn.
+        """
+        current_actor_id = state.get("extras", {}).get("current_actor_id")
+        if current_actor_id:
+            for step in reversed(state["trajectory"]):
+                if step.get("extras", {}).get("actor_id") == current_actor_id:
+                    return step
+            return None
+        return state["trajectory"][-1]
+
     @handle_openai_overlong_prompt
     async def get_native_response(
         self,
@@ -65,16 +81,20 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools
             )
 
-        # Token endpoint requires the prompt to extend the previous turn.
-        # Multi-agent envs rebuild prompts fresh per actor, breaking this.
-        prev_turn = state["trajectory"][-1]
+        # Find previous turn for the current actor (multi-agent) or last turn (single-agent)
+        prev_turn = self._find_actor_prev_turn(state)
+        if prev_turn is None:
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools
+            )
+
         prev_messages = concat_messages([prev_turn["prompt"], prev_turn["completion"]])
         if len(prompt) <= len(prev_messages):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools
             )
 
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        prompt_ids = await self.get_prompt_ids(prev_turn, state, prompt, tools)
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
             model=model,
@@ -93,19 +113,20 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
     async def get_prompt_ids(
         self,
+        prev_turn: dict,
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
     ) -> list[int]:
         """
-        Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
-        that this method is called *before* making the model response from
-        prompt_messages, i.e. the previous turn's prompt and completion do not yet
-        include the environment response and next turn's model response.
+        Build prompt_ids (token prompt) corresponding to prompt_messages.
+
+        For multi-agent, prev_turn is the last turn by the SAME actor,
+        found by _find_actor_prev_turn(). For single-agent, it's the last turn.
         """
-        prev_turn_prompt = state["trajectory"][-1]["prompt"]
-        prev_turn_completion = state["trajectory"][-1]["completion"]
-        prev_turn_tokens = state["trajectory"][-1]["tokens"]
+        prev_turn_prompt = prev_turn["prompt"]
+        prev_turn_completion = prev_turn["completion"]
+        prev_turn_tokens = prev_turn["tokens"]
         assert prev_turn_tokens is not None
         prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
         prev_turn_completion_ids = prev_turn_tokens["completion_ids"]

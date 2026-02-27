@@ -500,22 +500,12 @@ class MultiAgentEnv(MultiTurnEnv):
             # Split each game into per-actor states (trainable only)
             actor_states = []
             for state in game_states:
-                # Build full game conversation text for logging
-                full_turns = []
-                for step in state.get("trajectory", []):
-                    aid = step.get("extras", {}).get("actor_id", "?")
-                    comp = step.get("completion", [])
-                    text = comp[-1].get("content", "") if comp else ""
-                    full_turns.append(f"[{aid}] {text}")
-                full_conversation = "\n---\n".join(full_turns)
-
                 for astate in self.create_actor_states(
                     state, actor_ids=trainable_ids
                 ):
-                    # Attach game-level info to trajectory steps for logging
+                    # Attach game-level stop/error info to trajectory steps
                     for step in astate.get("trajectory", []):
                         step_extras = step.get("extras", {})
-                        step_extras["full_conversation"] = full_conversation
                         step_extras["game_stop_condition"] = state.get("stop_condition")
                         step_extras["game_error"] = str(state.get("error", "") or "")
                     actor_states.append(astate)
