@@ -27,6 +27,15 @@ from .clients.openai_chat_completions_token_client import (
 
 from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
+# Multi-agent support
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
+from .envs.registry import Registry  # noqa # isort: skip
+from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
+
+# Core abstractions
+from .taskset import TaskSet  # noqa # isort: skip
+from .agent import Agent  # noqa # isort: skip
+
 # main imports
 from .envs.env_group import EnvGroup
 from .envs.singleturn_env import SingleTurnEnv
@@ -63,6 +72,13 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "MultiAgentRubric",
+    # Multi-agent support
+    "MultiAgentEnv",
+    "Registry",
+    # Core abstractions
+    "TaskSet",
+    "Agent",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
