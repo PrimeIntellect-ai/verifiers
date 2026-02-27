@@ -64,6 +64,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools
             )
+
+        # Token endpoint requires the prompt to extend the previous turn.
+        # Multi-agent envs rebuild prompts fresh per actor, breaking this.
+        prev_turn = state["trajectory"][-1]
+        prev_messages = concat_messages([prev_turn["prompt"], prev_turn["completion"]])
+        if len(prompt) <= len(prev_messages):
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools
+            )
+
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
