@@ -37,8 +37,8 @@ from verifiers.utils.client_utils import get_actor_client
 # Large models: "sonnet", "opus", "qwen3-235b-i", "gemini-3-pro"
 # =============================================================================
 
-THINKER_ENDPOINT = "qwen3-235b-i"  # Large model answers questions
-GUESSER_ENDPOINT = "olmo3-7b-i"   # Small model asks questions
+THINKER_ENDPOINT = None  # None = use default model (e.g. prime-rl's vLLM server)
+GUESSER_ENDPOINT = None
 
 thinker_client, thinker_model = get_actor_client(THINKER_ENDPOINT)
 guesser_client, guesser_model = get_actor_client(GUESSER_ENDPOINT)
