@@ -18,6 +18,7 @@ so asymmetric optimal strategies emerge cleanly.
 """
 
 import random
+import re
 import string
 
 from datasets import Dataset
@@ -240,12 +241,19 @@ class PDTask(TaskSet):
         if not completion:
             return random.randint(0, 1)
         text = completion[-1].get("content", "").strip().upper()
+        # Strip think tags before parsing
+        text = re.sub(r"<THINK>.*?</THINK>", "", text, flags=re.DOTALL).strip()
         label_a = state["extras"]["label_a"]
         label_b = state["extras"]["label_b"]
         if label_a in text and label_b not in text:
             return 0
         if label_b in text and label_a not in text:
             return 1
+        # If both or neither found, check which appears last (model's final answer)
+        pos_a = text.rfind(label_a)
+        pos_b = text.rfind(label_b)
+        if pos_a >= 0 and pos_b >= 0:
+            return 0 if pos_a > pos_b else 1
         return random.randint(0, 1)
 
 
@@ -266,7 +274,7 @@ def load_environment(
 
     player1 = Agent(
         id="player1",
-        max_tokens=20,
+        max_tokens=50,
         is_trainable=True,
         model=p1_model,
         client=p1_client,
@@ -274,7 +282,7 @@ def load_environment(
 
     player2 = Agent(
         id="player2",
-        max_tokens=20,
+        max_tokens=50,
         is_trainable=True,
         model=p2_model,
         client=p2_client,
