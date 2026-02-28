@@ -32,7 +32,7 @@ from typing import Any, List, Optional
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.agent import Agent
+from verifiers.envs.agent import Agent
 from verifiers.envs.multiagent_env import MultiAgentEnv
 from verifiers.envs.registry import Registry
 from verifiers.types import Messages, State

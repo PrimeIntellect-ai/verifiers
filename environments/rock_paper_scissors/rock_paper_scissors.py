@@ -18,10 +18,10 @@ import random
 
 from datasets import Dataset
 
-from verifiers.agent import Agent
+from verifiers.envs.agent import Agent
 from verifiers.envs.multiagent_env import MultiAgentEnv
 from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
-from verifiers.taskset import TaskSet
+from verifiers.envs.taskset import TaskSet
 from verifiers.types import Messages, State
 from verifiers.utils.client_utils import get_actor_client
 

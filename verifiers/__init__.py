@@ -33,8 +33,8 @@ from .envs.registry import Registry  # noqa # isort: skip
 from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
 
 # Core abstractions
-from .taskset import TaskSet  # noqa # isort: skip
-from .agent import Agent  # noqa # isort: skip
+from .envs.taskset import TaskSet  # noqa # isort: skip
+from .envs.agent import Agent  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup
