@@ -167,6 +167,7 @@ def state_to_output(
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
+        advantage=state.get("advantage"),
     )
     usage = _extract_state_token_usage(state)
     if usage is None:
