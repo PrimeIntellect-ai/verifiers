@@ -431,16 +431,6 @@ class MultiAgentEnv(MultiTurnEnv):
     # Training Support
     # -------------------------------------------------------------------------
 
-    @property
-    def outputs_per_input(self) -> int:
-        """Number of RolloutOutputs produced per rollout input.
-
-        For multi-agent: one output per trainable actor per game.
-        Prime-rl reads this to determine how many game inputs to create.
-        """
-        trainable = [a for a in self._agents.values() if a.is_trainable]
-        return len(trainable) or 1
-
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
