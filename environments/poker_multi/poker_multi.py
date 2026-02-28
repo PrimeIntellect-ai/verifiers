@@ -1,20 +1,8 @@
 """
-Poker Multi v2: New decomposition.
+Poker: Multi-player Texas Hold'em with hidden information.
 
-Old style: PokerMultiEnv(MultiAgentEnv) — 1100+ lines, game logic, hand evaluation,
-           side pots, prompts, turn management, rubric, actors, dataset all in one class.
-
-New style: Game logic in PokerTask(TaskSet). Agents are separate.
-           Card utils and hand evaluation are module-level helpers.
-
-What this shows about the abstractions:
-    - TaskSet handles complex turn management (get_next_role depends on game state:
-      who's folded, who's all-in, what betting phase we're in)
-    - TaskSet handles hidden information (each player only sees their own cards)
-    - Variable number of agents (2-9 players configured at load time)
-    - Per-player Agents with different models and strategies
-    - All players output a JSON action
-    - Simple Agents — one model call per turn, no tools needed
+Game logic in PokerTask(TaskSet). Supports 2-9 players with per-player agents.
+TaskSet handles turn management (folds, all-ins, betting phases) and hidden cards.
 """
 
 import json

@@ -1,21 +1,8 @@
 """
-Proposer-Solver v2: New decomposition.
+Proposer-Solver: Two-agent math pipeline.
 
-Old style: ProposerSolverEnv(MultiAgentEnv) + SolverEnv(MultiAgentEnv) — two env
-           subclasses, Protocol.spawn() for child rollouts, everything interleaved.
-
-New style: Game logic in ProposerSolverTask(TaskSet). Two agents, 2 turns.
-           No spawning, no child envs. Just proposer → solver → evaluate.
-
-What this shows about the abstractions:
-    - TaskSet handles asymmetric roles (proposer sees problem, solver sees problem + strategy)
-    - Different roles could use different Harnesses (solver could use ToolHarness
-      to run code, but here both use SingleTurnHarness for simplicity)
-    - Rubric: proposer rewarded if solver succeeds, solver rewarded for correctness
-    - Only 2 turns total — simplest possible multi-agent pipeline
-
-The old spawning pattern (N solver copies in parallel) is a separate concern.
-That needs env-level orchestration, not TaskSet.
+Proposer suggests a strategy, solver executes it. Two turns total.
+Proposer rewarded if solver succeeds, solver rewarded for correctness.
 """
 
 import re

@@ -1,17 +1,8 @@
 """
-Rock Paper Scissors v2: New decomposition.
+Rock Paper Scissors: Two-player game with hidden simultaneous moves.
 
-Old style: RockPaperScissorsEnv(MultiAgentEnv) — game logic, prompts, state,
-           rubric, actors, dataset all in one class.
-
-New style: Game logic in RPSTask(TaskSet). Agents are separate.
-           MultiAgentEnv just runs the loop.
-
-What this shows about the abstractions:
-    - TaskSet controls information flow (build_prompt hides opponent's choice)
-    - Both players are simple Agents — one model call per turn
-    - Simple Agents — one model call per turn, no tools needed
-    - Turn order: alternating, but task creates simultaneous feel via hidden info
+Game logic in RPSTask(TaskSet), agents are separate, MultiAgentEnv runs the loop.
+TaskSet controls information flow (build_prompt hides opponent's choice).
 """
 
 import random
