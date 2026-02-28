@@ -212,6 +212,9 @@ class MultiAgentEnv(MultiTurnEnv):
         await super().add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
+    async def env_response(self, messages: Messages, state: State, **kwargs) -> Messages | str:
+        return []
+
     # Main Rollout Loop
     # -------------------------------------------------------------------------
 
