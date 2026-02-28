@@ -167,7 +167,7 @@ class ProposerSolverTask(TaskSet):
             return
 
         last_step = state["trajectory"][-1]
-        actor_id = last_step.get("extras", {}).get("actor_id", "")
+        actor_id = last_step["extras"].get("actor_id", "")
         completion = last_step.get("completion", [])
         if not completion:
             return

@@ -159,7 +159,7 @@ class RPSTask(TaskSet):
             return
 
         last_step = state["trajectory"][-1]
-        actor_id = last_step.get("extras", {}).get("actor_id", "")
+        actor_id = last_step["extras"].get("actor_id", "")
         choice = self._extract_choice(last_step)
 
         if actor_id == "player1":

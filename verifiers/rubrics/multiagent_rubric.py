@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
-from typing import AsyncContextManager, cast
+from typing import cast
 
 import verifiers as vf
 from verifiers.rubrics.rubric import Rubric

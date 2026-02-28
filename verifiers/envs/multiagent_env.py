@@ -338,7 +338,7 @@ class MultiAgentEnv(MultiTurnEnv):
             return
         all_messages = []
         for step in state["trajectory"]:
-            actor_id = step.get("extras", {}).get("actor_id", "")
+            actor_id = step["extras"].get("actor_id", "")
             for msg in step.get("completion", []):
                 tagged = dict(msg)
                 if actor_id and tagged.get("content"):
@@ -503,11 +503,9 @@ class MultiAgentEnv(MultiTurnEnv):
                 for astate in self.create_actor_states(
                     state, actor_ids=trainable_ids
                 ):
-                    # Attach game-level stop/error info to trajectory steps
                     for step in astate.get("trajectory", []):
-                        step_extras = step.get("extras", {})
-                        step_extras["game_stop_condition"] = state.get("stop_condition")
-                        step_extras["game_error"] = str(state.get("error", "") or "")
+                        step["extras"]["game_stop_condition"] = state.get("stop_condition")
+                        step["extras"]["game_error"] = str(state.get("error") or "")
                     actor_states.append(astate)
 
             if self.score_rollouts:
