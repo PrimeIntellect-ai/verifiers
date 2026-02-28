@@ -198,35 +198,6 @@ class MultiAgentEnv(MultiTurnEnv):
         return False  # Subclass uses @vf.stop decorator on its own methods
 
     # -------------------------------------------------------------------------
-    # Tool Support (env_response + tool call detection)
-    # -------------------------------------------------------------------------
-
-    async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
-        """Execute tool calls from the last assistant message.
-
-        Default returns [] (no tools). Override in subclass to add tool execution.
-        Called by the tool loop in rollout() when the model makes tool calls.
-        """
-        return []
-
-    def _last_completion_has_tool_calls(self, state: State) -> bool:
-        """Check if the last trajectory step's completion includes tool calls."""
-        trajectory = state.get("trajectory", [])
-        if not trajectory:
-            return False
-        last_completion = trajectory[-1].get("completion", [])
-        if not last_completion:
-            return False
-        last_msg = last_completion[-1]
-        return (
-            hasattr(last_msg, "tool_calls")
-            and last_msg.tool_calls is not None
-            and len(last_msg.tool_calls) > 0
-        )
-
-    # -------------------------------------------------------------------------
     # Trajectory Management
     # -------------------------------------------------------------------------
 
@@ -294,26 +265,6 @@ class MultiAgentEnv(MultiTurnEnv):
                     )
 
                     await self.add_model_response(state, prompt_messages, response)
-
-                    # Tool loop: same actor continues until no more tool calls.
-                    # env_response() returns [] by default (no tools).
-                    # Subclasses override env_response() to execute tools.
-                    while self._last_completion_has_tool_calls(state):
-                        last_step = state["trajectory"][-1]
-                        messages = list(last_step["prompt"]) + list(last_step["completion"])
-                        tool_results = await self.env_response(messages, state)
-                        if not tool_results:
-                            break
-                        prompt_messages = messages + list(tool_results)
-                        response = await self.get_model_response(
-                            state,
-                            prompt_messages,
-                            client=actor_client,
-                            model=actor.model,
-                            sampling_args=merged_args,
-                        )
-                        await self.add_model_response(state, prompt_messages, response)
-
                     await self.on_turn_complete(state)
 
                 except vf.OverlongPromptError:
@@ -477,9 +428,16 @@ class MultiAgentEnv(MultiTurnEnv):
         ]
         num_trainable = len(trainable_ids) or 1
 
+        if len(group_inputs) % num_trainable != 0:
+            raise ValueError(
+                f"rollouts_per_example ({len(group_inputs)}) must be divisible by "
+                f"num_trainable_actors ({num_trainable}). "
+                f"Each game produces {num_trainable} training outputs."
+            )
+
         # Run fewer games when multiple actors are trainable,
         # so total outputs = len(group_inputs)
-        games_count = max(1, len(group_inputs) // num_trainable)
+        games_count = len(group_inputs) // num_trainable
         game_inputs = group_inputs[:games_count]
 
         async def attempt() -> list[State]:
@@ -493,9 +451,6 @@ class MultiAgentEnv(MultiTurnEnv):
                 for astate in self.create_actor_states(
                     state, actor_ids=trainable_ids
                 ):
-                    for step in astate.get("trajectory", []):
-                        step["extras"]["game_stop_condition"] = state.get("stop_condition")
-                        step["extras"]["game_error"] = str(state.get("error") or "")
                     actor_states.append(astate)
 
             if self.score_rollouts:
