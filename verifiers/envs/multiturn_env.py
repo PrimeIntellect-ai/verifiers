@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
+from typing import final
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -68,7 +69,7 @@ class MultiTurnEnv(vf.Environment):
         return state
 
     async def get_prompt_messages(self, state: State) -> Messages:
-        """Build prompt messages for the current turn."""
+        """Override for rollouts with non-linear message sequences."""
         if len(state["trajectory"]) == 0:
             return normalize_messages(state["prompt"], field_name="state.prompt")
         prev_turn_prompt = normalize_messages(
@@ -137,6 +138,7 @@ class MultiTurnEnv(vf.Environment):
         )
         await self.add_trajectory_step(state, trajectory_step)
 
+    @final
     async def rollout(
         self,
         input: RolloutInput,
