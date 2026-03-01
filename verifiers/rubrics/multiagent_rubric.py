@@ -141,16 +141,15 @@ class MultiAgentRubric(Rubric):
                         step["reward"] = state["reward"]
 
         # Verify advantages are set
-        for state in states:
-            print(f"[SCORE_GROUP_END] advantage={state.get('advantage')} id={id(state)}")
+        print(f"[SCORE_GROUP_END] group={id(states)} advantages={[s.get('advantage') for s in states[:4]]}")
 
-        # Timing tracking (match parent)
-        end_time = time.time()
-        scoring_ms = (end_time - start_time) * 1000
-        for state in states:
-            if "timing" in state:
-                state["timing"]["scoring_ms"] = scoring_ms
-                state["timing"]["total_ms"] += scoring_ms
+        # Timing tracking DISABLED for debugging
+        # end_time = time.time()
+        # scoring_ms = (end_time - start_time) * 1000
+        # for state in states:
+        #     if "timing" in state:
+        #         state["timing"]["scoring_ms"] = scoring_ms
+        #         state["timing"]["total_ms"] += scoring_ms
 
     async def _score_states(
         self,
