@@ -47,7 +47,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        poll_interval: float = 2.0,
+        poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,
@@ -116,10 +116,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._interception_server = InterceptionServer(port=interception_port)
 
     async def get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                frpc_output = "\n".join(self._tunnel.recent_output)
+                logger.warning(
+                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
-                port = self._interception_server.port
+                port = self._interception_server.port  # ty: ignore[unresolved-attribute]
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
@@ -141,7 +149,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        await self._interception_server.start()
+        await self._interception_server.start()  # ty: ignore[unresolved-attribute]
 
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
@@ -175,7 +183,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
-        request_id_queue = self._interception_server.register_rollout(rollout_id)
+        request_id_queue = self._interception_server.register_rollout(rollout_id)  # ty: ignore[unresolved-attribute]
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -276,11 +284,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
-                intercept = self._interception_server.intercepts[request_id]
+                intercept = self._interception_server.intercepts[request_id]  # ty: ignore[unresolved-attribute]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
-                # No request yet, check if agent finished or timed out
+                # No request yet — check tunnel liveness first
+                if self._tunnel is not None and not self._tunnel.is_running:
+                    frpc_output = "\n".join(self._tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
                     return []
@@ -363,7 +378,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         request_id = state.get("current_request_id")
         intercept = (
-            self._interception_server.intercepts.get(request_id) if request_id else None
+            self._interception_server.intercepts.get(request_id) if request_id else None  # ty: ignore[unresolved-attribute]
         )
 
         if intercept:
