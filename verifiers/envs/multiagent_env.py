@@ -460,12 +460,13 @@ class MultiAgentEnv(MultiTurnEnv):
                 await self.rubric.score_group(actor_states)
             else:
                 await self.rubric.dummy_score_group(actor_states)
+            print(f"[ATTEMPT_POST_SCORE] id(list)={id(actor_states)} advantages={[s.get('advantage') for s in actor_states[:4]]} ids={[id(s) for s in actor_states[:4]]}")
             return actor_states
 
         actor_states = await maybe_retry(
             attempt, max_retries=max_retries
         )()
-        print(f"[MULTIAGENT_RUN_GROUP] {len(actor_states)} states, advantages={[s.get('advantage') for s in actor_states[:4]]}")
+        print(f"[MULTIAGENT_RUN_GROUP] id(list)={id(actor_states)} advantages={[s.get('advantage') for s in actor_states[:4]]} ids={[id(s) for s in actor_states[:4]]}")
         return [
             state_to_output(s, state_columns) for s in actor_states
         ]
