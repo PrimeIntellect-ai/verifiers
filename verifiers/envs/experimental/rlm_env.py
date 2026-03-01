@@ -2033,12 +2033,12 @@ class RLMEnv(vf.StatefulToolEnv):
         if sub_prompt_verbosity not in {"light", "medium", "heavy"}:
             raise ValueError(
                 f"Unsupported sub_prompt_verbosity '{sub_prompt_verbosity}. "
-                "Expected 'light', 'medium', or 'high'"
+                "Expected 'light', 'medium', or 'heavy'"
             )
         if root_prompt_verbosity not in {"light", "medium", "heavy"}:
             raise ValueError(
                 f"Unsupported root_prompt_verbosity '{root_prompt_verbosity}. "
-                "Expected 'light', 'medium', or 'high'"
+                "Expected 'light', 'medium', or 'heavy'"
             )
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
