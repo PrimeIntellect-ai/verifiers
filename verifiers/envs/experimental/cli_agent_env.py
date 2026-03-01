@@ -119,7 +119,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Get tunnel URL, starting the tunnel if needed."""
         async with self._tunnel_lock:
             if self._tunnel is None:
-                port = self._interception_server.port
+                port = cast(InterceptionServer, self._interception_server).port
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
@@ -141,7 +141,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        await self._interception_server.start()
+        await cast(InterceptionServer, self._interception_server).start()
 
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
@@ -175,7 +175,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
-        request_id_queue = self._interception_server.register_rollout(rollout_id)
+        request_id_queue = cast(
+            InterceptionServer, self._interception_server
+        ).register_rollout(rollout_id)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -276,7 +278,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
-                intercept = self._interception_server.intercepts[request_id]
+                intercept = cast(
+                    InterceptionServer, self._interception_server
+                ).intercepts[request_id]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
@@ -363,7 +367,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         request_id = state.get("current_request_id")
         intercept = (
-            self._interception_server.intercepts.get(request_id) if request_id else None
+            cast(InterceptionServer, self._interception_server).intercepts.get(
+                request_id
+            )
+            if request_id
+            else None
         )
 
         if intercept:
