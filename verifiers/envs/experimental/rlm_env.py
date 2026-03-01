@@ -2532,6 +2532,17 @@ class RLMEnv(vf.StatefulToolEnv):
                     max_turns_reached=False,
                 )
 
+            # Check if the sub-LLM completion token budget is exceeded
+            # mid-loop. We combine already-committed tokens (state) with
+            # tokens accumulated in this call so far.
+            if self.sub_llm_max_completion_tokens is not None:
+                committed = state.get("sub_llm_completion_tokens", 0)
+                if (
+                    committed + total_completion_tokens
+                    >= self.sub_llm_max_completion_tokens
+                ):
+                    break
+
             current_messages.append(
                 from_raw_message(assistant_message.model_dump(exclude_none=True))
             )
@@ -2546,7 +2557,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 )
                 current_messages.append(tool_result)
 
-        # Max turns reached - add prompt for final answer and make call without tools
+        # Max turns (or token budget) reached — force a final answer without tools.
         num_turns += 1
         current_messages.append(
             UserMessage(

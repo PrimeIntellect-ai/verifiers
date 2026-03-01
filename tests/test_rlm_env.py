@@ -2296,6 +2296,100 @@ class TestSubLLMCompletionTokenBudget:
         finally:
             await env.cleanup_rlm_state(result)
 
+    @pytest.mark.asyncio
+    async def test_budget_enforced_within_tool_loop(self, rlm_env_with_sub_tools):
+        """Budget is checked mid-loop: after a turn exceeds the budget,
+        the tool loop breaks and forces a final answer instead of continuing."""
+        from verifiers.types import Response, ResponseMessage, ToolCall, Usage
+
+        rlm_env_with_sub_tools.sub_llm_max_completion_tokens = 100
+
+        # Turn 1: tool call that uses 80 completion tokens
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=50,
+                reasoning_tokens=0,
+                completion_tokens=80,
+                total_tokens=130,
+            ),
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="sample_tool",
+                        arguments='{"x": 2, "y": 3}',
+                    )
+                ],
+            ),
+        )
+        # Turn 2 (forced final answer): no tools offered
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=100,
+                reasoning_tokens=0,
+                completion_tokens=30,
+                total_tokens=130,
+            ),
+            message=ResponseMessage(
+                content="Final answer",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
+        )
+        # Turn 3 would happen if the loop continued — but it shouldn't
+        resp3 = Response(
+            id="mock3",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=200,
+                reasoning_tokens=0,
+                completion_tokens=500,
+                total_tokens=700,
+            ),
+            message=ResponseMessage(
+                content="Should not reach here",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2, resp3])
+
+        # State has 30 tokens already used; budget is 100.
+        # After turn 1 (80 tokens), total = 30 + 80 = 110 >= 100 → break.
+        state = {"sub_llm_completion_tokens": 30}
+
+        messages = [{"role": "user", "content": "test"}]
+        result = await rlm_env_with_sub_tools._run_sub_llm(
+            state, mock_client, "gpt-4", messages
+        )
+
+        # Should have called the API twice: turn 1 (tool call) + forced final answer.
+        # NOT three times (which would mean the loop didn't break).
+        assert mock_client.get_response.await_count == 2
+        assert result["final_content"] == "Final answer"
+        assert result["max_turns_reached"] is True
+        assert result["total_completion_tokens"] == 110  # 80 + 30
+
 
 # =============================================================================
 # Sandbox Backend Tests (mocked)
