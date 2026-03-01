@@ -819,6 +819,7 @@ class TestRLMEnvInitialization:
         assert env.sub_tools == []
         assert env.max_output_length == 8192
         assert env.max_sub_llm_parallelism == 5
+        assert env.max_turns == 50
 
     def test_custom_configuration(self):
         def dummy_tool(x: int) -> int:
