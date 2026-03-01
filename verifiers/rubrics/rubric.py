@@ -311,9 +311,10 @@ class Rubric:
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
-            state["advantage"] = aggregated_rewards[i] - avg_reward
+            if any(w != 0.0 for w in self.weights):
+                state["advantage"] = aggregated_rewards[i] - avg_reward
             for t in state["trajectory"]:
-                if t["advantage"] is None:
+                if t["advantage"] is None and any(w != 0.0 for w in self.weights):
                     t["advantage"] = state["advantage"]
                 if t["reward"] is None:
                     t["reward"] = state["reward"]
