@@ -185,7 +185,8 @@ Info = dict[str, Any]
 SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
-RewardFunc = IndividualRewardFunc | GroupRewardFunc
+MultiAgentRewardFunc = Callable[..., dict[str, float] | Awaitable[dict[str, float]]]
+RewardFunc = IndividualRewardFunc | GroupRewardFunc | MultiAgentRewardFunc
 DatasetBuilder: TypeAlias = "Callable[[], Dataset]"
 
 
