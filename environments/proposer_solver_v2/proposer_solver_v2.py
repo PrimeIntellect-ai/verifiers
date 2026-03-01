@@ -187,7 +187,7 @@ def load_environment(num_examples: int = -1):
 
     proposer = Agent(
         id="proposer",
-        max_tokens=150,
+        max_tokens=2048,
         is_trainable=True,
         model=proposer_model,
         client=proposer_client,
@@ -195,7 +195,7 @@ def load_environment(num_examples: int = -1):
 
     solver = Agent(
         id="solver",
-        max_tokens=20,
+        max_tokens=2048,
         is_trainable=True,
         model=solver_model,
         client=solver_client,
