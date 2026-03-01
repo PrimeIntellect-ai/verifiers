@@ -1992,3 +1992,294 @@ class TestMessageHistory:
             assert result["_messages_uploaded_count"] == 0
         finally:
             await env.cleanup_rlm_state(result)
+
+
+# =============================================================================
+# Sub-LLM Completion Token Budget
+# =============================================================================
+
+
+class TestSubLLMCompletionTokenBudget:
+    """Tests for the sub_llm_max_completion_tokens budget feature."""
+
+    def test_default_is_none(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.sub_llm_max_completion_tokens is None
+
+    def test_custom_value(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            sub_llm_max_completion_tokens=50000,
+            interception_url="http://test.invalid",
+        )
+        assert env.sub_llm_max_completion_tokens == 50000
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_blocks_when_budget_exhausted(self, rlm_env):
+        rlm_env.sub_llm_max_completion_tokens = 1000
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 1000,
+        }
+
+        result = await rlm_env._run_sub_llm_request(
+            state_ref=state,
+            client=MagicMock(),
+            sub_model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            batch_id="b1",
+            request_id="r1",
+            parent_turn=0,
+        )
+
+        content = result["choices"][0]["message"]["content"]
+        assert "budget exhausted" in content.lower()
+        assert "1000/1000" in content
+        assert result["_rlm_metadata"]["budget_exhausted"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_allows_when_under_budget(self, rlm_env):
+        rlm_env.sub_llm_max_completion_tokens = 1000
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 500,
+        }
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm",
+            new=AsyncMock(
+                return_value={
+                    "final_content": "ok",
+                    "turns": [
+                        {
+                            "prompt_messages": [{"role": "user", "content": "hi"}],
+                            "response": mock_response,
+                            "tool_call_count": 0,
+                        }
+                    ],
+                    "total_prompt_tokens": 10,
+                    "total_completion_tokens": 20,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                    "max_turns_reached": False,
+                }
+            ),
+        ):
+            result = await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert result["_rlm_metadata"].get("budget_exhausted") is not True
+        assert result["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_allows_when_no_budget(self, rlm_env):
+        """When sub_llm_max_completion_tokens is None, no budget check occurs."""
+        assert rlm_env.sub_llm_max_completion_tokens is None
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 999999,
+        }
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm",
+            new=AsyncMock(
+                return_value={
+                    "final_content": "ok",
+                    "turns": [
+                        {
+                            "prompt_messages": [{"role": "user", "content": "hi"}],
+                            "response": mock_response,
+                            "tool_call_count": 0,
+                        }
+                    ],
+                    "total_prompt_tokens": 10,
+                    "total_completion_tokens": 20,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                    "max_turns_reached": False,
+                }
+            ),
+        ):
+            result = await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert result["_rlm_metadata"].get("budget_exhausted") is not True
+
+    @pytest.mark.asyncio
+    async def test_batch_early_exit_when_budget_exhausted(self, rlm_env):
+        rlm_env.sub_llm_max_completion_tokens = 500
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": {
+                "trajectory": [],
+                "sub_llm_completion_tokens": 500,
+            },
+        }
+
+        contents, summary_lines = await rlm_env._root_llm_batch(
+            context, ["prompt1", "prompt2"]
+        )
+
+        assert len(contents) == 2
+        assert "budget exhausted" in contents[0].lower()
+        assert "budget exhausted" in contents[1].lower()
+        assert any("skipped" in line for line in summary_lines)
+        assert any("500/500" in line for line in summary_lines)
+
+    @pytest.mark.asyncio
+    async def test_batch_summary_includes_budget_when_set(self, rlm_env):
+        rlm_env.sub_llm_max_completion_tokens = 10000
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 200,
+        }
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": state,
+        }
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm_request",
+            new=AsyncMock(
+                return_value={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "_rlm_metadata": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "tool_call_count": 0,
+                        "num_turns": 1,
+                        "max_turns_reached": False,
+                    },
+                }
+            ),
+        ):
+            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
+
+        # Summary should include budget info
+        budget_line = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        assert len(budget_line) == 1
+        assert "/10000" in budget_line[0]
+
+    @pytest.mark.asyncio
+    async def test_batch_summary_excludes_budget_when_none(self, rlm_env):
+        assert rlm_env.sub_llm_max_completion_tokens is None
+
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 200,
+        }
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": state,
+        }
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm_request",
+            new=AsyncMock(
+                return_value={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "_rlm_metadata": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "tool_call_count": 0,
+                        "num_turns": 1,
+                        "max_turns_reached": False,
+                    },
+                }
+            ),
+        ):
+            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
+
+        budget_lines = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        assert len(budget_lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_includes_budget_when_set(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            sub_llm_max_completion_tokens=50000,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "50000" in prompt
+            assert "completion tokens" in prompt
+            assert "llm_batch" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_excludes_budget_when_none(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        assert env.sub_llm_max_completion_tokens is None
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "budget" not in prompt.lower()
+        finally:
+            await env.cleanup_rlm_state(result)
