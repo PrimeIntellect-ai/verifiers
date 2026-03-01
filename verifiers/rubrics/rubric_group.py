@@ -83,6 +83,7 @@ class RubricGroup(Rubric):
         """
         aggregated_rewards = [0.0] * len(states)
         aggregated_metrics: dict[str, list[float]] = {}
+        metrics_set: dict[str, set[int]] = {}
         original_rewards = [state.get("reward", 0.0) for state in states]
         original_metrics = [
             state.get("metrics", {}).copy() if state.get("metrics") else {}
@@ -99,7 +100,9 @@ class RubricGroup(Rubric):
                 for key, value in rubric_metrics.items():
                     if key not in aggregated_metrics:
                         aggregated_metrics[key] = [0.0] * len(states)
+                        metrics_set[key] = set()
                     aggregated_metrics[key][i] += value
+                    metrics_set[key].add(i)
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
         for i, state in enumerate(states):
@@ -108,4 +111,5 @@ class RubricGroup(Rubric):
                 if "metrics" not in state:
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
-                    state["metrics"][key] = values[i]
+                    if i in metrics_set[key]:
+                        state["metrics"][key] = values[i]
