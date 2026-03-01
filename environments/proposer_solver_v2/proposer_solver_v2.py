@@ -1,13 +1,13 @@
 """
-Proposer-Solver: Two-agent math pipeline.
+Proposer-Solver: Two-agent math pipeline with conflicting incentives.
 
-Proposer suggests a strategy, solver executes it. Two turns total.
-Proposer rewarded if solver succeeds, solver rewarded for correctness.
+Proposer gives a hint (rewarded for correctness + brevity).
+Solver uses the hint to answer (rewarded for correctness only).
+
+Per-actor GRPO demo: optimal rewards differ at convergence.
 """
 
 import re
-
-from datasets import Dataset
 
 from verifiers.envs.agent import Agent
 from verifiers.envs.multiagent_env import MultiAgentEnv
@@ -15,6 +15,9 @@ from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.envs.taskset import TaskSet
 from verifiers.types import Messages, State
 from verifiers.utils.client_utils import get_actor_client
+from verifiers.utils.data_utils import load_example_dataset
+
+from datasets import Dataset
 
 
 # =============================================================================
@@ -27,6 +30,8 @@ SOLVER_ENDPOINT = None
 proposer_client, proposer_model = get_actor_client(PROPOSER_ENDPOINT)
 solver_client, solver_model = get_actor_client(SOLVER_ENDPOINT)
 
+MAX_HINT_LEN = 500  # chars — hints longer than this get 0 brevity bonus
+
 
 # =============================================================================
 # Rubric
@@ -34,13 +39,18 @@ solver_client, solver_model = get_actor_client(SOLVER_ENDPOINT)
 
 def create_rubric() -> MultiAgentRubric:
     """
-    Proposer rewarded if solver succeeds (incentivizes clear strategies).
-    Solver rewarded for correctness.
+    Proposer: correctness * (0.5 + 0.5 * brevity) — wants short hints.
+    Solver:   1.0 if correct, 0.0 if not — wants good hints.
     """
     rubric = MultiAgentRubric()
 
     def proposer_reward(state, **kwargs) -> float:
-        return 1.0 if state.get("extras", {}).get("correct", False) else 0.0
+        correct = state.get("extras", {}).get("correct", False)
+        if not correct:
+            return 0.0
+        hint_len = state.get("extras", {}).get("hint_length", 0)
+        brevity = max(0.0, 1.0 - hint_len / MAX_HINT_LEN)
+        return 0.5 + 0.5 * brevity
 
     def solver_reward(state, **kwargs) -> float:
         return 1.0 if state.get("extras", {}).get("correct", False) else 0.0
@@ -56,22 +66,15 @@ def create_rubric() -> MultiAgentRubric:
 
 class ProposerSolverTask(TaskSet):
     """
-    2-turn pipeline: proposer strategizes, solver executes.
+    2-turn pipeline: proposer hints, solver executes.
 
-    Turn 1 (proposer): Sees a math problem, proposes a solution strategy.
-    Turn 2 (solver):   Sees the problem + proposer's strategy, produces answer.
+    Turn 1 (proposer): Sees a math problem, writes a concise hint.
+    Turn 2 (solver):   Sees the problem + hint, produces numeric answer.
     Evaluate:          Check if solver's answer matches expected.
-
-    Compare with old ProposerSolverEnv + SolverEnv:
-    - BEFORE: Two env subclasses, Protocol.spawn() for N solver copies,
-              parent-child state relationships
-    - AFTER:  One TaskSet, two turns, no spawning. Clean and testable.
     """
 
     def __init__(self, num_examples: int = -1):
-        dataset = self._create_dataset()
-        if num_examples > 0:
-            dataset = dataset.select(range(min(num_examples, len(dataset))))
+        dataset = self._create_dataset(num_examples)
 
         super().__init__(
             name="proposer_solver_v2",
@@ -81,37 +84,29 @@ class ProposerSolverTask(TaskSet):
         )
 
     @staticmethod
-    def _create_dataset() -> Dataset:
-        """Math problems with known answers."""
-        problems = [
-            ("What is 17 + 28?", "45"),
-            ("What is 143 - 67?", "76"),
-            ("What is 12 * 9?", "108"),
-            ("What is 256 + 189?", "445"),
-            ("What is 84 - 37?", "47"),
-            ("What is 15 * 13?", "195"),
-            ("What is 1024 - 768?", "256"),
-            ("What is 33 + 77?", "110"),
-            ("What is 19 * 7?", "133"),
-            ("What is 500 - 234?", "266"),
-        ]
-        return Dataset.from_list([
-            {
-                "prompt": [{"role": "user", "content": problem}],
-                "answer": answer,
-                "info": {"problem": problem},
+    def _create_dataset(num_examples: int = -1) -> Dataset:
+        """Load GSM8K and reformat for TaskSet."""
+        gsm = load_example_dataset("gsm8k", split="train", n=50, seed=42)
+        rows = []
+        for i, row in enumerate(gsm):
+            if num_examples > 0 and i >= num_examples:
+                break
+            rows.append({
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+                "info": {"problem": row["question"]},
                 "example_id": i,
                 "task": "proposer_solver_v2",
-            }
-            for i, (problem, answer) in enumerate(problems)
-        ])
+            })
+        return Dataset.from_list(rows)
 
     # ---- State ----
 
     async def setup_state(self, state: State) -> State:
         state["extras"]["problem"] = state["input"].get("info", {}).get("problem", "")
         state["extras"]["expected_answer"] = state["input"].get("answer", "")
-        state["extras"]["strategy"] = ""
+        state["extras"]["hint"] = ""
+        state["extras"]["hint_length"] = 0
         state["extras"]["solver_answer"] = ""
         state["extras"]["correct"] = False
         return state
@@ -124,25 +119,25 @@ class ProposerSolverTask(TaskSet):
         if role == "proposer":
             return [
                 {"role": "system", "content": (
-                    "You are a Math Strategist. Given a math problem, propose a clear "
-                    "step-by-step strategy for solving it.\n\n"
-                    "Be specific about the operations needed. "
-                    "Output ONLY the strategy, nothing else."
+                    "You are a Math Hint Writer. Given a math problem, write a brief hint "
+                    "to help someone solve it.\n\n"
+                    "Be as concise as possible — shorter hints are better.\n"
+                    "Output ONLY the hint, nothing else."
                 )},
-                {"role": "user", "content": f"Problem: {problem}\n\nPropose a solution strategy:"},
+                {"role": "user", "content": f"Problem: {problem}\n\nWrite a concise hint:"},
             ]
 
         else:  # solver
-            strategy = state["extras"]["strategy"]
+            hint = state["extras"]["hint"]
             return [
                 {"role": "system", "content": (
-                    "You are a Math Solver. You are given a problem and a strategy.\n"
-                    "Follow the strategy and compute the final answer.\n\n"
+                    "You are a Math Solver. You are given a problem and a hint.\n"
+                    "Follow the hint and compute the final answer.\n\n"
                     "Output ONLY the numeric answer. Nothing else."
                 )},
                 {"role": "user", "content": (
                     f"Problem: {problem}\n\n"
-                    f"Strategy: {strategy}\n\n"
+                    f"Hint: {hint}\n\n"
                     f"Compute the answer:"
                 )},
             ]
@@ -161,23 +156,20 @@ class ProposerSolverTask(TaskSet):
         content = completion[-1].get("content", "")
 
         if actor_id == "proposer":
-            # Store strategy for solver to use
-            state["extras"]["strategy"] = content
+            state["extras"]["hint"] = content
+            state["extras"]["hint_length"] = len(content)
 
         elif actor_id == "solver":
-            # Check answer
             state["extras"]["solver_answer"] = content
             expected = state["extras"]["expected_answer"]
             numbers = re.findall(r'-?\d+', content)
-            state["extras"]["correct"] = bool(numbers and numbers[0] == expected)
+            state["extras"]["correct"] = bool(numbers and numbers[-1] == expected)
 
     async def should_stop(self, state: State) -> bool:
-        # Stop after solver has gone (2 turns total)
         actor_history = state.get("extras", {}).get("actor_history", [])
         return len(actor_history) >= 2
 
     async def on_game_end(self, state: State) -> None:
-        # Nothing extra needed — correct flag already set in on_turn_complete
         pass
 
 
@@ -187,16 +179,15 @@ class ProposerSolverTask(TaskSet):
 
 def load_environment(num_examples: int = -1):
     """
-    Composition:
-        Task   = ProposerSolverTask (math problems + strategy→solve pipeline)
-        Agents = {proposer: strategist, solver: calculator}
-        Env    = MultiAgentEnv(task, agents)
+    Conflicting-incentives proposer-solver:
+        Proposer: rewarded for correctness + brevity
+        Solver:   rewarded for correctness only
     """
     task = ProposerSolverTask(num_examples=num_examples)
 
     proposer = Agent(
         id="proposer",
-        max_tokens=200,
+        max_tokens=150,
         is_trainable=True,
         model=proposer_model,
         client=proposer_client,

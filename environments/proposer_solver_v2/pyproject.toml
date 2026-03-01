@@ -13,5 +13,5 @@ build-backend = "hatchling.build"
 include = ["proposer_solver_v2.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
-num_examples = 5
+num_examples = 20
 rollouts_per_example = 1
