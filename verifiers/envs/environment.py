@@ -800,6 +800,7 @@ class Environment(ABC):
             return group_states
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        print(f"[BASE_RUN_GROUP] {len(group_states)} states, advantages={[s.get('advantage') for s in group_states[:4]]}")
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]

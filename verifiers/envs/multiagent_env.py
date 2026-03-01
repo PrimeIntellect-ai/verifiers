@@ -465,6 +465,7 @@ class MultiAgentEnv(MultiTurnEnv):
         actor_states = await maybe_retry(
             attempt, max_retries=max_retries
         )()
+        print(f"[MULTIAGENT_RUN_GROUP] {len(actor_states)} states, advantages={[s.get('advantage') for s in actor_states[:4]]}")
         return [
             state_to_output(s, state_columns) for s in actor_states
         ]
