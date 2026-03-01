@@ -169,6 +169,9 @@ def state_to_output(
         tool_defs=state.get("tool_defs"),
         advantage=state.get("advantage"),
     )
+    adv_val = state.get("advantage")
+    if adv_val is not None and adv_val != 0.0:
+        print(f"[STATE_TO_OUTPUT] advantage={adv_val:.4f} reward={state.get('reward', 0.0):.4f} output_has={output.get('advantage')}")
     usage = _extract_state_token_usage(state)
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.
