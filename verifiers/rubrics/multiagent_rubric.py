@@ -132,7 +132,7 @@ class MultiAgentRubric(Rubric):
             for state in actor_states:
                 advantage = state["reward"] - mean_reward
                 state["advantage"] = advantage
-                self.logger.info(f"[{actor_id}] reward={state['reward']:.4f} mean={mean_reward:.4f} advantage={advantage:.4f}")
+                print(f"[ADVANTAGE DEBUG] [{actor_id}] reward={state['reward']:.4f} mean={mean_reward:.4f} advantage={advantage:.4f}")
 
                 for step in state.get("trajectory", []):
                     if step.get("advantage") is None:
