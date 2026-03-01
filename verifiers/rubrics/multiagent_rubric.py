@@ -140,6 +140,10 @@ class MultiAgentRubric(Rubric):
                     if step.get("reward") is None:
                         step["reward"] = state["reward"]
 
+        # Verify advantages are set
+        for state in states:
+            print(f"[SCORE_GROUP_END] advantage={state.get('advantage')} id={id(state)}")
+
         # Timing tracking (match parent)
         end_time = time.time()
         scoring_ms = (end_time - start_time) * 1000
