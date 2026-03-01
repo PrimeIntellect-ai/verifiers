@@ -169,8 +169,8 @@ def state_to_output(
         tool_defs=state.get("tool_defs"),
         advantage=state.get("advantage"),
     )
-    adv_val = state.get("advantage")
-    print(f"[STATE_TO_OUTPUT] advantage={adv_val} type={type(adv_val).__name__} reward={state.get('reward')} keys={sorted(state.keys())[:5]}")
+    actor = state.get("extras", {}).get("current_actor_id", "?")
+    print(f"[STATE_TO_OUTPUT] actor={actor} reward={state.get('reward')} metrics={state.get('metrics')} advantage={state.get('advantage')}")
     usage = _extract_state_token_usage(state)
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.
