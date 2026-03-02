@@ -432,24 +432,28 @@ def _truncate(s: str, limit: int = 200) -> str:
 
 
 def _log_request(rollout_id: str, body: dict) -> None:
-    logger.debug(f"[{rollout_id}] <- INTERCEPTED REQUEST")
+    """Log an intercepted request."""
+    log_msg = f"[{rollout_id}] <- INTERCEPTED REQUEST"
+    log_msg += f" ({len(body.get('tools', []))} tool(s))"
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):
-            logger.debug(f"  [{msg.get('role', '?')}] {_truncate(content)}")
+            log_msg += f"\n[{msg.get('role', '?')}] {_truncate(content)}"
         else:
-            logger.debug(f"  [{msg.get('role', '?')}] <complex content>")
-    if body.get("tools"):
-        logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
+            log_msg += f"\n[{msg.get('role', '?')}] <complex content>"
+        for tc in msg.get("tool_calls") or []:
+            func = tc.get("function", {})
+            log_msg += f"\n[tool_call]\n{func.get('name')}({_truncate(func.get('arguments', ''), 100)})"
+    logger.debug(log_msg)
 
 
 def _log_response(rollout_id: str, response: dict) -> None:
-    logger.debug(f"[{rollout_id}] -> RESPONSE")
+    """Log the response from the model."""
+    log_msg = f"[{rollout_id}] -> RESPONSE"
     msg = response.get("choices", [{}])[0].get("message", {})
     if msg.get("content"):
-        logger.debug(f"  [assistant] {_truncate(msg['content'])}")
+        log_msg += f"\n[assistant]\n{_truncate(msg['content'])}"
     for tc in msg.get("tool_calls") or []:
         func = tc.get("function", {})
-        logger.debug(
-            f"  [tool_call] {func.get('name')}({_truncate(func.get('arguments', ''), 100)})"
-        )
+        log_msg += f"\n[tool_call]\n{func.get('name')}({_truncate(func.get('arguments', ''), 100)})"
+    logger.debug(log_msg)
