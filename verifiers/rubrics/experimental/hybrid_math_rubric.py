@@ -108,6 +108,7 @@ class HybridMathRubric(vf.JudgeRubric):
 
         self.timeout_seconds = timeout_seconds
         self.judge_model = judge_model
+        self.class_objects["judge_model"] = judge_model
 
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
