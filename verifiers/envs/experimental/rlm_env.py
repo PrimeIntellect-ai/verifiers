@@ -3723,47 +3723,6 @@ class RLMEnv(vf.StatefulToolEnv):
         used = state.get("main_rlm_completion_tokens", 0)
         return used >= self.root_max_completion_tokens
 
-    async def get_model_response(  # type: ignore[override]
-        self, state: State, prompt: Messages, **kwargs: Any
-    ) -> Response:
-        """Ensure get_prompt_ids sees the last main trajectory step, not a sub-LLM step.
-
-        In interleaved mode, get_prompt_ids (called from super) reads
-        state["trajectory"][-1] to build token-level prompts.  After
-        env_response adds sub-LLM steps, trajectory[-1] may be a sub-LLM
-        step with incompatible tokens.  We temporarily move trailing sub-LLM
-        steps out of the trajectory for the duration of the super call.
-        """
-
-        if not self.include_sub_llm_in_trajectory:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        trajectory = state.get("trajectory", [])
-        if not trajectory:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        main_id = state["trajectory_id"]
-        if trajectory[-1].get("trajectory_id") == main_id:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        # Find last main step and temporarily move trailing sub-LLM steps aside
-        last_main_idx = None
-        for i in range(len(trajectory) - 1, -1, -1):
-            if trajectory[i].get("trajectory_id") == main_id:
-                last_main_idx = i
-                break
-
-        if last_main_idx is None:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        trailing = trajectory[last_main_idx + 1 :]
-        del trajectory[last_main_idx + 1 :]
-        try:
-            result = await super().get_model_response(state, prompt, **kwargs)
-        finally:
-            trajectory.extend(trailing)
-        return result
-
     # =========================================================================
     # Stop Conditions
     # =========================================================================
