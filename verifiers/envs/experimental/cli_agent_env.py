@@ -97,6 +97,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
+        self._interception_server: InterceptionServer | None = None
+        self._tunnel: Tunnel | None = None
+        self._tunnel_lock = asyncio.Lock()
+
+        self.init_interception(interception_port, interception_url)
+
+    def init_interception(
+        self,
+        interception_port: int = 8765,
+        interception_url: str | None = None,
+    ):
+        """Initialize interception server and tunnel resources. Call from __init__."""
         self.interception_port = interception_port
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
