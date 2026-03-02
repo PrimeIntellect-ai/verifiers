@@ -132,16 +132,12 @@ class MultiAgentRubric(Rubric):
             for state in actor_states:
                 advantage = state["reward"] - mean_reward
                 state["advantage"] = advantage
-                print(f"[ADVANTAGE DEBUG] [{actor_id}] reward={state['reward']:.4f} mean={mean_reward:.4f} advantage={advantage:.4f}")
 
                 for step in state.get("trajectory", []):
                     if step.get("advantage") is None:
                         step["advantage"] = advantage
                     if step.get("reward") is None:
                         step["reward"] = state["reward"]
-
-        # Verify advantages are set
-        print(f"[SCORE_GROUP_END] group={id(states)} advantages={[s.get('advantage') for s in states[:4]]}")
 
         # Timing tracking DISABLED for debugging
         # end_time = time.time()

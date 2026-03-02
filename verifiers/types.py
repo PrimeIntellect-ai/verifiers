@@ -315,16 +315,6 @@ class State(dict):
         return super().__getitem__(key)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        # DEBUG: catch advantage being reset from non-zero to 0.0
-        if key == "advantage":
-            try:
-                old = super().__getitem__("advantage")
-                if old is not None and old != 0.0 and (value == 0.0 or value is None):
-                    import traceback
-                    print(f"[ADVANTAGE RESET] id={id(self)} {old} -> {value}")
-                    traceback.print_stack(limit=10)
-            except KeyError:
-                pass
         # forward to input if exists
         if key in self.INPUT_FIELDS and "input" in self:
             input_obj = super().__getitem__("input")
