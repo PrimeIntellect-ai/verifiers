@@ -2391,6 +2391,154 @@ class TestSubLLMCompletionTokenBudget:
         assert result["total_completion_tokens"] == 110  # 80 + 30
 
 
+class TestRootLLMMaxCompletionTokens:
+    """Tests for the root_llm_max_completion_tokens budget feature."""
+
+    def test_default_is_none(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.root_llm_max_completion_tokens is None
+
+    def test_custom_value(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            root_llm_max_completion_tokens=20000,
+            interception_url="http://test.invalid",
+        )
+        assert env.root_llm_max_completion_tokens == 20000
+
+    @pytest.mark.asyncio
+    async def test_stop_false_when_none(self, rlm_env):
+        assert rlm_env.root_llm_max_completion_tokens is None
+        state = {"main_rlm_completion_tokens": 999999}
+        assert await rlm_env.root_token_budget_exhausted(state) is False
+
+    @pytest.mark.asyncio
+    async def test_stop_false_when_under_budget(self, rlm_env):
+        rlm_env.root_llm_max_completion_tokens = 1000
+        state = {"main_rlm_completion_tokens": 500}
+        assert await rlm_env.root_token_budget_exhausted(state) is False
+
+    @pytest.mark.asyncio
+    async def test_stop_true_when_at_budget(self, rlm_env):
+        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
+        state = {"main_rlm_completion_tokens": 1000, "rollout_id": "test"}
+        assert await rlm_env.root_token_budget_exhausted(state) is True
+        assert state["final_answer"] == "my answer"
+
+    @pytest.mark.asyncio
+    async def test_stop_true_when_over_budget(self, rlm_env):
+        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
+        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
+        assert await rlm_env.root_token_budget_exhausted(state) is True
+        assert state["final_answer"] == "my answer"
+
+    @pytest.mark.asyncio
+    async def test_stop_skips_read_when_final_answer_already_set(self, rlm_env):
+        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="should not be called")
+        state = {
+            "main_rlm_completion_tokens": 2000,
+            "final_answer": "existing answer",
+        }
+        assert await rlm_env.root_token_budget_exhausted(state) is True
+        assert state["final_answer"] == "existing answer"
+        rlm_env._executor.read_answer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_repl_output_includes_budget_when_set(self, rlm_env):
+        rlm_env.root_llm_max_completion_tokens = 5000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {
+            "trajectory": [],
+            "context_warning_sent": False,
+            "main_rlm_completion_tokens": 1200,
+        }
+        output = await rlm_env.call_python_repl("print('test')", state)
+
+        assert "1200/5000 root completion tokens used" in output
+
+    @pytest.mark.asyncio
+    async def test_repl_output_excludes_budget_when_none(self, rlm_env):
+        assert rlm_env.root_llm_max_completion_tokens is None
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {
+            "trajectory": [],
+            "context_warning_sent": False,
+            "main_rlm_completion_tokens": 1200,
+        }
+        output = await rlm_env.call_python_repl("print('test')", state)
+
+        assert "root completion tokens" not in output
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_includes_root_budget_when_set(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            root_llm_max_completion_tokens=20000,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "20000" in prompt
+            assert "completion tokens" in prompt
+            assert "your own responses" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_excludes_root_budget_when_none(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        assert env.root_llm_max_completion_tokens is None
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "your own responses" not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+
 # =============================================================================
 # Sandbox Backend Tests (mocked)
 # =============================================================================
