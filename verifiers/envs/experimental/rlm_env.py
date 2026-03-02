@@ -3707,11 +3707,21 @@ class RLMEnv(vf.StatefulToolEnv):
     async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
-        """Override to set final_env_response when answer is ready to avoid extra model call"""
+        """Override to set final_env_response when answer is ready or root budget is exhausted."""
         tool_messages = await super().env_response(messages, state, **kwargs)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
+        elif self._is_root_budget_exhausted(state):
+            await self._ensure_final_answer(state)
+            state["final_env_response"] = tool_messages
         return tool_messages
+
+    def _is_root_budget_exhausted(self, state: State) -> bool:
+        """Check if root model completion token budget is exhausted."""
+        if self.root_llm_max_completion_tokens is None:
+            return False
+        used = state.get("main_rlm_completion_tokens", 0)
+        return used >= self.root_llm_max_completion_tokens
 
     async def get_model_response(  # type: ignore[override]
         self, state: State, prompt: Messages, **kwargs: Any
@@ -3801,12 +3811,25 @@ class RLMEnv(vf.StatefulToolEnv):
 
     @vf.stop
     async def root_token_budget_exhausted(self, state: State) -> bool:
-        """Stop when root model's cumulative completion tokens reach the budget."""
-        if self.root_llm_max_completion_tokens is None:
+        """Stop when root model's cumulative completion tokens reach the budget.
+
+        When the last assistant message has pending tool calls, this returns
+        False so that env_response can execute the tool first. env_response
+        then sets final_env_response and the has_final_env_response stop
+        condition halts the loop on the next iteration.
+
+        This stop condition only fires directly when the model responds
+        without tool calls while over budget (safety net).
+        """
+        if not self._is_root_budget_exhausted(state):
             return False
-        used = state.get("main_rlm_completion_tokens", 0)
-        if used < self.root_llm_max_completion_tokens:
-            return False
+        # If the last main-model response has pending tool calls, defer
+        # so env_response can execute them before stopping.
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is not None:
+            last_message = cast(AssistantMessage, last_main["completion"][-1])
+            if last_message.role == "assistant" and (last_message.tool_calls or []):
+                return False
         await self._ensure_final_answer(state)
         return True
 

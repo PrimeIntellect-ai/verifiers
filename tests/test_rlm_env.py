@@ -2449,6 +2449,57 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env._executor.read_answer.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_stop_defers_when_pending_tool_calls(self, rlm_env):
+        """When over budget but last message has tool calls, defer to let
+        env_response execute the tool before stopping."""
+        from verifiers.types import AssistantMessage, ToolCall
+
+        rlm_env.root_llm_max_completion_tokens = 1000
+        assistant_msg = AssistantMessage(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="tc1", name="call_bash_repl", arguments="{}")],
+        )
+        state = {
+            "main_rlm_completion_tokens": 1500,
+            "trajectory_id": "main",
+            "trajectory": [
+                {
+                    "trajectory_id": "main",
+                    "prompt": [],
+                    "completion": [assistant_msg],
+                }
+            ],
+        }
+        assert await rlm_env.root_token_budget_exhausted(state) is False
+
+    @pytest.mark.asyncio
+    async def test_stop_fires_when_no_pending_tool_calls(self, rlm_env):
+        """When over budget and last message has no tool calls, stop fires."""
+        from verifiers.types import AssistantMessage
+
+        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="answer")
+        assistant_msg = AssistantMessage(
+            role="assistant",
+            content="I'm done",
+            tool_calls=None,
+        )
+        state = {
+            "main_rlm_completion_tokens": 1500,
+            "rollout_id": "test",
+            "trajectory_id": "main",
+            "trajectory": [
+                {
+                    "trajectory_id": "main",
+                    "prompt": [],
+                    "completion": [assistant_msg],
+                }
+            ],
+        }
+        assert await rlm_env.root_token_budget_exhausted(state) is True
+
+    @pytest.mark.asyncio
     async def test_repl_output_includes_budget_when_set(self, rlm_env):
         rlm_env.root_llm_max_completion_tokens = 5000
         rlm_env._execute_code = AsyncMock(
@@ -2537,6 +2588,67 @@ class TestRootLLMMaxCompletionTokens:
             assert "your own responses" not in prompt
         finally:
             await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_env_response_sets_final_env_response_when_budget_exhausted(
+        self, rlm_env
+    ):
+        """When root budget is exhausted, env_response should execute the tool
+        and set final_env_response so the loop stops after the tool runs."""
+        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
+
+        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            result = await rlm_env.env_response([], state)
+
+        assert result is fake_tool_messages
+        assert state["final_env_response"] is fake_tool_messages
+        assert state["final_answer"] == "my answer"
+
+    @pytest.mark.asyncio
+    async def test_env_response_no_final_env_response_when_under_budget(self, rlm_env):
+        """When root budget is not exhausted, env_response should not set
+        final_env_response."""
+        rlm_env.root_llm_max_completion_tokens = 1000
+
+        state = {"main_rlm_completion_tokens": 500}
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            result = await rlm_env.env_response([], state)
+
+        assert result is fake_tool_messages
+        assert "final_env_response" not in state
+
+    @pytest.mark.asyncio
+    async def test_env_response_final_answer_takes_priority_over_budget(self, rlm_env):
+        """When final_answer is already set (answer ready), that path takes
+        priority regardless of budget state."""
+        rlm_env.root_llm_max_completion_tokens = 1000
+
+        state = {
+            "main_rlm_completion_tokens": 500,
+            "final_answer": "already set",
+        }
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            await rlm_env.env_response([], state)
+
+        assert state["final_env_response"] is fake_tool_messages
+        assert state["final_answer"] == "already set"
 
 
 # =============================================================================
