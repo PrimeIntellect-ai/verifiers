@@ -3809,30 +3809,6 @@ class RLMEnv(vf.StatefulToolEnv):
         await self._ensure_final_answer(state)
         return True
 
-    @vf.stop
-    async def root_token_budget_exhausted(self, state: State) -> bool:
-        """Stop when root model's cumulative completion tokens reach the budget.
-
-        When the last assistant message has pending tool calls, this returns
-        False so that env_response can execute the tool first. env_response
-        then sets final_env_response and the has_final_env_response stop
-        condition halts the loop on the next iteration.
-
-        This stop condition only fires directly when the model responds
-        without tool calls while over budget (safety net).
-        """
-        if not self._is_root_budget_exhausted(state):
-            return False
-        # If the last main-model response has pending tool calls, defer
-        # so env_response can execute them before stopping.
-        last_main = self._last_main_trajectory_step(state)
-        if last_main is not None:
-            last_message = cast(AssistantMessage, last_main["completion"][-1])
-            if last_message.role == "assistant" and (last_message.tool_calls or []):
-                return False
-        await self._ensure_final_answer(state)
-        return True
-
     # =========================================================================
     # Cleanup
     # =========================================================================

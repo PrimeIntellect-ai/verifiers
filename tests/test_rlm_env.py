@@ -2409,95 +2409,28 @@ class TestRootLLMMaxCompletionTokens:
         assert env.root_llm_max_completion_tokens == 20000
 
     @pytest.mark.asyncio
-    async def test_stop_false_when_none(self, rlm_env):
+    async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
         assert rlm_env.root_llm_max_completion_tokens is None
         state = {"main_rlm_completion_tokens": 999999}
-        assert await rlm_env.root_token_budget_exhausted(state) is False
+        assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
-    async def test_stop_false_when_under_budget(self, rlm_env):
+    async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
         rlm_env.root_llm_max_completion_tokens = 1000
         state = {"main_rlm_completion_tokens": 500}
-        assert await rlm_env.root_token_budget_exhausted(state) is False
+        assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
-    async def test_stop_true_when_at_budget(self, rlm_env):
+    async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
         rlm_env.root_llm_max_completion_tokens = 1000
-        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
-        state = {"main_rlm_completion_tokens": 1000, "rollout_id": "test"}
-        assert await rlm_env.root_token_budget_exhausted(state) is True
-        assert state["final_answer"] == "my answer"
+        state = {"main_rlm_completion_tokens": 1000}
+        assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
-    async def test_stop_true_when_over_budget(self, rlm_env):
+    async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
         rlm_env.root_llm_max_completion_tokens = 1000
-        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
-        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
-        assert await rlm_env.root_token_budget_exhausted(state) is True
-        assert state["final_answer"] == "my answer"
-
-    @pytest.mark.asyncio
-    async def test_stop_skips_read_when_final_answer_already_set(self, rlm_env):
-        rlm_env.root_llm_max_completion_tokens = 1000
-        rlm_env._executor.read_answer = AsyncMock(return_value="should not be called")
-        state = {
-            "main_rlm_completion_tokens": 2000,
-            "final_answer": "existing answer",
-        }
-        assert await rlm_env.root_token_budget_exhausted(state) is True
-        assert state["final_answer"] == "existing answer"
-        rlm_env._executor.read_answer.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_stop_defers_when_pending_tool_calls(self, rlm_env):
-        """When over budget but last message has tool calls, defer to let
-        env_response execute the tool before stopping."""
-        from verifiers.types import AssistantMessage, ToolCall
-
-        rlm_env.root_llm_max_completion_tokens = 1000
-        assistant_msg = AssistantMessage(
-            role="assistant",
-            content=None,
-            tool_calls=[ToolCall(id="tc1", name="call_bash_repl", arguments="{}")],
-        )
-        state = {
-            "main_rlm_completion_tokens": 1500,
-            "trajectory_id": "main",
-            "trajectory": [
-                {
-                    "trajectory_id": "main",
-                    "prompt": [],
-                    "completion": [assistant_msg],
-                }
-            ],
-        }
-        assert await rlm_env.root_token_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_stop_fires_when_no_pending_tool_calls(self, rlm_env):
-        """When over budget and last message has no tool calls, stop fires."""
-        from verifiers.types import AssistantMessage
-
-        rlm_env.root_llm_max_completion_tokens = 1000
-        rlm_env._executor.read_answer = AsyncMock(return_value="answer")
-        assistant_msg = AssistantMessage(
-            role="assistant",
-            content="I'm done",
-            tool_calls=None,
-        )
-        state = {
-            "main_rlm_completion_tokens": 1500,
-            "rollout_id": "test",
-            "trajectory_id": "main",
-            "trajectory": [
-                {
-                    "trajectory_id": "main",
-                    "prompt": [],
-                    "completion": [assistant_msg],
-                }
-            ],
-        }
-        assert await rlm_env.root_token_budget_exhausted(state) is True
+        state = {"main_rlm_completion_tokens": 1500}
+        assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_repl_output_includes_budget_when_set(self, rlm_env):
