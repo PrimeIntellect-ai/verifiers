@@ -2012,25 +2012,25 @@ class TestMessageHistory:
 
 
 class TestSubLLMCompletionTokenBudget:
-    """Tests for the sub_llm_max_completion_tokens budget feature."""
+    """Tests for the sub_max_completion_tokens budget feature."""
 
     def test_default_is_none(self):
         dataset = make_dataset({})
         env = build_env(dataset, interception_url="http://test.invalid")
-        assert env.sub_llm_max_completion_tokens is None
+        assert env.sub_max_completion_tokens is None
 
     def test_custom_value(self):
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            sub_llm_max_completion_tokens=50000,
+            sub_max_completion_tokens=50000,
             interception_url="http://test.invalid",
         )
-        assert env.sub_llm_max_completion_tokens == 50000
+        assert env.sub_max_completion_tokens == 50000
 
     @pytest.mark.asyncio
     async def test_run_sub_llm_request_blocks_when_budget_exhausted(self, rlm_env):
-        rlm_env.sub_llm_max_completion_tokens = 1000
+        rlm_env.sub_max_completion_tokens = 1000
         state = {
             "trajectory": [],
             "sampling_args": {},
@@ -2054,7 +2054,7 @@ class TestSubLLMCompletionTokenBudget:
 
     @pytest.mark.asyncio
     async def test_run_sub_llm_request_allows_when_under_budget(self, rlm_env):
-        rlm_env.sub_llm_max_completion_tokens = 1000
+        rlm_env.sub_max_completion_tokens = 1000
         state = {
             "trajectory": [],
             "sampling_args": {},
@@ -2103,8 +2103,8 @@ class TestSubLLMCompletionTokenBudget:
 
     @pytest.mark.asyncio
     async def test_run_sub_llm_request_allows_when_no_budget(self, rlm_env):
-        """When sub_llm_max_completion_tokens is None, no budget check occurs."""
-        assert rlm_env.sub_llm_max_completion_tokens is None
+        """When sub_max_completion_tokens is None, no budget check occurs."""
+        assert rlm_env.sub_max_completion_tokens is None
         state = {
             "trajectory": [],
             "sampling_args": {},
@@ -2152,7 +2152,7 @@ class TestSubLLMCompletionTokenBudget:
 
     @pytest.mark.asyncio
     async def test_batch_early_exit_when_budget_exhausted(self, rlm_env):
-        rlm_env.sub_llm_max_completion_tokens = 500
+        rlm_env.sub_max_completion_tokens = 500
         context = {
             "client": MagicMock(),
             "sub_model": "gpt-4",
@@ -2174,7 +2174,7 @@ class TestSubLLMCompletionTokenBudget:
 
     @pytest.mark.asyncio
     async def test_batch_summary_includes_budget_when_set(self, rlm_env):
-        rlm_env.sub_llm_max_completion_tokens = 10000
+        rlm_env.sub_max_completion_tokens = 10000
 
         mock_response = MagicMock()
         mock_response.message.content = "ok"
@@ -2218,7 +2218,7 @@ class TestSubLLMCompletionTokenBudget:
 
     @pytest.mark.asyncio
     async def test_batch_summary_excludes_budget_when_none(self, rlm_env):
-        assert rlm_env.sub_llm_max_completion_tokens is None
+        assert rlm_env.sub_max_completion_tokens is None
 
         state = {
             "trajectory": [],
@@ -2257,7 +2257,7 @@ class TestSubLLMCompletionTokenBudget:
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            sub_llm_max_completion_tokens=50000,
+            sub_max_completion_tokens=50000,
             repl_language="python",
             interception_url="http://test.invalid",
         )
@@ -2283,7 +2283,7 @@ class TestSubLLMCompletionTokenBudget:
             repl_language="python",
             interception_url="http://test.invalid",
         )
-        assert env.sub_llm_max_completion_tokens is None
+        assert env.sub_max_completion_tokens is None
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -2302,7 +2302,7 @@ class TestSubLLMCompletionTokenBudget:
         the tool loop breaks and forces a final answer instead of continuing."""
         from verifiers.types import Response, ResponseMessage, ToolCall, Usage
 
-        rlm_env_with_sub_tools.sub_llm_max_completion_tokens = 100
+        rlm_env_with_sub_tools.sub_max_completion_tokens = 100
 
         # Turn 1: tool call that uses 80 completion tokens
         resp1 = Response(
@@ -2392,49 +2392,49 @@ class TestSubLLMCompletionTokenBudget:
 
 
 class TestRootLLMMaxCompletionTokens:
-    """Tests for the root_llm_max_completion_tokens budget feature."""
+    """Tests for the root_max_completion_tokens budget feature."""
 
     def test_default_is_none(self):
         dataset = make_dataset({})
         env = build_env(dataset, interception_url="http://test.invalid")
-        assert env.root_llm_max_completion_tokens is None
+        assert env.root_max_completion_tokens is None
 
     def test_custom_value(self):
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            root_llm_max_completion_tokens=20000,
+            root_max_completion_tokens=20000,
             interception_url="http://test.invalid",
         )
-        assert env.root_llm_max_completion_tokens == 20000
+        assert env.root_max_completion_tokens == 20000
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
-        assert rlm_env.root_llm_max_completion_tokens is None
+        assert rlm_env.root_max_completion_tokens is None
         state = {"main_rlm_completion_tokens": 999999}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
         state = {"main_rlm_completion_tokens": 500}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
         state = {"main_rlm_completion_tokens": 1000}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
         state = {"main_rlm_completion_tokens": 1500}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_repl_output_includes_budget_when_set(self, rlm_env):
-        rlm_env.root_llm_max_completion_tokens = 5000
+        rlm_env.root_max_completion_tokens = 5000
         rlm_env._execute_code = AsyncMock(
             return_value={
                 "status": "ok",
@@ -2457,7 +2457,7 @@ class TestRootLLMMaxCompletionTokens:
 
     @pytest.mark.asyncio
     async def test_repl_output_excludes_budget_when_none(self, rlm_env):
-        assert rlm_env.root_llm_max_completion_tokens is None
+        assert rlm_env.root_max_completion_tokens is None
         rlm_env._execute_code = AsyncMock(
             return_value={
                 "status": "ok",
@@ -2483,7 +2483,7 @@ class TestRootLLMMaxCompletionTokens:
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            root_llm_max_completion_tokens=20000,
+            root_max_completion_tokens=20000,
             repl_language="python",
             interception_url="http://test.invalid",
         )
@@ -2509,7 +2509,7 @@ class TestRootLLMMaxCompletionTokens:
             repl_language="python",
             interception_url="http://test.invalid",
         )
-        assert env.root_llm_max_completion_tokens is None
+        assert env.root_max_completion_tokens is None
         env._ensure_interception_server = AsyncMock()
         env._executor.prepare_filesystem = AsyncMock()
         env._executor.setup = AsyncMock()
@@ -2528,7 +2528,7 @@ class TestRootLLMMaxCompletionTokens:
     ):
         """When root budget is exhausted, env_response should execute the tool
         and set final_env_response so the loop stops after the tool runs."""
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
         rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
 
         state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
@@ -2548,7 +2548,7 @@ class TestRootLLMMaxCompletionTokens:
     async def test_env_response_no_final_env_response_when_under_budget(self, rlm_env):
         """When root budget is not exhausted, env_response should not set
         final_env_response."""
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
 
         state = {"main_rlm_completion_tokens": 500}
         fake_tool_messages = [MagicMock()]
@@ -2566,7 +2566,7 @@ class TestRootLLMMaxCompletionTokens:
     async def test_env_response_final_answer_takes_priority_over_budget(self, rlm_env):
         """When final_answer is already set (answer ready), that path takes
         priority regardless of budget state."""
-        rlm_env.root_llm_max_completion_tokens = 1000
+        rlm_env.root_max_completion_tokens = 1000
 
         state = {
             "main_rlm_completion_tokens": 500,
