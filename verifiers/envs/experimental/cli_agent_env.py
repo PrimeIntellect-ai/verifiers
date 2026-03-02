@@ -28,6 +28,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.worker_utils import get_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     def __init__(
         self,
         run_command: str,
-        interception_port: int = 8765,
+        interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
@@ -101,6 +102,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
 
+        interception_port = (
+            get_free_port() if interception_port is None else interception_port
+        )
         self.init_interception(interception_port, interception_url)
 
     def init_interception(
