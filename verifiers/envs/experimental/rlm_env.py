@@ -2532,6 +2532,10 @@ class RLMEnv(vf.StatefulToolEnv):
                     max_turns_reached=False,
                 )
 
+            current_messages.append(
+                from_raw_message(assistant_message.model_dump(exclude_none=True))
+            )
+
             # Check if the sub-LLM completion token budget is exceeded
             # mid-loop. We combine already-committed tokens (state) with
             # tokens accumulated in this call so far.
@@ -2542,10 +2546,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     >= self.sub_llm_max_completion_tokens
                 ):
                     break
-
-            current_messages.append(
-                from_raw_message(assistant_message.model_dump(exclude_none=True))
-            )
 
             for tool_call in tool_calls:
                 try:
