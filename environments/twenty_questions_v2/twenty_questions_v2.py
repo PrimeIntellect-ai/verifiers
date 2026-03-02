@@ -155,14 +155,14 @@ class TwentyQuestionsTask(TaskSet):
         if len(state["trajectory"]) == 0:
             return [
                 {"role": "system", "content": guesser_system},
-                {"role": "user", "content": f"I'm thinking of a {category}. You have {self.max_questions} questions to guess what it is. Ask your first question!"},
+                {"role": "user", "content": f"/no_think I'm thinking of a {category}. You have {self.max_questions} questions to guess what it is. Ask your first question!"},
             ]
 
         remaining = self.max_questions - state["extras"]["question_count"]
         history_str = self._build_qa_history(state)
         return [
             {"role": "system", "content": guesser_system},
-            {"role": "user", "content": f"I'm thinking of a {category}.\n\nConversation so far:\n{history_str}\n\nYou have {remaining} questions left. Ask another question or make a guess!"},
+            {"role": "user", "content": f"/no_think I'm thinking of a {category}.\n\nConversation so far:\n{history_str}\n\nYou have {remaining} questions left. Ask another question or make a guess!"},
         ]
 
     def _build_thinker_prompt(self, state: State, secret: str) -> Messages:
@@ -183,7 +183,7 @@ class TwentyQuestionsTask(TaskSet):
         question_num = state["extras"]["question_count"] + 1
         return [
             {"role": "system", "content": thinker_system + f"\n\nYour secret word is: {secret}"},
-            {"role": "user", "content": f"Question {question_num}: {last_question}"},
+            {"role": "user", "content": f"/no_think Question {question_num}: {last_question}"},
         ]
 
     # -------------------------------------------------------------------------
@@ -285,7 +285,7 @@ def load_environment(
     guesser = Agent(
         id="guesser",
         system_prompt="",
-        max_tokens=2048,
+        max_tokens=128,
         is_trainable=True,
         model=guesser_model,
         client=guesser_client,
@@ -294,7 +294,7 @@ def load_environment(
     thinker = Agent(
         id="thinker",
         system_prompt="",
-        max_tokens=256,
+        max_tokens=32,
         is_trainable=False,
         model=thinker_model,
         client=thinker_client,
