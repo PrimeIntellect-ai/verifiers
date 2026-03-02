@@ -1364,7 +1364,7 @@ class RLMExecutor(SandboxMixin):
         except RLMCodeExecutionTimeout:
             raise
         except Exception as e:
-            raise vf.SandboxError() from e
+            raise vf.SandboxError(f"Sandbox command failed: {e}") from e
 
         return RLMExecResult(stdout=raw, stderr="")
 
