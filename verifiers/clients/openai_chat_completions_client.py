@@ -209,7 +209,7 @@ class OpenAIChatCompletionsClient(
                 return ChatCompletionToolMessageParam(
                     role="tool",
                     tool_call_id=message.tool_call_id,
-                    content=content_to_text(message.content),
+                    content=cast(Any, normalize_content(message.content)),
                 )
             elif isinstance(message, TextMessage):
                 return ChatCompletionUserMessageParam(
