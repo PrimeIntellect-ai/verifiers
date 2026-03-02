@@ -83,10 +83,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         # Find previous turn for the current actor (multi-agent) or last turn (single-agent)
         prev_turn = self._find_actor_prev_turn(state)
+        actor_id = state.get("extras", {}).get("current_actor_id", "?")
         if prev_turn is None:
+            print(f"[TOKEN_CLIENT] actor={actor_id} no prev turn, using full prompt")
             return await super().get_native_response(
                 prompt, model, sampling_args, tools
             )
+        print(f"[TOKEN_CLIENT] actor={actor_id} reusing prev turn tokens")
 
         prev_messages = concat_messages([prev_turn["prompt"], prev_turn["completion"]])
         if len(prompt) <= len(prev_messages):
