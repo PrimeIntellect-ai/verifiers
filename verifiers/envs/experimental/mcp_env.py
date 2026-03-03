@@ -442,7 +442,7 @@ class MCPEnv(vf.StatefulToolEnv):
             return await super().call_tool(tool_name, tool_args, tool_call_id, **kwargs)
         except Exception as exc:
             if self._should_stop_for_error(exc):
-                raise vf.ToolCallError from exc
+                raise
             return ToolMessage(
                 role="tool",
                 content=self.error_formatter(exc),

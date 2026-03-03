@@ -1,5 +1,7 @@
 """Tests for the experimental MCPEnv foundation."""
 
+import json
+
 import pytest
 
 pytest.importorskip("mcp")
@@ -7,6 +9,7 @@ pytest.importorskip("mcp")
 import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
+from verifiers.types import ToolCall
 from verifiers.utils.mcp_utils.models import MCPTransportConfig
 from verifiers.utils.mcp_utils.transports.synthetic_transport import (
     SyntheticTransport,
@@ -44,6 +47,10 @@ class CountingSyntheticTransport(SyntheticTransport):
     async def disconnect(self):
         self.disconnect_count += 1
         await super().disconnect()
+
+
+class MCPStopError(RuntimeError):
+    pass
 
 
 def _build_env(mock_client, sample_chat_dataset, **kwargs):
@@ -366,6 +373,65 @@ class TestMCPEnv:
 
         tool_message = await env.call_tool("lookup", {"query": "ping"}, "call_3")
         assert tool_message.content == "search-1:ping"
+
+    @pytest.mark.asyncio
+    async def test_stop_errors_propagate_through_env_response(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        def transport_factory(config: MCPTransportConfig):
+            tool = create_tool(
+                name="explode",
+                description="Raise an MCP stop error",
+                parameters={},
+                required=[],
+            )
+            return CountingSyntheticTransport(
+                label=config.server_config.name,
+                tools={"explode": tool},
+                handlers={
+                    "explode": lambda data, args: (_ for _ in ()).throw(
+                        MCPStopError("boom")
+                    )
+                },
+            )
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            mcp_servers=[{"name": "search", "command": "dummy"}],
+            transport_factory=transport_factory,
+            stop_errors=[MCPStopError],
+        )
+
+        tool_call = ToolCall(id="call_0", name="explode", arguments=json.dumps({}))
+        mock_client.add_response(
+            messages=[{"role": "user", "content": "Invoke"}],
+            response="Using tool",
+            tool_calls=[
+                {
+                    "id": tool_call.id,
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                }
+            ],
+        )
+
+        state = await env.rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Invoke"}],
+                answer="",
+                task="",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert isinstance(state["error"], vf.ToolCallError)
+        assert isinstance(state["error"].__cause__, MCPStopError)
+        assert state["stop_condition"] == "has_error"
+        await env.cleanup()
 
     @pytest.mark.asyncio
     async def test_sandbox_connect_waits_for_exposed_service(self, monkeypatch):
