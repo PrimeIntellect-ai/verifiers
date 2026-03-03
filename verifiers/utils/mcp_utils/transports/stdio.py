@@ -14,8 +14,9 @@ from verifiers.utils.mcp_utils.transports.base import (
 
 
 class StdioTransport(MCPTransport):
-    def __init__(self, config: MCPServerConfig):
+    def __init__(self, config: MCPServerConfig, *, timeout: float = 30.0):
         self.config = config
+        self.timeout = timeout
         self.session: ClientSession | None = None
         self.tools: dict[str, MCPTool] = {}
         self._connection_task: asyncio.Task | None = None
@@ -47,8 +48,10 @@ class StdioTransport(MCPTransport):
             async with stdio_client(server_params) as (read, write):
                 async with ClientSession(read, write) as session:
                     self.session = session
-                    await session.initialize()
-                    tools_response = await session.list_tools()
+                    await asyncio.wait_for(session.initialize(), timeout=self.timeout)
+                    tools_response = await asyncio.wait_for(
+                        session.list_tools(), timeout=self.timeout
+                    )
                     self.tools = {tool.name: tool for tool in tools_response.tools}
                     self._ready.set()
 

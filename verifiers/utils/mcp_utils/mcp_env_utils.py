@@ -13,7 +13,10 @@ def create_transport(transport_config: MCPTransportConfig) -> MCPTransport:
             raise ValueError(
                 f"'command' required for stdio transport: {transport_config.server_config.name}"
             )
-        return StdioTransport(transport_config.server_config)
+        return StdioTransport(
+            transport_config.server_config,
+            timeout=transport_config.http_timeout,
+        )
 
     if transport_config.transport_type == "http":
         url = get_server_url(

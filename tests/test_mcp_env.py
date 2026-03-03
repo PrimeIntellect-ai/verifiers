@@ -689,6 +689,46 @@ class TestMCPEnv:
         await transport.disconnect()
 
     @pytest.mark.asyncio
+    async def test_stdio_connect_times_out_during_initialize(self, monkeypatch):
+        stdio_module = pytest.importorskip("verifiers.utils.mcp_utils.transports.stdio")
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        blocked = asyncio.Event()
+
+        @asynccontextmanager
+        async def fake_stdio_client(server_params):
+            yield object(), object()
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self.read = read
+                self.write = write
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                await blocked.wait()
+
+            async def list_tools(self):
+                raise AssertionError("initialize should time out before listing tools")
+
+        monkeypatch.setattr(stdio_module, "stdio_client", fake_stdio_client)
+        monkeypatch.setattr(stdio_module, "ClientSession", FakeClientSession)
+
+        transport = stdio_module.StdioTransport(
+            models_module.MCPServerConfig(name="local", command="dummy"),
+            timeout=0.01,
+        )
+
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.connect()
+        await transport.disconnect()
+
+    @pytest.mark.asyncio
     async def test_streaming_http_reconnect_exhaustion_raises_disconnect_error(
         self, monkeypatch
     ):
