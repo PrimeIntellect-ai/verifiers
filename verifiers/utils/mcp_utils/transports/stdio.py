@@ -44,9 +44,7 @@ class StdioTransport(MCPTransport):
                     self.session = session
                     await session.initialize()
                     tools_response = await session.list_tools()
-                    self.tools = {
-                        tool.name: tool for tool in tools_response.tools
-                    }
+                    self.tools = {tool.name: tool for tool in tools_response.tools}
                     self._ready.set()
 
                     while True:

@@ -55,9 +55,7 @@ class StreamingHTTPTransport(MCPTransport):
                         tools_response = await asyncio.wait_for(
                             session.list_tools(), timeout=self.timeout
                         )
-                        self.tools = {
-                            tool.name: tool for tool in tools_response.tools
-                        }
+                        self.tools = {tool.name: tool for tool in tools_response.tools}
                         self._ready.set()
 
                         while True:

@@ -443,7 +443,7 @@ During rollouts, the model can call tools, receive results, and continue reasoni
 
 ### MCP Tool Environments
 
-For tools implemented as MCP (Model Context Protocol) servers, `MCPEnv` extends `ToolEnv` to provide an integration that automatically connects to MCP servers and exposes their tools to the model:
+For tools implemented as MCP (Model Context Protocol) servers, `MCPEnv` extends `StatefulToolEnv` and can connect to MCP servers over stdio, streamable HTTP, or per-rollout sandbox transports:
 
 ```python
 mcp_servers = [
@@ -456,14 +456,31 @@ mcp_servers = [
 
 vf_env = vf.MCPEnv(
     mcp_servers=mcp_servers,
+    transport_type="stdio",  # or "http" / "sandbox"
     dataset=dataset,
     rubric=rubric,
 )
 ```
 
+By default, stdio/http transports are shared across rollouts (`connection_scope="shared"`), which is a good fit for stateless read-only MCP servers. For stateful MCP workflows, use `connection_scope="rollout"` or the sandbox transport, which defaults to isolated per-rollout state.
+
+For HTTP transports, each server needs a URL either inline or via `http_urls`:
+
+```python
+vf_env = vf.MCPEnv(
+    mcp_servers=[{"name": "remote-search", "url": "https://example.com/mcp"}],
+    transport_type="http",
+    http_timeout=30.0,  # applies to MCP handshake and tool calls
+    dataset=dataset,
+    rubric=rubric,
+)
+```
+
+For sandbox transports, `command`/`args` must start an MCP server that serves streamable HTTP on the exposed sandbox port. `MCPEnv` will expose that port and connect to the server's `/mcp` endpoint.
+
 ### Stateful Tool Environments
 
-`ToolEnv` and `MCPEnv` are designed for stateless, read-only tools where no session state needs to persist across calls within a rollout. For tools that require per-rollout state—such as a sandbox container, database connection, or session ID—use `StatefulToolEnv`.
+`ToolEnv` is designed for stateless, read-only tools where no session state needs to persist across calls within a rollout. For tools that require per-rollout state—such as a sandbox container, database connection, or session ID—use `StatefulToolEnv`. `MCPEnv` builds on this same stateful foundation for MCP-backed tools.
 
 The `setup_state` method is called at the beginning of each rollout for all environments which extend `MultiTurnEnv`, but is a no-op by default (including in `ToolEnv`). 
 
@@ -598,7 +615,7 @@ Verifiers defines a hierarchy of error types under `vf.Error`:
 - `vf.ModelError` — errors from model interactions (e.g., `vf.EmptyModelResponseError`)
 - `vf.OverlongPromptError` — prompt exceeds model context length
 - `vf.ToolError` — tool-related errors (`vf.ToolParseError`, `vf.ToolCallError`)
-- `vf.InfraError` — infrastructure errors (e.g., `vf.SandboxError`)
+- `vf.InfraError` — infrastructure errors (e.g., `vf.SandboxError`, `vf.TunnelError`)
 
 When a `vf.Error` is raised during a rollout, it is automatically caught and stored in `state["error"]`, triggering the built-in `has_error` stop condition at the next check. This allows rollouts to terminate gracefully rather than crashing.
 

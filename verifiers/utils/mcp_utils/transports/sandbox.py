@@ -148,7 +148,7 @@ class SandboxTransport(StreamingHTTPTransport):
         deadline = asyncio.get_running_loop().time() + PROCESS_START_TIMEOUT_SECONDS
         check_command = (
             f"test -s {shlex.quote(self.pid_file)} && "
-            f"kill -0 \"$(cat {shlex.quote(self.pid_file)})\""
+            f'kill -0 "$(cat {shlex.quote(self.pid_file)})"'
         )
 
         while True:

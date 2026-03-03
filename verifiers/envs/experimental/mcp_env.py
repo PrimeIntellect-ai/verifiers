@@ -188,9 +188,7 @@ class MCPEnv(vf.StatefulToolEnv):
                 )
             raise
 
-    async def _disconnect_transports(
-        self, transports: dict[str, MCPTransport]
-    ) -> None:
+    async def _disconnect_transports(self, transports: dict[str, MCPTransport]) -> None:
         errors: list[Exception] = []
         for transport in transports.values():
             try:
@@ -465,9 +463,7 @@ class MCPEnv(vf.StatefulToolEnv):
             try:
                 await self._disconnect_transports(rollout_transports)
             except Exception as exc:
-                self.logger.warning(
-                    f"Failed to clean up rollout MCP transports: {exc}"
-                )
+                self.logger.warning(f"Failed to clean up rollout MCP transports: {exc}")
 
     @teardown_handler
     async def teardown_shared_transports(self) -> None:

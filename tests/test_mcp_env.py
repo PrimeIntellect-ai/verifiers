@@ -209,7 +209,9 @@ class TestMCPEnv:
                 label=f"{config.server_config.name}-{len(created)}",
                 tools={"lookup": tool},
                 handlers={
-                    "lookup": lambda data, args, label=f"{config.server_config.name}-{len(created)}": (
+                    "lookup": lambda data,
+                    args,
+                    label=f"{config.server_config.name}-{len(created)}": (
                         f"{label}:{args['query']}"
                     )
                 },
@@ -335,7 +337,9 @@ class TestMCPEnv:
                 label=f"{config.server_config.name}-{len(created)}",
                 tools={"lookup": tool},
                 handlers={
-                    "lookup": lambda data, args, label=f"{config.server_config.name}-{len(created)}": (
+                    "lookup": lambda data,
+                    args,
+                    label=f"{config.server_config.name}-{len(created)}": (
                         f"{label}:{args['query']}"
                     )
                 },
