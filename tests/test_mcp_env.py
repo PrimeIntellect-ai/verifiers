@@ -368,6 +368,115 @@ class TestMCPEnv:
         assert tool_message.content == "search-1:ping"
 
     @pytest.mark.asyncio
+    async def test_sandbox_connect_waits_for_exposed_service(self, monkeypatch):
+        sandbox_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.sandbox"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        events: list[str] = []
+
+        class RecordingSandboxTransport(sandbox_module.SandboxTransport):
+            def __init__(self):
+                super().__init__(
+                    models_module.MCPServerConfig(name="sandbox", command="dummy"),
+                    sandbox_image="python:3.11-slim",
+                    sandbox_start_command="tail -f /dev/null",
+                    sandbox_environment_vars={},
+                    sandbox_cpu_cores=1,
+                    sandbox_memory_gb=1,
+                    sandbox_disk_size_gb=1,
+                    sandbox_timeout_minutes=1,
+                    port_to_expose=8000,
+                )
+
+            async def create_sandbox(self) -> str:
+                events.append("create")
+                self.sandbox_id = "sandbox-1"
+                return self.sandbox_id
+
+            async def run_setup_commands(self) -> None:
+                events.append("setup")
+
+            async def start_mcp_server(self) -> None:
+                events.append("start")
+
+            async def expose_port(self) -> str:
+                events.append("expose")
+                self.url = "https://sandbox.example/mcp"
+                return self.url
+
+            async def wait_for_service_ready(self) -> None:
+                events.append("ready")
+
+        async def fake_http_connect(self):
+            events.append("connect")
+            return {}
+
+        monkeypatch.setattr(
+            sandbox_module.StreamingHTTPTransport,
+            "connect",
+            fake_http_connect,
+        )
+
+        transport = RecordingSandboxTransport()
+        assert await transport.connect() == {}
+        assert events == ["create", "setup", "start", "expose", "ready", "connect"]
+
+    @pytest.mark.asyncio
+    async def test_sandbox_wait_for_service_ready_polls_exposed_url(self, monkeypatch):
+        sandbox_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.sandbox"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        class DummyWriter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+            def is_closing(self) -> bool:
+                return self.closed
+
+            async def wait_closed(self):
+                return None
+
+        attempts: list[tuple[str, int, bool]] = []
+
+        async def fake_open_connection(host: str, port: int, ssl: bool):
+            attempts.append((host, port, ssl))
+            if len(attempts) == 1:
+                raise ConnectionError("not ready yet")
+            return object(), DummyWriter()
+
+        monkeypatch.setattr(
+            sandbox_module.asyncio,
+            "open_connection",
+            fake_open_connection,
+        )
+        transport = sandbox_module.SandboxTransport(
+            models_module.MCPServerConfig(name="sandbox", command="dummy"),
+            sandbox_image="python:3.11-slim",
+            sandbox_start_command="tail -f /dev/null",
+            sandbox_environment_vars={},
+            sandbox_cpu_cores=1,
+            sandbox_memory_gb=1,
+            sandbox_disk_size_gb=1,
+            sandbox_timeout_minutes=1,
+            port_to_expose=8000,
+        )
+        transport.url = "https://sandbox.example/mcp"
+
+        await transport.wait_for_service_ready()
+
+        assert attempts == [
+            ("sandbox.example", 443, True),
+            ("sandbox.example", 443, True),
+        ]
+
+    @pytest.mark.asyncio
     async def test_sandbox_startup_error_reports_cleanup_failure(self):
         sandbox_module = pytest.importorskip(
             "verifiers.utils.mcp_utils.transports.sandbox"

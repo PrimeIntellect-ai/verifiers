@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import shlex
 from typing import Any
+from urllib.parse import urlparse
 
 from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
 from verifiers.utils.mcp_utils.models import MCPServerConfig
 from verifiers.utils.mcp_utils.transports.streaming_http import StreamingHTTPTransport
 
-PROCESS_START_TIMEOUT_SECONDS = 10.0
-PROCESS_POLL_INTERVAL_SECONDS = 0.5
+SERVICE_READY_TIMEOUT_SECONDS = 10.0
+SERVICE_POLL_INTERVAL_SECONDS = 0.5
 
 
 class SandboxTransport(StreamingHTTPTransport):
@@ -53,7 +54,6 @@ class SandboxTransport(StreamingHTTPTransport):
         self.sandbox_id: str | None = None
         self.port_to_expose = port_to_expose
         self.log_file = "/tmp/mcp.log"
-        self.pid_file = f"/tmp/mcp-{config.name}.pid"
         super().__init__(
             config,
             url="",
@@ -67,6 +67,7 @@ class SandboxTransport(StreamingHTTPTransport):
             await self.run_setup_commands()
             await self.start_mcp_server()
             await self.expose_port()
+            await self.wait_for_service_ready()
             return await super().connect()
         except Exception as exc:
             startup_error = await self.build_startup_error(exc)
@@ -133,38 +134,47 @@ class SandboxTransport(StreamingHTTPTransport):
             raise RuntimeError(
                 f"Sandbox transport for '{self.config.name}' requires a launch command"
             )
-        launch_command = (
-            f"rm -f {shlex.quote(self.pid_file)} && "
-            f"nohup {command} >{shlex.quote(self.log_file)} 2>&1 & "
-            f"echo $! > {shlex.quote(self.pid_file)}"
-        )
+        # Keep the launch path simple and let HTTP readiness confirm the service.
+        launch_command = f"nohup {command} >{shlex.quote(self.log_file)} 2>&1 &"
         await self.run_command_checked(
             f"sh -lc {shlex.quote(launch_command)}",
             context="start MCP server",
         )
-        await self.wait_for_process_start()
 
-    async def wait_for_process_start(self) -> None:
-        deadline = asyncio.get_running_loop().time() + PROCESS_START_TIMEOUT_SECONDS
-        check_command = (
-            f"test -s {shlex.quote(self.pid_file)} && "
-            f'kill -0 "$(cat {shlex.quote(self.pid_file)})"'
-        )
+    async def wait_for_service_ready(self) -> None:
+        parsed_url = urlparse(self.url)
+        host = parsed_url.hostname
+        if host is None:
+            raise RuntimeError(f"Sandbox transport produced an invalid URL: {self.url}")
+        port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        use_tls = parsed_url.scheme == "https"
+        deadline = asyncio.get_running_loop().time() + SERVICE_READY_TIMEOUT_SECONDS
+        last_error: Exception | None = None
 
         while True:
-            result = await self.run_command(
-                f"sh -lc {shlex.quote(check_command)}",
-                timeout=5,
-            )
-            exit_code = getattr(result, "exit_code", 0)
-            if exit_code in (0, None):
-                return
-            if asyncio.get_running_loop().time() >= deadline:
-                raise RuntimeError(
-                    "MCP server process exited before becoming ready"
-                    + self._startup_log_suffix()
+            writer = None
+            try:
+                # Sandbox launchers can fork before the final MCP server is ready, so
+                # use endpoint reachability as the readiness signal instead of a PID.
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port, ssl=use_tls),
+                    timeout=self.timeout,
                 )
-            await asyncio.sleep(PROCESS_POLL_INTERVAL_SECONDS)
+                writer.close()
+                await writer.wait_closed()
+                return
+            except Exception as exc:
+                last_error = exc
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RuntimeError(
+                        f"MCP server endpoint did not become reachable at {self.url}: "
+                        f"{last_error}"
+                    ) from exc
+                await asyncio.sleep(SERVICE_POLL_INTERVAL_SECONDS)
+            finally:
+                if writer is not None and not writer.is_closing():
+                    writer.close()
+                    await writer.wait_closed()
 
     async def expose_port(self) -> str:
         if self.sandbox_id is None:
