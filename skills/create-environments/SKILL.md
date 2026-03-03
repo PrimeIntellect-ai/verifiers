@@ -38,7 +38,8 @@ prime env install math-python --from-repo
 2. Select the smallest correct base class:
 - `SingleTurnEnv` for one-response tasks.
 - `MultiTurnEnv` for custom interaction loops.
-- `ToolEnv` or `MCPEnv` for stateless tools.
+- `ToolEnv` for native stateless tools.
+- `MCPEnv` for MCP-backed tools; prefer shared stdio/http transports for stateless backends and rollout-scoped or sandbox transports for stateful ones.
 - `StatefulToolEnv` for per-rollout resources.
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.

@@ -69,14 +69,14 @@ class StreamingHTTPTransport(MCPTransport):
                 last_error = exc
                 self.session = None
                 self.tools = {}
-                if consecutive_failures < self.max_retries - 1:
+                if consecutive_failures < self.max_retries:
                     consecutive_failures += 1
                     await asyncio.sleep(float(consecutive_failures))
                     continue
                 if not self._ready.is_set():
                     self._error = ConnectionError(
                         f"Failed to connect to MCP server at {self.url} after "
-                        f"{self.max_retries} attempts. Last error: {exc}"
+                        f"{self.max_retries} retries. Last error: {exc}"
                     )
                     self._ready.set()
                 break
