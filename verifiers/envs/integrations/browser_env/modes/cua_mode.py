@@ -250,7 +250,7 @@ class CUAMode:
         self.logger = env.logger
 
         # Set up retry now that we have logger
-        # Retry on BrowserbaseRateLimitError (429/503) and general connection errors
+        # Retries on any exception (default tenacity behavior)
         self.retrying = tc.AsyncRetrying(
             stop=tc.stop_after_attempt(self.max_retries),
             wait=tc.wait_exponential_jitter(
@@ -258,9 +258,6 @@ class CUAMode:
                 exp_base=self.backoff_factor,
                 max=self.max_backoff_seconds,
                 jitter=self.jitter,
-            ),
-            retry=tc.retry_if_exception_type(
-                (BrowserbaseRateLimitError, aiohttp.ClientError, ConnectionError)
             ),
             before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
             reraise=True,
