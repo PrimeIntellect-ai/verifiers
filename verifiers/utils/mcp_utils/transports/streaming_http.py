@@ -43,8 +43,9 @@ class StreamingHTTPTransport(MCPTransport):
 
     async def _maintain_connection(self) -> None:
         last_error: Exception | None = None
+        consecutive_failures = 0
 
-        for attempt in range(self.max_retries):
+        while True:
             try:
                 async with streamablehttp_client(self.url) as (read, write, _):
                     async with ClientSession(read, write) as session:
@@ -56,7 +57,9 @@ class StreamingHTTPTransport(MCPTransport):
                             session.list_tools(), timeout=self.timeout
                         )
                         self.tools = {tool.name: tool for tool in tools_response.tools}
-                        self._ready.set()
+                        consecutive_failures = 0
+                        if not self._ready.is_set():
+                            self._ready.set()
 
                         while True:
                             await asyncio.sleep(1)
@@ -66,14 +69,16 @@ class StreamingHTTPTransport(MCPTransport):
                 last_error = exc
                 self.session = None
                 self.tools = {}
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(float(attempt + 1))
+                if consecutive_failures < self.max_retries - 1:
+                    consecutive_failures += 1
+                    await asyncio.sleep(float(consecutive_failures))
                     continue
-                self._error = ConnectionError(
-                    f"Failed to connect to MCP server at {self.url} after "
-                    f"{self.max_retries} attempts. Last error: {exc}"
-                )
-                self._ready.set()
+                if not self._ready.is_set():
+                    self._error = ConnectionError(
+                        f"Failed to connect to MCP server at {self.url} after "
+                        f"{self.max_retries} attempts. Last error: {exc}"
+                    )
+                    self._ready.set()
                 break
             finally:
                 self.session = None
