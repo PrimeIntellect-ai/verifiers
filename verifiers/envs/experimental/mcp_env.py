@@ -216,6 +216,61 @@ class MCPEnv(vf.StatefulToolEnv):
         except Exception as exc:
             self.logger.warning(f"Failed while {context}: {exc}")
 
+    async def _all_transports_connected(
+        self, transports: dict[str, MCPTransport]
+    ) -> bool:
+        for transport in transports.values():
+            try:
+                if not await transport.is_connected():
+                    return False
+            except Exception:
+                return False
+        return True
+
+    async def _shared_transports_connected(self) -> bool:
+        if not self._shared_transports:
+            return False
+        if self._shared_bg_loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._all_transports_connected(self._shared_transports),
+                self._shared_bg_loop,
+            )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.wrap_future(future),
+                    timeout=MCP_TEARDOWN_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                future.cancel()
+                return False
+        return await self._all_transports_connected(self._shared_transports)
+
+    async def _reset_shared_transports(self) -> None:
+        if not self._shared_transports:
+            return
+        transports = self._shared_transports
+        self._shared_transports = {}
+        if self._shared_bg_loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._disconnect_transports(transports),
+                self._shared_bg_loop,
+            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.wrap_future(future),
+                    timeout=MCP_TEARDOWN_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                future.cancel()
+                self.logger.warning(
+                    f"Failed to reset stale shared MCP transports: {exc}"
+                )
+            return
+        await self._disconnect_transports_with_timeout(
+            transports,
+            context="resetting stale shared MCP transports",
+        )
+
     def _compute_public_tool_names(
         self, discovered_tools: list[tuple[str, MCPTool]]
     ) -> dict[tuple[str, str], str]:
@@ -290,11 +345,12 @@ class MCPEnv(vf.StatefulToolEnv):
             self._registered_mcp_tools[public_name] = registration
 
     async def _ensure_shared_transports(self) -> None:
-        if self._shared_transports:
+        if await self._shared_transports_connected():
             return
         async with self._get_shared_setup_lock():
-            if self._shared_transports:
+            if await self._shared_transports_connected():
                 return
+            await self._reset_shared_transports()
             if self._shared_bg_loop is not None:
                 transports = await asyncio.wrap_future(
                     asyncio.run_coroutine_threadsafe(

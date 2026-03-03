@@ -62,7 +62,6 @@ class SandboxTransport(StreamingHTTPTransport):
         )
 
     async def connect(self):
-        startup_error: Exception | None = None
         try:
             await self.create_sandbox()
             await self.run_setup_commands()
@@ -70,14 +69,15 @@ class SandboxTransport(StreamingHTTPTransport):
             await self.expose_port()
             return await super().connect()
         except Exception as exc:
-            startup_error = exc
-            raise await self.build_startup_error(exc) from exc
-        finally:
-            if startup_error is not None:
-                try:
-                    await self.disconnect()
-                except Exception:
-                    pass
+            startup_error = await self.build_startup_error(exc)
+            try:
+                await self.disconnect()
+            except Exception as cleanup_exc:
+                raise self._combine_startup_and_cleanup_errors(
+                    startup_error,
+                    cleanup_exc,
+                ) from exc
+            raise startup_error from exc
 
     async def create_sandbox(self) -> str:
         client = self.get_client()
@@ -201,6 +201,15 @@ class SandboxTransport(StreamingHTTPTransport):
         return RuntimeError(
             f"Failed to start sandbox MCP server '{self.config.name}': {exc}"
             f"{self._startup_log_suffix(logs)}"
+        )
+
+    def _combine_startup_and_cleanup_errors(
+        self,
+        startup_error: RuntimeError,
+        cleanup_exc: Exception,
+    ) -> RuntimeError:
+        return RuntimeError(
+            f"{startup_error}\nCleanup after startup failure also failed: {cleanup_exc}"
         )
 
     async def disconnect(self) -> None:

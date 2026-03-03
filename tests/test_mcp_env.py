@@ -317,3 +317,94 @@ class TestMCPEnv:
         second_names = [tool.name for tool in state_two["tool_defs"]]
         assert second_names == ["lookup"]
         assert [tool.name for tool in env.tool_defs] == ["lookup"]
+
+    @pytest.mark.asyncio
+    async def test_shared_scope_reconnects_after_unexpected_disconnect(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        created: list[CountingSyntheticTransport] = []
+
+        def transport_factory(config: MCPTransportConfig):
+            tool = create_tool(
+                name="lookup",
+                description="Lookup a value",
+                parameters={"query": {"type": "string"}},
+                required=["query"],
+            )
+            transport = CountingSyntheticTransport(
+                label=f"{config.server_config.name}-{len(created)}",
+                tools={"lookup": tool},
+                handlers={
+                    "lookup": lambda data, args, label=f"{config.server_config.name}-{len(created)}": (
+                        f"{label}:{args['query']}"
+                    )
+                },
+            )
+            created.append(transport)
+            return transport
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            mcp_servers=[{"name": "search", "command": "dummy"}],
+            transport_factory=transport_factory,
+        )
+
+        await _setup_state(env, make_input, mock_client)
+        assert len(created) == 1
+
+        await created[0].disconnect()
+        assert not await created[0].is_connected()
+
+        state = await _setup_state(env, make_input, mock_client)
+        assert len(created) == 2
+        assert [tool.name for tool in state["tool_defs"]] == ["lookup"]
+
+        tool_message = await env.call_tool("lookup", {"query": "ping"}, "call_3")
+        assert tool_message.content == "search-1:ping"
+
+    @pytest.mark.asyncio
+    async def test_sandbox_startup_error_reports_cleanup_failure(self):
+        sandbox_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.sandbox"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        class FailingSandboxTransport(sandbox_module.SandboxTransport):
+            def __init__(self):
+                super().__init__(
+                    models_module.MCPServerConfig(name="sandbox", command="dummy"),
+                    sandbox_image="python:3.11-slim",
+                    sandbox_start_command="tail -f /dev/null",
+                    sandbox_environment_vars={},
+                    sandbox_cpu_cores=1,
+                    sandbox_memory_gb=1,
+                    sandbox_disk_size_gb=1,
+                    sandbox_timeout_minutes=1,
+                    port_to_expose=8000,
+                )
+
+            async def create_sandbox(self) -> str:
+                self.sandbox_id = "sandbox-1"
+                return self.sandbox_id
+
+            async def run_setup_commands(self) -> None:
+                return None
+
+            async def start_mcp_server(self) -> None:
+                raise RuntimeError("server failed to start")
+
+            async def read_log_tail(self) -> str | None:
+                return "sandbox log tail"
+
+            async def disconnect(self) -> None:
+                raise RuntimeError("sandbox cleanup failed")
+
+        transport = FailingSandboxTransport()
+        with pytest.raises(RuntimeError) as exc_info:
+            await transport.connect()
+
+        message = str(exc_info.value)
+        assert "server failed to start" in message
+        assert "sandbox log tail" in message
+        assert "sandbox cleanup failed" in message
