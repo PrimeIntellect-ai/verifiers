@@ -50,6 +50,12 @@ class InfraError(Error):
     pass
 
 
+class TunnelError(InfraError):
+    """Raised when a tunnel process dies or becomes unreachable."""
+
+    pass
+
+
 class SandboxError(InfraError):
     """Used to catch errors while interacting with sandboxes."""
 

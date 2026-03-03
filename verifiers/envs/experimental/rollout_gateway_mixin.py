@@ -43,7 +43,7 @@ class RolloutGatewayMixin:
     def init_gateway(
         self,
         gateway_port: int = 8000,
-        timeout_seconds: float = 3600.0,
+        timeout_seconds: float = 21600.0,
     ):
         """Initialize gateway resources. Call in __init__ when use_gateway=True."""
         self.gateway_port = gateway_port
@@ -51,6 +51,7 @@ class RolloutGatewayMixin:
         self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
+        self._tunnel_monitor_task: asyncio.Task | None = None
 
     def _resolve_gateway_url(self, state: State) -> str:
         client = getattr(state["client"], "client", state["client"])
@@ -127,7 +128,7 @@ class RolloutGatewayMixin:
         )
 
     async def get_gateway_tunnel_url(self, local_addr: str | None = None) -> str:
-        """Get gateway tunnel URL, starting the tunnel if needed."""
+        """Get gateway tunnel URL, starting the tunnel if needed. Restarts dead tunnels."""
         async with self._tunnel_lock:
             if local_addr is None:
                 if len(self._tunnels) == 1:
@@ -141,6 +142,19 @@ class RolloutGatewayMixin:
                 )
 
             tunnel = self._tunnels.get(local_addr)
+
+            # Restart dead tunnel
+            if tunnel is not None and not tunnel.is_running:
+                frpc_output = "\n".join(tunnel.recent_output)
+                logger.warning(
+                    f"Tunnel dead for local_addr={local_addr} "
+                    f"tunnel_id={tunnel.tunnel_id}, recreating. "
+                    f"frpc output:\n{frpc_output}"
+                )
+                tunnel.sync_stop()
+                del self._tunnels[local_addr]
+                tunnel = None
+
             if tunnel is None:
                 tunnel = Tunnel(
                     local_port=self.gateway_port,
@@ -149,7 +163,20 @@ class RolloutGatewayMixin:
                 )
                 url = await tunnel.start()
                 self._tunnels[local_addr] = tunnel
-                logger.debug(f"Prime Tunnel started local_addr={local_addr} url={url}")
+                logger.debug(
+                    f"Prime Tunnel started local_addr={local_addr} "
+                    f"tunnel_id={tunnel.tunnel_id} url={url}"
+                )
+
+                # Lazily start health monitor on first tunnel creation
+                if (
+                    self._tunnel_monitor_task is None
+                    or self._tunnel_monitor_task.done()
+                ):
+                    self._tunnel_monitor_task = asyncio.create_task(
+                        self._tunnel_health_monitor()
+                    )
+
                 return url
 
             assert tunnel.url is not None, "Tunnel started but URL is None"
@@ -177,7 +204,28 @@ class RolloutGatewayMixin:
         """Poll until background job completes, capturing output."""
         if not self.use_gateway:
             return await super().poll_job_completion(state, sandbox_id, background_job)  # ty: ignore[unresolved-attribute]
+
+        tunnel_local_addr = state.get("tunnel_local_addr")
+
         while True:
+            # Check tunnel liveness
+            if tunnel_local_addr:
+                tunnel = self._tunnels.get(tunnel_local_addr)
+                if tunnel is not None and not tunnel.is_running:
+                    frpc_output = "\n".join(tunnel.recent_output)
+                    logger.warning(
+                        f"rollout={state.get('rollout_id')} sandbox={sandbox_id} "
+                        f"tunnel_id={tunnel.tunnel_id} stage=tunnel_died "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout "
+                        f"rollout={state.get('rollout_id')} "
+                        f"sandbox={sandbox_id} "
+                        f"tunnel_id={tunnel.tunnel_id}. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+
             status = await self.sandbox_client.get_background_job(  # ty: ignore[unresolved-attribute]
                 sandbox_id,
                 background_job,
@@ -268,7 +316,13 @@ class RolloutGatewayMixin:
             state["rollout_base_url"] = (
                 f"{tunnel_url.rstrip('/')}/v1/rollouts/{state['rollout_id']}"
             )
-            logger.debug(f"rollout={rollout_id} stage=start_tunnel url={tunnel_url}")
+            tunnel = self._tunnels.get(tunnel_local_addr)
+            tunnel_id = tunnel.tunnel_id if tunnel else None
+            state["tunnel_id"] = tunnel_id
+            logger.debug(
+                f"rollout={rollout_id} stage=start_tunnel "
+                f"tunnel_id={tunnel_id} url={tunnel_url}"
+            )
 
             env_vars = await self.build_env_vars(state)
             docker_image = await self.get_docker_image(state)  # ty: ignore[unresolved-attribute]
@@ -378,11 +432,62 @@ class RolloutGatewayMixin:
 
         return state
 
+    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
+        """Background task that checks tunnel liveness and restarts dead tunnels."""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with self._tunnel_lock:
+                    dead_addrs = [
+                        addr for addr, t in self._tunnels.items() if not t.is_running
+                    ]
+                    for addr in dead_addrs:
+                        tunnel = self._tunnels[addr]
+                        frpc_output = "\n".join(tunnel.recent_output)
+                        logger.warning(
+                            f"Health monitor: tunnel dead for local_addr={addr} "
+                            f"tunnel_id={tunnel.tunnel_id}. "
+                            f"frpc output:\n{frpc_output}"
+                        )
+                        tunnel.sync_stop()
+                        new_tunnel = Tunnel(
+                            local_port=self.gateway_port,
+                            local_addr=addr,
+                            log_level="debug"
+                            if logger.isEnabledFor(logging.DEBUG)
+                            else "info",
+                        )
+                        url = await new_tunnel.start()
+                        self._tunnels[addr] = new_tunnel
+                        logger.info(
+                            f"Health monitor: restarted tunnel local_addr={addr} "
+                            f"tunnel_id={new_tunnel.tunnel_id} url={url}"
+                        )
+
+                    alive = sum(1 for t in self._tunnels.values() if t.is_running)
+                    total = len(self._tunnels)
+                    logger.debug(f"Health monitor: {alive}/{total} tunnels alive")
+        except asyncio.CancelledError:
+            return
+
     @vf.teardown
     async def teardown_gateway(self):
-        """Close gateway HTTP client and stop gateway tunnels."""
+        """Close gateway HTTP client, cancel health monitor, and stop gateway tunnels."""
         if not self.use_gateway:
             return
+
+        # Cancel health monitor
+        if (
+            self._tunnel_monitor_task is not None
+            and not self._tunnel_monitor_task.done()
+        ):
+            self._tunnel_monitor_task.cancel()
+            try:
+                await self._tunnel_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._tunnel_monitor_task = None
+
         await self._http_client.aclose()
         async with self._tunnel_lock:
             tunnels = list(self._tunnels.items())

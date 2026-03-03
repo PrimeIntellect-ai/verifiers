@@ -56,9 +56,7 @@ class SandboxMixin:
         sandbox_wait_for_creation_max_attempts: int = 120,
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
-        self.logger = logging.getLogger(
-            f"{self.__class__.__module__}.{self.__class__.__name__}"
-        )
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
         self.sandbox_wait_for_creation_max_attempts = (
             sandbox_wait_for_creation_max_attempts

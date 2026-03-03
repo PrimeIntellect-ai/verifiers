@@ -28,6 +28,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.worker_utils import get_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     def __init__(
         self,
         run_command: str,
-        interception_port: int = 8765,
+        interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        poll_interval: float = 2.0,
+        poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,
@@ -101,6 +102,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
 
+        interception_port = (
+            get_free_port() if interception_port is None else interception_port
+        )
         self.init_interception(interception_port, interception_url)
 
     def init_interception(
@@ -124,8 +128,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         return server
 
     async def get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                frpc_output = "\n".join(self._tunnel.recent_output)
+                logger.warning(
+                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
                 server = self._require_interception_server()
                 port = server.port
@@ -291,7 +303,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
-                # No request yet, check if agent finished or timed out
+                # No request yet — check tunnel liveness first
+                if self._tunnel is not None and not self._tunnel.is_running:
+                    frpc_output = "\n".join(self._tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
                     return []

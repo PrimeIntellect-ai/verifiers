@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletion
@@ -14,13 +14,17 @@ from verifiers.clients.openai_chat_completions_client import (
 from verifiers.types import SamplingArgs, State
 
 
-def _has_multimodal_content(messages: OpenAIChatMessages) -> bool:
-    """Check if any message contains multimodal content (images, audio)."""
+def _has_multimodal_content(messages) -> bool:
+    """Check if any message contains multimodal content (images, audio).
+
+    Works with both plain dicts (OpenAIChatMessages) and Pydantic models
+    (Messages stored in trajectory steps) since both support .get().
+    """
     for msg in messages:
-        content = msg.get("content") if isinstance(msg, Mapping) else None
+        content = msg.get("content") if hasattr(msg, "get") else None
         if isinstance(content, list):
             for part in content:
-                if isinstance(part, Mapping) and part.get("type") in (
+                if hasattr(part, "get") and part.get("type") in (
                     "image_url",
                     "input_audio",
                 ):
@@ -73,18 +77,25 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
-        # Use standard /chat/completions for: (1) first turn (no prior tokens to
-        # stitch), or (2) multimodal conversations.  VLM image-placeholder
-        # expansion happens inside the engine during generation but NOT in the
-        # /tokenize endpoint, so token-stitching (TITO) operates in a different
-        # coordinate system than /tokenize and produces broken prompts.  Falling
-        # back to message-based inference (MITO) lets vLLM handle expansion
+        # Use standard /chat/completions for: (1) first turn (no prior tokens
+        # to stitch), or (2) conversations that contain multimodal content in
+        # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
+        # processor, so image placeholders stay collapsed (1 token instead of
+        # N) and token-stitching (TITO) produces broken prompts.  Falling back
+        # to message-based inference (MITO) lets vLLM handle expansion
         # correctly on every turn.
-        if len(state["trajectory"]) == 0 or _has_multimodal_content(prompt):
+        has_multimodal = _has_multimodal_content(prompt) or any(
+            _has_multimodal_content(step["prompt"]) for step in state["trajectory"]
+        )
+        if len(state["trajectory"]) == 0 or has_multimodal:
             return await super().get_native_response(
                 prompt, model, sampling_args, tools
             )
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        if prompt_ids is None:
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools
+            )
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
             model=model,
@@ -106,18 +117,65 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
-    ) -> list[int]:
+    ) -> list[int] | None:
         """
         Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
         that this method is called *before* making the model response from
         prompt_messages, i.e. the previous turn's prompt and completion do not yet
         include the environment response and next turn's model response.
+
+        Returns None when no trajectory step has a message-level prefix match with
+        prompt_messages.
         """
-        prev_turn_tokens = state["trajectory"][-1]["tokens"]
-        assert prev_turn_tokens is not None
-        prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
-        prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
-        prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
+
+        def normalize_for_comparison(value: Any) -> Any:
+            if hasattr(value, "model_dump"):
+                return normalize_for_comparison(value.model_dump())
+            if isinstance(value, Mapping):
+                return {
+                    str(key): normalize_for_comparison(val)
+                    for key, val in value.items()
+                }
+            if isinstance(value, list):
+                return [normalize_for_comparison(item) for item in value]
+            return value
+
+        async def find_largest_prefix_match_tokens() -> list[int] | None:
+            """Scan trajectory backwards for the step whose messages form the longest
+            prefix of prompt_messages. Returns that step's token IDs, or None."""
+            normalized_prompt_messages = normalize_for_comparison(prompt_messages)
+            best_prefix_len = -1
+            best_step_tokens = None
+            for step in reversed(state["trajectory"]):
+                step_tokens = step["tokens"]
+                if step_tokens is None:
+                    continue
+                step_messages = cast(Any, [*step["prompt"], *step["completion"]])
+                step_prompt_messages, _ = await self.to_native_prompt(step_messages)
+                normalized_step_messages = normalize_for_comparison(
+                    step_prompt_messages
+                )
+                prefix_len = len(normalized_step_messages)
+                if prefix_len <= 0:
+                    continue
+                if prefix_len <= best_prefix_len:
+                    continue
+                if prefix_len > len(normalized_prompt_messages):
+                    continue
+                if normalized_prompt_messages[:prefix_len] != normalized_step_messages:
+                    continue
+                best_prefix_len = prefix_len
+                best_step_tokens = step_tokens
+                if best_prefix_len == len(normalized_prompt_messages):
+                    break
+
+            if best_step_tokens is None:
+                return None
+            return best_step_tokens["prompt_ids"] + best_step_tokens["completion_ids"]
+
+        prev_turn_ids = await find_largest_prefix_match_tokens()
+        if prev_turn_ids is None:
+            return None
 
         def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
             """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
