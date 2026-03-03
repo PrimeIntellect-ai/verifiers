@@ -203,6 +203,43 @@ class TestMCPEnv:
         ]
 
     @pytest.mark.asyncio
+    async def test_mcp_tool_named_state_preserves_model_argument(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        def transport_factory(config: MCPTransportConfig):
+            tool = create_tool(
+                name="inspect",
+                description="Return the model-provided state argument",
+                parameters={"state": {"type": "string"}},
+                required=["state"],
+            )
+            return CountingSyntheticTransport(
+                label=config.server_config.name,
+                tools={"inspect": tool},
+                handlers={"inspect": lambda data, args: args["state"]},
+            )
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            mcp_servers=[{"name": "search", "command": "dummy"}],
+            transport_factory=transport_factory,
+        )
+
+        state = await _setup_state(env, make_input, mock_client)
+        schema = next(tool for tool in state["tool_defs"] if tool.name == "inspect")
+        assert schema.parameters["properties"]["state"] == {"type": "string"}
+        assert schema.parameters["required"] == ["state"]
+
+        tool_message = await env.call_tool(
+            "inspect",
+            {"state": "model-value"},
+            "call_state",
+            state=state,
+        )
+        assert tool_message.content == "model-value"
+
+    @pytest.mark.asyncio
     async def test_rollout_scope_creates_and_cleans_isolated_transports(
         self, mock_client, sample_chat_dataset, make_input
     ):

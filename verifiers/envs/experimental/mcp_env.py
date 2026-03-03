@@ -13,6 +13,7 @@ from verifiers.types import Messages, State, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.mcp_utils.mcp_env_utils import create_transport, validate_config
 from verifiers.utils.mcp_utils.mcp_tool_wrapper import (
+    MCP_PROXY_STATE_ARG,
     MCPToolProxy,
     RegisteredMCPTool,
     build_registered_tool,
@@ -338,7 +339,7 @@ class MCPEnv(vf.StatefulToolEnv):
                 self.tool_defs = []
             self.tool_defs.append(registration.to_tool_def())
             self.tool_map[public_name] = proxy
-            self.skipped_args[public_name] = ["state"]
+            self.skipped_args[public_name] = [MCP_PROXY_STATE_ARG]
             self.tool_monitor_rubric.add_tool_metric(proxy)
             self._registered_mcp_tools[public_name] = registration
 
@@ -384,7 +385,7 @@ class MCPEnv(vf.StatefulToolEnv):
         **kwargs,
     ) -> dict:
         if tool_name in self._registered_mcp_tools:
-            return {**tool_args, "state": state}
+            return {**tool_args, MCP_PROXY_STATE_ARG: state}
         return tool_args
 
     def _resolve_transport(self, public_tool_name: str, state: State) -> MCPTransport:
@@ -426,7 +427,10 @@ class MCPEnv(vf.StatefulToolEnv):
         state: State | None = None,
         **kwargs,
     ) -> ToolMessage:
-        if tool_name in self._registered_mcp_tools and "state" not in tool_args:
+        if (
+            tool_name in self._registered_mcp_tools
+            and MCP_PROXY_STATE_ARG not in tool_args
+        ):
             resolved_state = (
                 state if state is not None else cast(State | None, kwargs.get("state"))
             )
@@ -438,7 +442,7 @@ class MCPEnv(vf.StatefulToolEnv):
                         f"MCP tool '{tool_name}' requires rollout state when "
                         "connection_scope='rollout'"
                     )
-            tool_args = {**tool_args, "state": resolved_state}
+            tool_args = {**tool_args, MCP_PROXY_STATE_ARG: resolved_state}
 
         try:
             return await super().call_tool(tool_name, tool_args, tool_call_id, **kwargs)

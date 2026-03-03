@@ -7,6 +7,8 @@ from mcp.types import Tool as MCPTool
 
 from verifiers.types import Tool
 
+MCP_PROXY_STATE_ARG = "_vf_state"
+
 
 @dataclass(slots=True, frozen=True)
 class RegisteredMCPTool:
@@ -33,11 +35,11 @@ class MCPToolProxy:
         self.__name__ = registration.public_name
         self.__doc__ = registration.description or ""
 
-    async def __call__(self, state, **kwargs):
+    async def __call__(self, _vf_state, **kwargs):
         return await self.env.call_mcp_tool(
             public_tool_name=self.registration.public_name,
             tool_args=kwargs,
-            state=state,
+            state=_vf_state,
         )
 
 
