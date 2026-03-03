@@ -146,7 +146,7 @@ class ZMQEnvClient(EnvClient):
         self.socket.close()
         self.ctx.term()
 
-    async def _send_cancel(self, request_id: str) -> None:
+    async def send_cancel(self, request_id: str) -> None:
         """Send a cancel signal (empty payload) to the server for a request."""
         try:
             await self.socket.send_multipart([request_id.encode(), b""])
@@ -187,7 +187,7 @@ class ZMQEnvClient(EnvClient):
 
         # Best-effort: notify server to cancel these requests
         for pending_req in cancelled_requests:
-            await self._send_cancel(pending_req.request_id)
+            await self.send_cancel(pending_req.request_id)
 
         return cancelled_requests
 
@@ -304,13 +304,13 @@ class ZMQEnvClient(EnvClient):
             except asyncio.CancelledError:
                 async with self.pending_lock:
                     self.pending_requests.pop(request_id, None)
-                await self._send_cancel(request_id)
+                await self.send_cancel(request_id)
                 raise
             except asyncio.TimeoutError:
                 # Clean up on timeout
                 async with self.pending_lock:
                     self.pending_requests.pop(request_id, None)
-                await self._send_cancel(request_id)
+                await self.send_cancel(request_id)
                 log = (
                     self.logger.debug
                     if isinstance(request, HealthRequest)
