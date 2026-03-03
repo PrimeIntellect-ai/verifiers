@@ -546,10 +546,11 @@ class EvalDisplay(BaseDisplay):
                 if env_state.total > 0
                 else 0
             )
+            total_str = "..." if env_state.total <= 0 else str(env_state.total)
             line.append(" \u25b8 ", style="bold yellow")
             line.append(config.env_id, style="yellow")
             line.append(f"  {pct:.0f}%", style="bold")
-            line.append(f" ({env_state.progress}/{env_state.total})", style="dim")
+            line.append(f" ({env_state.progress}/{total_str})", style="dim")
             line.append("  reward ", style="dim")
             line.append(format_numeric(env_state.reward), style="bold")
             color = self._get_error_rate_color(env_state.error_rate)
