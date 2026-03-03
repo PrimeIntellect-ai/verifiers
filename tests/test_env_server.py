@@ -226,8 +226,11 @@ class TestRetryOnServerError:
 
         attempt_count = 0
 
-        async def mock_send(*args, **kwargs):
+        async def mock_send(frames, **kwargs):
             nonlocal attempt_count
+            # Ignore cancel signals (empty payload)
+            if len(frames) == 2 and frames[1] == b"":
+                return
             attempt_count += 1
 
             if attempt_count == 1:
@@ -268,7 +271,11 @@ class TestRetryOnServerError:
         """ServerError + no recovery within timeout -> TimeoutError."""
         client = make_client(recovery_timeout=0.5)
 
-        async def mock_send(*args, **kwargs):
+        async def mock_send(frames, **kwargs):
+            # Ignore cancel signals (empty payload)
+            if len(frames) == 2 and frames[1] == b"":
+                return
+
             async def fail():
                 await asyncio.sleep(0.05)
                 await client.cancel_all_pending("Connection lost")
@@ -290,8 +297,11 @@ class TestRetryOnServerError:
 
         attempt_count = 0
 
-        async def mock_send(*args, **kwargs):
+        async def mock_send(frames, **kwargs):
             nonlocal attempt_count
+            # Ignore cancel signals (empty payload)
+            if len(frames) == 2 and frames[1] == b"":
+                return
             attempt_count += 1
 
             async def fail():
@@ -317,23 +327,15 @@ class TestRetryOnServerError:
 class TestTaskCancellation:
     """Tests that client-side cancellation propagates to the server.
 
-    These tests are expected to fail (xfail) until cancellation propagation is
-    implemented. Once the fix is in place, the xfail markers should be removed.
+    The client sends an empty-payload cancel signal over the existing ZMQ
+    wire format, and the server cancels the corresponding asyncio task.
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Client cancellation does not propagate to the env server — "
-        "the server task keeps running after the client cancels",
-        strict=True,
-    )
     async def test_cancelled_client_task_should_cancel_server_task(self):
         """When the asyncio task awaiting send_request() is cancelled on the
-        client, the corresponding server-side task should also be cancelled.
-
-        Currently FAILS because no cancellation message is sent to the server.
-        The server task continues to run (consuming resources, holding sandbox
-        handles, etc.) even though no client is waiting for the result.
+        client, the corresponding server-side task should also be cancelled
+        via the empty-payload cancel signal.
         """
         server_task_started = asyncio.Event()
         server_task_cancelled = asyncio.Event()
@@ -375,16 +377,10 @@ class TestTaskCancellation:
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Client timeout does not cancel the server-side task",
-        strict=True,
-    )
     async def test_client_timeout_should_cancel_server_task(self):
         """When the client times out waiting for a response, the
-        corresponding server-side task should be cancelled.
-
-        Currently FAILS because the client simply drops the pending request
-        locally and raises TimeoutError without notifying the server.
+        corresponding server-side task should be cancelled via the
+        empty-payload cancel signal.
         """
         server_task_started = asyncio.Event()
         server_task_cancelled = asyncio.Event()
