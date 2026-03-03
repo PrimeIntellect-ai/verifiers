@@ -427,7 +427,9 @@ class MCPEnv(vf.StatefulToolEnv):
         **kwargs,
     ) -> ToolMessage:
         if tool_name in self._registered_mcp_tools and "state" not in tool_args:
-            resolved_state = state or cast(State | None, kwargs.get("state"))
+            resolved_state = (
+                state if state is not None else cast(State | None, kwargs.get("state"))
+            )
             if resolved_state is None:
                 if self.connection_scope == "shared":
                     resolved_state = cast(State, {})

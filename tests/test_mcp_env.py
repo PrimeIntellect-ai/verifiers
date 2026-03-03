@@ -1,6 +1,8 @@
 """Tests for the experimental MCPEnv foundation."""
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -11,6 +13,7 @@ from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ToolCall
 from verifiers.utils.mcp_utils.models import MCPTransportConfig
+from verifiers.utils.mcp_utils.transports.streaming_http import StreamingHTTPTransport
 from verifiers.utils.mcp_utils.transports.synthetic_transport import (
     SyntheticTransport,
     create_tool,
@@ -258,6 +261,58 @@ class TestMCPEnv:
         assert created[1].disconnect_count == 1
 
     @pytest.mark.asyncio
+    async def test_rollout_call_tool_keeps_explicit_falsey_state(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        created: list[CountingSyntheticTransport] = []
+
+        def transport_factory(config: MCPTransportConfig):
+            tool = create_tool(
+                name="lookup",
+                description="Lookup a value",
+                parameters={"query": {"type": "string"}},
+                required=["query"],
+            )
+            transport = CountingSyntheticTransport(
+                label=f"{config.server_config.name}-{len(created)}",
+                tools={"lookup": tool},
+                handlers={
+                    "lookup": lambda data,
+                    args,
+                    label=f"{config.server_config.name}-{len(created)}": (
+                        f"{label}:{args['query']}"
+                    )
+                },
+            )
+            created.append(transport)
+            return transport
+
+        class FalseyState(vf.State):
+            def __bool__(self) -> bool:
+                return False
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            mcp_servers=[{"name": "db", "command": "dummy"}],
+            connection_scope="rollout",
+            transport_factory=transport_factory,
+        )
+
+        state = await _setup_state(env, make_input, mock_client)
+        falsey_state = FalseyState(state)
+
+        tool_message = await env.call_tool(
+            "lookup",
+            {"query": "ping"},
+            "call_falsey",
+            state=falsey_state,
+        )
+        assert tool_message.content == "db-0:ping"
+
+        await env.cleanup_rollout_transports(state)
+
+    @pytest.mark.asyncio
     async def test_cleanup_disconnects_shared_transports(
         self, mock_client, sample_chat_dataset, make_input
     ):
@@ -373,6 +428,85 @@ class TestMCPEnv:
 
         tool_message = await env.call_tool("lookup", {"query": "ping"}, "call_3")
         assert tool_message.content == "search-1:ping"
+
+    @pytest.mark.asyncio
+    async def test_streaming_http_retry_clears_stale_session(self, monkeypatch):
+        transport_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.streaming_http"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        backoff_checked = asyncio.Event()
+        hold_backoff = asyncio.Event()
+        sleep_calls = 0
+        real_sleep = asyncio.sleep
+
+        tool = create_tool(
+            name="lookup",
+            description="Lookup a value",
+            parameters={"query": {"type": "string"}},
+            required=["query"],
+        )
+
+        @asynccontextmanager
+        async def fake_streamablehttp_client(url):
+            yield object(), object(), None
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self.read = read
+                self.write = write
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                return type("ToolsResponse", (), {"tools": [tool]})()
+
+            async def call_tool(self, tool_name, arguments):
+                return f"{tool_name}:{arguments['query']}"
+
+        async def fake_sleep(delay):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                raise RuntimeError("connection dropped")
+            if sleep_calls == 2:
+                assert transport.session is None
+                assert transport.tools == {}
+                backoff_checked.set()
+                await hold_backoff.wait()
+                return
+            await real_sleep(0)
+
+        monkeypatch.setattr(
+            transport_module,
+            "streamablehttp_client",
+            fake_streamablehttp_client,
+        )
+        monkeypatch.setattr(
+            transport_module,
+            "ClientSession",
+            FakeClientSession,
+        )
+        monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+
+        transport = StreamingHTTPTransport(
+            models_module.MCPServerConfig(name="remote", url="http://example/mcp"),
+            url="http://example/mcp",
+            max_retries=2,
+        )
+
+        await transport.connect()
+        await asyncio.wait_for(backoff_checked.wait(), timeout=1)
+        hold_backoff.set()
+        await transport.disconnect()
 
     @pytest.mark.asyncio
     async def test_stop_errors_propagate_through_env_response(

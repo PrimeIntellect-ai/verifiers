@@ -64,6 +64,8 @@ class StreamingHTTPTransport(MCPTransport):
                 raise
             except Exception as exc:
                 last_error = exc
+                self.session = None
+                self.tools = {}
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(float(attempt + 1))
                     continue
@@ -74,9 +76,8 @@ class StreamingHTTPTransport(MCPTransport):
                 self._ready.set()
                 break
             finally:
-                if self._error is not None:
-                    self.session = None
-                    self.tools = {}
+                self.session = None
+                self.tools = {}
 
         if self._error is None and last_error is not None and not self._ready.is_set():
             self._error = last_error
