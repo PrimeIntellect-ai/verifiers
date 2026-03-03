@@ -339,6 +339,12 @@ def main():
         help="Max retries for transient infrastructure errors (default: 0)",
     )
     parser.add_argument(
+        "--disable-env-server",
+        default=False,
+        action="store_true",
+        help="Do not start env servers when evaluating environments",
+    )
+    parser.add_argument(
         "--heartbeat-url",
         type=str,
         default=None,
@@ -620,6 +626,7 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
