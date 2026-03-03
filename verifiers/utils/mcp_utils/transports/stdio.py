@@ -33,8 +33,13 @@ class StdioTransport(MCPTransport):
 
     async def _maintain_connection(self) -> None:
         try:
+            command = self.config.command
+            if command is None:
+                raise RuntimeError(
+                    f"Stdio transport for '{self.config.name}' requires a command"
+                )
             server_params = StdioServerParameters(
-                command=self.config.command,
+                command=command,
                 args=self.config.args or [],
                 env=self.config.env,
             )

@@ -452,7 +452,7 @@ class MCPEnv(vf.StatefulToolEnv):
     async def cleanup(self) -> None:
         """Backward-compatible shared cleanup hook."""
         if self.connection_scope == "shared":
-            await self.teardown_shared_transports()
+            await self._teardown_shared_transports()
 
     @cleanup_handler
     async def cleanup_rollout_transports(self, state: State) -> None:
@@ -467,6 +467,9 @@ class MCPEnv(vf.StatefulToolEnv):
 
     @teardown_handler
     async def teardown_shared_transports(self) -> None:
+        await self._teardown_shared_transports()
+
+    async def _teardown_shared_transports(self) -> None:
         if not self._shared_transports:
             self._shutdown_shared_loop()
             return
