@@ -115,7 +115,7 @@ class MCPEnv(vf.StatefulToolEnv):
         future = asyncio.run_coroutine_threadsafe(coro, self._shared_bg_loop)
         return future.result()
 
-    def _bootstrap_shared_transports(self) -> None:
+    def _ensure_shared_loop_running(self) -> None:
         if self._shared_bg_loop is not None:
             return
 
@@ -128,6 +128,12 @@ class MCPEnv(vf.StatefulToolEnv):
             daemon=True,
         )
         self._shared_bg_thread.start()
+
+    def _bootstrap_shared_transports(self) -> None:
+        if self._shared_bg_loop is not None:
+            return
+
+        self._ensure_shared_loop_running()
 
         try:
             transports = self._run_on_shared_loop_sync(
@@ -350,15 +356,14 @@ class MCPEnv(vf.StatefulToolEnv):
             if await self._shared_transports_connected():
                 return
             await self._reset_shared_transports()
-            if self._shared_bg_loop is not None:
-                transports = await asyncio.wrap_future(
-                    asyncio.run_coroutine_threadsafe(
-                        self._create_connected_transports(),
-                        self._shared_bg_loop,
-                    )
+            self._ensure_shared_loop_running()
+            shared_loop = cast(asyncio.AbstractEventLoop, self._shared_bg_loop)
+            transports = await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(
+                    self._create_connected_transports(),
+                    shared_loop,
                 )
-            else:
-                transports = await self._create_connected_transports()
+            )
             self._register_discovered_tools(transports)
             self._shared_transports = transports
 

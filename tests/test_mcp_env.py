@@ -420,6 +420,79 @@ class TestMCPEnv:
         assert [tool.name for tool in env.tool_defs] == ["lookup"]
 
     @pytest.mark.asyncio
+    async def test_shared_scope_recreates_background_loop_after_cleanup(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        class LoopTrackingSyntheticTransport(CountingSyntheticTransport):
+            def __init__(self, *, label: str, tools, handlers):
+                super().__init__(label=label, tools=tools, handlers=handlers)
+                self.connect_loop: asyncio.AbstractEventLoop | None = None
+                self.call_loop: asyncio.AbstractEventLoop | None = None
+
+            async def connect(self):
+                self.connect_loop = asyncio.get_running_loop()
+                return await super().connect()
+
+            async def call_tool(self, tool_name: str, arguments: dict):
+                self.call_loop = asyncio.get_running_loop()
+                return await super().call_tool(tool_name, arguments)
+
+        created: list[LoopTrackingSyntheticTransport] = []
+
+        def transport_factory(config: MCPTransportConfig):
+            tool = create_tool(
+                name="lookup",
+                description="Lookup a value",
+                parameters={"query": {"type": "string"}},
+                required=["query"],
+            )
+            transport = LoopTrackingSyntheticTransport(
+                label=f"{config.server_config.name}-{len(created)}",
+                tools={"lookup": tool},
+                handlers={
+                    "lookup": lambda data,
+                    args,
+                    label=f"{config.server_config.name}-{len(created)}": (
+                        f"{label}:{args['query']}"
+                    )
+                },
+            )
+            created.append(transport)
+            return transport
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            mcp_servers=[{"name": "search", "command": "dummy"}],
+            transport_factory=transport_factory,
+        )
+
+        initial_loop = env._shared_bg_loop
+        assert initial_loop is not None
+
+        await _setup_state(env, make_input, mock_client)
+        assert len(created) == 1
+        assert created[0].connect_loop is initial_loop
+
+        await env.cleanup()
+        assert env._shared_bg_loop is None
+
+        rollout_loop = asyncio.get_running_loop()
+        await _setup_state(env, make_input, mock_client)
+        assert len(created) == 2
+
+        recreated_loop = env._shared_bg_loop
+        assert recreated_loop is not None
+        assert recreated_loop is not rollout_loop
+        assert created[1].connect_loop is recreated_loop
+
+        tool_message = await env.call_tool("lookup", {"query": "ping"}, "call_3")
+        assert tool_message.content == "search-1:ping"
+        assert created[1].call_loop is recreated_loop
+
+        await env.cleanup()
+
+    @pytest.mark.asyncio
     async def test_shared_scope_reconnects_after_unexpected_disconnect(
         self, mock_client, sample_chat_dataset, make_input
     ):
@@ -613,6 +686,88 @@ class TestMCPEnv:
 
         assert await transport.connect() == {"lookup": tool}
         assert attempts == 2
+        await transport.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_streaming_http_reconnect_exhaustion_raises_disconnect_error(
+        self, monkeypatch
+    ):
+        transport_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.streaming_http"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        attempts = 0
+        sleep_calls = 0
+        allow_drop = asyncio.Event()
+        real_sleep = asyncio.sleep
+        tool = create_tool(
+            name="lookup",
+            description="Lookup a value",
+            parameters={"query": {"type": "string"}},
+            required=["query"],
+        )
+
+        @asynccontextmanager
+        async def fake_streamablehttp_client(url):
+            nonlocal attempts
+            attempts += 1
+            if attempts > 1:
+                raise ConnectionError("reconnect failed")
+            yield object(), object(), None
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self.read = read
+                self.write = write
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                return type("ToolsResponse", (), {"tools": [tool]})()
+
+            async def call_tool(self, tool_name, arguments):
+                return f"{tool_name}:{arguments['query']}"
+
+        async def fake_sleep(delay):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                await allow_drop.wait()
+                raise RuntimeError("connection dropped")
+            await real_sleep(0)
+
+        monkeypatch.setattr(
+            transport_module,
+            "streamablehttp_client",
+            fake_streamablehttp_client,
+        )
+        monkeypatch.setattr(
+            transport_module,
+            "ClientSession",
+            FakeClientSession,
+        )
+        monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+
+        transport = StreamingHTTPTransport(
+            models_module.MCPServerConfig(name="remote", url="http://example/mcp"),
+            url="http://example/mcp",
+            max_retries=1,
+        )
+
+        assert await transport.connect() == {"lookup": tool}
+        allow_drop.set()
+        await asyncio.wait_for(transport._connection_task, timeout=1)
+        assert attempts == 2
+        with pytest.raises(ConnectionError, match="Lost connection to MCP server"):
+            await transport.call_tool("lookup", {"query": "ping"})
         await transport.disconnect()
 
     @pytest.mark.asyncio

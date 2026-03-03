@@ -32,6 +32,10 @@ class StreamingHTTPTransport(MCPTransport):
         self._ready = asyncio.Event()
         self._error: Exception | None = None
 
+    def _clear_live_connection(self) -> None:
+        self.session = None
+        self.tools = {}
+
     async def connect(self) -> dict[str, MCPTool]:
         self._connection_task = asyncio.create_task(self._maintain_connection())
         await self._ready.wait()
@@ -42,7 +46,6 @@ class StreamingHTTPTransport(MCPTransport):
         return self.tools
 
     async def _maintain_connection(self) -> None:
-        last_error: Exception | None = None
         consecutive_failures = 0
 
         while True:
@@ -57,6 +60,7 @@ class StreamingHTTPTransport(MCPTransport):
                             session.list_tools(), timeout=self.timeout
                         )
                         self.tools = {tool.name: tool for tool in tools_response.tools}
+                        self._error = None
                         consecutive_failures = 0
                         if not self._ready.is_set():
                             self._ready.set()
@@ -66,14 +70,18 @@ class StreamingHTTPTransport(MCPTransport):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                last_error = exc
-                self.session = None
-                self.tools = {}
+                self._clear_live_connection()
                 if consecutive_failures < self.max_retries:
                     consecutive_failures += 1
                     await asyncio.sleep(float(consecutive_failures))
                     continue
-                if not self._ready.is_set():
+
+                if self._ready.is_set():
+                    self._error = ConnectionError(
+                        f"Lost connection to MCP server at {self.url} after "
+                        f"{self.max_retries} retries. Last error: {exc}"
+                    )
+                else:
                     self._error = ConnectionError(
                         f"Failed to connect to MCP server at {self.url} after "
                         f"{self.max_retries} retries. Last error: {exc}"
@@ -81,15 +89,12 @@ class StreamingHTTPTransport(MCPTransport):
                     self._ready.set()
                 break
             finally:
-                self.session = None
-                self.tools = {}
-
-        if self._error is None and last_error is not None and not self._ready.is_set():
-            self._error = last_error
-            self._ready.set()
+                self._clear_live_connection()
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if self.session is None:
+            if self._error is not None:
+                raise self._error
             raise RuntimeError(f"Server '{self.config.name}' not connected")
         result = await asyncio.wait_for(
             self.session.call_tool(tool_name, arguments=arguments),
@@ -105,8 +110,7 @@ class StreamingHTTPTransport(MCPTransport):
             except asyncio.CancelledError:
                 pass
         self._connection_task = None
-        self.session = None
-        self.tools = {}
+        self._clear_live_connection()
         self._ready.clear()
         self._error = None
 
