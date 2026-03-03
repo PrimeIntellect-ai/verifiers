@@ -19,6 +19,34 @@ from tenacity import AsyncRetrying
 import verifiers as vf
 
 
+class BrowserbaseRateLimitError(Exception):
+    """Raised when Browserbase returns a retryable rate limit error (429/503)."""
+
+    def __init__(self, message: str, response: dict | None = None):
+        super().__init__(message)
+        self.response = response or {}
+        self.retryable = self.response.get("retryable", True)
+
+
+def _is_retryable_browserbase_error(response: dict) -> bool:
+    """Check if a Browserbase response indicates a retryable error."""
+    # Explicit retryable flag from Browserbase
+    if response.get("retryable", False):
+        return True
+    # Check for rate limit error codes
+    error = response.get("error", "")
+    code = response.get("code", "")
+    status_code = response.get("statusCode", 0)
+    # 429 = rate limited, 503 = service unavailable (often temporary)
+    if status_code in (429, 503):
+        return True
+    if "429" in str(error) or "rate" in str(error).lower():
+        return True
+    if code in ("SESSION_CREATE_FAILED", "RATE_LIMITED", "TOO_MANY_REQUESTS"):
+        return True
+    return False
+
+
 # Conditional imports for sandbox mode
 try:
     from prime_sandboxes import (
@@ -75,11 +103,13 @@ class CUAMode:
         browserbase_project_id: str | None = None,
         viewport_width: int = 1024,
         viewport_height: int = 768,
-        max_retries: int = 5,
-        base_delay: float = 0.5,
+        # Retry configuration for rate limits and transient errors
+        max_retries: int = 8,
+        base_delay: float = 1.0,
         backoff_factor: float = 2.0,
-        max_backoff_seconds: float = 30.0,
-        jitter: float = 1e-3,
+        max_backoff_seconds: float = 60.0,
+        jitter: float = 0.5,
+        session_creation_timeout: int = 120,
         screenshot_dir: str | None = None,
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
@@ -149,6 +179,7 @@ class CUAMode:
         self.backoff_factor = backoff_factor
         self.max_backoff_seconds = max_backoff_seconds
         self.jitter = jitter
+        self.session_creation_timeout = session_creation_timeout
         self.retrying: AsyncRetrying | None = None
 
         # Local mode specific
@@ -219,6 +250,7 @@ class CUAMode:
         self.logger = env.logger
 
         # Set up retry now that we have logger
+        # Retry on BrowserbaseRateLimitError (429/503) and general connection errors
         self.retrying = tc.AsyncRetrying(
             stop=tc.stop_after_attempt(self.max_retries),
             wait=tc.wait_exponential_jitter(
@@ -227,7 +259,10 @@ class CUAMode:
                 max=self.max_backoff_seconds,
                 jitter=self.jitter,
             ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
+            retry=tc.retry_if_exception_type(
+                (BrowserbaseRateLimitError, aiohttp.ClientError, ConnectionError)
+            ),
+            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
             reraise=True,
         )
 
@@ -309,16 +344,47 @@ class CUAMode:
         return self._http_client
 
     async def _create_session_http(self) -> dict:
-        """Create a new browser session via the CUA server (HTTP)."""
+        """Create a new browser session via the CUA server (HTTP).
+
+        Raises:
+            BrowserbaseRateLimitError: If Browserbase returns a retryable error (429/503)
+            RuntimeError: For non-retryable errors
+        """
         client = await self._get_http_client()
+        timeout = aiohttp.ClientTimeout(total=self.session_creation_timeout)
         async with client.post(
             f"{self.server_url}/sessions",
             json=self.session_config,
+            timeout=timeout,
         ) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
+                # Check if this is a rate limit error that should be retried
+                if resp.status in (429, 503):
+                    raise BrowserbaseRateLimitError(
+                        f"Rate limited (HTTP {resp.status}): {error_text}",
+                        {"statusCode": resp.status, "error": error_text, "retryable": True},
+                    )
                 raise RuntimeError(f"Failed to create browser session: {error_text}")
-            return await resp.json()
+
+            result = await resp.json()
+
+            # Check if the response indicates a retryable Browserbase error
+            # (sometimes errors come back as 200 with error in body)
+            if _is_retryable_browserbase_error(result):
+                raise BrowserbaseRateLimitError(
+                    f"Browserbase rate limit error: {result.get('error', 'Unknown error')}",
+                    result,
+                )
+
+            # Check for session ID - if missing and not a retryable error, it's a fatal error
+            if not result.get("sessionId"):
+                raise RuntimeError(
+                    f"Failed to get session ID from server response. "
+                    f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
+                )
+
+            return result
 
     async def _destroy_session_http(self, session_id: str) -> None:
         """Destroy a browser session via the CUA server (HTTP)."""
@@ -605,7 +671,12 @@ class CUAMode:
         return body, http_code
 
     async def _create_session_curl(self, sandbox_id: str) -> dict:
-        """Create a browser session via curl inside the sandbox."""
+        """Create a browser session via curl inside the sandbox.
+
+        Raises:
+            BrowserbaseRateLimitError: If Browserbase returns a retryable error (429/503)
+            RuntimeError: For non-retryable errors
+        """
         payload = json.dumps(self.session_config)
         escaped_payload = payload.replace("'", "'\\''")
 
@@ -614,17 +685,40 @@ class CUAMode:
             f'curl -s -w "\\n%{{http_code}}" -X POST http://localhost:{self.server_port}/sessions '
             f"-H 'Content-Type: application/json' "
             f"-d '{escaped_payload}'",
-            timeout=60,
+            timeout=self.session_creation_timeout,
         )
 
         body, http_code = self._parse_curl_response(stdout)
 
+        # Check for rate limit at HTTP level
+        if http_code in ("429", "503"):
+            raise BrowserbaseRateLimitError(
+                f"Rate limited (HTTP {http_code}): {body[:200]}",
+                {"statusCode": int(http_code), "error": body, "retryable": True},
+            )
+
         try:
-            return json.loads(body)
+            result = json.loads(body)
         except json.JSONDecodeError as e:
             raise RuntimeError(
                 f"Failed to parse session creation response (HTTP {http_code}): {body[:500]}"
             ) from e
+
+        # Check if the response indicates a retryable Browserbase error
+        if _is_retryable_browserbase_error(result):
+            raise BrowserbaseRateLimitError(
+                f"Browserbase rate limit error: {result.get('error', 'Unknown error')}",
+                result,
+            )
+
+        # Check for session ID - if missing and not a retryable error, it's a fatal error
+        if not result.get("sessionId"):
+            raise RuntimeError(
+                f"Failed to get session ID from server response. "
+                f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
+            )
+
+        return result
 
     async def _destroy_session_curl(self, session_id: str, sandbox_id: str) -> None:
         """Destroy a browser session via curl inside the sandbox."""
@@ -800,17 +894,19 @@ class CUAMode:
     # ==================== Lifecycle Methods ====================
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
-        """Create a browser session (and sandbox if in sandbox mode)."""
+        """Create a browser session (and sandbox if in sandbox mode).
+
+        Retries automatically on rate limit errors (429/503) from Browserbase.
+        """
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
             try:
                 async for attempt in self.retrying:  # type: ignore[union-attr]
                     with attempt:
                         result = await self._create_session_http()
-                session_id = result.get("sessionId")
-                if not session_id:
-                    raise RuntimeError("Failed to get session ID from server response")
+                        # Session ID check is now inside _create_session_http
 
+                session_id = result["sessionId"]
                 with self._sessions_lock:
                     self.active_sessions.add(session_id)
 
@@ -852,13 +948,9 @@ class CUAMode:
                 async for attempt in self.retrying:  # type: ignore[union-attr]
                     with attempt:
                         result = await self._create_session_curl(sandbox_id)
-                session_id = result.get("sessionId")
-                if not session_id:
-                    raise RuntimeError(
-                        f"Failed to get session ID from server response. "
-                        f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
-                    )
+                        # Session ID check is now inside _create_session_curl
 
+                session_id = result["sessionId"]
                 with self._sessions_lock:
                     self.active_sessions.add(session_id)
 
