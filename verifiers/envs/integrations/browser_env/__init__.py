@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 _LAZY_IMPORTS = {
     "BrowserEnv": ".browser_env:BrowserEnv",
     "ModeType": ".browser_env:ModeType",
+    "BrowserbaseMonitoringRubric": ".browserbase_rubric:BrowserbaseMonitoringRubric",
 }
 
 
@@ -60,6 +61,7 @@ def __getattr__(name: str):
 __all__ = [
     "BrowserEnv",
     "ModeType",
+    "BrowserbaseMonitoringRubric",
 ]
 
 if TYPE_CHECKING:
@@ -67,3 +69,4 @@ if TYPE_CHECKING:
         BrowserEnv,
         ModeType,
     )
+    from .browserbase_rubric import BrowserbaseMonitoringRubric

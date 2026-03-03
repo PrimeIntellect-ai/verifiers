@@ -894,12 +894,31 @@ class CUAMode:
         """Create a browser session (and sandbox if in sandbox mode).
 
         Retries automatically on rate limit errors (429/503) from Browserbase.
+        Tracks browserbase metrics in state for monitoring.
         """
+        # Initialize browserbase metrics for monitoring
+        state["browserbase_metrics"] = {
+            "session_creation_retries": 0,
+            "rate_limit_errors": 0,
+            "session_created": False,
+            "error": None,
+            "error_type": None,
+        }
+
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
             try:
                 async for attempt in self.retrying:  # type: ignore[union-attr]
                     with attempt:
+                        # Track retry attempts
+                        state["browserbase_metrics"]["session_creation_retries"] = (
+                            attempt.retry_state.attempt_number - 1
+                        )
+                        # Track rate limit errors from previous attempt
+                        if attempt.retry_state.outcome and attempt.retry_state.outcome.failed:
+                            exc = attempt.retry_state.outcome.exception()
+                            if isinstance(exc, BrowserbaseRateLimitError):
+                                state["browserbase_metrics"]["rate_limit_errors"] += 1
                         result = await self._create_session_http()
                         # Session ID check is now inside _create_session_http
 
@@ -909,9 +928,12 @@ class CUAMode:
 
                 state["session_id"] = session_id
                 state["browser_state"] = result.get("state", {})
+                state["browserbase_metrics"]["session_created"] = True
             except vf.Error:
                 raise
             except Exception as e:
+                state["browserbase_metrics"]["error"] = str(e)
+                state["browserbase_metrics"]["error_type"] = type(e).__name__
                 raise vf.BrowserSandboxError(e)
         else:
             # Sandbox mode: create sandbox, set up server, create session
@@ -944,6 +966,15 @@ class CUAMode:
 
                 async for attempt in self.retrying:  # type: ignore[union-attr]
                     with attempt:
+                        # Track retry attempts
+                        state["browserbase_metrics"]["session_creation_retries"] = (
+                            attempt.retry_state.attempt_number - 1
+                        )
+                        # Track rate limit errors from previous attempt
+                        if attempt.retry_state.outcome and attempt.retry_state.outcome.failed:
+                            exc = attempt.retry_state.outcome.exception()
+                            if isinstance(exc, BrowserbaseRateLimitError):
+                                state["browserbase_metrics"]["rate_limit_errors"] += 1
                         result = await self._create_session_curl(sandbox_id)
                         # Session ID check is now inside _create_session_curl
 
@@ -953,10 +984,13 @@ class CUAMode:
 
                 state["session_id"] = session_id
                 state["browser_state"] = result.get("state", {})
+                state["browserbase_metrics"]["session_created"] = True
             except vf.Error:
                 # Re-raise vf.Error subclasses as-is (they're already handled)
                 raise
             except Exception as e:
+                state["browserbase_metrics"]["error"] = str(e)
+                state["browserbase_metrics"]["error_type"] = type(e).__name__
                 # Wrap all other exceptions in BrowserSandboxError
                 # This ensures cleanup_session is called via stop_errors mechanism
                 raise vf.BrowserSandboxError(e)
