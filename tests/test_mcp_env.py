@@ -477,6 +477,63 @@ class TestMCPEnv:
         ]
 
     @pytest.mark.asyncio
+    async def test_sandbox_expose_port_uses_tcp_endpoint(self, monkeypatch):
+        sandbox_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.sandbox"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        class FakeExposure:
+            external_endpoint = "sandbox-host.example:12345"
+            url = "tcp://sandbox-host.example:12345"
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def expose(self, sandbox_id, port, name=None, protocol="HTTP"):
+                self.calls.append(
+                    {
+                        "sandbox_id": sandbox_id,
+                        "port": port,
+                        "name": name,
+                        "protocol": protocol,
+                    }
+                )
+                return FakeExposure()
+
+        fake_client = FakeClient()
+        monkeypatch.setattr(
+            sandbox_module.SandboxTransport,
+            "get_client",
+            classmethod(lambda cls: fake_client),
+        )
+
+        transport = sandbox_module.SandboxTransport(
+            models_module.MCPServerConfig(name="sandbox", command="dummy"),
+            sandbox_image="python:3.11-slim",
+            sandbox_start_command="tail -f /dev/null",
+            sandbox_environment_vars={},
+            sandbox_cpu_cores=1,
+            sandbox_memory_gb=1,
+            sandbox_disk_size_gb=1,
+            sandbox_timeout_minutes=1,
+            port_to_expose=8000,
+        )
+        transport.sandbox_id = "sandbox-1"
+
+        assert await transport.expose_port() == "http://sandbox-host.example:12345/mcp"
+        assert transport.url == "http://sandbox-host.example:12345/mcp"
+        assert fake_client.calls == [
+            {
+                "sandbox_id": "sandbox-1",
+                "port": 8000,
+                "name": None,
+                "protocol": "TCP",
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_sandbox_startup_error_reports_cleanup_failure(self):
         sandbox_module = pytest.importorskip(
             "verifiers.utils.mcp_utils.transports.sandbox"

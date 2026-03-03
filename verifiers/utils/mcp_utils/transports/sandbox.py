@@ -176,12 +176,29 @@ class SandboxTransport(StreamingHTTPTransport):
                     writer.close()
                     await writer.wait_closed()
 
+    def _build_exposed_mcp_url(self, exposed: Any) -> str:
+        endpoint = getattr(exposed, "external_endpoint", None)
+        if isinstance(endpoint, str) and endpoint.strip():
+            return f"http://{endpoint.strip()}/mcp"
+
+        raw_url = str(getattr(exposed, "url", "") or "").strip().rstrip("/")
+        if raw_url.startswith("tcp://"):
+            return f"http://{raw_url[len('tcp://') :]}/mcp"
+        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+            return f"{raw_url}/mcp"
+
+        raise RuntimeError("Sandbox exposure did not provide a usable endpoint URL.")
+
     async def expose_port(self) -> str:
         if self.sandbox_id is None:
             raise RuntimeError("Sandbox not created yet")
         client = self.get_client()
-        exposed = await client.expose(self.sandbox_id, self.port_to_expose)
-        self.url = f"{exposed.url}/mcp"
+        exposed = await client.expose(
+            self.sandbox_id,
+            self.port_to_expose,
+            protocol="TCP",
+        )
+        self.url = self._build_exposed_mcp_url(exposed)
         return self.url
 
     async def read_log_tail(self) -> str | None:
