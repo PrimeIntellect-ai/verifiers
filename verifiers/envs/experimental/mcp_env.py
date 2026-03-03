@@ -87,6 +87,7 @@ class MCPEnv(vf.StatefulToolEnv):
 
         self._shared_transports: dict[str, MCPTransport] = {}
         self._registered_mcp_tools: dict[str, RegisteredMCPTool] = {}
+        # Keep MCP tool aliases stable so reconnects do not rename tools mid-run.
         self._mcp_public_names: dict[tuple[str, str], str] = {}
         self._shared_setup_lock: asyncio.Lock | None = None
         self._shared_bg_loop: asyncio.AbstractEventLoop | None = None
@@ -117,6 +118,8 @@ class MCPEnv(vf.StatefulToolEnv):
         if self._shared_bg_loop is not None:
             return
 
+        # Shared MCP sessions live on their own loop so they can stay connected
+        # across rollout event loops while still supporting eager tool discovery.
         self._shared_bg_loop = asyncio.new_event_loop()
         self._shared_bg_thread = threading.Thread(
             target=self._run_shared_loop,
@@ -196,6 +199,22 @@ class MCPEnv(vf.StatefulToolEnv):
                 errors.append(exc)
         if errors:
             raise errors[0]
+
+    async def _disconnect_transports_with_timeout(
+        self,
+        transports: dict[str, MCPTransport],
+        *,
+        context: str,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                self._disconnect_transports(transports),
+                timeout=MCP_TEARDOWN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Timed out while {context}")
+        except Exception as exc:
+            self.logger.warning(f"Failed while {context}: {exc}")
 
     def _compute_public_tool_names(
         self, discovered_tools: list[tuple[str, MCPTool]]
@@ -422,19 +441,10 @@ class MCPEnv(vf.StatefulToolEnv):
                 )
             self._shutdown_shared_loop()
             return
-        try:
-            await asyncio.wait_for(
-                self._disconnect_transports(transports),
-                timeout=MCP_TEARDOWN_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            self.logger.warning(
-                "Timed out while disconnecting shared MCP transports during teardown"
-            )
-        except Exception as exc:
-            self.logger.warning(
-                f"Failed to disconnect shared MCP transports during teardown: {exc}"
-            )
+        await self._disconnect_transports_with_timeout(
+            transports,
+            context="disconnecting shared MCP transports during teardown",
+        )
 
     def _shutdown_shared_loop(self) -> None:
         if self._shared_bg_loop is None:
