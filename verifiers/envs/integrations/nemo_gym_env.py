@@ -1,82 +1,32 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import importlib.util
 import json
 import os
 import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import aiohttp
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.types import Messages, State, ToolMessage
+from verifiers.types import AssistantMessage, Messages, State, ToolMessage
 from verifiers.utils.message_utils import concat_messages, normalize_messages
+
+try:
+    from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+except ImportError as e:
+    raise ImportError(
+        "NemoGymEnv requires prime-sandboxes. Install with: uv add prime-sandboxes"
+    ) from e
 
 _ALLOWED_DATASET_SPLITS = {"example", "train", "validation"}
 _SERVER_LOG_PATH = "/tmp/nemo_gym_resource_server.log"
-_DEFAULT_PROFILE_NAME = "base"
-
-_DEFAULT_JUDGE_MODEL_SERVER_REF = {
-    "type": "responses_api_models",
-    "name": "policy_model",
-}
-_DEFAULT_EMPTY_RESPONSES_CREATE_PARAMS = {
-    "input": [],
-}
-
-
-@dataclass(frozen=True)
-class ResourceServerProfile:
-    """Server-specific customizations layered on top of the base adapter."""
-
-    name: str
-    resource_server: str
-    extra_pip_packages: tuple[str, ...] = ()
-    config_overrides: dict[str, Any] = field(default_factory=dict)
-    # Map config field -> candidate host env vars used to populate it.
-    env_config_overrides: dict[str, tuple[str, ...]] = field(default_factory=dict)
-
-
-_BUILTIN_SERVER_PROFILES: dict[str, ResourceServerProfile] = {
-    "structured_outputs": ResourceServerProfile(
-        name="structured_outputs",
-        resource_server="structured_outputs",
-        extra_pip_packages=("openapi-schema-validator==0.6.3",),
-    ),
-    "math_with_judge": ResourceServerProfile(
-        name="math_with_judge",
-        resource_server="math_with_judge",
-        extra_pip_packages=("math-verify==0.8.0", "datasets"),
-        config_overrides={
-            "judge_model_server": _DEFAULT_JUDGE_MODEL_SERVER_REF,
-            "judge_responses_create_params": _DEFAULT_EMPTY_RESPONSES_CREATE_PARAMS,
-            "should_use_judge": False,
-        },
-    ),
-    "text_to_sql": ResourceServerProfile(
-        name="text_to_sql",
-        resource_server="text_to_sql",
-        config_overrides={
-            "judge_model_server": _DEFAULT_JUDGE_MODEL_SERVER_REF,
-            "judge_responses_create_params": _DEFAULT_EMPTY_RESPONSES_CREATE_PARAMS,
-            "judge_endpoint_max_concurrency": None,
-        },
-    ),
-    "google_search": ResourceServerProfile(
-        name="google_search",
-        resource_server="google_search",
-        extra_pip_packages=("trafilatura==2.0.0",),
-        env_config_overrides={
-            "google_api_key": ("NEMO_GYM_GOOGLE_API_KEY", "GOOGLE_API_KEY"),
-            "google_cx": ("NEMO_GYM_GOOGLE_CX", "GOOGLE_CX"),
-        },
-    ),
-}
+_DEFAULT_NEMO_PACKAGE = "nemo-gym @ https://test-files.pythonhosted.org/packages/c0/58/451a826009a0b206c932e1ebde3dcff2a8b31152c77133fdde7e5f7ccd90/nemo_gym-0.2.9892rc0-py3-none-any.whl"
 
 
 def _json_dumps(value: Any) -> str:
@@ -136,59 +86,7 @@ def _sanitize_json_schema(value: Any) -> Any:
 def _normalize_parameters_schema(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"type": "object", "properties": {}}
-    sanitized = _sanitize_json_schema(value)
-    if not isinstance(sanitized, dict):
-        return {"type": "object", "properties": {}}
-    return sanitized
-
-
-def _normalize_content_for_prompt(content: Any) -> str | list[Any]:
-    if isinstance(content, (str, list)):
-        return content
-    return _stringify(content)
-
-
-def _normalize_prompt_from_responses_input(input_value: Any) -> list[dict[str, Any]]:
-    if isinstance(input_value, str):
-        return [{"role": "user", "content": input_value}]
-
-    if not isinstance(input_value, list):
-        return [{"role": "user", "content": _stringify(input_value)}]
-
-    prompt: list[dict[str, Any]] = []
-    for item in input_value:
-        if not isinstance(item, dict):
-            prompt.append({"role": "user", "content": _stringify(item)})
-            continue
-
-        role = item.get("role")
-        if role == "developer":
-            role = "system"
-
-        if role in {"system", "user", "assistant"}:
-            prompt.append(
-                {
-                    "role": role,
-                    "content": _normalize_content_for_prompt(item.get("content", "")),
-                }
-            )
-            continue
-
-        if role == "tool" and "tool_call_id" in item:
-            prompt.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": str(item["tool_call_id"]),
-                    "content": _normalize_content_for_prompt(item.get("content", "")),
-                }
-            )
-            continue
-
-        prompt.append({"role": "user", "content": _stringify(item)})
-
-    if not prompt:
-        return [{"role": "user", "content": ""}]
-    return prompt
+    return _sanitize_json_schema(value)
 
 
 def _nemo_tools_to_tool_defs(raw_tools: Any) -> list[dict[str, Any]]:
@@ -241,123 +139,6 @@ def _nemo_tools_to_tool_defs(raw_tools: Any) -> list[dict[str, Any]]:
     return tool_defs
 
 
-def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = copy.deepcopy(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_dict(cast(dict[str, Any], merged[key]), value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
-def _unique_values(values: list[str]) -> tuple[str, ...]:
-    unique: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        unique.append(value)
-    return tuple(unique)
-
-
-def _find_first_env(candidates: tuple[str, ...]) -> str | None:
-    for env_key in candidates:
-        value = os.getenv(env_key)
-        if value:
-            return value
-    return None
-
-
-def _resolve_server_profile(
-    *,
-    resource_server: str,
-    server_profile: str | None,
-    server_profile_overrides: dict[str, Any] | None,
-    extra_pip_packages: list[str] | None,
-    strict_profile_env: bool,
-) -> tuple[ResourceServerProfile, dict[str, Any]]:
-    if extra_pip_packages is not None:
-        if not isinstance(extra_pip_packages, list) or any(
-            not isinstance(pkg, str) or not pkg.strip() for pkg in extra_pip_packages
-        ):
-            raise ValueError("extra_pip_packages must be a list of non-empty strings")
-
-    if server_profile_overrides is not None and not isinstance(
-        server_profile_overrides, dict
-    ):
-        raise ValueError("server_profile_overrides must be a JSON object when provided")
-
-    normalized_profile = (server_profile or "").strip() or None
-    resolved_profile: ResourceServerProfile | None = None
-
-    if normalized_profile is None:
-        resolved_profile = _BUILTIN_SERVER_PROFILES.get(resource_server)
-    elif normalized_profile == _DEFAULT_PROFILE_NAME:
-        resolved_profile = None
-    else:
-        resolved_profile = _BUILTIN_SERVER_PROFILES.get(normalized_profile)
-        if resolved_profile is None:
-            known = sorted([_DEFAULT_PROFILE_NAME, *_BUILTIN_SERVER_PROFILES.keys()])
-            raise ValueError(
-                f"Unknown server_profile '{normalized_profile}'. Expected one of: {known}"
-            )
-        if (
-            resource_server != "math_with_code"
-            and resource_server != resolved_profile.resource_server
-        ):
-            raise ValueError(
-                "resource_server and server_profile are inconsistent. "
-                f"resource_server='{resource_server}', server_profile='{normalized_profile}' "
-                f"(profile maps to '{resolved_profile.resource_server}')."
-            )
-
-    if resolved_profile is None:
-        resolved_profile = ResourceServerProfile(
-            name=_DEFAULT_PROFILE_NAME,
-            resource_server=resource_server,
-        )
-
-    profile_overrides = copy.deepcopy(resolved_profile.config_overrides)
-    missing_env_keys: list[tuple[str, tuple[str, ...]]] = []
-    for config_key, env_candidates in resolved_profile.env_config_overrides.items():
-        if not env_candidates:
-            continue
-        env_value = _find_first_env(env_candidates)
-        if env_value is None:
-            missing_env_keys.append((config_key, env_candidates))
-            continue
-        profile_overrides[config_key] = env_value
-
-    if missing_env_keys and strict_profile_env:
-        missing_text = "; ".join(
-            f"{config_key} <- one of {list(env_candidates)}"
-            for config_key, env_candidates in missing_env_keys
-        )
-        raise ValueError(
-            f"Missing required env vars for profile '{resolved_profile.name}': {missing_text}"
-        )
-
-    if server_profile_overrides:
-        profile_overrides = _deep_merge_dict(
-            profile_overrides, server_profile_overrides
-        )
-
-    packages = _unique_values(
-        [*resolved_profile.extra_pip_packages, *(extra_pip_packages or [])]
-    )
-
-    resolved = ResourceServerProfile(
-        name=resolved_profile.name,
-        resource_server=resolved_profile.resource_server,
-        extra_pip_packages=packages,
-        config_overrides=profile_overrides,
-        env_config_overrides=resolved_profile.env_config_overrides,
-    )
-    return resolved, profile_overrides
-
-
 def _resolve_resources_servers_root() -> Path:
     resources_spec = importlib.util.find_spec("resources_servers")
     if resources_spec and resources_spec.submodule_search_locations:
@@ -393,7 +174,8 @@ def _resolve_dataset_path(
     path = resources_root / resource_server / "data" / f"{dataset_split}.jsonl"
     if not path.exists():
         raise FileNotFoundError(
-            f"Could not find dataset file for server '{resource_server}' split '{dataset_split}': {path}"
+            "Could not find dataset file for server "
+            f"'{resource_server}' split '{dataset_split}': {path}"
         )
     return path
 
@@ -415,7 +197,8 @@ def _load_rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"Row {line_no} in {path} is not an object")
             if "responses_create_params" not in row:
                 raise ValueError(
-                    f"Row {line_no} in {path} is missing required key 'responses_create_params'"
+                    f"Row {line_no} in {path} is missing required key "
+                    "'responses_create_params'"
                 )
             rows.append(row)
     if not rows:
@@ -426,8 +209,8 @@ def _load_rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
 def _build_dataset(
     resource_server: str,
     dataset_split: str,
-    dataset_path: str | None,
-    dataset_limit: int | None,
+    dataset_path: str | None = None,
+    dataset_limit: int | None = None,
 ) -> tuple[Dataset, Path]:
     resolved_path = _resolve_dataset_path(resource_server, dataset_split, dataset_path)
     rows = _load_rows_from_jsonl(resolved_path)
@@ -443,45 +226,26 @@ def _build_dataset(
         if not isinstance(responses_create_params, dict):
             raise ValueError("responses_create_params must be an object")
 
-        prompt = _normalize_prompt_from_responses_input(
-            responses_create_params.get("input", [])
-        )
-        tool_defs = _nemo_tools_to_tool_defs(responses_create_params.get("tools", []))
-        answer = _stringify(row.get("answer", ""))
-
+        raw_input = responses_create_params.get("input", [])
+        if isinstance(raw_input, str):
+            prompt = [{"role": "user", "content": raw_input}]
+        elif isinstance(raw_input, list):
+            prompt = raw_input
+        else:
+            prompt = [{"role": "user", "content": _stringify(raw_input)}]
         dataset_rows.append(
             {
                 "prompt": prompt,
-                "answer": answer,
+                "answer": _stringify(row.get("answer", "")),
                 "task": resource_server,
                 "info": {
-                    "dataset_row": row,
                     "dataset_row_json": _json_dumps(row),
                     "resource_server": resource_server,
-                    "tool_defs": tool_defs,
-                    "tool_defs_json": _json_dumps(tool_defs),
                 },
             }
         )
 
     return Dataset.from_list(dataset_rows), resolved_path
-
-
-def _extract_text_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                if isinstance(part.get("text"), str):
-                    parts.append(part["text"])
-                else:
-                    parts.append(_stringify(part))
-            else:
-                parts.append(_stringify(part))
-        return "\n".join(parts)
-    return _stringify(content)
 
 
 def _completion_to_nemo_response(
@@ -494,66 +258,46 @@ def _completion_to_nemo_response(
     message_idx = 0
 
     for msg in completion:
-        role = msg.get("role")
-
-        if role == "assistant":
-            assistant_text = _extract_text_content(msg.get("content"))
-            if assistant_text:
+        if isinstance(msg, AssistantMessage):
+            text = msg.content or ""
+            if isinstance(text, list):
+                text = "\n".join(getattr(p, "text", str(p)) for p in text)
+            if text:
                 output.append(
                     {
                         "id": f"msg_{message_idx}",
                         "type": "message",
                         "role": "assistant",
                         "content": [
-                            {
-                                "type": "output_text",
-                                "text": assistant_text,
-                                "annotations": [],
-                            }
+                            {"type": "output_text", "text": text, "annotations": []}
                         ],
                     }
                 )
                 message_idx += 1
 
-            tool_calls = msg.get("tool_calls") or []
-            if isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    if not hasattr(tc, "get"):
-                        continue
-                    call_id = tc.get("id") or f"call_{message_idx}"
-                    name = tc.get("name")
-                    if not isinstance(name, str) or not name:
-                        continue
-                    arguments = tc.get("arguments", "{}")
-                    if not isinstance(arguments, str):
-                        arguments = _stringify(arguments)
-                    output.append(
-                        {
-                            "id": str(call_id),
-                            "type": "function_call",
-                            "call_id": str(call_id),
-                            "name": name,
-                            "arguments": arguments,
-                        }
-                    )
-                    message_idx += 1
+            for tc in msg.tool_calls or []:
+                output.append(
+                    {
+                        "id": tc.id,
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    }
+                )
+                message_idx += 1
 
-        elif role == "tool":
-            tool_call_id = msg.get("tool_call_id")
-            if tool_call_id is None:
-                continue
+        elif isinstance(msg, ToolMessage):
+            content = msg.content
+            if isinstance(content, list):
+                content = "\n".join(getattr(p, "text", str(p)) for p in content)
             output.append(
                 {
                     "type": "function_call_output",
-                    "call_id": str(tool_call_id),
-                    "output": _extract_text_content(msg.get("content")),
+                    "call_id": msg.tool_call_id,
+                    "output": content or "",
                 }
             )
-
-    tool_choice = responses_create_params.get("tool_choice", "none")
-    tools = responses_create_params.get("tools", [])
-    if not isinstance(tools, list):
-        tools = []
 
     return {
         "id": f"verifiers-{trajectory_id}",
@@ -564,8 +308,8 @@ def _completion_to_nemo_response(
         "parallel_tool_calls": bool(
             responses_create_params.get("parallel_tool_calls", False)
         ),
-        "tool_choice": tool_choice,
-        "tools": tools,
+        "tool_choice": responses_create_params.get("tool_choice", "none"),
+        "tools": responses_create_params.get("tools", []),
     }
 
 
@@ -573,74 +317,75 @@ def _reward_from_verify(state: State, **kwargs: Any) -> float:
     verify_response = state.get("verify_response")
     if not isinstance(verify_response, dict):
         return 0.0
-    try:
-        return float(verify_response.get("reward", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+    return float(verify_response.get("reward", 0.0) or 0.0)
 
 
-def _verify_error_metric(state: State, **kwargs: Any) -> float:
-    verify_response = state.get("verify_response")
-    if isinstance(verify_response, dict) and verify_response.get("error"):
-        return 1.0
-    return 0.0
+@dataclass
+class _NemoGymServer:
+    sandbox_id: str
+    exposure_id: str
+    base_url: str
+    openapi_paths: set[str]
 
 
-class NemoGymSandboxEnv(vf.SandboxEnv):
+_DEFAULT_SANDBOX_OPTIONS = {
+    "docker_image": "python:3.12",
+    "cpu_cores": 2,
+    "memory_gb": 4,
+    "disk_size_gb": 10,
+    "timeout_minutes": 60,
+    "port": 8000,
+    "server_start_timeout_s": 120,
+    "http_timeout_s": 60,
+}
+
+
+class NemoGymEnv(vf.MultiTurnEnv):
     def __init__(
         self,
         *,
         resource_server: str,
         dataset: Dataset,
         rubric: vf.Rubric,
-        max_turns: int,
-        sandbox_docker_image: str,
-        sandbox_cpu_cores: int,
-        sandbox_memory_gb: int,
-        sandbox_timeout_minutes: int,
-        sandbox_port: int,
-        sandbox_server_start_timeout_s: int,
-        sandbox_http_timeout_s: int,
-        nemo_package: str,
-        nemo_package_version: str | None,
-        server_profile_name: str,
-        server_config_overrides: dict[str, Any],
-        extra_pip_packages: tuple[str, ...],
-        sandbox_pip_index_url_env_var: str,
-        sandbox_pip_extra_index_url_env_var: str,
-        seed_session_on_start: bool,
-        system_prompt: str | None,
+        max_turns: int = 16,
+        config_overrides: dict[str, Any] | None = None,
+        extra_pip_packages: list[str] | None = None,
+        nemo_package: str = _DEFAULT_NEMO_PACKAGE,
+        nemo_package_version: str | None = None,
+        seed_session_on_start: bool = True,
+        system_prompt: str | None = None,
+        sandbox_options: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         self.resource_server = resource_server
-        self.sandbox_port = sandbox_port
-        self.sandbox_server_start_timeout_s = sandbox_server_start_timeout_s
-        self.sandbox_http_timeout_s = sandbox_http_timeout_s
         self.nemo_package = nemo_package
         self.nemo_package_version = nemo_package_version
-        self.server_profile_name = server_profile_name
-        self.server_config_overrides = copy.deepcopy(server_config_overrides)
-        self.extra_pip_packages = extra_pip_packages
-        self.sandbox_pip_index_url_env_var = sandbox_pip_index_url_env_var
-        self.sandbox_pip_extra_index_url_env_var = sandbox_pip_extra_index_url_env_var
+        self.extra_pip_packages = list(extra_pip_packages or [])
+        self.config_overrides = dict(config_overrides or {})
         self.seed_session_on_start = seed_session_on_start
+
+        opts = {**_DEFAULT_SANDBOX_OPTIONS, **(sandbox_options or {})}
+        self.docker_image: str = opts["docker_image"]
+        self.sandbox_cpu_cores: int = opts["cpu_cores"]
+        self.sandbox_memory_gb: int = opts["memory_gb"]
+        self.sandbox_disk_size_gb: int = opts["disk_size_gb"]
+        self.sandbox_timeout_minutes: int = opts["timeout_minutes"]
+        self.sandbox_port: int = opts["port"]
+        self.server_start_timeout_s: int = opts["server_start_timeout_s"]
+        self.http_timeout_s: int = opts["http_timeout_s"]
+
+        self._http_session: aiohttp.ClientSession | None = None
+        self._server: _NemoGymServer | None = None
+        self._sandbox_lock: asyncio.Lock | None = None
 
         super().__init__(
             dataset=dataset,
             rubric=rubric,
             max_turns=max_turns,
             system_prompt=system_prompt,
-            sandbox_name=f"nemo-gym-{resource_server}",
-            docker_image=sandbox_docker_image,
-            cpu_cores=sandbox_cpu_cores,
-            memory_gb=sandbox_memory_gb,
-            timeout_minutes=sandbox_timeout_minutes,
-            timeout_per_command_seconds=max(30, sandbox_http_timeout_s),
+            message_type="chat",
             **kwargs,
         )
-
-        # No static tools are exposed; runtime tool_defs come from dataset rows.
-        self.remove_tool(self.bash)
 
     def _nemo_package_spec(self) -> str:
         if self.nemo_package_version:
@@ -650,24 +395,24 @@ class NemoGymSandboxEnv(vf.SandboxEnv):
     def _install_command(self) -> str:
         package_specs = [self._nemo_package_spec(), "httpx", *self.extra_pip_packages]
         quoted_specs = " ".join(shlex.quote(spec) for spec in package_specs)
+
         env_chunks: list[str] = []
-        for key in (
-            self.sandbox_pip_index_url_env_var,
-            self.sandbox_pip_extra_index_url_env_var,
-        ):
+        for key in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
             value = os.getenv(key)
             if value:
                 env_chunks.append(f"{key}={shlex.quote(value)}")
+
         env_prefix = " ".join(env_chunks)
-        cmd = f"python -m pip install --no-cache-dir {quoted_specs}"
-        return f"{env_prefix} {cmd}".strip()
+        command = f"python -m pip install --no-cache-dir {quoted_specs}"
+        return f"{env_prefix} {command}".strip()
 
     def _server_launcher_script(self) -> str:
-        serialized_overrides = _json_dumps(self.server_config_overrides)
+        serialized_overrides = _json_dumps(self.config_overrides)
         return f"""
 import importlib
 import inspect
 import json
+import sys
 
 import uvicorn
 from omegaconf import OmegaConf
@@ -678,6 +423,19 @@ from nemo_gym.server_utils import BaseServerConfig, ServerClient
 RESOURCE_SERVER = {self.resource_server!r}
 PORT = {self.sandbox_port}
 SERVER_CONFIG_OVERRIDES = json.loads({serialized_overrides!r})
+
+# Add the server's package directory to sys.path and PYTHONPATH so relative
+# imports (e.g. "from lcb_integration import ...") resolve correctly.
+# PYTHONPATH is needed so Ray workers also inherit the path.
+import os
+_rs_pkg = importlib.import_module("resources_servers")
+for _search_path in getattr(_rs_pkg, "__path__", []):
+    _server_dir = _search_path + "/" + RESOURCE_SERVER
+    if _server_dir not in sys.path:
+        sys.path.insert(0, _server_dir)
+    _pypath = os.environ.get("PYTHONPATH", "")
+    if _server_dir not in _pypath:
+        os.environ["PYTHONPATH"] = _server_dir + (":" + _pypath if _pypath else "")
 
 module = importlib.import_module(f"resources_servers.{{RESOURCE_SERVER}}.app")
 server_cls = None
@@ -692,7 +450,9 @@ for obj in module.__dict__.values():
         break
 
 if server_cls is None:
-    raise RuntimeError(f"Could not locate SimpleResourcesServer subclass in {{module.__name__}}")
+    raise RuntimeError(
+        f"Could not locate SimpleResourcesServer subclass in {{module.__name__}}"
+    )
 
 config_cls = server_cls.model_fields["config"].annotation
 config_payload = {{
@@ -733,9 +493,116 @@ uvicorn.run(
             f"nohup python {launcher_path} > {_SERVER_LOG_PATH} 2>&1 &"
         )
 
-    async def _server_log_tail(self, sandbox_id: str, lines: int = 120) -> str:
+    def _build_sandbox_request(self) -> CreateSandboxRequest:
+        params: dict[str, Any] = {
+            "name": f"nemo-gym-{self.resource_server}",
+            "docker_image": self.docker_image,
+            "start_command": "tail -f /dev/null",
+            "cpu_cores": self.sandbox_cpu_cores,
+            "memory_gb": self.sandbox_memory_gb,
+            "disk_size_gb": self.sandbox_disk_size_gb,
+            "timeout_minutes": self.sandbox_timeout_minutes,
+            "environment_vars": {"ENABLE_WEB_INTERFACE": "false"},
+        }
+        return CreateSandboxRequest(**cast(Any, params))
+
+    def _exposure_to_base_url(self, exposure: Any) -> str:
+        endpoint = getattr(exposure, "external_endpoint", None)
+        if isinstance(endpoint, str) and endpoint.strip():
+            return f"http://{endpoint.strip()}"
+
+        raw_url = str(getattr(exposure, "url", "") or "").strip()
+        if raw_url.startswith("tcp://"):
+            host_port = raw_url[len("tcp://") :].rstrip("/")
+            if host_port:
+                return f"http://{host_port}"
+        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+            return raw_url.rstrip("/")
+
+        raise RuntimeError("NeMo Gym sandbox exposure did not provide a usable URL.")
+
+    async def _ensure_http_session(self) -> aiohttp.ClientSession:
+        if self._http_session is None or self._http_session.closed:
+            timeout = aiohttp.ClientTimeout(total=float(self.http_timeout_s))
+            self._http_session = aiohttp.ClientSession(timeout=timeout)
+        return self._http_session
+
+    async def _ensure_server(self) -> _NemoGymServer:
+        if self._server is not None:
+            return self._server
+        if self._sandbox_lock is None:
+            self._sandbox_lock = asyncio.Lock()
+        async with self._sandbox_lock:
+            if self._server is not None:
+                return self._server
+            self._server = await self._create_sandbox()
+            return self._server
+
+    async def _request(
+        self,
+        *,
+        base_url: str,
+        method: str,
+        endpoint: str,
+        payload: Any | None = None,
+        cookie: str | None = None,
+    ) -> tuple[int, Any, dict[str, str]]:
+        session = await self._ensure_http_session()
+        url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        headers = {"cookie": cookie} if cookie else None
+        request_kwargs: dict[str, Any] = {}
+        if payload is not None:
+            request_kwargs["json"] = payload
+
+        async with session.request(
+            method,
+            url,
+            headers=headers,
+            **request_kwargs,
+        ) as response:
+            text = await response.text()
+            if not text:
+                body: Any = {}
+            else:
+                try:
+                    body = json.loads(text)
+                except json.JSONDecodeError:
+                    body = text
+            return int(response.status), body, dict(response.headers)
+
+    async def _wait_for_server_ready(self, base_url: str) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        last_error = "no attempts"
+
+        while (loop.time() - start) < float(self.server_start_timeout_s):
+            try:
+                status, body, _ = await self._request(
+                    base_url=base_url,
+                    method="GET",
+                    endpoint="/openapi.json",
+                )
+                if status == 200 and isinstance(body, dict):
+                    return body
+                last_error = f"HTTP {status}: {_stringify(body)[:400]}"
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+            await asyncio.sleep(2)
+
+        raise vf.SandboxError(
+            "NeMo Gym server failed to become ready within "
+            f"{self.server_start_timeout_s}s at {base_url}. Last error: {last_error}"
+        )
+
+    async def _server_log_tail(
+        self,
+        sandboxes: AsyncSandboxClient,
+        sandbox_id: str,
+        lines: int = 120,
+    ) -> str:
         try:
-            result = await self.sandbox_client.execute_command(
+            result = await sandboxes.execute_command(
                 sandbox_id,
                 f"tail -n {lines} {_SERVER_LOG_PATH} 2>/dev/null || true",
                 timeout=10,
@@ -744,309 +611,237 @@ uvicorn.run(
         except Exception:
             return ""
 
-    async def _sandbox_http_request(
-        self,
-        sandbox_id: str,
-        method: str,
-        endpoint: str,
-        payload: Any | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> tuple[int, Any, dict[str, str]]:
-        raw_payload = json.dumps(payload)
-        raw_headers = json.dumps(headers or {})
-        command = (
-            "python - <<'PY'\n"
-            "import json\n"
-            "import sys\n"
-            "import httpx\n\n"
-            f"url = 'http://127.0.0.1:{self.sandbox_port}{endpoint}'\n"
-            f"method = {method!r}\n"
-            f"payload = json.loads({raw_payload!r})\n\n"
-            f"headers = json.loads({raw_headers!r})\n\n"
-            "try:\n"
-            "    with httpx.Client(timeout=60.0, follow_redirects=True) as client:\n"
-            "        if payload is None:\n"
-            "            response = client.request(method, url, headers=headers or None)\n"
-            "        else:\n"
-            "            response = client.request(method, url, json=payload, headers=headers or None)\n"
-            "    body = response.text\n"
-            "    try:\n"
-            "        body = response.json()\n"
-            "    except Exception:\n"
-            "        pass\n"
-            "    print(json.dumps({'status_code': int(response.status_code), 'body': body, 'headers': dict(response.headers)}))\n"
-            "except Exception as exc:\n"
-            "    print(json.dumps({'status_code': 0, 'error': f'{type(exc).__name__}: {exc}'}))\n"
-            "    sys.exit(2)\n"
-            "PY"
-        )
-        result = await self.sandbox_client.execute_command(
-            sandbox_id,
-            command,
-            timeout=max(30, int(self.sandbox_http_timeout_s)),
-        )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if result.exit_code != 0 and not stdout:
-            raise vf.SandboxError(
-                f"Sandbox HTTP request failed (exit {result.exit_code}) to {endpoint}: {stderr[-500:]}"
-            )
+    async def _create_sandbox(self) -> _NemoGymServer:
+        await self._ensure_http_session()
 
-        try:
-            parsed = json.loads(stdout)
-        except Exception as exc:
-            raise vf.SandboxError(
-                f"Sandbox HTTP request returned invalid JSON for {endpoint}: {stdout[-500:]}"
-            ) from exc
-
-        if not isinstance(parsed, dict):
-            raise vf.SandboxError(
-                f"Sandbox HTTP request returned invalid payload for {endpoint}"
-            )
-
-        status_code = int(parsed.get("status_code", 0) or 0)
-        if status_code == 0 and parsed.get("error"):
-            return 0, {"error": parsed["error"]}, {}
-        headers_obj = parsed.get("headers")
-        normalized_headers: dict[str, str] = {}
-        if isinstance(headers_obj, dict):
-            normalized_headers = {
-                str(k).lower(): _stringify(v) for k, v in headers_obj.items()
-            }
-        return status_code, parsed.get("body"), normalized_headers
-
-    async def _wait_for_server_ready(
-        self,
-        sandbox_id: str,
-    ) -> dict[str, Any]:
-        start = time.time()
-        last_error = ""
-        while time.time() - start < self.sandbox_server_start_timeout_s:
+        async with AsyncSandboxClient() as sandboxes:
+            sandbox: Any | None = None
+            exposure: Any | None = None
             try:
-                status_code, body, _headers = await self._sandbox_http_request(
-                    sandbox_id=sandbox_id,
-                    method="GET",
-                    endpoint="/openapi.json",
-                    payload=None,
+                sandbox = await sandboxes.create(self._build_sandbox_request())
+                print(
+                    f"[NemoGymEnv] Created sandbox {sandbox.id} for '{self.resource_server}'"
                 )
-                if status_code == 200 and isinstance(body, dict):
-                    return body
-                last_error = f"HTTP {status_code}: {_stringify(body)[:400]}"
+                await sandboxes.wait_for_creation(sandbox.id)
+
+                install_result = await sandboxes.execute_command(
+                    sandbox.id,
+                    self._install_command(),
+                    timeout=900,
+                )
+                if install_result.exit_code != 0:
+                    stderr = (install_result.stderr or "").strip()
+                    stdout = (install_result.stdout or "").strip()
+                    raise vf.SandboxError(
+                        "Failed to install NeMo Gym in sandbox. "
+                        f"stdout: {stdout[-500:]} stderr: {stderr[-500:]}"
+                    )
+
+                start_result = await sandboxes.execute_command(
+                    sandbox.id,
+                    self._start_server_command(),
+                    timeout=30,
+                )
+                if start_result.exit_code != 0:
+                    stderr = (start_result.stderr or "").strip()
+                    raise vf.SandboxError(
+                        f"Failed to launch NeMo Gym resource server: {stderr[-500:]}"
+                    )
+
+                exposure = await sandboxes.expose(
+                    sandbox.id,
+                    port=self.sandbox_port,
+                    name="nemo-gym",
+                    protocol="TCP",
+                )
+                base_url = self._exposure_to_base_url(exposure)
+
+                openapi = await self._wait_for_server_ready(base_url)
+                openapi_paths = set((openapi.get("paths") or {}).keys())
+
+                return _NemoGymServer(
+                    sandbox_id=sandbox.id,
+                    exposure_id=str(getattr(exposure, "exposure_id", "")),
+                    base_url=base_url,
+                    openapi_paths=openapi_paths,
+                )
             except Exception as exc:
-                last_error = str(exc)
-            await asyncio.sleep(2)
+                if sandbox is not None:
+                    logs = await self._server_log_tail(sandboxes, sandbox.id)
+                    if exposure is not None:
+                        try:
+                            await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
+                        except Exception:
+                            pass
+                    try:
+                        await sandboxes.delete(sandbox.id)
+                    except Exception:
+                        pass
+                else:
+                    logs = ""
 
-        logs = await self._server_log_tail(sandbox_id)
-        detail = f" Last error: {last_error}" if last_error else ""
-        if logs:
-            detail += f"\nServer log tail:\n{logs}"
-        raise vf.SandboxError(
-            "NeMo Gym resource server failed to become ready "
-            f"within {self.sandbox_server_start_timeout_s}s.{detail}"
-        )
+                if isinstance(exc, vf.SandboxError):
+                    detail = str(exc)
+                else:
+                    detail = f"{type(exc).__name__}: {exc}"
+                if logs:
+                    detail = f"{detail}\nServer log tail:\n{logs}"
+                sandbox_id = sandbox.id if sandbox is not None else "N/A"
+                raise vf.SandboxError(
+                    f"Failed at sandbox startup for NeMo Gym resource server "
+                    f"'{self.resource_server}' (sandbox={sandbox_id}): {detail}"
+                ) from exc
 
-    async def _seed_session_if_supported(
-        self,
-        sandbox_id: str,
-        openapi: dict[str, Any],
-        seed_payload: dict[str, Any],
-    ) -> str | None:
-        paths = openapi.get("paths") if isinstance(openapi, dict) else None
-        if not isinstance(paths, dict):
-            return None
-        if "/seed_session" not in paths:
-            return None
+    def _get_server(self) -> _NemoGymServer:
+        if self._server is None:
+            raise RuntimeError("No server available — was setup_state() called?")
+        return self._server
 
-        status_code, body, headers = await self._sandbox_http_request(
-            sandbox_id=sandbox_id,
+    async def _seed_session(self, base_url: str, payload: dict[str, Any]) -> str | None:
+        status, body, headers = await self._request(
+            base_url=base_url,
             method="POST",
             endpoint="/seed_session",
-            payload=seed_payload or {},
+            payload=payload,
         )
-        if status_code >= 400 or status_code == 0:
+        if status >= 400:
             raise vf.SandboxError(
-                f"seed_session failed with status {status_code}: {_stringify(body)[:400]}"
+                f"seed_session failed with status {status}: {_stringify(body)[:400]}"
             )
-        set_cookie = headers.get("set-cookie")
+
+        set_cookie = headers.get("set-cookie") or headers.get("Set-Cookie")
         if isinstance(set_cookie, str):
-            cookie_value = set_cookie.split(";", 1)[0].strip()
-            if cookie_value:
-                return cookie_value
+            cookie = set_cookie.split(";", 1)[0].strip()
+            if cookie:
+                return cookie
         return None
 
-    async def setup_state(self, state: State, **kwargs: Any) -> State:
-        state = await super().setup_state(state, **kwargs)
-        sandbox_id = state["sandbox_id"]
+    async def setup_state(self, state: State) -> State:
+        state = await super().setup_state(state)
+        server = await self._ensure_server()
 
-        await self.sandbox_client.wait_for_creation(sandbox_id)
+        # dataset_row_json is a JSON string we set in _build_dataset — deserialize
+        # it here rather than using info dict fields directly, because HF Arrow
+        # serialization corrupts heterogeneous nested schemas.
+        dataset_row = json.loads(state["info"]["dataset_row_json"])
+        responses_create_params = dataset_row["responses_create_params"]
 
-        install_result = await self.sandbox_client.execute_command(
-            sandbox_id,
-            self._install_command(),
-            # Prime sandboxes currently cap command timeout at 900s.
-            timeout=900,
+        tool_defs_raw = _nemo_tools_to_tool_defs(
+            responses_create_params.get("tools", [])
         )
-        if install_result.exit_code != 0:
-            stderr = (install_result.stderr or "").strip()
-            stdout = (install_result.stdout or "").strip()
-            raise vf.SandboxError(
-                "Failed to install NeMo Gym inside sandbox. "
-                f"stdout: {stdout[-500:]} stderr: {stderr[-500:]}"
-            )
-
-        start_result = await self.sandbox_client.execute_command(
-            sandbox_id,
-            self._start_server_command(),
-            timeout=30,
-        )
-        if start_result.exit_code != 0:
-            stderr = (start_result.stderr or "").strip()
-            raise vf.SandboxError(
-                f"Failed to start NeMo Gym resource server: {stderr[-500:]}"
-            )
-
-        openapi = await self._wait_for_server_ready(sandbox_id)
-
-        seed_payload: dict[str, Any] = {}
-        info = state.get("info", {})
-        if isinstance(info, dict):
-            row = info.get("dataset_row")
-            if isinstance(row, dict):
-                seed_payload = {
-                    k: v for k, v in row.items() if k != "responses_create_params"
-                }
-
-        if self.seed_session_on_start:
-            state["nemo_cookie"] = await self._seed_session_if_supported(
-                sandbox_id, openapi, seed_payload
-            )
-        else:
-            state["nemo_cookie"] = None
-
-        if isinstance(info, dict):
-            tool_defs_raw: Any = info.get("tool_defs", [])
-            tool_defs_json = info.get("tool_defs_json")
-            if isinstance(tool_defs_json, str):
-                try:
-                    parsed_tool_defs = json.loads(tool_defs_json)
-                    if isinstance(parsed_tool_defs, list):
-                        tool_defs_raw = parsed_tool_defs
-                except json.JSONDecodeError:
-                    pass
-            state["tool_defs"] = self._normalize_tool_defs(tool_defs_raw) or []
-
-        paths = openapi.get("paths") if isinstance(openapi, dict) else {}
-        if not isinstance(paths, dict):
-            paths = {}
-
-        state["nemo_base_url"] = f"http://127.0.0.1:{self.sandbox_port}"
+        state["tool_defs"] = self._normalize_tool_defs(tool_defs_raw) or []
+        state["nemo_dataset_row"] = dataset_row
         state["verify_response"] = None
-        state["nemo_server_meta"] = {
-            "resource_server": self.resource_server,
-            "server_profile": self.server_profile_name,
-            "base_url": state["nemo_base_url"],
-            "openapi_paths": sorted(paths.keys()),
-            "server_config_overrides": copy.deepcopy(self.server_config_overrides),
-            "extra_pip_packages": list(self.extra_pip_packages),
+
+        seed_payload = {
+            k: v for k, v in dataset_row.items() if k != "responses_create_params"
         }
+        cookie: str | None = None
+        if self.seed_session_on_start and "/seed_session" in server.openapi_paths:
+            cookie = await self._seed_session(server.base_url, seed_payload)
+        state["nemo_cookie"] = cookie
         return state
 
-    def update_tool_args(
+    async def env_response(
         self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        messages: vf.Messages,
+        messages: Messages,
         state: State,
         **kwargs: Any,
-    ) -> dict[str, Any]:
-        updated = dict(tool_args)
-        updated["_vf_nemo_state"] = state
-        return updated
+    ) -> Messages:
+        if not messages:
+            return []
 
-    async def call_tool(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        tool_call_id: str,
-        **kwargs: Any,
-    ) -> ToolMessage:
-        state = cast(State | None, tool_args.pop("_vf_nemo_state", None))
-        if state is None:
-            return ToolMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                content=_json_dumps(
-                    {"error": "Internal state missing for NeMo tool call"}
-                ),
-            )
+        last_message = messages[-1]
+        if (
+            not isinstance(last_message, AssistantMessage)
+            or not last_message.tool_calls
+        ):
+            return []
 
-        sandbox_id = state.get("sandbox_id")
-        if not isinstance(sandbox_id, str):
-            return ToolMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                content=_json_dumps({"error": "Sandbox ID unavailable"}),
-            )
+        server = self._get_server()
+        cookie = state.get("nemo_cookie")
 
-        endpoint = f"/{tool_name}"
-        try:
-            status_code, body, _headers = await self._sandbox_http_request(
-                sandbox_id=sandbox_id,
-                method="POST",
-                endpoint=endpoint,
-                payload=tool_args,
-                headers={"cookie": state["nemo_cookie"]}
-                if isinstance(state.get("nemo_cookie"), str)
-                else None,
-            )
-        except Exception as exc:
-            return ToolMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                content=_json_dumps(
-                    {
-                        "error": f"Tool request failed: {type(exc).__name__}: {exc}",
-                        "endpoint": endpoint,
-                    }
-                ),
-            )
+        tool_messages: list[ToolMessage] = []
+        for tool_call in last_message.tool_calls:
+            call_id = tool_call.id
+            tool_name = tool_call.name
+            endpoint = f"/{tool_name}"
 
-        if status_code >= 400 or status_code == 0:
-            content = _json_dumps(
-                {
-                    "error": "Tool endpoint returned non-success status",
-                    "endpoint": endpoint,
-                    "status_code": status_code,
-                    "body": body,
-                }
-            )
-        elif isinstance(body, str):
-            content = body
-        else:
-            content = _json_dumps(body)
-
-        return ToolMessage(role="tool", tool_call_id=tool_call_id, content=content)
-
-    def _get_dataset_row(self, state: State) -> dict[str, Any]:
-        info = state.get("info")
-        if not isinstance(info, dict):
-            raise ValueError("state.info is missing or invalid")
-
-        row_json = info.get("dataset_row_json")
-        if isinstance(row_json, str):
             try:
-                parsed = json.loads(row_json)
-            except json.JSONDecodeError as exc:
-                raise ValueError("state.info.dataset_row_json is invalid JSON") from exc
-            if isinstance(parsed, dict) and "responses_create_params" in parsed:
-                return parsed
+                parsed_args = json.loads(tool_call.arguments)
+            except Exception as exc:
+                tool_messages.append(
+                    ToolMessage(
+                        role="tool",
+                        tool_call_id=call_id,
+                        content=_json_dumps(
+                            {
+                                "error": "Invalid JSON tool arguments",
+                                "detail": f"{type(exc).__name__}: {exc}",
+                                "arguments": tool_call.arguments,
+                            }
+                        ),
+                    )
+                )
+                continue
 
-        row = info.get("dataset_row")
-        if not isinstance(row, dict):
-            raise ValueError("state.info.dataset_row is missing or invalid")
-        if "responses_create_params" not in row:
-            raise ValueError("dataset_row is missing responses_create_params")
-        return row
+            try:
+                status, body, _ = await self._request(
+                    base_url=server.base_url,
+                    method="POST",
+                    endpoint=endpoint,
+                    payload=parsed_args,
+                    cookie=cookie,
+                )
+            except Exception as exc:
+                tool_messages.append(
+                    ToolMessage(
+                        role="tool",
+                        tool_call_id=call_id,
+                        content=_json_dumps(
+                            {
+                                "error": "Tool request failed",
+                                "endpoint": endpoint,
+                                "detail": f"{type(exc).__name__}: {exc}",
+                            }
+                        ),
+                    )
+                )
+                continue
+
+            if status >= 400:
+                content = _json_dumps(
+                    {
+                        "error": "Tool endpoint returned non-success status",
+                        "endpoint": endpoint,
+                        "status_code": status,
+                        "body": body,
+                    }
+                )
+            elif isinstance(body, str):
+                content = body
+            else:
+                content = _json_dumps(body)
+
+            tool_messages.append(
+                ToolMessage(role="tool", tool_call_id=call_id, content=content)
+            )
+
+        return tool_messages
+
+    @vf.stop
+    async def no_tool_calls(self, state: State, **kwargs: Any) -> bool:
+        trajectory = state.get("trajectory")
+        if not trajectory:
+            return False
+        last_message = trajectory[-1]["completion"][-1]
+        return (
+            isinstance(last_message, AssistantMessage) and not last_message.tool_calls
+        )
+
+    @vf.cleanup
+    async def cleanup_nemo(self, state: State) -> None:
+        await self._verify(state)
 
     def _completion_for_verify(self, state: State) -> Messages:
         completion = state.get("completion")
@@ -1077,195 +872,86 @@ uvicorn.run(
         prompt_messages = normalize_messages(state["prompt"], field_name="state.prompt")
         return full_conversation[len(prompt_messages) :]
 
-    async def post_rollout(self, state: State):
-        dataset_row: dict[str, Any] | None = None
-        sandbox_id = state.get("sandbox_id")
-
+    async def _verify(self, state: State) -> None:
         try:
-            dataset_row = self._get_dataset_row(state)
-        except Exception as exc:
-            state["verify_response"] = {
-                "reward": 0.0,
-                "error": f"Dataset row error: {exc}",
+            dataset_row = state["nemo_dataset_row"]
+            responses_create_params = dataset_row["responses_create_params"]
+
+            completion = self._completion_for_verify(state)
+            nemo_response = _completion_to_nemo_response(
+                completion=completion,
+                model_name=str(state.get("model", "")),
+                trajectory_id=str(state.get("trajectory_id", "unknown")),
+                responses_create_params=responses_create_params,
+            )
+
+            verify_payload = {
+                "responses_create_params": responses_create_params,
+                "response": nemo_response,
+                **{
+                    k: v
+                    for k, v in dataset_row.items()
+                    if k != "responses_create_params"
+                },
             }
 
-        if isinstance(sandbox_id, str) and dataset_row is not None:
-            try:
-                responses_create_params = cast(
-                    dict[str, Any], dataset_row["responses_create_params"]
-                )
-                completion = self._completion_for_verify(state)
-                nemo_response = _completion_to_nemo_response(
-                    completion=completion,
-                    model_name=str(state.get("model", "")),
-                    trajectory_id=str(state.get("trajectory_id", "unknown")),
-                    responses_create_params=responses_create_params,
-                )
+            server = self._get_server()
+            cookie = state.get("nemo_cookie")
+            status, body, _ = await self._request(
+                base_url=server.base_url,
+                method="POST",
+                endpoint="/verify",
+                payload=verify_payload,
+                cookie=cookie,
+            )
 
-                verify_payload = {
-                    "responses_create_params": responses_create_params,
-                    "response": nemo_response,
-                    **{
-                        k: v
-                        for k, v in dataset_row.items()
-                        if k != "responses_create_params"
-                    },
-                }
-
-                status_code, body, _headers = await self._sandbox_http_request(
-                    sandbox_id=sandbox_id,
-                    method="POST",
-                    endpoint="/verify",
-                    payload=verify_payload,
-                    headers={"cookie": state["nemo_cookie"]}
-                    if isinstance(state.get("nemo_cookie"), str)
-                    else None,
-                )
-                if status_code >= 400 or status_code == 0:
-                    state["verify_response"] = {
-                        "reward": 0.0,
-                        "error": (
-                            "Verify endpoint returned non-success status "
-                            f"{status_code}: {_stringify(body)[:400]}"
-                        ),
-                    }
-                else:
-                    if not isinstance(body, dict):
-                        payload = {
-                            "reward": 0.0,
-                            "error": "Verify endpoint did not return JSON",
-                            "body": _stringify(body)[:400],
-                        }
-                    else:
-                        payload = body
-                    state["verify_response"] = payload
-            except Exception as exc:
+            if status >= 400:
                 state["verify_response"] = {
                     "reward": 0.0,
-                    "error": f"Verification request failed: {type(exc).__name__}: {exc}",
+                    "error": f"Verify endpoint returned status {status}: {_stringify(body)[:400]}",
                 }
+            else:
+                state["verify_response"] = body
 
-            # Optional close hook for envs that expose /close and pass env_id in row.
-            try:
-                server_meta = state.get("nemo_server_meta", {})
-                paths = (
-                    set(server_meta.get("openapi_paths", []))
-                    if isinstance(server_meta, dict)
-                    else set()
-                )
-                if (
-                    "/close" in paths
-                    and isinstance(dataset_row, dict)
-                    and dataset_row.get("env_id") is not None
-                ):
-                    await self._sandbox_http_request(
-                        sandbox_id=sandbox_id,
+            if (
+                "/close" in server.openapi_paths
+                and dataset_row.get("env_id") is not None
+            ):
+                try:
+                    await self._request(
+                        base_url=server.base_url,
                         method="POST",
                         endpoint="/close",
                         payload={"env_id": dataset_row["env_id"]},
-                        headers={"cookie": state["nemo_cookie"]}
-                        if isinstance(state.get("nemo_cookie"), str)
-                        else None,
+                        cookie=cookie,
                     )
+                except Exception:
+                    pass
+        except Exception as exc:
+            state["verify_response"] = {
+                "reward": 0.0,
+                "error": f"Verification failed: {type(exc).__name__}: {exc}",
+            }
+
+    async def _destroy_sandbox(self, server: _NemoGymServer) -> None:
+        if not server.sandbox_id:
+            return
+        async with AsyncSandboxClient() as sandboxes:
+            if server.exposure_id:
+                try:
+                    await sandboxes.unexpose(server.sandbox_id, server.exposure_id)
+                except Exception:
+                    pass
+            try:
+                await sandboxes.delete(server.sandbox_id)
             except Exception:
                 pass
 
-        if state.get("verify_response") is None:
-            state["verify_response"] = {
-                "reward": 0.0,
-                "error": "Verification was not executed",
-            }
-
-
-def load_environment(
-    resource_server: str = "math_with_code",
-    server_profile: str | None = None,
-    server_profile_overrides: dict[str, Any] | None = None,
-    extra_pip_packages: list[str] | None = None,
-    strict_profile_env: bool = True,
-    dataset_split: str = "example",
-    dataset_path: str | None = None,
-    dataset_limit: int | None = None,
-    sandbox_docker_image: str = "python:3.12",
-    sandbox_cpu_cores: int = 2,
-    sandbox_memory_gb: int = 4,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_port: int = 8000,
-    sandbox_server_start_timeout_s: int = 120,
-    sandbox_http_timeout_s: int = 60,
-    nemo_package: str = "nemo-gym",
-    nemo_package_version: str | None = None,
-    sandbox_pip_index_url_env_var: str = "PIP_INDEX_URL",
-    sandbox_pip_extra_index_url_env_var: str = "PIP_EXTRA_INDEX_URL",
-    seed_session_on_start: bool = True,
-    max_turns: int = 16,
-    system_prompt: str | None = None,
-    **kwargs: Any,
-) -> vf.Environment:
-    if dataset_split not in _ALLOWED_DATASET_SPLITS:
-        raise ValueError(
-            f"dataset_split must be one of {sorted(_ALLOWED_DATASET_SPLITS)}, got '{dataset_split}'"
-        )
-
-    resolved_profile, server_config_overrides = _resolve_server_profile(
-        resource_server=resource_server,
-        server_profile=server_profile,
-        server_profile_overrides=server_profile_overrides,
-        extra_pip_packages=extra_pip_packages,
-        strict_profile_env=strict_profile_env,
-    )
-    resolved_resource_server = resolved_profile.resource_server
-
-    dataset, _resolved_dataset_path = _build_dataset(
-        resource_server=resolved_resource_server,
-        dataset_split=dataset_split,
-        dataset_path=dataset_path,
-        dataset_limit=dataset_limit,
-    )
-
-    rubric = vf.Rubric(funcs=[_reward_from_verify], weights=[1.0])
-    rubric.add_metric(_verify_error_metric, weight=0.0)
-
-    return NemoGymSandboxEnv(
-        resource_server=resolved_resource_server,
-        dataset=dataset,
-        rubric=rubric,
-        max_turns=max_turns,
-        sandbox_docker_image=sandbox_docker_image,
-        sandbox_cpu_cores=sandbox_cpu_cores,
-        sandbox_memory_gb=sandbox_memory_gb,
-        sandbox_timeout_minutes=sandbox_timeout_minutes,
-        sandbox_port=sandbox_port,
-        sandbox_server_start_timeout_s=sandbox_server_start_timeout_s,
-        sandbox_http_timeout_s=sandbox_http_timeout_s,
-        nemo_package=nemo_package,
-        nemo_package_version=nemo_package_version,
-        server_profile_name=resolved_profile.name,
-        server_config_overrides=server_config_overrides,
-        extra_pip_packages=resolved_profile.extra_pip_packages,
-        sandbox_pip_index_url_env_var=sandbox_pip_index_url_env_var,
-        sandbox_pip_extra_index_url_env_var=sandbox_pip_extra_index_url_env_var,
-        seed_session_on_start=seed_session_on_start,
-        system_prompt=system_prompt,
-        **kwargs,
-    )
-
-
-def load_math_with_judge_environment(**kwargs: Any) -> vf.Environment:
-    """Example specialized loader using the built-in math_with_judge profile."""
-
-    return load_environment(
-        resource_server="math_with_judge",
-        server_profile="math_with_judge",
-        **kwargs,
-    )
-
-
-def load_google_search_environment(**kwargs: Any) -> vf.Environment:
-    """Example specialized loader using the built-in google_search profile."""
-
-    return load_environment(
-        resource_server="google_search",
-        server_profile="google_search",
-        **kwargs,
-    )
+    @vf.teardown
+    async def teardown_server(self) -> None:
+        if self._server is not None:
+            await self._destroy_sandbox(self._server)
+            self._server = None
+        if self._http_session is not None and not self._http_session.closed:
+            await self._http_session.close()
+        self._http_session = None

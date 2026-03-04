@@ -6,7 +6,7 @@
 
 ### Overview
 - **Environment ID**: `nemo-workplace-assistant`
-- **Short description**: Tool-rich NeMo Gym `workplace_assistant` resource server adapter environment, executed in sandbox per rollout.
+- **Short description**: Tool-rich NeMo Gym `workplace_assistant` resource server adapter environment.
 - **Tags**: nemo-gym, tools, session-state, sandbox
 
 ### Why this example
@@ -41,17 +41,15 @@ Override sandbox NeMo package (if needed):
 
 ```bash
 uv run vf-eval nemo-workplace-assistant -m anthropic/claude-sonnet-4.5 -n 1 -r 1 \
-  --env-args '{"nemo_package":"https://test-files.pythonhosted.org/packages/c0/58/451a826009a0b206c932e1ebde3dcff2a8b31152c77133fdde7e5f7ccd90/nemo_gym-0.2.9892rc0-py3-none-any.whl"}'
+  --env-args '{"nemo_package":"nemo-gym","nemo_package_version":"0.2.9892rc0"}'
 ```
 
 ### Environment Arguments
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `dataset_split` | str | `"example"` | Dataset split (`example`, `train`, `validation`) |
-| `dataset_path` | str \| None | `None` | Optional explicit JSONL path override |
-| `dataset_limit` | int \| None | `None` | Optional row cap |
 | `max_turns` | int | `16` | Max turns per rollout |
-| `nemo_package` | str | TestPyPI wheel URL | Package/wheel installed inside sandbox |
+| `nemo_package` | str | `"nemo-gym"` | Package installed inside sandbox |
 | `nemo_package_version` | str \| None | `None` | Optional version pin when using package name |
 
 Any additional kwargs are forwarded to `verifiers.envs.integrations.nemo_gym_env.load_environment`.
@@ -60,6 +58,4 @@ Any additional kwargs are forwarded to `verifiers.envs.integrations.nemo_gym_env
 | Metric | Meaning |
 | ------ | ------- |
 | `reward` | scalar reward from NeMo `/verify` response |
-| `_verify_error_metric` | 1.0 if verify failed and adapter used fallback, else 0.0 |
-| `total_tool_calls` | number of executed tool calls |
 | `num_turns` | number of turns in rollout |
