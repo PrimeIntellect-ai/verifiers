@@ -101,6 +101,9 @@ rl = [
     "flash-attn>=2.8.3",
 ]
 
+[tool.uv]
+preview = true
+
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 
