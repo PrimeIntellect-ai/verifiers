@@ -600,30 +600,17 @@ class EvalDisplay(BaseDisplay):
         log_text.append(level, style=level_style)
         log_text.append(message, style="dim")
 
-    @staticmethod
-    def _wrap_log_line(line: str, width: int, indent: int = 4) -> list[str]:
-        """Wrap a log line, indenting continuation lines."""
-        if len(line) <= width:
-            return [line]
-        rows = [line[:width]]
-        rest = line[width:]
-        cont_width = width - indent
-        prefix = " " * indent
-        while rest:
-            rows.append(prefix + rest[:cont_width])
-            rest = rest[cont_width:]
-        return rows
-
     def _make_logs_panel(self, env_idx: int, max_lines: int = 20) -> Panel:
         """Create a logs panel for an environment (streamed from env worker log file).
 
-        Lines wrap with indented continuations. Up/down arrow keys scroll
-        through log history via self._log_scroll_offset (0 = pinned to bottom).
+        Up/down arrow keys scroll through log history via self._log_scroll_offset
+        (0 = pinned to bottom). Rich handles line wrapping naturally; the colored
+        log headers make entry boundaries clear without indentation.
         """
         logs_list = list(self._env_logs.get(env_idx, []))
         log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
 
-        # Get inner width for wrapping
+        # Get inner width for estimating wrapped line heights
         try:
             term_width = os.get_terminal_size(0).columns
         except OSError:
@@ -635,30 +622,25 @@ class EvalDisplay(BaseDisplay):
         self._log_scroll_offset = max(0, min(self._log_scroll_offset, len(logs_list)))
 
         # Work backwards from the end (minus scroll offset) to fill max_lines
-        # of rendered height, accounting for line wrapping
+        # of rendered rows, accounting for line wrapping
         end_idx = len(logs_list) - self._log_scroll_offset
-        visible_entries: list[list[str]] = []
+        visible: list[str] = []
         rendered_height = 0
         for i in range(end_idx - 1, -1, -1):
-            rows = self._wrap_log_line(logs_list[i], inner_width)
-            if rendered_height + len(rows) > max_lines:
+            line_height = max(1, -(-len(logs_list[i]) // inner_width))  # ceil div
+            if rendered_height + line_height > max_lines:
                 break
-            visible_entries.insert(0, rows)
-            rendered_height += len(rows)
+            visible.insert(0, logs_list[i])
+            rendered_height += line_height
 
-        # Build the text with no_wrap since we handle wrapping ourselves.
-        # First row of each entry gets styled header; continuation rows are dim.
-        log_text = Text(no_wrap=True, overflow="ellipsis")
+        # Build styled log text; Rich handles wrapping
+        log_text = Text()
         first = True
-        for rows in visible_entries:
-            for j, row in enumerate(rows):
-                if not first:
-                    log_text.append("\n")
-                if j == 0:
-                    self._append_styled_log_line(log_text, row)
-                else:
-                    log_text.append(row, style="dim")
-                first = False
+        for line in visible:
+            if not first:
+                log_text.append("\n")
+            self._append_styled_log_line(log_text, line)
+            first = False
 
         # Pad remaining space with empty lines
         remaining = max_lines - rendered_height
