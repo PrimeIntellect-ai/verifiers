@@ -7,6 +7,7 @@ Provides a visual progress display that works in two modes:
 """
 
 import asyncio
+import io
 import math
 import os
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -376,8 +377,17 @@ class EvalDisplay(BaseDisplay):
 
         return config.client_config.api_base_url
 
-    def _make_env_panel(self, env_idx: int, log_max_lines: int = 20) -> Panel:
-        """Create a full-width panel for a single environment with config and progress."""
+    def _make_env_panel(
+        self, env_idx: int, available_height: int | None = None
+    ) -> Panel:
+        """Create a full-width panel for a single environment with config and progress.
+
+        Args:
+            env_idx: Index of the environment to display.
+            available_height: Total lines available for this panel. If provided,
+                the log panel is sized to fill the remaining space. If None,
+                a default of 20 log lines is used.
+        """
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
 
@@ -494,8 +504,30 @@ class EvalDisplay(BaseDisplay):
         if len(self.configs) > 1:
             title.append(f" (env {env_idx + 1}/{len(self.configs)})", style="dim")
 
-        logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(Text(""))
+
+        # Compute log lines by measuring the actual rendered height of content.
+        # We render content_items to a temporary buffer to count lines because
+        # items like the metrics row can wrap to multiple terminal lines depending
+        # on width and number of metrics — so counting items != counting lines.
+        if available_height is not None:
+            try:
+                term_width = os.get_terminal_size(0).columns
+            except OSError:
+                term_width = shutil.get_terminal_size().columns
+            # Panel borders (2) + padding (2) reduce inner width by 4 chars each side
+            inner_width = max(20, term_width - 4)
+            buf = io.StringIO()
+            measure_console = Console(file=buf, width=inner_width, highlight=False)
+            measure_console.print(Group(*content_items))
+            rendered_lines = buf.getvalue().count("\n")
+            # Outer panel: 2 borders + 2 padding; logs panel: 2 borders
+            overhead = rendered_lines + 4 + 2
+            log_max_lines = max(3, available_height - overhead)
+        else:
+            log_max_lines = 20
+
+        logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(logs_panel)
 
         return Panel(
@@ -587,11 +619,10 @@ class EvalDisplay(BaseDisplay):
     def _make_env_stack(self) -> Group:
         """Create overview panel + single selected detail panel with adaptive sizing.
 
-        The overview is pinned at the top (capped at half terminal height).
-        Below it, exactly one env detail panel is shown, selected via arrow keys.
-
-        In screen mode (--tui), the display fills the terminal exactly.
-        In non-screen mode, the display renders inline with generous defaults.
+        The overview is pinned at the top (capped at half terminal height, scrolls
+        to keep the selected env visible). Below it, exactly one env detail panel
+        is shown, selected via left/right arrow keys. The log panel within the
+        detail panel fills the remaining terminal space.
         """
         if not self.configs:
             return Group()
@@ -662,15 +693,11 @@ class EvalDisplay(BaseDisplay):
         )
 
         # --- Detail panel: log area fills remaining terminal space ---
-        # Detail fixed overhead: 2 borders + 2 padding + 8 content lines
-        # + 2 logs panel borders = 14, plus 2 buffer for rendering overhead
         footer_height = 3
-        detail_fixed = 16
-        available = term_height - overview_height - footer_height - detail_fixed
-        log_max_lines = max(3, available)
+        available_for_detail = term_height - overview_height - footer_height
 
         detail_panel = self._make_env_panel(
-            self._selected_env_idx, log_max_lines=log_max_lines
+            self._selected_env_idx, available_height=available_for_detail
         )
 
         return Group(overview_panel, detail_panel)
