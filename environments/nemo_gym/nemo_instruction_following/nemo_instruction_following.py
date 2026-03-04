@@ -1,7 +1,7 @@
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.integrations.nemo_gym_env import (
+from verifiers.envs.integrations.nemo_gym import (
     NemoGymEnv,
     _build_dataset,
     _reward_from_verify,
@@ -13,14 +13,17 @@ def load_environment(
     **kwargs: Any,
 ) -> vf.Environment:
     dataset, _ = _build_dataset(
-        resource_server="structured_outputs", dataset_split=dataset_split
+        resource_server="instruction_following", dataset_split=dataset_split
     )
     rubric = vf.Rubric(funcs=[_reward_from_verify], weights=[1.0])
     return NemoGymEnv(
-        resource_server="structured_outputs",
+        resource_server="instruction_following",
         dataset=dataset,
         rubric=rubric,
         max_turns=1,
-        extra_pip_packages=["openapi-schema-validator==0.6.3"],
+        extra_pip_packages=[
+            "git+https://github.com/abukharin-nv/verifiable-instructions.git",
+            "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+        ],
         **kwargs,
     )

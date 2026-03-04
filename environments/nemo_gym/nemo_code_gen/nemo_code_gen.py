@@ -1,7 +1,7 @@
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.integrations.nemo_gym_env import (
+from verifiers.envs.integrations.nemo_gym import (
     NemoGymEnv,
     _build_dataset,
     _reward_from_verify,
