@@ -274,7 +274,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
                 state["agent_stderr"] = status.stderr
-                logger.debug(f"Agent completed with exit_code={status.exit_code}")
+                if status.exit_code == 0:
+                    logger.debug(
+                        f"Agent completed successfully (exit_code={status.exit_code})"
+                    )
+                else:
+                    logger.warning(
+                        f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
+                    )
                 return
             await asyncio.sleep(1)
 
