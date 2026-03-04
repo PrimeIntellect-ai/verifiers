@@ -89,6 +89,7 @@ class OpenCodeMonitorRubric(vf.Rubric):
         self.add_metric(self.total_tool_calls)
         self.add_metric(self.unique_tools_used)
         self.add_metric(self.has_tool_calls)
+        self.add_metric(self.agent_error)
         for tool_name in self.tool_names:
             self.add_metric(self._make_tool_count_metric(tool_name))
 
@@ -119,6 +120,10 @@ class OpenCodeMonitorRubric(vf.Rubric):
     async def has_tool_calls(self, completion: Messages) -> float:
         """Whether the completion has any tool calls (0 or 1)."""
         return float(bool(self._count_tool_calls(completion)))
+
+    async def agent_error(self, state: vf.State) -> float:
+        """Whether the agent errored (exit_code != 0)."""
+        return float(state.get("agent_exit_code") != 0)
 
     def _make_tool_count_metric(self, tool_name: str) -> Callable:
         """Create a metric function that counts calls to a specific tool."""
