@@ -663,9 +663,9 @@ class EvalDisplay(BaseDisplay):
 
         # --- Detail panel: log area fills remaining terminal space ---
         # Detail fixed overhead: 2 borders + 2 padding + 8 content lines
-        # + 2 logs panel borders = 14
+        # + 2 logs panel borders = 14, plus 2 buffer for rendering overhead
         footer_height = 3
-        detail_fixed = 14
+        detail_fixed = 16
         available = term_height - overview_height - footer_height - detail_fixed
         log_max_lines = max(3, available)
 
