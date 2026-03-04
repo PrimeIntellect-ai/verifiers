@@ -548,6 +548,58 @@ class EvalDisplay(BaseDisplay):
             expand=True,
         )
 
+    _LOG_LEVEL_STYLES: dict[str, str] = {
+        "DEBUG": "dim blue",
+        "INFO": "bold green",
+        "WARNING": "bold yellow",
+        "ERROR": "bold red",
+        "CRITICAL": "bold red reverse",
+    }
+
+    @staticmethod
+    def _parse_log_header(line: str) -> tuple[str, str, str, str] | None:
+        """Parse a log line into (timestamp, separator+source+separator, level, message).
+
+        Expected format: '2026-03-03 22:57:21 - source.name - LEVEL ...'
+        Returns None if the line doesn't match this format.
+        """
+        # Match: datetime (19 chars) + " - " + source + " - " + LEVEL + rest
+        if len(line) < 22 or line[19:22] != " - ":
+            return None
+        rest = line[22:]
+        # Find the second " - " separator
+        sep_idx = rest.find(" - ")
+        if sep_idx < 0:
+            return None
+        source = rest[:sep_idx]
+        after_source = rest[sep_idx + 3 :]
+        # Extract the level (first word)
+        space_idx = after_source.find(" ")
+        if space_idx < 0:
+            level = after_source
+            message = ""
+        else:
+            level = after_source[:space_idx]
+            message = after_source[space_idx:]
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            return None
+        return line[:19], source, level, message
+
+    def _append_styled_log_line(self, log_text: Text, line: str) -> None:
+        """Append a log line to a Text object with colored header parts."""
+        parsed = self._parse_log_header(line)
+        if parsed is None:
+            log_text.append(line, style="dim")
+            return
+        timestamp, source, level, message = parsed
+        level_style = self._LOG_LEVEL_STYLES.get(level, "dim")
+        log_text.append(timestamp, style="bold dim")
+        log_text.append(" - ", style="dim")
+        log_text.append(source, style="dim cyan")
+        log_text.append(" - ", style="dim")
+        log_text.append(level, style=level_style)
+        log_text.append(message, style="dim")
+
     @staticmethod
     def _wrap_log_line(line: str, width: int, indent: int = 4) -> list[str]:
         """Wrap a log line, indenting continuation lines."""
@@ -594,14 +646,18 @@ class EvalDisplay(BaseDisplay):
             visible_entries.insert(0, rows)
             rendered_height += len(rows)
 
-        # Build the text with no_wrap since we handle wrapping ourselves
+        # Build the text with no_wrap since we handle wrapping ourselves.
+        # First row of each entry gets styled header; continuation rows are dim.
         log_text = Text(no_wrap=True, overflow="ellipsis")
         first = True
         for rows in visible_entries:
-            for row in rows:
+            for j, row in enumerate(rows):
                 if not first:
                     log_text.append("\n")
-                log_text.append(row, style="dim")
+                if j == 0:
+                    self._append_styled_log_line(log_text, row)
+                else:
+                    log_text.append(row, style="dim")
                 first = False
 
         # Pad remaining space with empty lines
