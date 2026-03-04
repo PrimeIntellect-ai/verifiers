@@ -345,6 +345,13 @@ def main():
         help="Do not start env servers when evaluating environments",
     )
     parser.add_argument(
+        "--abbreviated-summary",
+        "-A",
+        default=False,
+        action="store_true",
+        help="Abbreviated summary: show settings and stats only, skip example prompts/completions",
+    )
+    parser.add_argument(
         "--heartbeat-url",
         type=str,
         default=None,
@@ -660,7 +667,13 @@ def main():
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:
-        asyncio.run(run_evaluations_tui(eval_run_config, tui_mode=args.tui))
+        asyncio.run(
+            run_evaluations_tui(
+                eval_run_config,
+                tui_mode=args.tui,
+                compact=args.abbreviated_summary,
+            )
+        )
 
 
 if __name__ == "__main__":
