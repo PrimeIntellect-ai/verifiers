@@ -422,7 +422,9 @@ class EvalDisplay(BaseDisplay):
         config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
 
-        if config.sampling_args and any(config.sampling_args.values()):
+        if config.sampling_args and any(
+            v is not None for v in config.sampling_args.values()
+        ):
             config_line.append("  |  ", style="dim")
             config_line.append("custom sampling ", style="white")
             config_line.append("(", style="dim")
@@ -1013,7 +1015,9 @@ class EvalDisplay(BaseDisplay):
 
         display_max = self._display_max_concurrent(config, env_state.total)
         text.append(fmt_concurrency(display_max), style="bold")
-        if config.sampling_args and any(config.sampling_args.values()):
+        if config.sampling_args and any(
+            v is not None for v in config.sampling_args.values()
+        ):
             text.append("\n")
             text.append("sampling: ", style="dim")
             parts = [
