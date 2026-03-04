@@ -108,7 +108,7 @@ class UltimatumTask(TaskSet):
                     f"You have ${TOTAL_AMOUNT} to split with another player. "
                     "You must propose how much to give them. "
                     "If they reject your offer, you BOTH get nothing.\n\n"
-                    "Keep as much as you can. Only offer the minimum needed to close the deal.\n\n"
+                    "Make a fair offer so they accept.\n\n"
                     "Output ONLY a single number (0-10) representing how much you offer the other player."
                 )},
                 {"role": "user", "content": f"/no_think You have ${TOTAL_AMOUNT}. How much do you offer the other player?"},
@@ -119,8 +119,7 @@ class UltimatumTask(TaskSet):
                 {"role": "system", "content": (
                     f"Someone is splitting ${TOTAL_AMOUNT} with you. "
                     f"They are offering you ${offer} (they keep ${TOTAL_AMOUNT - offer}).\n\n"
-                    "Don't accept anything less than a fair deal. "
-                    "Reject lowball offers to teach them a lesson.\n\n"
+                    "Accept any offer — getting something is better than nothing.\n\n"
                     "Output ONLY 'Accept' or 'Reject'."
                 )},
                 {"role": "user", "content": f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"},
@@ -172,14 +171,16 @@ class UltimatumTask(TaskSet):
 # Environment Loader
 # =============================================================================
 
-def load_environment(num_examples: int = -1):
+def load_environment(num_examples: int = -1, actor_models: dict[str, str] | None = None):
     task = UltimatumTask(num_examples=num_examples)
+
+    actor_models = actor_models or {}
 
     proposer = Agent(
         id="proposer",
         max_tokens=32,
         is_trainable=True,
-        model=proposer_model,
+        model=actor_models.get("proposer", proposer_model),
         client=proposer_client,
     )
 
@@ -187,7 +188,7 @@ def load_environment(num_examples: int = -1):
         id="responder",
         max_tokens=32,
         is_trainable=True,
-        model=responder_model,
+        model=actor_models.get("responder", responder_model),
         client=responder_client,
     )
 
