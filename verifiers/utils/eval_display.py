@@ -733,13 +733,7 @@ class EvalDisplay(BaseDisplay):
 
     async def wait_for_exit(self) -> None:
         """Stop key listener before wait_for_exit so they don't compete for stdin."""
-        if self._key_listener_task is not None:
-            self._key_listener_task.cancel()
-            try:
-                await self._key_listener_task
-            except asyncio.CancelledError:
-                pass
-            self._key_listener_task = None
+        self._stop_key_listener()
         await super().wait_for_exit()
 
     async def __aenter__(self) -> "EvalDisplay":

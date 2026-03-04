@@ -151,7 +151,8 @@ class BaseDisplay:
         self._console_file: io.TextIOWrapper | None = None
         self._stdout_thread: _FDToLogger | None = None
         self._stderr_thread: _FDToLogger | None = None
-        self._key_listener_task: asyncio.Task | None = None
+        self._key_listener_thread: threading.Thread | None = None
+        self._key_listener_stop: threading.Event | None = None
 
     def _render(self) -> Any:
         """
@@ -344,16 +345,15 @@ class BaseDisplay:
             termios.tcsetattr(fd, termios.TCSADRAIN, self._old_terminal_settings)
             self._old_terminal_settings = None
 
-    async def _listen_for_keys(self) -> None:
-        """Background task that polls stdin for keypresses and dispatches to _on_key."""
-        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
-            return
+    def _key_listener_loop(self) -> None:
+        """Background thread that polls stdin for keypresses and dispatches to _on_key."""
         import select as select_module
 
         fd = sys.stdin.fileno()
-        while True:
-            await asyncio.sleep(0.05)  # 20Hz polling
-            if not select_module.select([fd], [], [], 0)[0]:
+        stop = self._key_listener_stop
+        while stop is not None and not stop.is_set():
+            # Use select with timeout so we can check the stop event
+            if not select_module.select([fd], [], [], 0.05)[0]:
                 continue
             char = os.read(fd, 1)
             if char == b"\x1b":
@@ -441,21 +441,34 @@ class BaseDisplay:
             # Restore terminal settings
             termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
+    def _start_key_listener(self) -> None:
+        """Start the key listener background thread."""
+        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
+            return
+        self._key_listener_stop = threading.Event()
+        self._key_listener_thread = threading.Thread(
+            target=self._key_listener_loop, daemon=True
+        )
+        self._key_listener_thread.start()
+
+    def _stop_key_listener(self) -> None:
+        """Stop the key listener background thread."""
+        if self._key_listener_stop is not None:
+            self._key_listener_stop.set()
+        if self._key_listener_thread is not None:
+            self._key_listener_thread.join(timeout=0.5)
+            self._key_listener_thread = None
+        self._key_listener_stop = None
+
     async def __aenter__(self) -> "BaseDisplay":
         """Async context manager entry - start the display."""
         self.start()
-        self._key_listener_task = asyncio.create_task(self._listen_for_keys())
+        self._start_key_listener()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit - stop the display."""
-        if self._key_listener_task is not None:
-            self._key_listener_task.cancel()
-            try:
-                await self._key_listener_task
-            except asyncio.CancelledError:
-                pass
-            self._key_listener_task = None
+        self._stop_key_listener()
         self.stop()
 
     def __enter__(self) -> "BaseDisplay":
