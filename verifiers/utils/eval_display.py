@@ -488,9 +488,11 @@ class EvalDisplay(BaseDisplay):
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # build title with env name only
+        # build title with env name (and index if multi-env)
         title = Text()
         title.append(config.env_id, style="bold cyan")
+        if len(self.configs) > 1:
+            title.append(f" (env {env_idx + 1}/{len(self.configs)})", style="dim")
 
         logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(Text(""))
@@ -526,14 +528,15 @@ class EvalDisplay(BaseDisplay):
             padding=(0, 1),
         )
 
-    def _make_compact_env_row(self, env_idx: int) -> Text:
+    def _make_compact_env_row(self, env_idx: int, selected: bool = False) -> Text:
         """Create a compact single-line summary for any env status."""
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
 
+        prefix = "\u25b6 " if selected else "  "
         line = Text()
         if env_state.status == "completed":
-            line.append(" \u2713 ", style="bold green")
+            line.append(f"{prefix}\u2713 ", style="bold green")
             line.append(config.env_id, style="green")
             line.append("  reward ", style="dim")
             line.append(format_numeric(env_state.reward), style="bold")
@@ -545,7 +548,7 @@ class EvalDisplay(BaseDisplay):
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
             line.append(f"  {time_str}", style="dim")
         elif env_state.status == "failed":
-            line.append(" \u2717 ", style="bold red")
+            line.append(f"{prefix}\u2717 ", style="bold red")
             line.append(config.env_id, style="red")
             if env_state.error:
                 line.append("  ", style="dim")
@@ -561,7 +564,7 @@ class EvalDisplay(BaseDisplay):
                 else 0
             )
             total_str = "..." if env_state.total <= 0 else str(env_state.total)
-            line.append(" \u25b8 ", style="bold yellow")
+            line.append(f"{prefix}\u25cf ", style="bold yellow")
             line.append(config.env_id, style="yellow")
             line.append(f"  {pct:.0f}%", style="bold")
             line.append(f" ({env_state.progress}/{total_str})", style="dim")
@@ -575,7 +578,7 @@ class EvalDisplay(BaseDisplay):
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
             line.append(f"  {time_str}", style="dim")
         else:
-            line.append(" \u25cb ", style="dim")
+            line.append(f"{prefix}\u25cb ", style="dim")
             line.append(config.env_id, style="dim")
             line.append("  pending", style="dim")
 
@@ -640,8 +643,9 @@ class EvalDisplay(BaseDisplay):
 
         overview_rows: list[Text] = []
         for idx in overview_indices:
-            row = self._make_compact_env_row(idx)
-            if idx == self._selected_env_idx:
+            is_selected = idx == self._selected_env_idx
+            row = self._make_compact_env_row(idx, selected=is_selected)
+            if is_selected:
                 row.stylize("bold")
             overview_rows.append(row)
         if hidden_count > 0:
