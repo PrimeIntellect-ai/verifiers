@@ -153,7 +153,6 @@ class BaseDisplay:
         self._stderr_thread: _FDToLogger | None = None
         self._key_listener_thread: threading.Thread | None = None
         self._key_listener_stop: threading.Event | None = None
-        self._key_listener_terminal_settings: list | None = None
 
     def _render(self) -> Any:
         """
@@ -255,16 +254,14 @@ class BaseDisplay:
         self._stdout_thread.start()
         self._stderr_thread.start()
 
-        # Disable terminal echo in screen mode to prevent scroll/arrow keys from displaying
-        if self.screen and HAS_TERMINAL_CONTROL and sys.stdin.isatty():
+        # Enable cbreak mode (disables echo + line buffering) for arrow key input
+        if HAS_TERMINAL_CONTROL and sys.stdin.isatty():
             import termios
+            import tty
 
             fd = sys.stdin.fileno()
             self._old_terminal_settings = termios.tcgetattr(fd)
-            new_settings = termios.tcgetattr(fd)
-            # Disable echo (ECHO flag in lflags)
-            new_settings[3] = new_settings[3] & ~termios.ECHO
-            termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+            tty.setcbreak(fd)
 
         # In non-TUI mode, clamp vertical overflow so oversized renders don't
         # scroll and smear repeated frames in-place.
@@ -445,19 +442,9 @@ class BaseDisplay:
             termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     def _start_key_listener(self) -> None:
-        """Start the key listener background thread and enable cbreak mode."""
+        """Start the key listener background thread."""
         if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
             return
-        # Enable cbreak mode (disables echo + line buffering) for arrow key input.
-        # Saved separately from _old_terminal_settings (used by start/stop for
-        # screen-mode echo disable) so they don't interfere.
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        self._key_listener_terminal_settings = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-
         self._key_listener_stop = threading.Event()
         self._key_listener_thread = threading.Thread(
             target=self._key_listener_loop, daemon=True
@@ -465,22 +452,13 @@ class BaseDisplay:
         self._key_listener_thread.start()
 
     def _stop_key_listener(self) -> None:
-        """Stop the key listener background thread and restore terminal mode."""
+        """Stop the key listener background thread."""
         if self._key_listener_stop is not None:
             self._key_listener_stop.set()
         if self._key_listener_thread is not None:
             self._key_listener_thread.join(timeout=0.5)
             self._key_listener_thread = None
         self._key_listener_stop = None
-        # Restore terminal settings that were changed by _start_key_listener
-        if self._key_listener_terminal_settings is not None:
-            import termios
-
-            fd = sys.stdin.fileno()
-            termios.tcsetattr(
-                fd, termios.TCSADRAIN, self._key_listener_terminal_settings
-            )
-            self._key_listener_terminal_settings = None
 
     async def __aenter__(self) -> "BaseDisplay":
         """Async context manager entry - start the display."""
