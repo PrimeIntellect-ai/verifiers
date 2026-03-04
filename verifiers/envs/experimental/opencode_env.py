@@ -58,12 +58,16 @@ These tools are also EXTREMELY helpful for planning tasks, and for breaking down
 It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
 """
 
+DEFAULT_OPENCODE_INSTALL_COMMAND = (
+    "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
+)
+
 DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE = """\
 set -e
 
 apt-get update && apt-get install -y curl
 
-curl -fsSL https://opencode.ai/install | bash
+{install_command}
 export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
@@ -142,6 +146,7 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_AGENT_WORKDIR = "/app"
     DEFAULT_ASSET_DIR = "/opencode"
     DEFAULT_DISABLED_TOOLS = ["webfetch", "question"]
+    DEFAULT_INSTALL_COMMAND = DEFAULT_OPENCODE_INSTALL_COMMAND
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_OPENCODE_SYSTEM_PROMPT
 
@@ -152,6 +157,7 @@ class OpenCodeEnv(CliAgentEnv):
         agent_workdir: str = DEFAULT_AGENT_WORKDIR,
         disabled_tools: list[str] | None = DEFAULT_DISABLED_TOOLS,
         system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
+        install_command: str = DEFAULT_INSTALL_COMMAND,
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
         **kwargs,
     ):
@@ -164,6 +170,7 @@ class OpenCodeEnv(CliAgentEnv):
             agent_workdir,
             disabled_tools=disabled_tools,
             system_prompt=system_prompt,
+            install_command=install_command,
         )
 
         super().__init__(
@@ -285,6 +292,7 @@ class OpenCodeEnv(CliAgentEnv):
         agent_workdir: str,
         disabled_tools: list[str] | None = None,
         system_prompt: str | None = None,
+        install_command: str = DEFAULT_OPENCODE_INSTALL_COMMAND,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
@@ -298,4 +306,5 @@ class OpenCodeEnv(CliAgentEnv):
             agent_workdir=agent_workdir,
             prompt_path=self.remote_prompt_path,
             logs_path=self.remote_logs_path,
+            install_command=install_command,
         )
