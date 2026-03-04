@@ -59,6 +59,7 @@ def run_cli(make_metadata, make_state, make_input):
             "max_retries": 0,
             "tui": False,
             "debug": False,
+            "abbreviated_summary": False,
             "heartbeat_url": None,
         }
         base_args.update(overrides)

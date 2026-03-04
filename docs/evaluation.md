@@ -158,6 +158,7 @@ When evaluating multiple environments, the display shows an overview panel at th
 | `--verbose` | `-v` | false | Enable debug logging |
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
+| `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |

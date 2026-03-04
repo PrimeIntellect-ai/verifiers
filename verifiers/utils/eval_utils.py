@@ -709,12 +709,15 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         )
 
 
-async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> None:
+async def run_evaluations_tui(
+    config: EvalRunConfig, tui_mode: bool = True, compact: bool = False
+) -> None:
     """Run multi-environment evaluation with a Rich display.
 
     Args:
         config: Evaluation run configuration.
         tui_mode: If True, use alternate screen (--tui flag). If False, refresh in-place.
+        compact: If True, show compact summary (settings + stats, skip example prompts).
     """
     from verifiers.utils.eval_display import EvalDisplay, is_tty
 
@@ -730,7 +733,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
         heart = Heartbeat(config.heartbeat_url)
 
-    display = EvalDisplay(config.evals, screen=tui_mode)
+    display = EvalDisplay(config.evals, screen=tui_mode, compact=compact)
 
     async def run_with_progress(
         env_config: EvalConfig, env_idx: int

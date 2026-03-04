@@ -156,9 +156,12 @@ class EvalDisplay(BaseDisplay):
                 If False (default), refresh in-place without screen hijacking.
     """
 
-    def __init__(self, configs: list[EvalConfig], screen: bool = False) -> None:
+    def __init__(
+        self, configs: list[EvalConfig], screen: bool = False, compact: bool = False
+    ) -> None:
         super().__init__(screen=screen, refresh_per_second=4)
         self.state = EvalDisplayState()
+        self.compact = compact
 
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
@@ -419,7 +422,9 @@ class EvalDisplay(BaseDisplay):
         config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
 
-        if config.sampling_args and any(config.sampling_args.values()):
+        if config.sampling_args and any(
+            v is not None for v in config.sampling_args.values()
+        ):
             config_line.append("  |  ", style="dim")
             config_line.append("custom sampling ", style="white")
             config_line.append("(", style="dim")
@@ -988,15 +993,65 @@ class EvalDisplay(BaseDisplay):
         self.console.print(table)
         self.console.print()
 
+    def _make_settings_panel(
+        self, config: EvalConfig, env_state: EnvEvalState
+    ) -> Panel:
+        """Create a panel showing key eval settings for this environment."""
+        text = Text()
+        text.append("model: ", style="dim")
+        text.append(config.model, style="bold")
+        text.append("\n")
+        text.append("endpoint: ", style="dim")
+        text.append(self._format_client_target(config))
+        text.append("\n")
+        text.append("examples: ", style="dim")
+        text.append(str(env_state.num_examples), style="bold")
+        text.append("  rollouts/example: ", style="dim")
+        text.append(str(config.rollouts_per_example), style="bold")
+        text.append("  concurrent: ", style="dim")
+
+        def fmt_concurrency(val: int) -> str:
+            return "\u221e" if val == -1 else str(val)
+
+        display_max = self._display_max_concurrent(config, env_state.total)
+        text.append(fmt_concurrency(display_max), style="bold")
+        if config.sampling_args and any(
+            v is not None for v in config.sampling_args.values()
+        ):
+            text.append("\n")
+            text.append("sampling: ", style="dim")
+            parts = [
+                f"{k}={v}" for k, v in config.sampling_args.items() if v is not None
+            ]
+            text.append(", ".join(parts))
+        if config.env_args:
+            text.append("\n")
+            text.append("env args: ", style="dim")
+            parts = [f"{k}={v}" for k, v in config.env_args.items()]
+            text.append(", ".join(parts))
+        return Panel(
+            text,
+            title="[dim]settings[/dim]",
+            border_style="dim",
+        )
+
     def _make_env_detail(
         self, config: EvalConfig, env_state: EnvEvalState, results: GenerateOutputs
     ) -> Group:
         """Create detailed content for a single environment's summary."""
         items: list[Panel] = []
 
-        # Example 0 prompt/completion (already in printable format from state_to_output)
+        # Settings panel (always shown)
+        items.append(self._make_settings_panel(config, env_state))
+
+        # Example 0 prompt/completion (skip in compact mode)
         outputs = results["outputs"]
-        if outputs and outputs[0]["prompt"] and outputs[0]["completion"]:
+        if (
+            not self.compact
+            and outputs
+            and outputs[0]["prompt"]
+            and outputs[0]["completion"]
+        ):
             prompt = outputs[0]["prompt"]
             completion = outputs[0]["completion"]
             reward_0 = outputs[0]["reward"] if outputs[0]["reward"] else 0.0
