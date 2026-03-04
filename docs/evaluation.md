@@ -147,6 +147,10 @@ By default, scoring runs interleaved with generation. Use `--no-interleave-scori
 
 The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
 
+### Display
+
+When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
+
 ### Output and Saving
 
 | Flag | Short | Default | Description |

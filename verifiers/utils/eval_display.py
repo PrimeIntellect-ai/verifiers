@@ -7,7 +7,10 @@ Provides a visual progress display that works in two modes:
 """
 
 import asyncio
+import io
 import math
+import os
+import shutil
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -15,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -160,6 +163,9 @@ class EvalDisplay(BaseDisplay):
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
 
+        self._selected_env_idx: int = 0
+        self._log_scroll_offset: int = 0  # 0 = pinned to bottom (latest)
+
         # per-environment log files and log buffers for streaming env worker logs
         self._env_log_files: dict[int, dict[Path, int]] = {}
         self._env_logs: dict[int, deque[str]] = {}
@@ -177,6 +183,24 @@ class EvalDisplay(BaseDisplay):
             self._env_log_files[idx] = {}
             self._env_logs[idx] = deque(maxlen=100)
             self._env_log_titles[idx] = Text("logs", style="dim")
+
+    def _on_key(self, key: str) -> None:
+        if not self.configs:
+            return
+        if key == "right":
+            self._selected_env_idx = (self._selected_env_idx + 1) % len(self.configs)
+            self._log_scroll_offset = 0  # reset scroll on env switch
+            self.refresh()
+        elif key == "left":
+            self._selected_env_idx = (self._selected_env_idx - 1) % len(self.configs)
+            self._log_scroll_offset = 0  # reset scroll on env switch
+            self.refresh()
+        elif key == "up":
+            self._log_scroll_offset += 3
+            self.refresh()
+        elif key == "down":
+            self._log_scroll_offset = max(0, self._log_scroll_offset - 3)
+            self.refresh()
 
     @staticmethod
     def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
@@ -362,8 +386,17 @@ class EvalDisplay(BaseDisplay):
 
         return config.client_config.api_base_url
 
-    def _make_env_panel(self, env_idx: int) -> Panel:
-        """Create a full-width panel for a single environment with config and progress."""
+    def _make_env_panel(
+        self, env_idx: int, available_height: int | None = None
+    ) -> Panel:
+        """Create a full-width panel for a single environment with config and progress.
+
+        Args:
+            env_idx: Index of the environment to display.
+            available_height: Total lines available for this panel. If provided,
+                the log panel is sized to fill the remaining space. If None,
+                a default of 20 log lines is used.
+        """
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
 
@@ -474,12 +507,36 @@ class EvalDisplay(BaseDisplay):
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # build title with env name only
+        # build title with env name (and index if multi-env)
         title = Text()
         title.append(config.env_id, style="bold cyan")
+        if len(self.configs) > 1:
+            title.append(f" (env {env_idx + 1}/{len(self.configs)})", style="dim")
 
-        logs_panel = self._make_logs_panel(env_idx, max_lines=20)
         content_items.append(Text(""))
+
+        # Compute log lines by measuring the actual rendered height of content.
+        # We render content_items to a temporary buffer to count lines because
+        # items like the metrics row can wrap to multiple terminal lines depending
+        # on width and number of metrics — so counting items != counting lines.
+        if available_height is not None:
+            try:
+                term_width = os.get_terminal_size(0).columns
+            except OSError:
+                term_width = shutil.get_terminal_size().columns
+            # Panel borders (2) + padding (2) reduce inner width by 4 chars each side
+            inner_width = max(20, term_width - 4)
+            buf = io.StringIO()
+            measure_console = Console(file=buf, width=inner_width, highlight=False)
+            measure_console.print(Group(*content_items))
+            rendered_lines = buf.getvalue().count("\n")
+            # Outer panel: 2 borders + 2 padding; logs panel: 2 borders
+            overhead = rendered_lines + 4 + 2
+            log_max_lines = max(3, available_height - overhead)
+        else:
+            log_max_lines = 20
+
+        logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(logs_panel)
 
         return Panel(
@@ -491,19 +548,134 @@ class EvalDisplay(BaseDisplay):
             expand=True,
         )
 
+    _LOG_LEVEL_STYLES: dict[str, str] = {
+        "DEBUG": "dim blue",
+        "INFO": "bold green",
+        "WARNING": "bold yellow",
+        "ERROR": "bold red",
+        "CRITICAL": "bold red reverse",
+    }
+
+    @staticmethod
+    def _parse_log_header(line: str) -> tuple[str, str, str, str] | None:
+        """Parse a log line into (timestamp, separator+source+separator, level, message).
+
+        Expected format: '2026-03-03 22:57:21 - source.name - LEVEL ...'
+        Returns None if the line doesn't match this format.
+        """
+        # Match: datetime (19 chars) + " - " + source + " - " + LEVEL + rest
+        if len(line) < 22 or line[19:22] != " - ":
+            return None
+        rest = line[22:]
+        # Find the second " - " separator
+        sep_idx = rest.find(" - ")
+        if sep_idx < 0:
+            return None
+        source = rest[:sep_idx]
+        after_source = rest[sep_idx + 3 :]
+        # Extract the level (first word)
+        space_idx = after_source.find(" ")
+        if space_idx < 0:
+            level = after_source
+            message = ""
+        else:
+            level = after_source[:space_idx]
+            message = after_source[space_idx:]
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            return None
+        return line[:19], source, level, message
+
+    def _append_styled_log_line(self, log_text: Text, line: str) -> None:
+        """Append a log line to a Text object with colored header parts."""
+        parsed = self._parse_log_header(line)
+        if parsed is None:
+            log_text.append(line, style="dim")
+            return
+        timestamp, source, level, message = parsed
+        level_style = self._LOG_LEVEL_STYLES.get(level, "dim")
+        log_text.append(timestamp, style="bold dim")
+        log_text.append(" - ", style="dim")
+        log_text.append(source, style="dim cyan")
+        log_text.append(" - ", style="dim")
+        log_text.append(level, style=level_style)
+        log_text.append(message, style="dim")
+
+    @staticmethod
+    def _wrap_log_line(line: str, width: int, indent: int = 4) -> list[str]:
+        """Wrap a log line, indenting continuation lines."""
+        if len(line) <= width:
+            return [line]
+        rows = [line[:width]]
+        rest = line[width:]
+        cont_width = width - indent
+        prefix = " " * indent
+        while rest:
+            rows.append(prefix + rest[:cont_width])
+            rest = rest[cont_width:]
+        return rows
+
     def _make_logs_panel(self, env_idx: int, max_lines: int = 20) -> Panel:
-        """Create a logs panel for an environment (streamed from env worker log file)."""
+        """Create a logs panel for an environment (streamed from env worker log file).
+
+        Lines wrap with indented continuations. Up/down arrow keys scroll
+        through log history via self._log_scroll_offset (0 = pinned to bottom).
+        """
         logs_list = list(self._env_logs.get(env_idx, []))
         log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
+
+        # Get inner width for wrapping
+        try:
+            term_width = os.get_terminal_size(0).columns
+        except OSError:
+            term_width = shutil.get_terminal_size().columns
+        # Panel border (2) + panel padding (2) + outer panel border (2) + outer padding (2)
+        inner_width = max(20, term_width - 8)
+
+        # Clamp scroll offset
+        self._log_scroll_offset = max(0, min(self._log_scroll_offset, len(logs_list)))
+
+        # Work backwards from the end (minus scroll offset) to fill max_lines
+        # of rendered height, accounting for line wrapping
+        end_idx = len(logs_list) - self._log_scroll_offset
+        visible_entries: list[list[str]] = []
+        rendered_height = 0
+        for i in range(end_idx - 1, -1, -1):
+            rows = self._wrap_log_line(logs_list[i], inner_width)
+            if rendered_height + len(rows) > max_lines:
+                break
+            visible_entries.insert(0, rows)
+            rendered_height += len(rows)
+
+        # Build the text with no_wrap since we handle wrapping ourselves.
+        # First row of each entry gets styled header; continuation rows are dim.
         log_text = Text(no_wrap=True, overflow="ellipsis")
-        recent = logs_list[-max_lines:] if len(logs_list) > max_lines else logs_list
-        for i in range(max_lines):
-            if i > 0:
-                log_text.append("\n")
-            if i < len(recent):
-                log_text.append(recent[i], style="dim")
-            else:
+        first = True
+        for rows in visible_entries:
+            for j, row in enumerate(rows):
+                if not first:
+                    log_text.append("\n")
+                if j == 0:
+                    self._append_styled_log_line(log_text, row)
+                else:
+                    log_text.append(row, style="dim")
+                first = False
+
+        # Pad remaining space with empty lines
+        remaining = max_lines - rendered_height
+        for j in range(remaining):
+            if first and j == 0:
                 log_text.append(" ", style="dim")
+            else:
+                log_text.append("\n ")
+            first = False
+
+        # Show scroll indicator in title
+        if self._log_scroll_offset > 0:
+            scroll_title = Text()
+            scroll_title.append_text(log_title)
+            scroll_title.append(f" (+{self._log_scroll_offset} scrolled)", style="dim")
+            log_title = scroll_title
+
         return Panel(
             log_text,
             title=log_title,
@@ -512,14 +684,15 @@ class EvalDisplay(BaseDisplay):
             padding=(0, 1),
         )
 
-    def _make_compact_env_row(self, env_idx: int) -> Text:
+    def _make_compact_env_row(self, env_idx: int, selected: bool = False) -> Text:
         """Create a compact single-line summary for any env status."""
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
 
+        prefix = "\u25b6 " if selected else "  "
         line = Text()
         if env_state.status == "completed":
-            line.append(" \u2713 ", style="bold green")
+            line.append(f"{prefix}\u2713 ", style="bold green")
             line.append(config.env_id, style="green")
             line.append("  reward ", style="dim")
             line.append(format_numeric(env_state.reward), style="bold")
@@ -531,7 +704,7 @@ class EvalDisplay(BaseDisplay):
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
             line.append(f"  {time_str}", style="dim")
         elif env_state.status == "failed":
-            line.append(" \u2717 ", style="bold red")
+            line.append(f"{prefix}\u2717 ", style="bold red")
             line.append(config.env_id, style="red")
             if env_state.error:
                 line.append("  ", style="dim")
@@ -547,7 +720,7 @@ class EvalDisplay(BaseDisplay):
                 else 0
             )
             total_str = "..." if env_state.total <= 0 else str(env_state.total)
-            line.append(" \u25b8 ", style="bold yellow")
+            line.append(f"{prefix}\u25cf ", style="bold yellow")
             line.append(config.env_id, style="yellow")
             line.append(f"  {pct:.0f}%", style="bold")
             line.append(f" ({env_state.progress}/{total_str})", style="dim")
@@ -561,88 +734,149 @@ class EvalDisplay(BaseDisplay):
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
             line.append(f"  {time_str}", style="dim")
         else:
-            line.append(" \u25cb ", style="dim")
+            line.append(f"{prefix}\u25cb ", style="dim")
             line.append(config.env_id, style="dim")
             line.append("  pending", style="dim")
 
         return line
 
     def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels.
+        """Create overview panel + single selected detail panel with adaptive sizing.
 
-        A persistent overview panel at the top shows every env's status on one line.
-        Below it, only running envs get full detail panels with progress bars,
-        metrics, and logs. This prevents overflow when many environments are evaluated.
+        The overview is pinned at the top (capped at half terminal height, scrolls
+        to keep the selected env visible). Below it, exactly one env detail panel
+        is shown, selected via left/right arrow keys. The log panel within the
+        detail panel fills the remaining terminal space.
         """
         if not self.configs:
             return Group()
 
-        # Overview panel: one compact line per env, always visible
-        overview_rows = [
-            self._make_compact_env_row(idx) for idx in range(len(self.configs))
-        ]
+        # Use stdin (fd 0) to query terminal size since stdout/stderr are redirected
+        # to pipes by BaseDisplay.start(), which makes shutil.get_terminal_size()
+        # fall back to a default of 24 lines.
+        try:
+            term_height = os.get_terminal_size(0).lines
+        except OSError:
+            term_height = shutil.get_terminal_size().lines
+
+        # Cap overview at half the terminal height
+        max_overview_content = max(1, term_height // 2 - 2)
+
+        n = len(self.configs)
+        if n <= max_overview_content:
+            # All envs fit — no truncation
+            start, end = 0, n
+        else:
+            sel = self._selected_env_idx
+            # Near the top: show from start, bottom indicator only
+            if sel < max_overview_content - 1:
+                start = 0
+                end = max_overview_content - 1  # -1 for "more" indicator
+            # Near the bottom: show end, top indicator only
+            elif sel >= n - (max_overview_content - 1):
+                end = n
+                start = n - (max_overview_content - 1)  # -1 for "above" indicator
+            # Middle: both indicators
+            else:
+                visible = max(1, max_overview_content - 2)  # -2 for both indicators
+                half = visible // 2
+                start = sel - half
+                end = start + visible
+
+        above_count = start
+        below_count = n - end
+
+        overview_rows: list[Text] = []
+        if above_count > 0:
+            overview_rows.append(Text(f"  ... {above_count} above", style="dim"))
+        for idx in range(start, end):
+            is_selected = idx == self._selected_env_idx
+            row = self._make_compact_env_row(idx, selected=is_selected)
+            if is_selected:
+                row.stylize("bold")
+            overview_rows.append(row)
+        if below_count > 0:
+            overview_rows.append(Text(f"  ... and {below_count} more", style="dim"))
+
+        overview_content_lines = len(overview_rows)
+        overview_height = overview_content_lines + 2  # +2 for panel borders
 
         n_total = len(self.configs)
         n_completed = sum(
             1 for s in self.state.envs.values() if s.status in ("completed", "failed")
         )
-        title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
+        overview_title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
 
-        items: list[Panel | Group] = [
-            Panel(
-                Group(*overview_rows),
-                title=title,
-                title_align="left",
-                border_style="dim",
-                padding=(0, 1),
-                expand=True,
-            )
-        ]
+        overview_panel = Panel(
+            Group(*overview_rows),
+            title=overview_title,
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+            expand=True,
+        )
 
-        # Full detail panels for running envs only
-        for idx in range(len(self.configs)):
-            if self.state.envs[idx].status == "running":
-                items.append(self._make_env_panel(idx))
+        # --- Detail panel: log area fills remaining terminal space ---
+        footer_height = 3
+        available_for_detail = term_height - overview_height - footer_height
 
-        return Group(*items)
+        detail_panel = self._make_env_panel(
+            self._selected_env_idx, available_height=available_for_detail
+        )
+
+        return Group(overview_panel, detail_panel)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
+        nav_hint = ""
+        if len(self.configs) > 1:
+            nav_hint = "\u25c4 \u25ba switch envs  \u25b2 \u25bc scroll logs"
+
         if self.state.all_completed:
             if self.screen:
-                # TUI mode - show exit instructions
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Press ", style="dim")
                 footer_text.append("q", style="bold cyan")
                 footer_text.append(" or ", style="dim")
                 footer_text.append("Enter", style="bold cyan")
                 footer_text.append(" to exit", style="dim")
             else:
-                # Normal mode - no exit prompt needed
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Evaluation complete", style="dim")
             return Panel(footer_text, border_style="dim")
         else:
             if self.screen:
-                # TUI mode - show interrupt instructions
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Press ", style="dim")
                 footer_text.append("Ctrl+C", style="bold yellow")
                 footer_text.append(" to interrupt", style="dim")
             else:
-                # Normal mode - show running status
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Running...", style="dim")
             return Panel(footer_text, border_style="dim")
 
     def _render(self) -> Group:
         """Create the full display."""
         items: list[Group | Panel] = [self._make_env_stack()]
-
-        if self.screen:
-            items.append(self._make_footer())
-
+        items.append(self._make_footer())
         return Group(*items)
+
+    async def wait_for_exit(self) -> None:
+        """Stop key listener before wait_for_exit so they don't compete for stdin."""
+        self._stop_key_listener()
+        await super().wait_for_exit()
 
     async def __aenter__(self) -> "EvalDisplay":
         await super().__aenter__()
