@@ -108,7 +108,7 @@ class UltimatumTask(TaskSet):
                     f"You have ${TOTAL_AMOUNT} to split with another player. "
                     "You must propose how much to give them. "
                     "If they reject your offer, you BOTH get nothing.\n\n"
-                    "Make sure a deal gets done — don't be afraid to offer a fair amount.\n\n"
+                    "Keep as much as you can. Only offer the minimum needed to close the deal.\n\n"
                     "Output ONLY a single number (0-10) representing how much you offer the other player."
                 )},
                 {"role": "user", "content": f"/no_think You have ${TOTAL_AMOUNT}. How much do you offer the other player?"},
@@ -119,8 +119,8 @@ class UltimatumTask(TaskSet):
                 {"role": "system", "content": (
                     f"Someone is splitting ${TOTAL_AMOUNT} with you. "
                     f"They are offering you ${offer} (they keep ${TOTAL_AMOUNT - offer}).\n\n"
-                    "If you reject, you BOTH get nothing. "
-                    "See how much you can get — but remember, nothing is worse than something.\n\n"
+                    "Don't accept anything less than a fair deal. "
+                    "Reject lowball offers to teach them a lesson.\n\n"
                     "Output ONLY 'Accept' or 'Reject'."
                 )},
                 {"role": "user", "content": f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"},
