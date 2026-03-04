@@ -356,6 +356,8 @@ class BaseDisplay:
             if not select_module.select([fd], [], [], 0.05)[0]:
                 continue
             char = os.read(fd, 1)
+            if not char:  # EOF (e.g. SSH disconnect)
+                break
             if char == b"\x1b":
                 # Parse escape sequences for arrow keys
                 if select_module.select([fd], [], [], 0.05)[0]:
