@@ -512,15 +512,99 @@ class EvalDisplay(BaseDisplay):
             padding=(0, 1),
         )
 
+    def _make_compact_env_row(self, env_idx: int) -> Text:
+        """Create a compact single-line summary for any env status."""
+        config = self.configs[env_idx]
+        env_state = self.state.envs[env_idx]
+
+        line = Text()
+        if env_state.status == "completed":
+            line.append(" \u2713 ", style="bold green")
+            line.append(config.env_id, style="green")
+            line.append("  reward ", style="dim")
+            line.append(format_numeric(env_state.reward), style="bold")
+            color = self._get_error_rate_color(env_state.error_rate)
+            line.append("  error rate ", style="dim")
+            line.append(f"{env_state.error_rate:.3f}", style=f"bold {color}")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        elif env_state.status == "failed":
+            line.append(" \u2717 ", style="bold red")
+            line.append(config.env_id, style="red")
+            if env_state.error:
+                line.append("  ", style="dim")
+                line.append(env_state.error[:80], style="red")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        elif env_state.status == "running":
+            pct = (
+                (env_state.progress / env_state.total * 100)
+                if env_state.total > 0
+                else 0
+            )
+            total_str = "..." if env_state.total <= 0 else str(env_state.total)
+            line.append(" \u25b8 ", style="bold yellow")
+            line.append(config.env_id, style="yellow")
+            line.append(f"  {pct:.0f}%", style="bold")
+            line.append(f" ({env_state.progress}/{total_str})", style="dim")
+            line.append("  reward ", style="dim")
+            line.append(format_numeric(env_state.reward), style="bold")
+            color = self._get_error_rate_color(env_state.error_rate)
+            line.append("  error rate ", style="dim")
+            line.append(f"{env_state.error_rate:.3f}", style=f"bold {color}")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        else:
+            line.append(" \u25cb ", style="dim")
+            line.append(config.env_id, style="dim")
+            line.append("  pending", style="dim")
+
+        return line
+
     def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels."""
+        """Create a vertical stack of environment panels.
+
+        A persistent overview panel at the top shows every env's status on one line.
+        Below it, only running envs get full detail panels with progress bars,
+        metrics, and logs. This prevents overflow when many environments are evaluated.
+        """
         if not self.configs:
             return Group()
 
-        # create panels for each environment by index
-        panels = [self._make_env_panel(idx) for idx in range(len(self.configs))]
+        # Overview panel: one compact line per env, always visible
+        overview_rows = [
+            self._make_compact_env_row(idx) for idx in range(len(self.configs))
+        ]
 
-        return Group(*panels)
+        n_total = len(self.configs)
+        n_completed = sum(
+            1 for s in self.state.envs.values() if s.status in ("completed", "failed")
+        )
+        title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
+
+        items: list[Panel | Group] = [
+            Panel(
+                Group(*overview_rows),
+                title=title,
+                title_align="left",
+                border_style="dim",
+                padding=(0, 1),
+                expand=True,
+            )
+        ]
+
+        # Full detail panels for running envs only
+        for idx in range(len(self.configs)):
+            if self.state.envs[idx].status == "running":
+                items.append(self._make_env_panel(idx))
+
+        return Group(*items)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
