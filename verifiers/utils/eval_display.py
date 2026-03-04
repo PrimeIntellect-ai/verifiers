@@ -8,6 +8,8 @@ Provides a visual progress display that works in two modes:
 
 import asyncio
 import math
+import os
+import shutil
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -160,6 +162,8 @@ class EvalDisplay(BaseDisplay):
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
 
+        self._selected_env_idx: int = 0
+
         # per-environment log files and log buffers for streaming env worker logs
         self._env_log_files: dict[int, dict[Path, int]] = {}
         self._env_logs: dict[int, deque[str]] = {}
@@ -177,6 +181,16 @@ class EvalDisplay(BaseDisplay):
             self._env_log_files[idx] = {}
             self._env_logs[idx] = deque(maxlen=100)
             self._env_log_titles[idx] = Text("logs", style="dim")
+
+    def _on_key(self, key: str) -> None:
+        if not self.configs:
+            return
+        if key == "right":
+            self._selected_env_idx = (self._selected_env_idx + 1) % len(self.configs)
+            self.refresh()
+        elif key == "left":
+            self._selected_env_idx = (self._selected_env_idx - 1) % len(self.configs)
+            self.refresh()
 
     @staticmethod
     def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
@@ -362,7 +376,7 @@ class EvalDisplay(BaseDisplay):
 
         return config.client_config.api_base_url
 
-    def _make_env_panel(self, env_idx: int) -> Panel:
+    def _make_env_panel(self, env_idx: int, log_max_lines: int = 20) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
@@ -478,7 +492,7 @@ class EvalDisplay(BaseDisplay):
         title = Text()
         title.append(config.env_id, style="bold cyan")
 
-        logs_panel = self._make_logs_panel(env_idx, max_lines=20)
+        logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(Text(""))
         content_items.append(logs_panel)
 
@@ -568,81 +582,165 @@ class EvalDisplay(BaseDisplay):
         return line
 
     def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels.
+        """Create overview panel + single selected detail panel with adaptive sizing.
 
-        A persistent overview panel at the top shows every env's status on one line.
-        Below it, only running envs get full detail panels with progress bars,
-        metrics, and logs. This prevents overflow when many environments are evaluated.
+        The overview is pinned at the top (capped at half terminal height).
+        Below it, exactly one env detail panel is shown, selected via arrow keys.
+
+        In screen mode (--tui), the display fills the terminal exactly.
+        In non-screen mode, the display renders inline with generous defaults.
         """
         if not self.configs:
             return Group()
 
-        # Overview panel: one compact line per env, always visible
-        overview_rows = [
-            self._make_compact_env_row(idx) for idx in range(len(self.configs))
-        ]
+        # Use stdin (fd 0) to query terminal size since stdout/stderr are redirected
+        # to pipes by BaseDisplay.start(), which makes shutil.get_terminal_size()
+        # fall back to a default of 24 lines.
+        try:
+            term_height = os.get_terminal_size(0).lines
+        except OSError:
+            term_height = shutil.get_terminal_size().lines
+
+        # Cap overview at half the terminal height
+        max_overview_content = max(1, term_height // 2 - 2)
+
+        if len(self.configs) <= max_overview_content:
+            overview_indices = list(range(len(self.configs)))
+            hidden_count = 0
+        else:
+            # Priority: failed > running > completed > pending
+            failed = [
+                i
+                for i in range(len(self.configs))
+                if self.state.envs[i].status == "failed"
+            ]
+            running = [
+                i
+                for i in range(len(self.configs))
+                if self.state.envs[i].status == "running"
+            ]
+            completed = [
+                i
+                for i in range(len(self.configs))
+                if self.state.envs[i].status == "completed"
+            ]
+            pending = [
+                i
+                for i in range(len(self.configs))
+                if self.state.envs[i].status == "pending"
+            ]
+            ordered = failed + running + completed + pending
+            # Reserve 1 row for "... and X more" line
+            visible_count = max(1, max_overview_content - 1)
+            overview_indices = ordered[:visible_count]
+            # Ensure selected env is always visible
+            if self._selected_env_idx not in overview_indices:
+                overview_indices[-1] = self._selected_env_idx
+            hidden_count = len(self.configs) - len(overview_indices)
+
+        overview_rows: list[Text] = []
+        for idx in overview_indices:
+            row = self._make_compact_env_row(idx)
+            if idx == self._selected_env_idx:
+                row.stylize("bold")
+            overview_rows.append(row)
+        if hidden_count > 0:
+            overview_rows.append(Text(f"  ... and {hidden_count} more", style="dim"))
+
+        overview_content_lines = len(overview_rows)
+        overview_height = overview_content_lines + 2  # +2 for panel borders
 
         n_total = len(self.configs)
         n_completed = sum(
             1 for s in self.state.envs.values() if s.status in ("completed", "failed")
         )
-        title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
+        overview_title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
 
-        items: list[Panel | Group] = [
-            Panel(
-                Group(*overview_rows),
-                title=title,
-                title_align="left",
-                border_style="dim",
-                padding=(0, 1),
-                expand=True,
-            )
-        ]
+        overview_panel = Panel(
+            Group(*overview_rows),
+            title=overview_title,
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+            expand=True,
+        )
 
-        # Full detail panels for running envs only
-        for idx in range(len(self.configs)):
-            if self.state.envs[idx].status == "running":
-                items.append(self._make_env_panel(idx))
+        # --- Detail panel for selected env ---
+        if self.screen:
+            # Screen mode: fill terminal exactly
+            # Detail fixed overhead: 2 borders + 2 padding + 8 content lines
+            # + 2 logs panel borders = 14
+            footer_height = 3
+            detail_fixed = 14
+            available = term_height - overview_height - footer_height - detail_fixed
+            log_max_lines = max(3, available)
+        else:
+            # Non-screen mode: generous fixed default
+            log_max_lines = 20
 
-        return Group(*items)
+        detail_panel = self._make_env_panel(
+            self._selected_env_idx, log_max_lines=log_max_lines
+        )
+
+        return Group(overview_panel, detail_panel)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
+        nav_hint = ""
+        if len(self.configs) > 1:
+            nav_hint = "\u25c4 \u25ba to switch envs"
+
         if self.state.all_completed:
             if self.screen:
-                # TUI mode - show exit instructions
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Press ", style="dim")
                 footer_text.append("q", style="bold cyan")
                 footer_text.append(" or ", style="dim")
                 footer_text.append("Enter", style="bold cyan")
                 footer_text.append(" to exit", style="dim")
             else:
-                # Normal mode - no exit prompt needed
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Evaluation complete", style="dim")
             return Panel(footer_text, border_style="dim")
         else:
             if self.screen:
-                # TUI mode - show interrupt instructions
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Press ", style="dim")
                 footer_text.append("Ctrl+C", style="bold yellow")
                 footer_text.append(" to interrupt", style="dim")
             else:
-                # Normal mode - show running status
                 footer_text = Text()
+                if nav_hint:
+                    footer_text.append(nav_hint, style="dim")
+                    footer_text.append("  |  ", style="dim")
                 footer_text.append("Running...", style="dim")
             return Panel(footer_text, border_style="dim")
 
     def _render(self) -> Group:
         """Create the full display."""
         items: list[Group | Panel] = [self._make_env_stack()]
-
-        if self.screen:
-            items.append(self._make_footer())
-
+        items.append(self._make_footer())
         return Group(*items)
+
+    async def wait_for_exit(self) -> None:
+        """Stop key listener before wait_for_exit so they don't compete for stdin."""
+        if self._key_listener_task is not None:
+            self._key_listener_task.cancel()
+            try:
+                await self._key_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._key_listener_task = None
+        await super().wait_for_exit()
 
     async def __aenter__(self) -> "EvalDisplay":
         await super().__aenter__()

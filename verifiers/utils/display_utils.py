@@ -151,6 +151,7 @@ class BaseDisplay:
         self._console_file: io.TextIOWrapper | None = None
         self._stdout_thread: _FDToLogger | None = None
         self._stderr_thread: _FDToLogger | None = None
+        self._key_listener_task: asyncio.Task | None = None
 
     def _render(self) -> Any:
         """
@@ -252,16 +253,14 @@ class BaseDisplay:
         self._stdout_thread.start()
         self._stderr_thread.start()
 
-        # Disable terminal echo in screen mode to prevent scroll/arrow keys from displaying
-        if self.screen and HAS_TERMINAL_CONTROL and sys.stdin.isatty():
+        # Enable cbreak mode (disables echo + line buffering) for arrow key input
+        if HAS_TERMINAL_CONTROL and sys.stdin.isatty():
             import termios
+            import tty
 
             fd = sys.stdin.fileno()
             self._old_terminal_settings = termios.tcgetattr(fd)
-            new_settings = termios.tcgetattr(fd)
-            # Disable echo (ECHO flag in lflags)
-            new_settings[3] = new_settings[3] & ~termios.ECHO
-            termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+            tty.setcbreak(fd)
 
         # In non-TUI mode, clamp vertical overflow so oversized renders don't
         # scroll and smear repeated frames in-place.
@@ -345,6 +344,43 @@ class BaseDisplay:
             termios.tcsetattr(fd, termios.TCSADRAIN, self._old_terminal_settings)
             self._old_terminal_settings = None
 
+    async def _listen_for_keys(self) -> None:
+        """Background task that polls stdin for keypresses and dispatches to _on_key."""
+        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
+            return
+        import select as select_module
+
+        fd = sys.stdin.fileno()
+        while True:
+            await asyncio.sleep(0.05)  # 20Hz polling
+            if not select_module.select([fd], [], [], 0)[0]:
+                continue
+            char = os.read(fd, 1)
+            if char == b"\x1b":
+                # Parse escape sequences for arrow keys
+                if select_module.select([fd], [], [], 0.05)[0]:
+                    next_char = os.read(fd, 1)
+                    if (
+                        next_char == b"["
+                        and select_module.select([fd], [], [], 0.05)[0]
+                    ):
+                        direction = os.read(fd, 1)
+                        key_map = {
+                            b"C": "right",
+                            b"D": "left",
+                            b"A": "up",
+                            b"B": "down",
+                        }
+                        if direction in key_map:
+                            self._on_key(key_map[direction])
+                # Drain any remaining escape sequence chars
+                while select_module.select([fd], [], [], 0.01)[0]:
+                    os.read(fd, 1)
+
+    def _on_key(self, key: str) -> None:
+        """Handle a parsed keypress. Override in subclasses."""
+        pass
+
     async def wait_for_exit(self) -> None:
         """
         Wait for user to press a key to exit.
@@ -408,10 +444,18 @@ class BaseDisplay:
     async def __aenter__(self) -> "BaseDisplay":
         """Async context manager entry - start the display."""
         self.start()
+        self._key_listener_task = asyncio.create_task(self._listen_for_keys())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit - stop the display."""
+        if self._key_listener_task is not None:
+            self._key_listener_task.cancel()
+            try:
+                await self._key_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._key_listener_task = None
         self.stop()
 
     def __enter__(self) -> "BaseDisplay":
