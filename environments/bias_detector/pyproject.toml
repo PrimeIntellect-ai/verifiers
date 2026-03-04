@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bias_detector"
+version = "0.1.0"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[project.entry-points."verifiers.environments"]
+bias_detector = "bias_detector:load_environment"
