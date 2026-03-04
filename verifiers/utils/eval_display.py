@@ -164,6 +164,7 @@ class EvalDisplay(BaseDisplay):
         self.configs: list[EvalConfig] = list(configs)
 
         self._selected_env_idx: int = 0
+        self._log_scroll_offset: int = 0  # 0 = pinned to bottom (latest)
 
         # per-environment log files and log buffers for streaming env worker logs
         self._env_log_files: dict[int, dict[Path, int]] = {}
@@ -188,9 +189,17 @@ class EvalDisplay(BaseDisplay):
             return
         if key == "right":
             self._selected_env_idx = (self._selected_env_idx + 1) % len(self.configs)
+            self._log_scroll_offset = 0  # reset scroll on env switch
             self.refresh()
         elif key == "left":
             self._selected_env_idx = (self._selected_env_idx - 1) % len(self.configs)
+            self._log_scroll_offset = 0  # reset scroll on env switch
+            self.refresh()
+        elif key == "up":
+            self._log_scroll_offset += 3
+            self.refresh()
+        elif key == "down":
+            self._log_scroll_offset = max(0, self._log_scroll_offset - 3)
             self.refresh()
 
     @staticmethod
@@ -539,19 +548,78 @@ class EvalDisplay(BaseDisplay):
             expand=True,
         )
 
+    @staticmethod
+    def _wrap_log_line(line: str, width: int, indent: int = 4) -> list[str]:
+        """Wrap a log line, indenting continuation lines."""
+        if len(line) <= width:
+            return [line]
+        rows = [line[:width]]
+        rest = line[width:]
+        cont_width = width - indent
+        prefix = " " * indent
+        while rest:
+            rows.append(prefix + rest[:cont_width])
+            rest = rest[cont_width:]
+        return rows
+
     def _make_logs_panel(self, env_idx: int, max_lines: int = 20) -> Panel:
-        """Create a logs panel for an environment (streamed from env worker log file)."""
+        """Create a logs panel for an environment (streamed from env worker log file).
+
+        Lines wrap with indented continuations. Up/down arrow keys scroll
+        through log history via self._log_scroll_offset (0 = pinned to bottom).
+        """
         logs_list = list(self._env_logs.get(env_idx, []))
         log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
+
+        # Get inner width for wrapping
+        try:
+            term_width = os.get_terminal_size(0).columns
+        except OSError:
+            term_width = shutil.get_terminal_size().columns
+        # Panel border (2) + panel padding (2) + outer panel border (2) + outer padding (2)
+        inner_width = max(20, term_width - 8)
+
+        # Clamp scroll offset
+        self._log_scroll_offset = max(0, min(self._log_scroll_offset, len(logs_list)))
+
+        # Work backwards from the end (minus scroll offset) to fill max_lines
+        # of rendered height, accounting for line wrapping
+        end_idx = len(logs_list) - self._log_scroll_offset
+        visible_entries: list[list[str]] = []
+        rendered_height = 0
+        for i in range(end_idx - 1, -1, -1):
+            rows = self._wrap_log_line(logs_list[i], inner_width)
+            if rendered_height + len(rows) > max_lines:
+                break
+            visible_entries.insert(0, rows)
+            rendered_height += len(rows)
+
+        # Build the text with no_wrap since we handle wrapping ourselves
         log_text = Text(no_wrap=True, overflow="ellipsis")
-        recent = logs_list[-max_lines:] if len(logs_list) > max_lines else logs_list
-        for i in range(max_lines):
-            if i > 0:
-                log_text.append("\n")
-            if i < len(recent):
-                log_text.append(recent[i], style="dim")
-            else:
+        first = True
+        for rows in visible_entries:
+            for row in rows:
+                if not first:
+                    log_text.append("\n")
+                log_text.append(row, style="dim")
+                first = False
+
+        # Pad remaining space with empty lines
+        remaining = max_lines - rendered_height
+        for j in range(remaining):
+            if first and j == 0:
                 log_text.append(" ", style="dim")
+            else:
+                log_text.append("\n ")
+            first = False
+
+        # Show scroll indicator in title
+        if self._log_scroll_offset > 0:
+            scroll_title = Text()
+            scroll_title.append_text(log_title)
+            scroll_title.append(f" (+{self._log_scroll_offset} scrolled)", style="dim")
+            log_title = scroll_title
+
         return Panel(
             log_text,
             title=log_title,
@@ -706,7 +774,7 @@ class EvalDisplay(BaseDisplay):
         """Create the footer panel with instructions."""
         nav_hint = ""
         if len(self.configs) > 1:
-            nav_hint = "\u25c4 \u25ba to switch envs"
+            nav_hint = "\u25c4 \u25ba switch envs  \u25b2 \u25bc scroll logs"
 
         if self.state.all_completed:
             if self.screen:
