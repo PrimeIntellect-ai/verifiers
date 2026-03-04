@@ -607,49 +607,41 @@ class EvalDisplay(BaseDisplay):
         # Cap overview at half the terminal height
         max_overview_content = max(1, term_height // 2 - 2)
 
-        if len(self.configs) <= max_overview_content:
-            overview_indices = list(range(len(self.configs)))
-            hidden_count = 0
+        n = len(self.configs)
+        if n <= max_overview_content:
+            # All envs fit — no truncation
+            start, end = 0, n
         else:
-            # Priority: failed > running > completed > pending
-            failed = [
-                i
-                for i in range(len(self.configs))
-                if self.state.envs[i].status == "failed"
-            ]
-            running = [
-                i
-                for i in range(len(self.configs))
-                if self.state.envs[i].status == "running"
-            ]
-            completed = [
-                i
-                for i in range(len(self.configs))
-                if self.state.envs[i].status == "completed"
-            ]
-            pending = [
-                i
-                for i in range(len(self.configs))
-                if self.state.envs[i].status == "pending"
-            ]
-            ordered = failed + running + completed + pending
-            # Reserve 1 row for "... and X more" line
-            visible_count = max(1, max_overview_content - 1)
-            overview_indices = ordered[:visible_count]
-            # Ensure selected env is always visible
-            if self._selected_env_idx not in overview_indices:
-                overview_indices[-1] = self._selected_env_idx
-            hidden_count = len(self.configs) - len(overview_indices)
+            sel = self._selected_env_idx
+            # Near the top: show from start, bottom indicator only
+            if sel < max_overview_content - 1:
+                start = 0
+                end = max_overview_content - 1  # -1 for "more" indicator
+            # Near the bottom: show end, top indicator only
+            elif sel >= n - (max_overview_content - 1):
+                end = n
+                start = n - (max_overview_content - 1)  # -1 for "above" indicator
+            # Middle: both indicators
+            else:
+                visible = max(1, max_overview_content - 2)  # -2 for both indicators
+                half = visible // 2
+                start = sel - half
+                end = start + visible
+
+        above_count = start
+        below_count = n - end
 
         overview_rows: list[Text] = []
-        for idx in overview_indices:
+        if above_count > 0:
+            overview_rows.append(Text(f"  ... {above_count} above", style="dim"))
+        for idx in range(start, end):
             is_selected = idx == self._selected_env_idx
             row = self._make_compact_env_row(idx, selected=is_selected)
             if is_selected:
                 row.stylize("bold")
             overview_rows.append(row)
-        if hidden_count > 0:
-            overview_rows.append(Text(f"  ... and {hidden_count} more", style="dim"))
+        if below_count > 0:
+            overview_rows.append(Text(f"  ... and {below_count} more", style="dim"))
 
         overview_content_lines = len(overview_rows)
         overview_height = overview_content_lines + 2  # +2 for panel borders
