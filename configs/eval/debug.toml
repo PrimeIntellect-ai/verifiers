@@ -1,6 +1,5 @@
 model = "openai/gpt-4.1-mini"
 save_results = true
-save_every = 10
 
 [[eval]]
 env_id = "primeintellect/wiki-search"

@@ -6,7 +6,7 @@
 
 ### Overview
 - **Environment ID**: `math-group`
-- **Short description**: Groups GSM8K and MATH single-turn sub-environments into one evaluation with a shared math CoT parser.
+- **Short description**: Groups GSM8K and MATH single-turn sub-environments into one evaluation with a shared math reasoning-and-answer format.
 - **Tags**: math, group, single-turn, gsm8k, math, think
 
 ### Datasets
@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn (EnvGroup of two SingleTurnEnv instances)
-- **Parser**: `ThinkParser` with boxed answer extraction
 - **Rubric overview**: Exact numeric/equivalent match per sub-environment plus optional format check
 
 ### Quickstart

@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Any, Callable, cast
 
-from verifiers.types import ChatMessage
+from verifiers.types import Messages
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -25,7 +25,7 @@ BOXED_SYSTEM_PROMPT = (
 def format_dataset(
     dataset: Dataset,
     system_prompt: str | None = None,
-    few_shot: list[ChatMessage] | None = None,
+    few_shot: Messages | None = None,
     question_key: str = "question",
     answer_key: str = "answer",
     map_kwargs: dict = {},
@@ -39,10 +39,10 @@ def format_dataset(
     ):
         dataset = dataset.rename_column("example_id", "src_id")
     if "example_id" not in dataset.column_names:
-        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+        dataset = dataset.add_column("example_id", range(len(dataset)))
 
     # extract format_prompt as a standalone function to avoid capturing self
-    def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
+    def format_prompt_fn(prompt_str: str) -> Messages:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -273,10 +273,10 @@ def load_example_dataset(
             split = "test"
         aime_i = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        )  # type: ignore[redundant-cast]
+        )
         aime_ii = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
-        )  # type: ignore[redundant-cast]
+        )
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:

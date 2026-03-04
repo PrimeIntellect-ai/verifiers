@@ -1,3 +1,4 @@
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,7 +87,7 @@ class TestIsInstalled:
         )
         assert is_installed("gsm8k") is True
         mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "gsm8k"],
+            ["uv", "pip", "show", "--python", sys.executable, "gsm8k"],
             capture_output=True,
             text=True,
         )
@@ -122,7 +123,7 @@ class TestIsInstalled:
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         is_installed("my-package")
         mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "my_package"],
+            ["uv", "pip", "show", "--python", sys.executable, "my_package"],
             capture_output=True,
             text=True,
         )

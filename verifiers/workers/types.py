@@ -1,3 +1,5 @@
+from asyncio import Future
+from enum import Enum
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SkipValidation
@@ -30,14 +32,14 @@ class BaseResponse(BaseModel):
 
 
 class HealthRequest(BaseRequest):
-    request_type: Literal["health"] = "health"  # type: ignore[override]
+    request_type: Literal["health"] = "health"
 
 
 class HealthResponse(BaseResponse): ...
 
 
 class RunRolloutRequest(BaseRequest):
-    request_type: Literal["run_rollout"] = "run_rollout"  # type: ignore[override]
+    request_type: Literal["run_rollout"] = "run_rollout"
 
     # skip validation because multi-modal content type + tool calls validate weirdly
     # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
@@ -54,7 +56,7 @@ class RunRolloutResponse(BaseResponse):
 
 
 class RunGroupRequest(BaseRequest):
-    request_type: Literal["run_group"] = "run_group"  # type: ignore[override]
+    request_type: Literal["run_group"] = "run_group"
 
     # skip validation because multi-modal content type + tool calls validate weirdly
     # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
@@ -72,3 +74,22 @@ class RunGroupResponse(BaseResponse):
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
 BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
+
+
+class ServerState(str, Enum):
+    STARTUP = "startup"  # Initial state, before first successful health check
+    HEALTHY = "healthy"  # Server is responsive and working normally
+    UNHEALTHY = "unhealthy"  # Server failed health checks
+
+
+class ServerError(RuntimeError): ...
+
+
+class PendingRequest(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    request_id: str
+    request: BaseRequest
+    future: Future[dict]
+    timeout: float | None = None
+    submitted_at: float  # timestamp

@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: tool use (single-turn ToolEnv)
-- **Parser**: Basic `Parser` with boxed answer extraction
 - **Rubric overview**: Correctness by `math_verify.parse` + `verify`; logs auxiliary metrics (#turns, #tool calls, #errors)
 
 ### Quickstart

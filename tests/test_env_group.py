@@ -14,7 +14,7 @@ from verifiers.types import State
 class TestEnvGroupRubric:
     """Test cases for the EnvGroupRubric class."""
 
-    def test_env_group_rubric_initialization(self, mock_openai_client):
+    def test_env_group_rubric_initialization(self, mock_client):
         """Test EnvGroupRubric initialization with multiple environments."""
 
         # Create test environments with different rubrics
@@ -28,14 +28,14 @@ class TestEnvGroupRubric:
             return 0.8
 
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(funcs=[func1, func2], weights=[1.0, 0.5]),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(funcs=[func2, func3], weights=[0.7, 1.0]),
@@ -49,7 +49,7 @@ class TestEnvGroupRubric:
         assert set(rubric.all_reward_names) == {"num_turns", "func1", "func2", "func3"}
 
     @pytest.mark.asyncio
-    async def test_env_group_rubric_score_rollout(self, mock_openai_client, make_input):
+    async def test_env_group_rubric_score_rollout(self, mock_client, make_input):
         """Test scoring a rollout with EnvGroupRubric."""
 
         # Create test environments
@@ -60,14 +60,14 @@ class TestEnvGroupRubric:
             return 0.6
 
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(funcs=[func1], weights=[1.0]),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(funcs=[func2], weights=[1.0]),
@@ -90,7 +90,7 @@ class TestEnvGroupRubric:
         }
         state["is_completed"] = False
         state["stop_condition"] = None
-        state["oai_tools"] = []
+        state["tool_defs"] = []
         state["reward"] = None
         state["metrics"] = None
 
@@ -103,10 +103,10 @@ class TestEnvGroupRubric:
         assert state["reward"] == 0.8
 
     @pytest.mark.asyncio
-    async def test_env_group_rubric_unknown_task(self, mock_openai_client, make_input):
+    async def test_env_group_rubric_unknown_task(self, mock_client, make_input):
         """Test scoring with unknown task returns zeros."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
@@ -126,7 +126,7 @@ class TestEnvGroupRubric:
         }
         state["is_completed"] = False
         state["stop_condition"] = None
-        state["oai_tools"] = []
+        state["tool_defs"] = []
         state["reward"] = None
         state["metrics"] = None
 
@@ -138,17 +138,17 @@ class TestEnvGroupRubric:
 class TestEnvGroup:
     """Test cases for the EnvGroup class."""
 
-    def test_env_group_initialization(self, mock_openai_client):
+    def test_env_group_initialization(self, mock_client):
         """Test EnvGroup initialization with multiple environments."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -161,17 +161,17 @@ class TestEnvGroup:
         assert env_group.env_map["env_0"] == env1
         assert env_group.env_map["env_1"] == env2
 
-    def test_env_group_unique_example_ids(self, mock_openai_client):
+    def test_env_group_unique_example_ids(self, mock_client):
         """Test EnvGroup initialization with multiple environments."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -182,17 +182,17 @@ class TestEnvGroup:
         assert "example_id" in dataset.column_names
         assert len(set(dataset["example_id"])) == len(dataset)
 
-    def test_env_group_with_custom_names(self, mock_openai_client):
+    def test_env_group_with_custom_names(self, mock_client):
         """Test EnvGroup with custom environment names."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -211,10 +211,10 @@ class TestEnvGroup:
         ):
             EnvGroup(envs=[])
 
-    def test_env_group_mismatched_names_fails(self, mock_openai_client):
+    def test_env_group_mismatched_names_fails(self, mock_client):
         """Test that EnvGroup fails when env_names length doesn't match envs."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
@@ -225,10 +225,10 @@ class TestEnvGroup:
         ):
             EnvGroup(envs=[env1], env_names=["math", "code"])
 
-    def test_env_group_dataset_concatenation(self, mock_openai_client):
+    def test_env_group_dataset_concatenation(self, mock_client):
         """Test that EnvGroup properly concatenates datasets with task labels."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict(
                 {"question": ["q1", "q2"], "answer": ["a1", "a2"]}
@@ -237,7 +237,7 @@ class TestEnvGroup:
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q3"], "answer": ["a3"]}),
             rubric=Rubric(),
@@ -256,10 +256,10 @@ class TestEnvGroup:
         assert tasks[1] == "math"
         assert tasks[2] == "code"
 
-    def test_env_group_rubric_type(self, mock_openai_client):
+    def test_env_group_rubric_type(self, mock_client):
         """Test that EnvGroup creates EnvGroupRubric."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
@@ -271,18 +271,18 @@ class TestEnvGroup:
         assert env_group.rubric.env_map["env_0"] == env1
 
     @pytest.mark.asyncio
-    async def test_env_group_rollout_routing(self, mock_openai_client, make_input):
+    async def test_env_group_rollout_routing(self, mock_client, make_input):
         """Test that rollout is properly routed to the correct sub-environment."""
         # Create environments with different behaviors
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -310,7 +310,7 @@ class TestEnvGroup:
         # Test routing to math environment
         state1 = await env_group.rollout(
             input=make_input(prompt="Test prompt", task="math"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -325,7 +325,7 @@ class TestEnvGroup:
         # Test routing to code environment
         state2 = await env_group.rollout(
             input=make_input(prompt="Test prompt", task="code"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -333,17 +333,17 @@ class TestEnvGroup:
         env1_rollout_mock.assert_not_called()
         env2_rollout_mock.assert_called_once()
 
-    def test_get_env_for_task(self, mock_openai_client):
+    def test_get_env_for_task(self, mock_client):
         """Test getting environment for a specific task."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -357,17 +357,17 @@ class TestEnvGroup:
         assert env_group.get_env_for_task("unknown") == env1
 
     @pytest.mark.asyncio
-    async def test_env_group_generate(self, mock_openai_client, make_input):
+    async def test_env_group_generate(self, mock_client, make_input):
         """Test generate method with EnvGroup."""
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             rubric=Rubric(),
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             rubric=Rubric(),
@@ -400,7 +400,7 @@ class TestEnvGroup:
         ]
 
         outputs = await env_group.generate(
-            inputs, client=mock_openai_client, model="test-model"
+            inputs, client=mock_client, model="test-model"
         )
 
         states = outputs["outputs"]
@@ -409,11 +409,11 @@ class TestEnvGroup:
             assert "completion" in state
             assert "reward" in state
 
-    def test_env_group_with_mixed_datasets(self, mock_openai_client):
+    def test_env_group_with_mixed_datasets(self, mock_client):
         """Test EnvGroup with environments having different dataset configurations."""
         # Environment with both train and eval datasets
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
             eval_dataset=Dataset.from_dict({"question": ["eq1"], "answer": ["ea1"]}),
@@ -422,7 +422,7 @@ class TestEnvGroup:
 
         # Environment with only eval dataset
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
             eval_dataset=Dataset.from_dict({"question": ["eq2"], "answer": ["ea2"]}),
@@ -444,11 +444,11 @@ class TestEnvGroup:
         assert eval_dataset["task"][0] == "task1"
         assert eval_dataset["task"][1] == "task2"
 
-    def test_env_group_with_only_eval_datasets(self, mock_openai_client):
+    def test_env_group_with_only_eval_datasets(self, mock_client):
         """Test EnvGroup with environments that only have eval datasets (no train datasets)."""
         # Environment with only eval dataset
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["eq1"], "answer": ["ea1"]}),
             rubric=Rubric(),
@@ -456,7 +456,7 @@ class TestEnvGroup:
 
         # Another environment with only eval dataset
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["eq2"], "answer": ["ea2"]}),
             rubric=Rubric(),
@@ -474,7 +474,7 @@ class TestEnvGroup:
         assert eval_dataset["task"][0] == "task1"
         assert eval_dataset["task"][1] == "task2"
 
-    def test_env_group_task_assignment_on_iteration(self, mock_openai_client):
+    def test_env_group_task_assignment_on_iteration(self, mock_client):
         """Test that task values are correct when iterating over dataset rows.
 
         This catches closure bugs where loop variables are captured by reference
@@ -482,7 +482,7 @@ class TestEnvGroup:
         HuggingFace's lazy evaluation.
         """
         env1 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict(
                 {"question": ["q1", "q2"], "answer": ["a1", "a2"]}
@@ -491,7 +491,7 @@ class TestEnvGroup:
         )
 
         env2 = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=Dataset.from_dict(
                 {"question": ["q3", "q4"], "answer": ["a3", "a4"]}

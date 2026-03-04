@@ -63,9 +63,11 @@ uv run pytest -m unit
 
 The test suite includes comprehensive support for testing async Environment classes:
 
-### AsyncOpenAI Client Mocking
-- `mock_openai_client` fixture provides a fully mocked AsyncOpenAI client
-- Supports both chat completions and regular completions
+### MockClient (conftest.py)
+- `MockClient(Client)` implements the `get_response()` interface returning `vf.Response` objects
+- `mock_client` fixture provides an instance for tests
+- Supports prompt-to-response mappings via `add_response()`
+- Tracks calls via `call_count` and `last_call_kwargs`
 - No actual API calls are made during testing
 
 ### Test Datasets
@@ -76,22 +78,17 @@ The test suite includes comprehensive support for testing async Environment clas
 ### Async Test Examples
 ```python
 @pytest.mark.asyncio
-async def test_my_async_function(mock_openai_client):
-    env = SingleTurnEnv(client=mock_openai_client, model="test", ...)
+async def test_my_async_function(mock_client):
+    env = SingleTurnEnv(client=mock_client, model="test", ...)
     result = await env.rollout(...)
-    assert result[0] == expected_completion
+    assert mock_client.call_count == 1
 
-# MultiTurnEnv testing
-@pytest.mark.asyncio  
-async def test_multiturn_conversation(mock_multiturn_env):
-    # Configure sequential responses
-    responses = ["response1", "response2", "final DONE"]
-    mock_multiturn_env.client.chat.completions.create.side_effect = [
-        create_mock_response(resp) for resp in responses
-    ]
-    
-    completion, state = await mock_multiturn_env.rollout(...)
-    assert len(completion) > 1  # Multiple turns
+# Custom response mapping
+@pytest.mark.asyncio
+async def test_with_custom_response(mock_client):
+    mock_client.set_default_response("DONE")
+    env = SimpleMultiTurnEnv(client=mock_client, model="test", ...)
+    completion, state = await env.rollout(...)
 ```
 
 ### Environment Testing
@@ -103,7 +100,6 @@ async def test_multiturn_conversation(mock_multiturn_env):
   - Completion detection logic
   - State management across turns
 - Tests cover both chat and completion message formats
-- Mocked responses simulate real OpenAI API behavior
 - Error handling and edge cases are tested
 - No real LLM requests are made
 
@@ -112,5 +108,5 @@ async def test_multiturn_conversation(mock_multiturn_env):
 1. Create test files following the `test_*.py` naming convention
 2. Use the fixtures from `conftest.py` for common instances
 3. Add appropriate test markers (`@pytest.mark.asyncio` for async tests)
-4. Use `mock_openai_client` for Environment testing
+4. Use `mock_client` for Environment testing
 5. Follow the existing test structure and naming conventions

@@ -6,7 +6,10 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
+import asyncio
+import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -18,7 +21,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs
+from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
@@ -39,7 +42,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
-    usage: dict[str, float] | None = None
+    usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -157,6 +160,12 @@ class EvalDisplay(BaseDisplay):
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
 
+        # per-environment log files and log buffers for streaming env worker logs
+        self._env_log_files: dict[int, dict[Path, int]] = {}
+        self._env_logs: dict[int, deque[str]] = {}
+        self._env_log_titles: dict[int, Text] = {}
+        self._tail_task: asyncio.Task | None = None
+
         # initialize env states by index
         for idx, config in enumerate(configs):
             total = config.num_examples * config.rollouts_per_example
@@ -165,6 +174,30 @@ class EvalDisplay(BaseDisplay):
                 num_examples=config.num_examples,
                 rollouts_per_example=config.rollouts_per_example,
             )
+            self._env_log_files[idx] = {}
+            self._env_logs[idx] = deque(maxlen=100)
+            self._env_log_titles[idx] = Text("logs", style="dim")
+
+    @staticmethod
+    def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
+
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
+
+        return display_rollout_concurrency
 
     def update_env_state(
         self,
@@ -175,7 +208,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
-        usage: dict[str, float] | None = None,
+        usage: TokenUsage | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -228,6 +261,36 @@ class EvalDisplay(BaseDisplay):
 
         self.refresh()
 
+    def add_log_file_for_env(self, env_idx: int, path: Path) -> None:
+        """Register a log file for tailing for a specific environment."""
+        if env_idx in self._env_log_files:
+            self._env_log_files[env_idx][path] = 0
+            title = Text()
+            title.append("logs", style="dim")
+            title.append(" ", style="dim")
+            title.append(str(path), style="dim cyan")
+            self._env_log_titles[env_idx] = title
+
+    async def _tail_log_files(self) -> None:
+        """Background task to tail per-env log files and push lines to per-env buffers."""
+        while True:
+            await asyncio.sleep(0.2)
+            for env_idx, log_files in list(self._env_log_files.items()):
+                for path in list(log_files.keys()):
+                    if not path.exists():
+                        continue
+                    try:
+                        pos = log_files[path]
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(pos)
+                            for line in f:
+                                line = line.rstrip("\n")
+                                if line:
+                                    self._env_logs[env_idx].append(line)
+                            log_files[path] = f.tell()
+                    except Exception:
+                        pass
+
     def _get_error_rate_color(self, error_rate: float) -> str:
         """Get color for error rate: red if > 10%, otherwise default."""
         if error_rate > 0.10:
@@ -267,7 +330,7 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_tokens_row(self, usage: dict[str, float]) -> Table | None:
+    def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
         tokens_text = Text()
         tokens_text.append("╰─ ", style="dim")
@@ -284,6 +347,21 @@ class EvalDisplay(BaseDisplay):
                 tokens_text.append("   ")
         return make_aligned_row(tokens_text, Text())
 
+    @staticmethod
+    def _format_client_target(config: EvalConfig) -> str:
+        endpoint_configs = config.client_config.endpoint_configs
+        endpoint_count = len(endpoint_configs) if endpoint_configs else 1
+
+        if config.endpoint_id and endpoint_count >= 2:
+            return f"endpoint_id={config.endpoint_id} ({endpoint_count} endpoints)"
+
+        if endpoint_configs:
+            if endpoint_count == 1:
+                return endpoint_configs[0].api_base_url
+            return ", ".join(endpoint.api_base_url for endpoint in endpoint_configs)
+
+        return config.client_config.api_base_url
+
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs[env_idx]
@@ -293,7 +371,7 @@ class EvalDisplay(BaseDisplay):
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
-        config_line.append(config.client_config.api_base_url, style="white")
+        config_line.append(self._format_client_target(config), style="white")
         config_line.append("  |  ", style="dim")
         config_line.append(str(env_state.num_examples), style="white")
         config_line.append("x", style="white")
@@ -303,8 +381,9 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
-        config_line.append(fmt_concurrency(config.max_concurrent), style="white")
+        config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
@@ -318,10 +397,6 @@ class EvalDisplay(BaseDisplay):
         if config.save_results:
             config_line.append("  |  ", style="dim")
             config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
 
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback
@@ -403,6 +478,10 @@ class EvalDisplay(BaseDisplay):
         title = Text()
         title.append(config.env_id, style="bold cyan")
 
+        logs_panel = self._make_logs_panel(env_idx, max_lines=20)
+        content_items.append(Text(""))
+        content_items.append(logs_panel)
+
         return Panel(
             Group(*content_items),
             title=title,
@@ -412,15 +491,120 @@ class EvalDisplay(BaseDisplay):
             expand=True,
         )
 
+    def _make_logs_panel(self, env_idx: int, max_lines: int = 20) -> Panel:
+        """Create a logs panel for an environment (streamed from env worker log file)."""
+        logs_list = list(self._env_logs.get(env_idx, []))
+        log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
+        log_text = Text(no_wrap=True, overflow="ellipsis")
+        recent = logs_list[-max_lines:] if len(logs_list) > max_lines else logs_list
+        for i in range(max_lines):
+            if i > 0:
+                log_text.append("\n")
+            if i < len(recent):
+                log_text.append(recent[i], style="dim")
+            else:
+                log_text.append(" ", style="dim")
+        return Panel(
+            log_text,
+            title=log_title,
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+        )
+
+    def _make_compact_env_row(self, env_idx: int) -> Text:
+        """Create a compact single-line summary for any env status."""
+        config = self.configs[env_idx]
+        env_state = self.state.envs[env_idx]
+
+        line = Text()
+        if env_state.status == "completed":
+            line.append(" \u2713 ", style="bold green")
+            line.append(config.env_id, style="green")
+            line.append("  reward ", style="dim")
+            line.append(format_numeric(env_state.reward), style="bold")
+            color = self._get_error_rate_color(env_state.error_rate)
+            line.append("  error rate ", style="dim")
+            line.append(f"{env_state.error_rate:.3f}", style=f"bold {color}")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        elif env_state.status == "failed":
+            line.append(" \u2717 ", style="bold red")
+            line.append(config.env_id, style="red")
+            if env_state.error:
+                line.append("  ", style="dim")
+                line.append(env_state.error[:80], style="red")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        elif env_state.status == "running":
+            pct = (
+                (env_state.progress / env_state.total * 100)
+                if env_state.total > 0
+                else 0
+            )
+            total_str = "..." if env_state.total <= 0 else str(env_state.total)
+            line.append(" \u25b8 ", style="bold yellow")
+            line.append(config.env_id, style="yellow")
+            line.append(f"  {pct:.0f}%", style="bold")
+            line.append(f" ({env_state.progress}/{total_str})", style="dim")
+            line.append("  reward ", style="dim")
+            line.append(format_numeric(env_state.reward), style="bold")
+            color = self._get_error_rate_color(env_state.error_rate)
+            line.append("  error rate ", style="dim")
+            line.append(f"{env_state.error_rate:.3f}", style=f"bold {color}")
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            line.append(f"  {time_str}", style="dim")
+        else:
+            line.append(" \u25cb ", style="dim")
+            line.append(config.env_id, style="dim")
+            line.append("  pending", style="dim")
+
+        return line
+
     def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels."""
+        """Create a vertical stack of environment panels.
+
+        A persistent overview panel at the top shows every env's status on one line.
+        Below it, only running envs get full detail panels with progress bars,
+        metrics, and logs. This prevents overflow when many environments are evaluated.
+        """
         if not self.configs:
             return Group()
 
-        # create panels for each environment by index
-        panels = [self._make_env_panel(idx) for idx in range(len(self.configs))]
+        # Overview panel: one compact line per env, always visible
+        overview_rows = [
+            self._make_compact_env_row(idx) for idx in range(len(self.configs))
+        ]
 
-        return Group(*panels)
+        n_total = len(self.configs)
+        n_completed = sum(
+            1 for s in self.state.envs.values() if s.status in ("completed", "failed")
+        )
+        title = Text(f"Overview ({n_completed}/{n_total} done)", style="dim")
+
+        items: list[Panel | Group] = [
+            Panel(
+                Group(*overview_rows),
+                title=title,
+                title_align="left",
+                border_style="dim",
+                padding=(0, 1),
+                expand=True,
+            )
+        ]
+
+        # Full detail panels for running envs only
+        for idx in range(len(self.configs)):
+            if self.state.envs[idx].status == "running":
+                items.append(self._make_env_panel(idx))
+
+        return Group(*items)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
@@ -455,14 +639,25 @@ class EvalDisplay(BaseDisplay):
         """Create the full display."""
         items: list[Group | Panel] = [self._make_env_stack()]
 
-        # Always show log panel (with placeholder lines if no logs)
-        items.append(self._make_log_panel())
-
-        # Only show footer in TUI mode
         if self.screen:
             items.append(self._make_footer())
 
         return Group(*items)
+
+    async def __aenter__(self) -> "EvalDisplay":
+        await super().__aenter__()
+        self._tail_task = asyncio.create_task(self._tail_log_files())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._tail_task is not None:
+            self._tail_task.cancel()
+            try:
+                await self._tail_task
+            except asyncio.CancelledError:
+                pass
+            self._tail_task = None
+        await super().__aexit__(exc_type, exc_val, exc_tb)
 
     def print_final_summary(self) -> None:
         """Print a comprehensive summary after the display closes."""
@@ -604,7 +799,13 @@ class EvalDisplay(BaseDisplay):
             completion_text = format_messages(completion)
             if error_0 is not None:
                 completion_text.append("\n\nerror: ", style="bold red")
-                completion_text.append(error_0, style="bold red")
+                if isinstance(error_0, dict):
+                    completion_text.append(
+                        error_0.get("error_chain_repr", str(error_0)),
+                        style="bold red",
+                    )
+                else:
+                    completion_text.append(str(error_0), style="bold red")
             completion_text.append("\n\nreward: ", style="bold cyan")
             completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 

@@ -1,0 +1,77 @@
+name: Publish verifiers-rl
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. verifiers-rl-v0.1.0)'
+        required: true
+        type: string
+  push:
+    tags:
+      - "verifiers-rl-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged release (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Checkout tagged release (push)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$PUSHED_REF"
+          fi
+
+          case "$TAG" in
+            verifiers-rl-v*) ;;
+            *)
+              echo "Release tags must be prefixed with 'verifiers-rl-v' (received '$TAG')" >&2
+              exit 1
+              ;;
+          esac
+
+          VERSION="${TAG#verifiers-rl-v}"
+          FILE_VERSION=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          with Path('packages/verifiers-rl/pyproject.toml').open('rb') as f:
+              data = tomllib.load(f)
+          print(data['project']['version'])
+          PY
+          )
+
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "Version mismatch: tag requests '$VERSION' but packages/verifiers-rl/pyproject.toml defines '$FILE_VERSION'" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build verifiers-rl
+        run: uv build packages/verifiers-rl
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --token "$PYPI_TOKEN" packages/verifiers-rl/dist/*

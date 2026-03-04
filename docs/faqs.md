@@ -103,13 +103,6 @@ def relative_reward(completions: list, answers: list, **kwargs) -> list[float]:
 
 ## Training
 
-### What's the difference between `prime-rl` and `vf-rl`?
-
-- **prime-rl**: Production-ready, multi-node, MoE support, advanced features. Use for serious training.
-- **vf-rl**: Minimal (~1000 LOC), single-node, hackable. Use for small-scale testing or as a starting point for your own training loop.
-
-Both use the same core algorithm (async CISPO).
-
 ### How do I use a local vLLM server?
 
 Point the client to your local server:

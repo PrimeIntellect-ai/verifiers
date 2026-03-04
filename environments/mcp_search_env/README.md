@@ -21,7 +21,6 @@ This environment demonstrates how to use the first-class `MCPEnv` from `verifier
 ### Task
 
 - **Type**: <multi-turn | tool use>
-- **Parser**: N/A
 - **Rubric overview**: N/A
 
 ### Quickstart

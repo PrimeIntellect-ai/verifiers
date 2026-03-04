@@ -1,6 +1,8 @@
 # environments/AGENTS.md
 
-This file mirrors the "Environments" section from the Verifiers documentation, and is downloaded automatically using the setup script.
+<!-- Generated for repository development workflows. Do not edit directly. -->
+
+This file mirrors the "Environments" documentation page.
 
 ---
 
@@ -657,16 +659,16 @@ This bypasses the normal model response loop and immediately terminates the roll
 
 ## Developing Environments
 
-Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `vf-setup` command initializes this structure:
+Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `prime lab setup` command initializes this structure:
 
 ```bash
-vf-setup
+prime lab setup
 ```
 
-The `vf-init` command initializes a new environment project:
+The `prime env init` command initializes a new environment project:
 
 ```bash
-vf-init my-env
+prime env init my-env
 ```
 
 This creates the following structure:
@@ -792,51 +794,14 @@ Supported third-party environment integrations include:
 - **`TextArenaEnv`** — wraps [TextArena](https://github.com/LeonGuertler/TextArena) text-based game environments
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
+- **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv).
-
-### BrowserEnv
-
-`BrowserEnv` provides browser automation with two modes:
-
-- **DOM mode** (`mode="dom"`): Natural language browser control via Stagehand SDK. Uses semantic operations like `act("click the login button")`, `observe("find form fields")`, and `extract("get the table data")`.
-
-- **CUA mode** (`mode="cua"`): Vision-based browser control using coordinate-based primitives. Uses low-level operations like `click(x, y)`, `type_text("hello")`, `scroll(0, 0, 0, 500)`, and `goto("https://example.com")`.
-
-**CUA mode with automatic sandbox deployment** (default, recommended):
-
-```python
-env = BrowserEnv(
-    mode="cua",
-    dataset=dataset,
-    rubric=rubric,
-)
-```
-
-When `use_sandbox=True` (the default), the CUA server is automatically deployed to a sandbox container. No manual server setup is required. The sandbox handles:
-- Server file upload and initialization
-- Server lifecycle management
-- Browser session isolation
-- Automatic cleanup on rollout completion
-
-**CUA mode with manual server** (for local development):
-
-```python
-# First start the server manually:
-# cd assets/templates/browserbase/cua && ./start.sh
-
-env = BrowserEnv(
-    mode="cua",
-    use_sandbox=False,
-    server_url="http://localhost:3000",
-    dataset=dataset,
-    rubric=rubric,
-)
-```
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). For OpenEnv environments, build the bundled project image with `prime env build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
-- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization
+- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling ( like `sandbox_client_max_workers`) parameters via `SandboxMixin`
+- **`RolloutGatewayMixin`** — opt-in mixin for `CliAgentEnv` that replaces its interception-based rollout with a server-side gateway path, where the agent talks directly to the inference server's rollout gateway. Toggle between modes via the `use_gateway` attribute: when `True`, the mixin's `rollout()` fires and manages gateway registration, tunnel setup, and trajectory fetching; when `False`, falls through to `CliAgentEnv`'s interception path. Use with `class MyEnv(vf.RolloutGatewayMixin, vf.CliAgentEnv):`
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
-- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Execution supports both local and sandbox backends via `execution_backend` (`"local"` default, `"sandbox"` to run the REPL inside a Prime Sandbox). Context is still filesystem-based: a provided `context_dir` is copied into the working directory, or legacy JSON-serializable `context` data is written to `context.json`/`context.txt`. The RLM scaffolding prompt (filesystem availability note, REPL workflow, tool docs) is injected into the first user message wrapped in `<RLM_SCAFFOLDING>...</RLM_SCAFFOLDING>`, preserving any external system prompt. The REPL language is configurable via `repl_language` (default: `bash`); use `repl_language="python"` to retain the Python REPL. Bash mode uses `call_bash_repl` and behaves like a terminal; Python mode uses `call_python_repl`. Sub-LLM and root-tool interception for sandboxes is routed through a Prime Tunnel unless `interception_url` is provided. Tooling can be split via `tools` (shared), `root_tools` (REPL-only), and `sub_tools` (sub-LLM tools). Fixed root tools like `llm_batch` are always present and cannot be overridden. Tool ordering is fixed tools → shared tools → role-specific tools, with per-list deduplication by name. Root tools are callable only inside the REPL; sub-LLM tools use standard tool-calling.
+- **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

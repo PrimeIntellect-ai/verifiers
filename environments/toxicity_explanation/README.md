@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: default `Parser`
 - **Rubric overview**: `JudgeRubric` with a numeric (0–10) rubric normalized to 0–1; evaluates correctness and explanation quality
 
 ### Quickstart

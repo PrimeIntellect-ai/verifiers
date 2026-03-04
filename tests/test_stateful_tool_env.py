@@ -26,7 +26,7 @@ def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
 class TestStatefulToolEnv:
     @pytest.mark.asyncio
     async def test_stateful_tool_env_updates_args(
-        self, mock_stateful_tool_env, mock_openai_client, make_input
+        self, mock_stateful_tool_env, mock_client, make_input
     ):
         tool_call = _build_tool_call("offset_tool", {"x": 5})
         assistant_message = {
@@ -36,12 +36,12 @@ class TestStatefulToolEnv:
         }
         user_message = ChatCompletionUserMessageParam(content="Offset 5", role="user")
 
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[user_message],
             response="Using tool",
             tool_calls=[tool_call],
         )
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[
                 user_message,
                 assistant_message,
@@ -56,7 +56,7 @@ class TestStatefulToolEnv:
 
         state = await mock_stateful_tool_env.rollout(
             input=make_input(prompt=[user_message], task="", answer=""),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         completion = state["completion"]
@@ -71,11 +71,11 @@ class TestStatefulToolEnv:
 
         schema = next(
             tool
-            for tool in mock_stateful_tool_env.oai_tools
-            if tool["function"]["name"] == "secret_tool"
+            for tool in mock_stateful_tool_env.tool_defs
+            if tool["name"] == "secret_tool"
         )
 
-        assert "secret" not in schema["function"]["parameters"]["properties"]
+        assert "secret" not in schema["parameters"]["properties"]
         assert mock_stateful_tool_env.skipped_args["secret_tool"] == ["secret"]
         assert "secret_tool" in mock_stateful_tool_env.tool_map
 
@@ -86,11 +86,9 @@ class TestStatefulToolEnv:
         mock_stateful_tool_env.add_tool(tool_with_dict, args_to_skip=["state"])
 
         schema = next(
-            t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "tool_with_dict"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "tool_with_dict"
         )
-        assert "state" not in schema["function"]["parameters"]["properties"]
+        assert "state" not in schema["parameters"]["properties"]
 
     def test_add_tool_does_not_mutate_original_signature(self, mock_stateful_tool_env):
         """Verify that add_tool with args_to_skip doesn't mutate the original function."""
@@ -112,12 +110,10 @@ class TestStatefulToolEnv:
 
         # But schema should have hidden removed
         schema = next(
-            t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "my_tool"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "my_tool"
         )
-        assert "hidden" not in schema["function"]["parameters"]["properties"]
-        assert "command" in schema["function"]["parameters"]["properties"]
+        assert "hidden" not in schema["parameters"]["properties"]
+        assert "command" in schema["parameters"]["properties"]
 
     def test_add_tool_does_not_mutate_bound_method_signature(
         self, mock_stateful_tool_env
@@ -143,16 +139,14 @@ class TestStatefulToolEnv:
 
         # But schema should have hidden removed
         schema = next(
-            t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "my_tool"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "my_tool"
         )
-        assert "hidden" not in schema["function"]["parameters"]["properties"]
-        assert "command" in schema["function"]["parameters"]["properties"]
+        assert "hidden" not in schema["parameters"]["properties"]
+        assert "command" in schema["parameters"]["properties"]
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that StatefulToolEnv stops rollout when tool call is not JSON-parsable."""
 
@@ -164,7 +158,7 @@ class TestStatefulToolEnv:
                 return tool_args
 
         env = ParseErrorStatefulToolEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
@@ -185,7 +179,7 @@ class TestStatefulToolEnv:
         )
 
         # First response triggers tool call with invalid JSON
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Square 4"}],
             response="Using tool",
             tool_calls=[tool_call_with_invalid_json_arguments],
@@ -195,7 +189,7 @@ class TestStatefulToolEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Square 4"}], answer="", task=""
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -215,7 +209,7 @@ class TestStatefulToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_call_error(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that ToolEnv stops rollout when tool raises an exception."""
 
@@ -227,14 +221,14 @@ class TestStatefulToolEnv:
                 return tool_args
 
         env = ErrorStatefulToolEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
         )
 
         tool_call = _build_tool_call("faulty_tool", {})
 
-        mock_openai_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Invoke"}],
             response="Using tool",
             tool_calls=[tool_call],
@@ -244,7 +238,7 @@ class TestStatefulToolEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Invoke"}], answer="", task=""
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 

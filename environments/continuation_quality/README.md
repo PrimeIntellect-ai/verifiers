@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: custom
 - **Rubric overview**: Judge model letter grade (gpt-4.1-mini-based by default)
 
 ### Quickstart

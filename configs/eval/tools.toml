@@ -1,6 +1,5 @@
 model = "openai/gpt-5-mini"
 save_results = true
-save_every = 10
 
 [[eval]]
 env_id = "bfcl-v3"
@@ -10,7 +9,7 @@ rollouts_per_example = 3
 [[eval]]
 env_id = "tau2-bench"
 num_examples = 100
-rollouts_per_example = 3    
+rollouts_per_example = 3
 
 [[eval]]
 env_id = "wiki-search"

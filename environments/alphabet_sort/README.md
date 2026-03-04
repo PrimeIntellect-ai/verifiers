@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: multi-turn
-- **Parser**: `XMLParser(["alphabetical_sorted"])` on turn 1; `XMLParser(["combined_alphabetical_sorted"])` on later turns
 - **Rubric overview**: The reward function uses difflib to calculate sequence similarity between predicted and expected outputs, with the final score raised to the nth power (similarity_power, defaults to 4) to emphasize precision.
 
 ### Quickstart

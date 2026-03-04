@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: multi-turn
-- **Parser**: XMLParser with fields `think`, `answer` (from `MathRubric`)
 - **Rubric overview**: `MathRubric` combining exact/equivalence math grading and a small format component
 
 ### Quickstart

@@ -116,3 +116,23 @@ def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_in
     assert "r2: [0.2, 0.5]" in captured.out
     # r3 should have [0.3, 0.6] (third rollout of each example)
     assert "r3: [0.3, 0.6]" in captured.out
+
+
+def test_print_results_includes_usage(capsys, make_metadata, make_output):
+    from verifiers.utils.eval_utils import print_results
+
+    outputs = [
+        make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
+        make_output(example_id=1, reward=0.0, metrics={"test_metric": 2.0}),
+    ]
+    outputs[0]["token_usage"] = {"input_tokens": 10.0, "output_tokens": 4.0}
+    outputs[1]["token_usage"] = {"input_tokens": 6.0, "output_tokens": 2.0}
+    metadata = make_metadata(num_examples=2, rollouts_per_example=1, usage=None)
+
+    results = GenerateOutputs(outputs=outputs, metadata=metadata)
+    print_results(results)
+    captured = capsys.readouterr()
+
+    assert "Usage:" in captured.out
+    assert "input_tokens (avg): 8.000" in captured.out
+    assert "output_tokens (avg): 3.000" in captured.out

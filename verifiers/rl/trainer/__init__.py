@@ -1,37 +1,29 @@
-import logging
-
-import torch._dynamo
-
-from .config import RLConfig
-from .trainer import RLTrainer
-
-torch._dynamo.config.suppress_errors = True
+import importlib
 
 
-def GRPOTrainer(model, processing_class, env, args):
-    logging.warning("GRPOTrainer is deprecated and renamed to RLTrainer.")
-    return RLTrainer(model, processing_class, env, args)
+try:
+    _trainer = importlib.import_module("verifiers_rl.rl.trainer")
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "verifiers.rl.trainer moved to optional package 'verifiers-rl'. Install with: uv add verifiers-rl"
+    ) from e
 
-
-def GRPOConfig(**kwargs):
-    logging.warning("GRPOConfig is deprecated and renamed to RLConfig.")
-    return RLConfig(**kwargs)
-
-
-def grpo_defaults(**kwargs):
-    logging.warning("grpo_defaults is deprecated and replaced with RLConfig.")
-    return RLConfig(**kwargs)
-
-
-def lora_defaults(**kwargs):
-    raise ValueError("lora_defaults is deprecated and replaced with RLConfig.")
-
+RLTrainer = _trainer.RLTrainer
+RLConfig = _trainer.RLConfig
+GRPOTrainer = _trainer.GRPOTrainer
+GRPOConfig = _trainer.GRPOConfig
+grpo_defaults = _trainer.grpo_defaults
+lora_defaults = _trainer.lora_defaults
+get_model = _trainer.get_model
+get_model_and_tokenizer = _trainer.get_model_and_tokenizer
 
 __all__ = [
-    "RLConfig",
     "RLTrainer",
+    "RLConfig",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
     "lora_defaults",
+    "get_model",
+    "get_model_and_tokenizer",
 ]

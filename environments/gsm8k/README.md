@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: `ThinkParser` with boxed answer extraction
 - **Rubric overview**: Exact match on parsed boxed answer; optional format check
 
 ### Quickstart

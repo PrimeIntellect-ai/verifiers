@@ -1,0 +1,21 @@
+model = "openai/gpt-4.1-mini"
+reflection_model = "openai/gpt-4.1-mini"
+endpoints_path = "../endpoints.toml"
+
+[env]
+env_id = "primeintellect/wiki-search"
+env_args = {}
+extra_env_kwargs = {}
+
+[gepa]
+max_calls = 500
+num_train = 100
+num_val = 50
+minibatch_size = 3
+# perfect_score = 1.0
+# state_columns = ["tool_calls"]
+
+[execution]
+max_concurrent = 32
+seed = 0
+# sampling_args = { max_tokens = 512, temperature = 0.7 }

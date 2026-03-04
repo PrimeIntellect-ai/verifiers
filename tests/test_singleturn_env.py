@@ -13,12 +13,10 @@ from verifiers.types import RolloutTiming
 class TestSingleTurnEnv:
     """Test cases for the SingleTurnEnv class."""
 
-    def test_singleturn_env_initialization_chat(
-        self, mock_openai_client, sample_dataset
-    ):
+    def test_singleturn_env_initialization_chat(self, mock_client, sample_dataset):
         """Test SingleTurnEnv initialization with chat format."""
         env = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_dataset,
             message_type="chat",
@@ -30,7 +28,7 @@ class TestSingleTurnEnv:
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 
-    def test_singleturn_env_initialization_completion(self, mock_openai_client):
+    def test_singleturn_env_initialization_completion(self, mock_client):
         """Test SingleTurnEnv initialization with completion format."""
         completion_dataset = Dataset.from_dict(
             {
@@ -40,7 +38,7 @@ class TestSingleTurnEnv:
         )
 
         env = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=completion_dataset,
             message_type="completion",
@@ -124,7 +122,7 @@ class TestSingleTurnEnv:
         assert state["answer"] == input["answer"]
 
         # Verify the client was called
-        mock_singleturn_env.client.chat.completions.create.assert_called_once()
+        assert mock_singleturn_env.client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_rollout_completion_format(
@@ -139,16 +137,15 @@ class TestSingleTurnEnv:
         )
         completion = state["completion"]
 
-        # Should return string format for completion
-        assert isinstance(completion, str)
-        assert completion == "This is a test completion"
+        assert isinstance(completion, list)
+        assert completion[0]["content"] == "This is a test response"
 
         # Check state structure
         assert "trajectory" in state
         assert len(state["trajectory"]) == 1
 
         # Verify the client was called
-        mock_singleturn_env_completion.client.completions.create.assert_called_once()
+        assert mock_singleturn_env_completion.client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_rollout_with_sampling_args(self, mock_singleturn_env, make_input):
@@ -168,9 +165,9 @@ class TestSingleTurnEnv:
         assert completion[0]["content"] == "This is a test response"
 
         # Verify sampling args were passed
-        call_args = mock_singleturn_env.client.chat.completions.create.call_args
-        assert "temperature" in call_args.kwargs
-        assert "max_completion_tokens" in call_args.kwargs
+        call_kwargs = mock_singleturn_env.client.last_call_kwargs
+        assert call_kwargs["sampling_args"]["temperature"] == 0.8
+        assert call_kwargs["sampling_args"]["max_tokens"] == 100
 
     @pytest.mark.asyncio
     async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
@@ -200,8 +197,8 @@ class TestSingleTurnEnv:
     async def test_rollout_error_handling(self, mock_singleturn_env, make_input):
         """Test rollout handles errors from get_model_response."""
         # Mock get_model_response to return an error
-        mock_singleturn_env.client.chat.completions.create = AsyncMock(
-            side_effect=Exception("API Error")
+        mock_singleturn_env.client.get_response = AsyncMock(
+            side_effect=vf.ModelError("API Error")
         )
 
         state = await mock_singleturn_env.rollout(
@@ -335,12 +332,12 @@ class TestSingleTurnEnv:
 
     @pytest.mark.asyncio
     async def test_different_message_types_in_same_env(
-        self, mock_openai_client, sample_dataset, make_input
+        self, mock_client, sample_dataset, make_input
     ):
         """Test that environment respects its message_type setting."""
         # Chat environment
         chat_env = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_dataset,
             message_type="chat",
@@ -351,7 +348,7 @@ class TestSingleTurnEnv:
             {"prompt": ["Test prompt"], "answer": ["Test answer"]}
         )
         completion_env = SingleTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=completion_dataset,
             message_type="completion",
@@ -362,7 +359,7 @@ class TestSingleTurnEnv:
             input=make_input(
                 prompt=[{"role": "user", "content": "Hello"}], answer="Hi"
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         chat_completion = chat_state["completion"]
@@ -371,20 +368,20 @@ class TestSingleTurnEnv:
         # Test completion rollout
         comp_state = await completion_env.rollout(
             input=make_input(prompt="Complete this:", answer="Done"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         completion_result = comp_state["completion"]
-        assert isinstance(completion_result, str)
+        assert isinstance(completion_result, list)
 
     @pytest.mark.asyncio
     async def test_singleturn_stops_after_one_response(
-        self, mock_openai_client, sample_dataset, make_input
+        self, mock_client, sample_dataset, make_input
     ):
         """Test that SingleTurnEnv truly stops after one response."""
         # We'll verify this by checking the is_completed logic
         env = SingleTurnEnv(
-            client=mock_openai_client, model="test-model", dataset=sample_dataset
+            client=mock_client, model="test-model", dataset=sample_dataset
         )
 
         # Before any trajectory steps

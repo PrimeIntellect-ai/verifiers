@@ -803,58 +803,74 @@ class CUAMode:
         """Create a browser session (and sandbox if in sandbox mode)."""
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
-            async for attempt in self.retrying:  # type: ignore[union-attr]
-                with attempt:
-                    result = await self._create_session_http()
-            session_id = result.get("sessionId")
-            if not session_id:
-                raise RuntimeError("Failed to get session ID from server response")
+            try:
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        result = await self._create_session_http()
+                session_id = result.get("sessionId")
+                if not session_id:
+                    raise RuntimeError("Failed to get session ID from server response")
 
-            with self._sessions_lock:
-                self.active_sessions.add(session_id)
+                with self._sessions_lock:
+                    self.active_sessions.add(session_id)
 
-            state["session_id"] = session_id
-            state["browser_state"] = result.get("state", {})
+                state["session_id"] = session_id
+                state["browser_state"] = result.get("state", {})
+            except vf.Error:
+                raise
+            except Exception as e:
+                raise vf.BrowserSandboxError(e)
         else:
             # Sandbox mode: create sandbox, set up server, create session
-            if self.use_prebuilt_image:
-                if self.logger:
-                    self.logger.debug(f"Using prebuilt image: {self.prebuilt_image}")
+            # Wrap in try-except to ensure errors trigger cleanup via stop_errors
+            try:
+                if self.use_prebuilt_image:
+                    if self.logger:
+                        self.logger.debug(
+                            f"Using prebuilt image: {self.prebuilt_image}"
+                        )
+
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_server(sandbox_id)
+                else:
+                    if self.use_binary:
+                        await self._ensure_binary_exists()
+
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            sandbox_id = await self._create_sandbox()
+                    await self._wait_for_sandbox_ready(sandbox_id)
+                    state["cua_sandbox_id"] = sandbox_id
+                    await self._upload_server_files(sandbox_id)
+                    await self._start_server(sandbox_id)
+                    await self._wait_for_server(sandbox_id)
 
                 async for attempt in self.retrying:  # type: ignore[union-attr]
                     with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._wait_for_server(sandbox_id)
-            else:
-                if self.use_binary:
-                    await self._ensure_binary_exists()
+                        result = await self._create_session_curl(sandbox_id)
+                session_id = result.get("sessionId")
+                if not session_id:
+                    raise RuntimeError(
+                        f"Failed to get session ID from server response. "
+                        f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
+                    )
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
-                    with attempt:
-                        sandbox_id = await self._create_sandbox()
-                await self._wait_for_sandbox_ready(sandbox_id)
-                state["cua_sandbox_id"] = sandbox_id
-                await self._upload_server_files(sandbox_id)
-                await self._start_server(sandbox_id)
-                await self._wait_for_server(sandbox_id)
+                with self._sessions_lock:
+                    self.active_sessions.add(session_id)
 
-            async for attempt in self.retrying:  # type: ignore[union-attr]
-                with attempt:
-                    result = await self._create_session_curl(sandbox_id)
-            session_id = result.get("sessionId")
-            if not session_id:
-                raise RuntimeError(
-                    f"Failed to get session ID from server response. "
-                    f"Response keys: {list(result.keys())}, Response: {str(result)[:500]}"
-                )
-
-            with self._sessions_lock:
-                self.active_sessions.add(session_id)
-
-            state["session_id"] = session_id
-            state["browser_state"] = result.get("state", {})
+                state["session_id"] = session_id
+                state["browser_state"] = result.get("state", {})
+            except vf.Error:
+                # Re-raise vf.Error subclasses as-is (they're already handled)
+                raise
+            except Exception as e:
+                # Wrap all other exceptions in BrowserSandboxError
+                # This ensures cleanup_session is called via stop_errors mechanism
+                raise vf.BrowserSandboxError(e)
 
         return state
 

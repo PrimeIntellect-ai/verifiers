@@ -4,12 +4,10 @@ import re
 from typing import Any
 
 import pytest
-from openai.types.chat.chat_completion import ChatCompletion, Choice
-from openai.types.chat.chat_completion_message import ChatCompletionMessage
-from openai.types.completion import Completion as OAICompletion
-from openai.types.completion_choice import CompletionChoice
 
+from tests.conftest import MockClient
 from verifiers.envs.experimental.gym_env import EpisodicSumRubric, GymEnv
+from verifiers.types import Response, ResponseMessage
 
 
 # ----------------- Toy Environment -----------------
@@ -47,71 +45,81 @@ class ToyEnv:
         return f"x={self.x}", reward, done, False, info
 
 
-# ----------------- Mock OpenAI Client -----------------
-class _MockChatCompletions:
-    async def create(self, *, model: str, messages: list[dict[str, str]], **kwargs):
-        last_user = next(
-            (
-                m.get("content") or ""
-                for m in reversed(messages)
-                if m.get("role") == "user"
+class GymMockClient(MockClient):
+    """Mock client for GymEnv tests that responds based on x=N observations."""
+
+    @staticmethod
+    def _is_text_prompt(prompt) -> bool:
+        """Detect completion-mode prompts (single TextMessage with role='text')."""
+        if isinstance(prompt, str):
+            return True
+        if isinstance(prompt, list) and len(prompt) == 1:
+            msg = prompt[0]
+            role = msg["role"] if isinstance(msg, dict) else getattr(msg, "role", None)
+            if role == "text":
+                return True
+        return False
+
+    @staticmethod
+    def _extract_text(prompt) -> str:
+        """Extract text content from a text/completion prompt."""
+        if isinstance(prompt, str):
+            return prompt
+        msg = prompt[0]
+        if isinstance(msg, dict):
+            return msg.get("content", "")
+        return getattr(msg, "content", "")
+
+    async def get_response(self, prompt, model, sampling_args, tools=None, **kwargs):
+        self.call_count += 1
+        self.last_call_kwargs = {
+            "prompt": prompt,
+            "model": model,
+            "sampling_args": sampling_args,
+            "tools": tools,
+            **kwargs,
+        }
+
+        # Extract last user content
+        last_user = ""
+        if self._is_text_prompt(prompt):
+            last_user = self._extract_text(prompt)
+        elif isinstance(prompt, list):
+            for msg in reversed(prompt):
+                role = (
+                    msg.get("role")
+                    if isinstance(msg, dict)
+                    else getattr(msg, "role", "")
+                )
+                if role == "user":
+                    content = (
+                        msg.get("content")
+                        if isinstance(msg, dict)
+                        else getattr(msg, "content", "")
+                    )
+                    last_user = str(content)
+                    break
+
+        n = 0
+        m = re.search(r"x\s*=\s*(-?\d+)", last_user)
+        if m:
+            n = int(m.group(1))
+        action = "1" if n < 3 else "0"
+
+        return Response(
+            id="mock-id",
+            created=0,
+            model=model,
+            usage=None,
+            message=ResponseMessage(
+                content=action,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
             ),
-            "",
         )
-        n = 0
-        m = re.search(r"x\s*=\s*(-?\d+)", str(last_user))
-        if m:
-            n = int(m.group(1))
-
-        action = "1" if n < 3 else "0"
-
-        message = ChatCompletionMessage.model_construct(
-            role="assistant", content=action, tool_calls=None
-        )
-        choice = Choice.model_construct(
-            index=0, message=message, finish_reason="stop", logprobs=None
-        )
-        return ChatCompletion.model_construct(
-            id="mock-chatcmpl",
-            choices=[choice],
-            created=0,
-            model=model,
-            object="chat.completion",
-            usage=None,
-        )
-
-
-class _MockCompletions:
-    async def create(self, *, model: str, prompt: str, **kwargs):
-        n = 0
-        m = re.search(r"x\s*=\s*(-?\d+)", prompt or "")
-        if m:
-            n = int(m.group(1))
-        action = "1" if n < 3 else "0"
-
-        choice = CompletionChoice.model_construct(
-            index=0, text=action, logprobs=None, finish_reason="stop"
-        )
-        return OAICompletion.model_construct(
-            id="mock-cmpl",
-            choices=[choice],
-            created=0,
-            model=model,
-            object="text_completion",
-            usage=None,
-        )
-
-
-class _MockChat:
-    def __init__(self):
-        self.completions = _MockChatCompletions()
-
-
-class MockAsyncOpenAI:
-    def __init__(self):
-        self.chat = _MockChat()
-        self.completions = _MockCompletions()
-        self.base_url = "mock://local"
 
 
 def parse_action(txt: str) -> int:
@@ -128,7 +136,7 @@ def toy_env_class():
 
 @pytest.fixture
 def client():
-    return MockAsyncOpenAI()
+    return GymMockClient()
 
 
 # ----------------- Tests -----------------
@@ -321,25 +329,6 @@ def test_missing_env_cls_raises_error():
         GymEnv(action_parser=parse_action)  # type: ignore[call-arg]
 
 
-def test_completion_mode(toy_env_class, client):
-    """Completion mode uses string prompts instead of chat messages."""
-    env = GymEnv(
-        env_cls=toy_env_class,
-        action_parser=parse_action,
-        message_type="completion",
-        num_train_episodes=0,
-        num_eval_episodes=1,
-    )
-
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["outputs"][0]
-
-    assert isinstance(st["prompt"], str)
-    assert st["prompt"] == "x=0"
-    comp = st.get("completion", "")
-    assert isinstance(comp, str)
-
-
 def test_dataset_generation_chat_mode(toy_env_class):
     """gym_to_hf generates datasets with question column for chat mode."""
     env = GymEnv(
@@ -355,22 +344,6 @@ def test_dataset_generation_chat_mode(toy_env_class):
     assert len(env.dataset) == 10
     assert len(env.eval_dataset) == 3
     assert "question" in env.dataset.column_names
-
-
-def test_dataset_generation_completion_mode(toy_env_class):
-    """gym_to_hf generates datasets with prompt column for completion mode."""
-    env = GymEnv(
-        env_cls=toy_env_class,
-        action_parser=parse_action,
-        message_type="completion",
-        num_train_episodes=5,
-        num_eval_episodes=2,
-    )
-
-    assert env.dataset is not None
-    assert len(env.dataset) == 5
-    assert "prompt" in env.dataset.column_names
-    assert isinstance(env.dataset[0]["prompt"], str)
 
 
 def test_train_and_eval_datasets_separate(toy_env_class):

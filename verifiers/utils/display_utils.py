@@ -166,6 +166,10 @@ class BaseDisplay:
         if self._live:
             self._live.update(self._render())
 
+    def get_log_hint(self) -> Text | None:
+        """Return an optional hint for viewing full logs."""
+        return Text("full logs: --debug", style="dim")
+
     def _make_log_panel(self) -> Panel:
         """Create a panel showing recent log messages with placeholder lines."""
         max_lines = self._log_handler.logs.maxlen or 3
@@ -181,7 +185,16 @@ class BaseDisplay:
             else:
                 log_text.append(" ", style="dim")  # placeholder line
 
-        return Panel(log_text, title="[dim]Logs[/dim]", border_style="dim")
+        subtitle = self.get_log_hint()
+        if subtitle is None:
+            return Panel(log_text, title="[dim]Logs[/dim]", border_style="dim")
+        return Panel(
+            log_text,
+            title="[dim]Logs[/dim]",
+            subtitle=subtitle,
+            subtitle_align="center",
+            border_style="dim",
+        )
 
     def start(self) -> None:
         """Start the live display."""
@@ -250,13 +263,17 @@ class BaseDisplay:
             new_settings[3] = new_settings[3] & ~termios.ECHO
             termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
 
+        # In non-TUI mode, clamp vertical overflow so oversized renders don't
+        # scroll and smear repeated frames in-place.
+        vertical_overflow = "visible" if self.screen else "ellipsis"
+
         self._live = Live(
             self._render(),
             console=self.console,
             refresh_per_second=self.refresh_per_second,
             screen=self.screen,
             transient=False,  # Keep final display visible in scrollback
-            vertical_overflow="visible",
+            vertical_overflow=vertical_overflow,
         )
         self._live.start()
 
@@ -300,10 +317,10 @@ class BaseDisplay:
 
         # Restore stdout/stderr
         if self._old_stdout is not None:
-            sys.stdout = self._old_stdout  # type: ignore[assignment]
+            sys.stdout = self._old_stdout
             self._old_stdout = None
         if self._old_stderr is not None:
-            sys.stderr = self._old_stderr  # type: ignore[assignment]
+            sys.stderr = self._old_stderr
             self._old_stderr = None
         if self._console_file is not None:
             # Redirect console back to original stdout before closing temp stream

@@ -254,6 +254,32 @@ def format_prompt_or_completion(prompt_or_completion) -> Text:
     return out
 
 
+def _coerce_info_value(info: Any) -> Any:
+    """Return parsed JSON when info is a JSON string, otherwise original value."""
+    if not isinstance(info, str):
+        return info
+    stripped = info.strip()
+    if not stripped:
+        return ""
+    if stripped[0] not in "[{":
+        return info
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return info
+
+
+def format_info_for_details(info: Any) -> str:
+    """Format record info for the details panel in rollout view."""
+    info_value = _coerce_info_value(info)
+    if isinstance(info_value, (dict, list)):
+        try:
+            return json.dumps(info_value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            return str(info_value)
+    return str(info_value)
+
+
 # ----------------------------
 # Custom Panel Widget
 # ----------------------------
@@ -650,8 +676,12 @@ class ViewRunScreen(Screen):
                         id="completion-scroll",
                     )
 
-            # Details section (horizontal scroll)
-            yield Panel(Static("", id="details", markup=False), classes="details-panel")
+            # Details section
+            with Panel(classes="details-panel"):
+                yield VerticalScroll(
+                    Static("", id="details", markup=False),
+                    id="details-scroll",
+                )
 
         yield Footer()
 
@@ -803,13 +833,12 @@ class ViewRunScreen(Screen):
         info = record.get("info", None)
         if info not in (None, {}):
             details_lines.append("Info: ", style="bold")
-            try:
-                details_lines.append(json.dumps(info, ensure_ascii=False, indent=2))
-            except Exception:
-                details_lines.append(str(info))
+            details_lines.append(format_info_for_details(info))
 
         task = record.get("task", None)
         if task not in (None, ""):
+            if details_lines.plain and not details_lines.plain.endswith("\n"):
+                details_lines.append("\n")
             details_lines.append("Task: ", style="bold")
             details_lines.append(str(task))
 
@@ -835,6 +864,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_next_record(self) -> None:
         if self.records:
@@ -843,6 +873,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_search(self) -> None:
         if not self.records:
@@ -1063,7 +1094,7 @@ class VerifiersTUI(App):
         text-style: bold;
     }
     
-    #prompt-scroll, #completion-scroll {
+    #prompt-scroll, #completion-scroll, #details-scroll {
         height: 1fr;
         background: $surface;
         padding: 0 1;
@@ -1077,6 +1108,7 @@ class VerifiersTUI(App):
         min-height: 3;
         max-height: 6;
     }
+
     
     .run-list-panel {
         height: 1fr;

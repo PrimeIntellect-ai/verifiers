@@ -128,11 +128,11 @@ class TestStopPriorityOrdering:
             )
         ]
 
-    def test_stop_conditions_sorted_by_priority(self, mock_openai_client):
+    def test_stop_conditions_sorted_by_priority(self, mock_client):
         """Test that stop conditions are sorted by priority."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedStopEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -146,11 +146,11 @@ class TestStopPriorityOrdering:
         names = [method.__name__ for method in class_stop_conditions]
         assert names == ["early_stop", "another_default", "default_stop", "late_stop"]
 
-    def test_stop_conditions_tie_breaking_alphabetical(self, mock_openai_client):
+    def test_stop_conditions_tie_breaking_alphabetical(self, mock_client):
         """Test that stop conditions with same priority are sorted alphabetically."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedStopEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -170,18 +170,18 @@ class TestStopPriorityOrdering:
         assert names == ["another_default", "default_stop"]
 
     @pytest.mark.asyncio
-    async def test_stop_conditions_execution_order(self, mock_openai_client):
+    async def test_stop_conditions_execution_order(self, mock_client):
         """Test that stop conditions execute in priority order."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedStopEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
             rubric=vf.Rubric(),
         )
 
-        mock_openai_client.set_default_responses(chat_response="test")
+        mock_client.set_default_response("test")
 
         await env.rollout(
             input=RolloutInput(
@@ -190,7 +190,7 @@ class TestStopPriorityOrdering:
                 example_id=0,
                 task="test",
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -224,11 +224,11 @@ class TestStopPriorityOrdering:
 class TestCleanupPriorityOrdering:
     """Test cleanup handler priority ordering."""
 
-    def test_cleanup_handlers_sorted_by_priority(self, mock_openai_client):
+    def test_cleanup_handlers_sorted_by_priority(self, mock_client):
         """Test that cleanup handlers are sorted by priority."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedCleanupEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -244,11 +244,11 @@ class TestCleanupPriorityOrdering:
             "late_cleanup",
         ]
 
-    def test_cleanup_handlers_tie_breaking_alphabetical(self, mock_openai_client):
+    def test_cleanup_handlers_tie_breaking_alphabetical(self, mock_client):
         """Test that cleanup handlers with same priority are sorted alphabetically."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedCleanupEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -265,11 +265,11 @@ class TestCleanupPriorityOrdering:
         assert names == ["another_default_cleanup", "default_cleanup"]
 
     @pytest.mark.asyncio
-    async def test_cleanup_handlers_execution_order(self, mock_openai_client):
+    async def test_cleanup_handlers_execution_order(self, mock_client):
         """Test that cleanup handlers execute in priority order."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedCleanupEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -283,7 +283,7 @@ class TestCleanupPriorityOrdering:
                 example_id=0,
                 task="test",
             ),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         await env._cleanup(state)
@@ -301,11 +301,11 @@ class TestCleanupPriorityOrdering:
 class TestTeardownPriorityOrdering:
     """Test teardown handler priority ordering."""
 
-    def test_teardown_handlers_sorted_by_priority(self, mock_openai_client):
+    def test_teardown_handlers_sorted_by_priority(self, mock_client):
         """Test that teardown handlers are sorted by priority."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedTeardownEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -321,11 +321,11 @@ class TestTeardownPriorityOrdering:
             "late_teardown",
         ]
 
-    def test_teardown_handlers_tie_breaking_alphabetical(self, mock_openai_client):
+    def test_teardown_handlers_tie_breaking_alphabetical(self, mock_client):
         """Test that teardown handlers with same priority are sorted alphabetically."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedTeardownEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -342,11 +342,11 @@ class TestTeardownPriorityOrdering:
         assert names == ["another_default_teardown", "default_teardown"]
 
     @pytest.mark.asyncio
-    async def test_teardown_handlers_execution_order(self, mock_openai_client):
+    async def test_teardown_handlers_execution_order(self, mock_client):
         """Test that teardown handlers execute in priority order."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RankedTeardownEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -368,7 +368,7 @@ class TestTeardownPriorityOrdering:
 class TestDecoratorPriorityEdgeCases:
     """Test edge cases for decorator priority functionality."""
 
-    def test_decorator_without_priority_defaults_to_zero(self, mock_openai_client):
+    def test_decorator_without_priority_defaults_to_zero(self, mock_client):
         """Test that decorators without priority parameter default to priority 0."""
 
         class DefaultPriorityEnv(vf.MultiTurnEnv):
@@ -389,7 +389,7 @@ class TestDecoratorPriorityEdgeCases:
 
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = DefaultPriorityEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -431,7 +431,7 @@ class TestDecoratorPriorityEdgeCases:
         assert getattr(class_cleanup, "cleanup_priority", None) == 0
         assert getattr(class_teardown, "teardown_priority", None) == 0
 
-    def test_high_priorities_run_before_default(self, mock_openai_client):
+    def test_high_priorities_run_before_default(self, mock_client):
         """Test that high priorities run before default priority 0."""
 
         class HighPriorityEnv(vf.MultiTurnEnv):
@@ -459,7 +459,7 @@ class TestDecoratorPriorityEdgeCases:
 
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = HighPriorityEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -483,7 +483,7 @@ class TestDecoratorPriorityEdgeCases:
         names = [method.__name__ for method in class_stop_conditions]
         assert names == ["very_early", "early", "default"]
 
-    def test_low_priorities_run_after_default(self, mock_openai_client):
+    def test_low_priorities_run_after_default(self, mock_client):
         """Test that low priorities run after default priority 0."""
 
         class LowPriorityEnv(vf.MultiTurnEnv):
@@ -504,7 +504,7 @@ class TestDecoratorPriorityEdgeCases:
 
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = LowPriorityEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),
@@ -528,7 +528,7 @@ class TestDecoratorPriorityEdgeCases:
         names = [method.__name__ for method in class_stop_conditions]
         assert names == ["default", "late", "very_late"]
 
-    def test_mixed_priorities_complex_ordering(self, mock_openai_client):
+    def test_mixed_priorities_complex_ordering(self, mock_client):
         """Test complex ordering with mixed priorities."""
 
         class MixedPriorityEnv(vf.MultiTurnEnv):
@@ -557,7 +557,7 @@ class TestDecoratorPriorityEdgeCases:
 
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = MixedPriorityEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=vf.Parser(),

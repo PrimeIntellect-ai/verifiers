@@ -11,14 +11,22 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
+from verifiers.types import ClientConfig
+from verifiers.utils.metric_utils import compute_pass_at_k
 from verifiers.utils.save_utils import (
+    GenerateOutputsBuilder,
     extract_usage_tokens,
+    load_outputs,
     make_serializable,
+    save_new_outputs,
     states_to_outputs,
+    validate_resume_metadata,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 
 
 # Test models for make_serializable tests
@@ -128,6 +136,30 @@ class TestSavingMetadata:
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
         assert result["state_columns"] == []
 
+    def test_generate_outputs_builder_serializes_endpoint_configs_base_url(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(
+                api_base_url="http://localhost:8000/v1",
+                endpoint_configs=[
+                    ClientConfig(api_base_url="http://localhost:8000/v1"),
+                    ClientConfig(api_base_url="http://localhost:8001/v1"),
+                ],
+            ),
+            num_examples=1,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+        metadata = builder.build_metadata()
+        assert isinstance(metadata["base_url"], str)
+        assert (
+            metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        )
+
 
 class TestSavingResults:
     def test_extract_usage_tokens_prompt_completion(self):
@@ -157,6 +189,27 @@ class TestSavingResults:
         assert input_tokens == 8
         assert output_tokens == 3
 
+    def test_extract_usage_tokens_invalid_values(self):
+        response = type(
+            "Response",
+            (),
+            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
+        )()
+        input_tokens, output_tokens = extract_usage_tokens(response)
+        assert input_tokens == 0
+        assert output_tokens == 0
+
+    def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
+        self, make_state
+    ):
+        state = make_state()
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = []
+        output = states_to_outputs([state], state_columns=[])[0]
+        assert "token_usage" not in output
+
     def test_states_to_outputs(self, make_state):
         states = [
             make_state(
@@ -181,6 +234,34 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
+    def test_states_to_outputs_completion_keeps_messages(self, make_state):
+        states = [
+            make_state(
+                prompt=[
+                    {"role": "text", "content": "Start:"},
+                    {"role": "assistant", "content": "First response"},
+                    {"role": "text", "content": " Continue."},
+                ],
+                completion=[
+                    {"role": "assistant", "content": "Final DONE"},
+                ],
+                answer="",
+                info={},
+                reward=1.0,
+                message_type="completion",
+            )
+        ]
+        outputs = states_to_outputs(states, state_columns=[])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
+        assert result[0]["prompt"] == [
+            {"role": "text", "content": "Start:"},
+            {"role": "assistant", "content": "First response"},
+            {"role": "text", "content": " Continue."},
+        ]
+        assert result[0]["completion"] == [
+            {"role": "assistant", "content": "Final DONE"},
+        ]
+
     def test_non_serializable_state_column_raises(self, make_state):
         """Non-serializable state_columns should raise ValueError."""
         import pytest
@@ -194,3 +275,358 @@ class TestSavingResults:
         ]
         with pytest.raises(ValueError, match="not JSON-serializable"):
             states_to_outputs(states, state_columns=["client"])
+
+
+class TestLoadOutputs:
+    def test_ignores_malformed_trailing_line(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        valid_outputs = [
+            {"example_id": 0, "task": "task-0"},
+            {"example_id": 1, "task": "task-1"},
+        ]
+        partial_trailing_line = '{"example_id": 2, "task": "task-2"'
+        lines = [json.dumps(output) for output in valid_outputs]
+        outputs_path.write_text(
+            "\n".join(lines + [partial_trailing_line]) + "\n", encoding="utf-8"
+        )
+
+        outputs = load_outputs(results_path)
+
+        assert len(outputs) == 2
+        assert outputs[0]["example_id"] == 0
+        assert outputs[1]["example_id"] == 1
+
+    def test_raises_for_malformed_non_trailing_line(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        malformed_non_trailing_line = '{"example_id": 0, "task": "broken"'
+        valid_line = json.dumps({"example_id": 1, "task": "task-1"})
+        outputs_path.write_text(
+            "\n".join([malformed_non_trailing_line, valid_line]) + "\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(json.JSONDecodeError):
+            load_outputs(results_path)
+
+
+class TestSaveNewOutputs:
+    def test_truncates_malformed_trailing_line_before_append(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        existing_outputs = [
+            {"example_id": 0, "task": "task-0"},
+            {"example_id": 1, "task": "task-1"},
+        ]
+        malformed_trailing_line = '{"example_id": 2, "task": "task-2"'
+        lines = [json.dumps(output) for output in existing_outputs]
+        outputs_path.write_text(
+            "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
+        )
+
+        save_new_outputs(
+            [{"example_id": 3, "task": "task-3"}],
+            results_path,
+        )
+
+        persisted_lines = [
+            line
+            for line in outputs_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        parsed_outputs = [json.loads(line) for line in persisted_lines]
+
+        assert [output["example_id"] for output in parsed_outputs] == [0, 1, 3]
+        assert [output["example_id"] for output in load_outputs(results_path)] == [
+            0,
+            1,
+            3,
+        ]
+
+
+class TestResumeMetadataValidation:
+    def test_validate_resume_metadata_accepts_matching_config(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=3,
+            rollouts_per_example=2,
+        )
+
+    def test_validate_resume_metadata_accepts_increased_num_examples(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=5,
+            rollouts_per_example=2,
+        )
+
+    def test_validate_resume_metadata_raises_on_mismatch(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 8,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="metadata mismatch"):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id="math-env",
+                model="test-model",
+                num_examples=3,
+                rollouts_per_example=2,
+            )
+
+
+class TestComputePassAtK:
+    @staticmethod
+    def _make_output(example_id: int, reward: float) -> dict:
+        return {"example_id": example_id, "reward": reward}
+
+    def test_single_rollout_returns_empty(self):
+        """rollouts_per_example=1 should return empty dicts."""
+        outputs = [self._make_output(0, 1.0)]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=1)
+        assert pass_at_k == {}
+        assert pass_all_k == {}
+
+    def test_all_correct(self):
+        """All rollouts correct → pass@k = 1.0 and pass^k = 1.0 for all k."""
+        outputs = [self._make_output(0, 1.0) for _ in range(8)]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=8)
+        assert set(pass_at_k.keys()) == {"1", "2", "4", "8"}
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(1.0)
+            assert pass_all_k[k] == pytest.approx(1.0)
+
+    def test_none_correct(self):
+        """No rollouts correct → pass@k = 0.0 and pass^k = 0.0 for all k."""
+        outputs = [self._make_output(0, 0.0) for _ in range(8)]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=8)
+        assert set(pass_at_k.keys()) == {"1", "2", "4", "8"}
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(0.0)
+            assert pass_all_k[k] == pytest.approx(0.0)
+
+    def test_partial_correctness(self):
+        """Partial correctness: 2 correct out of 4 rollouts."""
+        outputs = [
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 0.0),
+            self._make_output(0, 0.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # k values: 1, 2, 4
+        assert set(pass_at_k.keys()) == {"1", "2", "4"}
+        # n=4, c=2: pass@1 = 1 - C(2,1)/C(4,1) = 1 - 2/4 = 0.5
+        assert pass_at_k["1"] == pytest.approx(0.5)
+        # n=4, c=2: pass@2 = 1 - C(2,2)/C(4,2) = 1 - 1/6
+        assert pass_at_k["2"] == pytest.approx(1.0 - 1.0 / 6.0)
+        # n=4, c=2: pass@4 = 1 - C(2,4)/C(4,4) = 1 - 0/1 = 1.0 (n-c < k)
+        assert pass_at_k["4"] == pytest.approx(1.0)
+        # pass^k: C(c,k)/C(n,k)
+        # n=4, c=2: pass^1 = C(2,1)/C(4,1) = 2/4 = 0.5
+        assert pass_all_k["1"] == pytest.approx(0.5)
+        # n=4, c=2: pass^2 = C(2,2)/C(4,2) = 1/6
+        assert pass_all_k["2"] == pytest.approx(1.0 / 6.0)
+        # n=4, c=2: pass^4 = C(2,4)/C(4,4) = 0/1 = 0.0
+        assert pass_all_k["4"] == pytest.approx(0.0)
+
+    def test_multiple_examples_averaged(self):
+        """pass@k and pass^k are averaged across multiple examples."""
+        outputs = [
+            # Example 0: all correct
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            # Example 1: none correct
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        assert set(pass_at_k.keys()) == {"1", "2", "4"}
+        # pass@1: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k["1"] == pytest.approx(0.5)
+        # pass@2: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k["2"] == pytest.approx(0.5)
+        # pass@4: (1.0 + 0.0) / 2 = 0.5
+        assert pass_at_k["4"] == pytest.approx(0.5)
+        # pass^1: (1.0 + 0.0) / 2 = 0.5
+        assert pass_all_k["1"] == pytest.approx(0.5)
+        # pass^4: (1.0 + 0.0) / 2 = 0.5
+        assert pass_all_k["4"] == pytest.approx(0.5)
+
+    def test_powers_of_two_k_selection(self):
+        """k values are powers of 2 in [1, n]."""
+        outputs = [self._make_output(0, 1.0) for _ in range(16)]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=16)
+        assert set(pass_at_k.keys()) == {"1", "2", "4", "8", "16"}
+
+    def test_n3_k_values(self):
+        """n=3 should give k=1,2."""
+        outputs = [self._make_output(0, 1.0) for _ in range(3)]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=3)
+        assert set(pass_at_k.keys()) == {"1", "2"}
+
+    def test_correctness_threshold(self):
+        """Only reward >= 0.5 counts as correct by default."""
+        outputs = [
+            self._make_output(0, 0.49),  # not correct
+            self._make_output(0, 0.5),  # correct
+            self._make_output(0, 1.0),  # correct
+            self._make_output(0, 0.0),  # not correct
+        ]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # n=4, c=2
+        assert pass_at_k["1"] == pytest.approx(0.5)
+
+    def test_custom_threshold(self):
+        """Custom threshold changes which rollouts count as correct."""
+        outputs = [
+            self._make_output(0, 0.4),  # not correct at 0.7
+            self._make_output(0, 0.6),  # not correct at 0.7
+            self._make_output(0, 0.8),  # correct at 0.7
+            self._make_output(0, 0.3),  # not correct at 0.7
+        ]
+        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4, threshold=0.7)
+        # n=4, c=1: pass@1 = 1 - C(3,1)/C(4,1) = 1 - 3/4 = 0.25
+        assert pass_at_k["1"] == pytest.approx(0.25)
+        # n=4, c=1: pass@2 = 1 - C(3,2)/C(4,2) = 1 - 3/6 = 0.5
+        assert pass_at_k["2"] == pytest.approx(0.5)
+
+    def test_builder_includes_pass_at_k(self):
+        """GenerateOutputsBuilder.build_metadata() includes pass_at_k and pass_all_k."""
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=4,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+        builder.add_outputs(
+            [
+                {"example_id": 0, "reward": 1.0, "metrics": {}},
+                {"example_id": 0, "reward": 0.0, "metrics": {}},
+                {"example_id": 0, "reward": 1.0, "metrics": {}},
+                {"example_id": 0, "reward": 0.0, "metrics": {}},
+            ]
+        )
+        metadata = builder.build_metadata()
+        assert set(metadata["pass_at_k"].keys()) == {"1", "2", "4"}
+        assert set(metadata["pass_all_k"].keys()) == {"1", "2", "4"}
+        assert metadata["pass_threshold"] == 0.5
+
+    def test_builder_uses_custom_threshold(self):
+        """GenerateOutputsBuilder respects pass_threshold."""
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=4,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+            pass_threshold=0.7,
+        )
+        builder.add_outputs(
+            [
+                {"example_id": 0, "reward": 0.4, "metrics": {}},
+                {"example_id": 0, "reward": 0.6, "metrics": {}},
+                {"example_id": 0, "reward": 0.8, "metrics": {}},
+                {"example_id": 0, "reward": 0.3, "metrics": {}},
+            ]
+        )
+        metadata = builder.build_metadata()
+        assert metadata["pass_threshold"] == 0.7
+        # 1 of 4 correct at threshold=0.7: pass@1 = 1 - C(3,1)/C(4,1) = 0.25
+        assert metadata["pass_at_k"]["1"] == pytest.approx(0.25)
+        # 1 of 4 correct at threshold=0.7: pass^1 = C(1,1)/C(4,1) = 0.25
+        assert metadata["pass_all_k"]["1"] == pytest.approx(0.25)
+
+    def test_incomplete_groups_excluded(self):
+        """Examples with fewer outputs than rollouts_per_example are excluded."""
+        outputs = [
+            # Example 0: complete group (4 rollouts), all correct
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            # Example 1: incomplete group (only 2 of 4 rollouts)
+            self._make_output(1, 0.0),
+            self._make_output(1, 0.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        # Only example 0 contributes; example 1 is excluded entirely
+        assert pass_at_k["1"] == pytest.approx(1.0)
+        assert pass_all_k["1"] == pytest.approx(1.0)
+
+    def test_all_groups_incomplete_returns_empty(self):
+        """If no example has a complete group, return empty dicts."""
+        outputs = [
+            self._make_output(0, 1.0),
+            self._make_output(0, 1.0),
+            self._make_output(1, 1.0),
+        ]
+        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
+        assert pass_at_k == {}
+        assert pass_all_k == {}
