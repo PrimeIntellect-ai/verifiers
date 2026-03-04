@@ -24,6 +24,14 @@ class StdioTransport(MCPTransport):
         self._error: Exception | None = None
 
     async def connect(self) -> dict[str, MCPTool]:
+        if self._connection_task is not None and not self._connection_task.done():
+            await self._ready.wait()
+            if self._error is not None:
+                raise self._error
+            return self.tools
+
+        self._ready.clear()
+        self._error = None
         self._connection_task = asyncio.create_task(self._maintain_connection())
         await self._ready.wait()
 

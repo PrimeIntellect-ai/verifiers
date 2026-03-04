@@ -745,6 +745,59 @@ class TestMCPEnv:
         await transport.disconnect()
 
     @pytest.mark.asyncio
+    async def test_stdio_connect_can_retry_after_failed_attempt(self, monkeypatch):
+        stdio_module = pytest.importorskip("verifiers.utils.mcp_utils.transports.stdio")
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        attempts = 0
+        tool = create_tool(
+            name="lookup",
+            description="Lookup a value",
+            parameters={"query": {"type": "string"}},
+            required=["query"],
+        )
+
+        @asynccontextmanager
+        async def fake_stdio_client(server_params):
+            yield object(), object()
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self.read = read
+                self.write = write
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("first attempt failed")
+                return None
+
+            async def list_tools(self):
+                return type("ToolsResponse", (), {"tools": [tool]})()
+
+        monkeypatch.setattr(stdio_module, "stdio_client", fake_stdio_client)
+        monkeypatch.setattr(stdio_module, "ClientSession", FakeClientSession)
+
+        transport = stdio_module.StdioTransport(
+            models_module.MCPServerConfig(name="local", command="dummy"),
+            timeout=0.01,
+        )
+
+        with pytest.raises(RuntimeError, match="first attempt failed"):
+            await transport.connect()
+
+        assert await transport.connect() == {"lookup": tool}
+        assert attempts == 2
+        await transport.disconnect()
+
+    @pytest.mark.asyncio
     async def test_streaming_http_reconnect_exhaustion_raises_disconnect_error(
         self, monkeypatch
     ):
@@ -824,6 +877,81 @@ class TestMCPEnv:
         assert attempts == 2
         with pytest.raises(ConnectionError, match="Lost connection to MCP server"):
             await transport.call_tool("lookup", {"query": "ping"})
+        await transport.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_streaming_http_connect_can_retry_after_failed_attempt(
+        self, monkeypatch
+    ):
+        transport_module = pytest.importorskip(
+            "verifiers.utils.mcp_utils.transports.streaming_http"
+        )
+        models_module = pytest.importorskip("verifiers.utils.mcp_utils.models")
+
+        attempts = 0
+        tool = create_tool(
+            name="lookup",
+            description="Lookup a value",
+            parameters={"query": {"type": "string"}},
+            required=["query"],
+        )
+
+        @asynccontextmanager
+        async def fake_streamablehttp_client(url):
+            yield object(), object(), None
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self.read = read
+                self.write = write
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("first attempt failed")
+                return None
+
+            async def list_tools(self):
+                return type("ToolsResponse", (), {"tools": [tool]})()
+
+            async def call_tool(self, tool_name, arguments):
+                return f"{tool_name}:{arguments['query']}"
+
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay):
+            await real_sleep(0)
+
+        monkeypatch.setattr(
+            transport_module,
+            "streamablehttp_client",
+            fake_streamablehttp_client,
+        )
+        monkeypatch.setattr(
+            transport_module,
+            "ClientSession",
+            FakeClientSession,
+        )
+        monkeypatch.setattr(transport_module.asyncio, "sleep", fake_sleep)
+
+        transport = StreamingHTTPTransport(
+            models_module.MCPServerConfig(name="remote", url="http://example/mcp"),
+            url="http://example/mcp",
+            max_retries=0,
+        )
+
+        with pytest.raises(ConnectionError, match="Failed to connect to MCP server"):
+            await transport.connect()
+
+        assert await transport.connect() == {"lookup": tool}
+        assert attempts == 2
         await transport.disconnect()
 
     @pytest.mark.asyncio
