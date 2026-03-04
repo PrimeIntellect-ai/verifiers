@@ -661,18 +661,13 @@ class EvalDisplay(BaseDisplay):
             expand=True,
         )
 
-        # --- Detail panel for selected env ---
-        if self.screen:
-            # Screen mode: fill terminal exactly
-            # Detail fixed overhead: 2 borders + 2 padding + 8 content lines
-            # + 2 logs panel borders = 14
-            footer_height = 3
-            detail_fixed = 14
-            available = term_height - overview_height - footer_height - detail_fixed
-            log_max_lines = max(3, available)
-        else:
-            # Non-screen mode: generous fixed default
-            log_max_lines = 20
+        # --- Detail panel: log area fills remaining terminal space ---
+        # Detail fixed overhead: 2 borders + 2 padding + 8 content lines
+        # + 2 logs panel borders = 14
+        footer_height = 3
+        detail_fixed = 14
+        available = term_height - overview_height - footer_height - detail_fixed
+        log_max_lines = max(3, available)
 
         detail_panel = self._make_env_panel(
             self._selected_env_idx, log_max_lines=log_max_lines
