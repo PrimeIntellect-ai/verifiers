@@ -822,7 +822,9 @@ class CUAMode:
                 raise vf.BrowserSandboxError(e)
         else:
             # Sandbox mode: create sandbox, set up server, create session
-            # Wrap in try-except to ensure errors trigger cleanup via stop_errors
+            # Wrap in try-except to ensure errors trigger cleanup via stop_errors.
+            # Store sandbox_id in state immediately after creation so cleanup_session
+            # can delete it even if later steps (wait_for_ready, wait_for_server) fail.
             try:
                 if self.use_prebuilt_image:
                     if self.logger:
@@ -833,8 +835,8 @@ class CUAMode:
                     async for attempt in self.retrying:  # type: ignore[union-attr]
                         with attempt:
                             sandbox_id = await self._create_sandbox()
-                    await self._wait_for_sandbox_ready(sandbox_id)
                     state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
                     await self._wait_for_server(sandbox_id)
                 else:
                     if self.use_binary:
@@ -843,8 +845,8 @@ class CUAMode:
                     async for attempt in self.retrying:  # type: ignore[union-attr]
                         with attempt:
                             sandbox_id = await self._create_sandbox()
-                    await self._wait_for_sandbox_ready(sandbox_id)
                     state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
                     await self._upload_server_files(sandbox_id)
                     await self._start_server(sandbox_id)
                     await self._wait_for_server(sandbox_id)
