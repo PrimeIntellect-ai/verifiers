@@ -413,6 +413,25 @@ class Rubric:
         scoring_ms = (end_time - start_time) * 1000
         avg_reward = sum(aggregated_rewards) / num_states
 
+        # Compute per-agent baselines for multi-agent environments
+        # Each agent's advantage is relative to that agent's mean reward
+        agent_baselines: dict[str, float] = {}
+        agent_reward_sums: dict[str, float] = {}
+        agent_reward_counts: dict[str, int] = {}
+
+        for i in range(num_states):
+            for agent_id, reward in aggregated_agent_rewards[i].items():
+                if agent_id not in agent_reward_sums:
+                    agent_reward_sums[agent_id] = 0.0
+                    agent_reward_counts[agent_id] = 0
+                agent_reward_sums[agent_id] += reward
+                agent_reward_counts[agent_id] += 1
+
+        for agent_id in agent_reward_sums:
+            agent_baselines[agent_id] = (
+                agent_reward_sums[agent_id] / agent_reward_counts[agent_id]
+            )
+
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
@@ -431,9 +450,13 @@ class Rubric:
                     else:
                         t["reward"] = state["reward"]
 
-                # Compute per-agent advantage using global baseline
+                # Compute per-agent advantage using per-agent baseline
                 if t["advantage"] is None:
-                    t["advantage"] = t["reward"] - avg_reward
+                    agent_id = t.get("extras", {}).get("agent_id")
+                    if agent_id and agent_id in agent_baselines:
+                        t["advantage"] = t["reward"] - agent_baselines[agent_id]
+                    else:
+                        t["advantage"] = t["reward"] - avg_reward
 
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
