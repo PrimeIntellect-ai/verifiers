@@ -240,6 +240,22 @@ class TestMCPEnv:
         assert tool_message.content == "model-value"
 
     @pytest.mark.asyncio
+    async def test_local_tool_errors_keep_parent_call_tool_behavior(
+        self, mock_client, sample_chat_dataset
+    ):
+        def explode() -> str:
+            raise RuntimeError("local boom")
+
+        env = _build_env(
+            mock_client,
+            sample_chat_dataset,
+            tools=[explode],
+        )
+
+        with pytest.raises(RuntimeError, match="local boom"):
+            await env.call_tool("explode", {}, "call_local")
+
+    @pytest.mark.asyncio
     async def test_rollout_scope_creates_and_cleans_isolated_transports(
         self, mock_client, sample_chat_dataset, make_input
     ):

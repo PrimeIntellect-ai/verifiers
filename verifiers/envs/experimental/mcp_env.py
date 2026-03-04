@@ -432,10 +432,10 @@ class MCPEnv(vf.StatefulToolEnv):
         state: State | None = None,
         **kwargs,
     ) -> ToolMessage:
-        if (
-            tool_name in self._registered_mcp_tools
-            and MCP_PROXY_STATE_ARG not in tool_args
-        ):
+        if tool_name not in self._registered_mcp_tools:
+            return await super().call_tool(tool_name, tool_args, tool_call_id, **kwargs)
+
+        if MCP_PROXY_STATE_ARG not in tool_args:
             resolved_state = (
                 state if state is not None else cast(State | None, kwargs.get("state"))
             )
