@@ -195,7 +195,7 @@ def _attach_prompt_components(
         info = dict(info)
         info["prompt_components"] = dict(candidate)
 
-        tool_source_env = _resolve_env_for_input(env, inp_copy)
+        tool_source_env = _resolve_env_for_input(env, inp_copy)  # ty: ignore[invalid-argument-type]
         tool_source = getattr(tool_source_env, "oai_tools", None)
         if tool_overrides and tool_source:
             new_tools = []

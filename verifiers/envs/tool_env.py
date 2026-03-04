@@ -120,7 +120,7 @@ class ToolEnv(vf.MultiTurnEnv):
 
     def get_prompt_components(self) -> dict[str, str]:
         components = super().get_prompt_components()
-        for tool in self.oai_tools or []:
+        for tool in self.oai_tools or []:  # ty: ignore[unresolved-attribute]
             func = tool.get("function", {})
             name = func.get("name")
             if not name:

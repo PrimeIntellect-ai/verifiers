@@ -676,16 +676,16 @@ class Environment(ABC):
 
     @staticmethod
     def _inject_system_prompt_to_prompt(
-        prompt: Messages | None,
+        prompt: Any,
         system_prompt: str,
-    ) -> Messages:
-        """Inject or replace system prompt in a prompt payload."""
-        sys_msg = cast(dict[str, str], {"role": "system", "content": system_prompt})
+    ) -> Any:
+        """Inject or replace system prompt in a prompt payload (raw dicts/str)."""
+        sys_msg: dict[str, str] = {"role": "system", "content": system_prompt}
         if prompt is None or (isinstance(prompt, list) and not prompt):
             return [sys_msg]
         if isinstance(prompt, str):
             return f"{system_prompt}\n\n{prompt}"
-        prompt_list = cast(List[dict[str, str]], [dict(m) for m in prompt])
+        prompt_list: list[dict[str, Any]] = [dict(m) for m in prompt]
         if prompt_list[0].get("role") == "system":
             prompt_list[0]["content"] = system_prompt
             return prompt_list
