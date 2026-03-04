@@ -3,7 +3,6 @@ import logging
 import time
 import uuid
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from prime_sandboxes import (
     AdvancedConfigs,
@@ -122,16 +121,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             raise RuntimeError("Interception server is not initialized.")
         return self._interception_server
 
-    def _resolve_tunnel_local_addr(self, state: State) -> str:
-        """Extract the hostname/IP from the client's base URL to use as tunnel local_addr."""
-        client = getattr(state["client"], "client", state["client"])
-        base_url = str(client.base_url).rstrip("/")
-        parsed = urlparse(base_url)
-        host = parsed.hostname
-        if host is None:
-            raise ValueError(f"Invalid client base URL; missing hostname: {base_url}")
-        return host
-
     async def get_tunnel_url(self, local_addr: str = "127.0.0.1") -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
@@ -236,9 +225,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await interception_server.start()
 
         if self.interception_url is None:
-            tunnel_local_addr = self._resolve_tunnel_local_addr(state)
-            state["tunnel_local_addr"] = tunnel_local_addr
-            tunnel_url = await self.get_tunnel_url(local_addr=tunnel_local_addr)
+            tunnel_url = await self.get_tunnel_url()
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
         else:
             state["interception_base_url"] = (
@@ -383,16 +370,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
             except asyncio.TimeoutError:
                 # No request yet — check tunnel liveness first
-                tunnel_local_addr = state.get("tunnel_local_addr")
-                if tunnel_local_addr:
-                    tunnel = self._tunnels.get(tunnel_local_addr)
-                    if tunnel is not None and not tunnel.is_running:
-                        frpc_output = "\n".join(tunnel.recent_output)
-                        raise vf.TunnelError(
-                            f"Tunnel process died during rollout "
-                            f"tunnel_id={tunnel.tunnel_id}. "
-                            f"frpc output:\n{frpc_output}"
-                        )
+                dead_tunnel = next(
+                    (t for t in self._tunnels.values() if not t.is_running), None
+                )
+                if dead_tunnel is not None:
+                    frpc_output = "\n".join(dead_tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout "
+                        f"tunnel_id={dead_tunnel.tunnel_id}. "
+                        f"frpc output:\n{frpc_output}"
+                    )
                 # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
