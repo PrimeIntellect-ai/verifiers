@@ -761,7 +761,7 @@ uvicorn.run(
         server = self._get_server()
         cookie = state.get("nemo_cookie")
 
-        tool_messages: list[ToolMessage] = []
+        tool_messages: Messages = []
         for tool_call in last_message.tool_calls:
             call_id = tool_call.id
             tool_name = tool_call.name
