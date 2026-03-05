@@ -260,46 +260,38 @@ class OpenCodeEnv(CliAgentEnv):
             env_vars["OPENCODE_ENABLE_EXA"] = str(1)
         return env_vars
 
-    def normalize_intercepted_messages(self, messages: Messages) -> Messages:
-        """Fix OpenCode's message history normalization artifacts:
-        - Lowercases tool names
-        - Compacts JSON arguments
-        - Strips trailing newlines from assistant content
+    def normalize_response(self, response: vf.Response) -> vf.Response:
+        """Normalize model response to match OpenCode's message history conventions.
 
-        This enables message prefix hits with TITO client.
+        OpenCode lowercases tool names, compacts JSON arguments, and strips
+        trailing newlines from assistant content when it reconstructs its history.
+        Applying the same normalization to the stored step enables TITO prefix hits.
         """
-        normalized = []
-        for msg in messages:
-            if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
-                normalized.append(msg)
+        message = response.message
+        if not message.tool_calls:
+            return response
+        normalized_tool_calls = []
+        for tc in message.tool_calls:
+            if not isinstance(tc, ToolCall):
+                normalized_tool_calls.append(tc)
                 continue
-            fixed_tool_calls = []
-            for tc in msg.tool_calls:
-                if not isinstance(tc, ToolCall):
-                    fixed_tool_calls.append(tc)
-                    continue
-                # Restore PascalCase tool name
-                fixed_name = tc.name[0].upper() + tc.name[1:] if tc.name else tc.name
-                # Re-pretty-print JSON arguments
-                try:
-                    fixed_arguments = json.dumps(json.loads(tc.arguments), indent=2)
-                except (json.JSONDecodeError, TypeError):
-                    fixed_arguments = tc.arguments
-                fixed_tool_calls.append(
-                    tc.model_copy(
-                        update={"name": fixed_name, "arguments": fixed_arguments}
-                    )
-                )
-            # Restore trailing newline stripped by OpenCode
-            content = msg.content
-            if isinstance(content, str) and not content.endswith("\n"):
-                content = content + "\n"
-            normalized.append(
-                msg.model_copy(
-                    update={"tool_calls": fixed_tool_calls, "content": content}
+            lowercased_name = tc.name.lower()
+            try:
+                compact_arguments = json.dumps(json.loads(tc.arguments))
+            except (json.JSONDecodeError, TypeError):
+                compact_arguments = tc.arguments
+            normalized_tool_calls.append(
+                tc.model_copy(
+                    update={"name": lowercased_name, "arguments": compact_arguments}
                 )
             )
-        return normalized
+        content = message.content
+        if isinstance(content, str) and content.endswith("\n"):
+            content = content.rstrip("\n")
+        normalized_message = message.model_copy(
+            update={"tool_calls": normalized_tool_calls, "content": content}
+        )
+        return response.model_copy(update={"message": normalized_message})
 
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""

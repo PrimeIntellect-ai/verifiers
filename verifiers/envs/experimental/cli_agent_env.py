@@ -406,10 +406,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     def normalize_intercepted_messages(self, messages: Messages) -> Messages:
         """Hook to normalize messages received from the agent before model inference.
 
-        Override in subclasses to fix agent-side normalization artifacts such as
-        tool name casing, argument formatting, or content whitespace.
+        Override in subclasses to transform the agent's reconstructed history
+        before it is used as the prompt for the next model call.
         """
         return messages
+
+    def normalize_response(self, response: Response) -> Response:
+        """Hook to normalize the model response before it is stored in the trajectory.
+
+        Override in subclasses to align the stored step format with the agent's
+        own message history conventions, enabling TITO prefix cache hits.
+        """
+        return response
 
     def _normalize_intercept_tool_defs(
         self, intercept_tools: object
@@ -541,7 +549,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         # On first turn, update state["prompt"] to match the agent's actual prompt
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
-        await super().add_model_response(state, prompt_messages, response)
+        await super().add_model_response(
+            state, prompt_messages, self.normalize_response(response)
+        )
 
     @vf.teardown
     async def teardown_resources(self):
