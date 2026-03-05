@@ -14,19 +14,23 @@ from verifiers.utils.interception_utils import _truncate as truncate
 
 logger = logging.getLogger(__name__)
 
-# Default OpenCode tools to track individually
+# https://opencode.ai/docs/tools/#built-in
 OPENCODE_TOOLS = [
     "bash",
-    "glob",
-    "grep",
-    "read",
     "edit",
     "write",
+    "read",
+    "grep",
+    "glob",
+    "list",
+    "lsp",
+    "patch",
+    "skill",
     "todowrite",
     "todoread",
     "webfetch",
+    "websearch",
     "question",
-    "task",
 ]
 
 DEFAULT_SYSTEM_PROMPT = """\
@@ -157,7 +161,7 @@ class OpenCodeEnv(CliAgentEnv):
         dataset: Dataset,
         asset_dir: str = DEFAULT_ASSET_DIR,
         agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-        disabled_tools: list[str] | None = DEFAULT_DISABLED_TOOLS,
+        disabled_tools: list[str] = DEFAULT_DISABLED_TOOLS,
         system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
         install_command: str = DEFAULT_INSTALL_COMMAND,
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
@@ -250,6 +254,13 @@ class OpenCodeEnv(CliAgentEnv):
                 )
             finally:
                 Path(local_system_prompt_path).unlink(missing_ok=True)
+
+    async def build_env_vars(self, state: vf.State) -> dict[str, str]:
+        """Build environment variables for the sandbox. Override to add custom vars."""
+        env_vars = await super().build_env_vars(state)
+        if "websearch" not in self.disabled_tools:
+            env_vars["OPENCODE_ENABLE_EXA"] = str(1)
+        return env_vars
 
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""
