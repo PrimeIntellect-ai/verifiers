@@ -135,7 +135,6 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 return {
                     str(key): normalize_for_comparison(val)
                     for key, val in value.items()
-                    if key != "reasoning_content"
                 }
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]

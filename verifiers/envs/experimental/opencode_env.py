@@ -151,6 +151,7 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
     DEFAULT_DISABLE_COMPACTION = True
+    DEFAULT_ENABLE_INTERLEAVED = True
 
     def __init__(
         self,
@@ -162,6 +163,7 @@ class OpenCodeEnv(CliAgentEnv):
         install_command: str = DEFAULT_INSTALL_COMMAND,
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
         disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
+        enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
         **kwargs,
     ):
         self.asset_dir = asset_dir
@@ -175,6 +177,7 @@ class OpenCodeEnv(CliAgentEnv):
             system_prompt=system_prompt,
             install_command=install_command,
             disable_compaction=disable_compaction,
+            enable_interleaved=enable_interleaved,
         )
 
         if (
@@ -303,6 +306,7 @@ class OpenCodeEnv(CliAgentEnv):
         disabled_tools: list[str] | None = None,
         system_prompt_path: str | None = None,
         disable_compaction: bool = True,
+        enable_interleaved: bool = True,
     ) -> str:
         """Build OpenCode config."""
         config: dict = {
@@ -323,6 +327,9 @@ class OpenCodeEnv(CliAgentEnv):
                                 "input": ["text", "image"],
                                 "output": ["text"],
                             },
+                            "interleaved": {"field": "reasoning_content"}
+                            if enable_interleaved
+                            else False,
                         }
                     },
                 }
@@ -351,6 +358,7 @@ class OpenCodeEnv(CliAgentEnv):
         system_prompt: str | None = None,
         install_command: str = DEFAULT_INSTALL_COMMAND,
         disable_compaction: bool = True,
+        enable_interleaved: bool = True,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
@@ -358,6 +366,7 @@ class OpenCodeEnv(CliAgentEnv):
             disabled_tools,
             self.remote_system_prompt_path if system_prompt else None,
             disable_compaction=disable_compaction,
+            enable_interleaved=enable_interleaved,
         )
 
         return run_command_template.format(
