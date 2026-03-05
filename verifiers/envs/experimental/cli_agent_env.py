@@ -14,7 +14,7 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
     Messages,
     MessageType,
@@ -123,6 +123,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             get_free_port() if interception_port is None else interception_port
         )
         self.init_interception(interception_port, interception_url)
+        self.add_rubric(SandboxMonitorRubric())
         self.add_rubric(CliAgentMonitorRubric())
 
     def init_interception(
