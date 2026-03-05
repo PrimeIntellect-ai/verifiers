@@ -441,7 +441,10 @@ def _truncate(s: str, limit: int = 200) -> str:
 def _log_request(rollout_id: str, body: dict) -> None:
     """Log an intercepted request."""
     log_msg = f"[{rollout_id}] <- INTERCEPTED REQUEST"
-    log_msg += f" ({len(body.get('tools', []))} tool(s))"
+    tools = body.get("tools", [])
+    log_msg += f" ({len(tools)} tool(s))"
+    if tools:
+        log_msg += f"\n[tools]\n{', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):

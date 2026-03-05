@@ -22,14 +22,12 @@ OPENCODE_TOOLS = [
     "read",
     "grep",
     "glob",
-    "list",
-    "lsp",
-    "patch",
     "skill",
     "todowrite",
-    "todoread",
     "webfetch",
     "websearch",
+    "codesearch"
+    "task",
     "question",
 ]
 
@@ -146,7 +144,9 @@ class OpenCodeEnv(CliAgentEnv):
 
     DEFAULT_AGENT_WORKDIR = "/app"
     DEFAULT_ASSET_DIR = "/opencode"
-    DEFAULT_DISABLED_TOOLS = ["question"]
+    # 'question' requires user interaction
+    # 'task' spawns subagents which gives non-linear env histories
+    DEFAULT_DISABLED_TOOLS = ["question", "task"]
     DEFAULT_INSTALL_COMMAND = DEFAULT_INSTALL_COMMAND
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
