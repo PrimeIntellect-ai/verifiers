@@ -259,17 +259,17 @@ class OpenCodeEnv(CliAgentEnv):
         config: dict = {
             "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
             "provider": {
-                "intercepted": {
+                "${OPENAI_MODEL%%/*}": {
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "Intercepted",
+                    "name": "${OPENAI_MODEL%%/*}",
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "intercepted",
                         "timeout": 600000,
                     },
                     "models": {
-                        "model": {
-                            "name": "Intercepted Model",
+                        "${OPENAI_MODEL##*/}": {
+                            "name": "${OPENAI_MODEL##*/}",
                             "modalities": {
                                 "input": ["text", "image"],
                                 "output": ["text"],
@@ -278,7 +278,7 @@ class OpenCodeEnv(CliAgentEnv):
                     },
                 }
             },
-            "model": "intercepted/model",
+            "model": "$OPENAI_MODEL",
         }
 
         if system_prompt_path or disabled_tools:
