@@ -127,15 +127,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         async with self._tunnel_lock:
             tunnel = self._tunnels.get(local_addr)
 
-            if self._tunnel is None:
-                interception_server = self._require_interception_server()
-                port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
-                    self._tunnel = Tunnel(
-                        local_port=port,
-                        log_level="debug",
-                    )
-
             # Restart dead tunnel
             if tunnel is not None and not tunnel.is_running:
                 frpc_output = "\n".join(tunnel.recent_output)
