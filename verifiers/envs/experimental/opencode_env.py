@@ -67,15 +67,15 @@ set -e
 
 apt-get update && apt-get install -y curl
 
-for _oc_attempt in 1 2 3; do
+for install_attempt in 1 2 3; do
     if {install_command}; then
         break
     fi
-    if [ "$_oc_attempt" -eq 3 ]; then
+    if [ "$install_attempt" -eq 3 ]; then
         echo "OpenCode installation failed after 3 attempts" >&2
         exit 1
     fi
-    echo "OpenCode install attempt $_oc_attempt/3 failed, retrying in 5s..." >&2
+    echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
     sleep 5
 done
 export PATH="$HOME/.opencode/bin:$PATH"
