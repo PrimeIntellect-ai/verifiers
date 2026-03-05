@@ -402,6 +402,8 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
         }
         if tool_calls:
             message_payload["tool_calls"] = tool_calls
+        if message.reasoning_content is not None:
+            message_payload["reasoning_content"] = message.reasoning_content
 
         choice: dict[str, Any] = {
             "index": 0,

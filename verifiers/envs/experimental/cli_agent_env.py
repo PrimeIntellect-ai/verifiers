@@ -379,7 +379,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
                 intercept = interception_server.intercepts[request_id]
-                return normalize_messages(intercept["messages"], field_name="messages")
+                messages = normalize_messages(
+                    intercept["messages"], field_name="messages"
+                )
+                return self.normalize_intercepted_messages(messages)
 
             except asyncio.TimeoutError:
                 # No request yet — check tunnel liveness first
@@ -399,6 +402,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     return []
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
                     return []
+
+    def normalize_intercepted_messages(self, messages: Messages) -> Messages:
+        """Hook to normalize messages received from the agent before model inference.
+
+        Override in subclasses to fix agent-side normalization artifacts such as
+        tool name casing, argument formatting, or content whitespace.
+        """
+        return messages
 
     def _normalize_intercept_tool_defs(
         self, intercept_tools: object
