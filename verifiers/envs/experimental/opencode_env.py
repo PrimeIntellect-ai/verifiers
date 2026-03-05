@@ -26,7 +26,7 @@ OPENCODE_TOOLS = [
     "todowrite",
     "webfetch",
     "websearch",
-    "codesearch"
+    "codesearch",
     "task",
     "question",
 ]
