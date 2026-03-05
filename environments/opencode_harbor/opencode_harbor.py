@@ -125,23 +125,23 @@ def _build_opencode_config(
     config: dict = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
-            "${OPENAI_MODEL%%/*}": {
+            "intercepted": {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "${OPENAI_MODEL%%/*}",
+                "name": "Intercepted",
                 "options": {
                     "baseURL": "$OPENAI_BASE_URL",
                     "apiKey": "intercepted",
                     "timeout": 600000,
                 },
                 "models": {
-                    "${OPENAI_MODEL##*/}": {
-                        "name": "${OPENAI_MODEL##*/}",
+                    "model": {
+                        "name": "Intercepted Model",
                         "modalities": {"input": ["text", "image"], "output": ["text"]},
                     }
                 },
             }
         },
-        "model": "$OPENAI_MODEL",
+        "model": "intercepted/model",
     }
 
     # Add agent config if we have custom prompt or disabled tools

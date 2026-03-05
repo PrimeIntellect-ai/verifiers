@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any
@@ -334,7 +335,7 @@ class RolloutGatewayMixin:
                 memory_gb=self.memory_gb,  # ty: ignore[unresolved-attribute]
                 disk_size_gb=self.disk_size_gb,  # ty: ignore[unresolved-attribute]
                 gpu_count=self.gpu_count,  # ty: ignore[unresolved-attribute]
-                timeout_minutes=self.timeout_minutes,  # ty: ignore[unresolved-attribute]
+                timeout_minutes=math.ceil(self.timeout_seconds / 60),  # ty: ignore[unresolved-attribute]
                 environment_vars=env_vars,
                 team_id=self.team_id,  # ty: ignore[unresolved-attribute]
                 advanced_configs=self.advanced_configs,  # ty: ignore[unresolved-attribute]
