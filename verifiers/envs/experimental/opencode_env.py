@@ -262,7 +262,6 @@ class OpenCodeEnv(CliAgentEnv):
 
     def normalize_response(self, response: vf.Response) -> vf.Response:
         """Normalize model response to match OpenCode's message history conventions:
-        - Lowercase tool names
         - Compact JSON arugments
         - Strip trailing newlines from assistant content
 
@@ -276,7 +275,6 @@ class OpenCodeEnv(CliAgentEnv):
             if not isinstance(tc, ToolCall):
                 normalized_tool_calls.append(tc)
                 continue
-            lowercased_name = tc.name.lower()
             try:
                 compact_arguments = json.dumps(
                     json.loads(tc.arguments), separators=(",", ":"), ensure_ascii=False
@@ -284,9 +282,7 @@ class OpenCodeEnv(CliAgentEnv):
             except (json.JSONDecodeError, TypeError):
                 compact_arguments = tc.arguments
             normalized_tool_calls.append(
-                tc.model_copy(
-                    update={"name": lowercased_name, "arguments": compact_arguments}
-                )
+                tc.model_copy(update={"arguments": compact_arguments})
             )
         content = message.content
         if content is None:
