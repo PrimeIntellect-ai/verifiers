@@ -323,7 +323,7 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
 
     expanded = []
     for combo in itertools.product(*value_lists):
-        config = dict(fixed)
+        config = {k: (dict(v) if isinstance(v, dict) else v) for k, v in fixed.items()}
         for key, value in zip(keys, combo):
             if key.startswith("env_args."):
                 env_key = key[len("env_args.") :]
