@@ -285,15 +285,22 @@ class OpenCodeEnv(CliAgentEnv):
             except (json.JSONDecodeError, TypeError):
                 compact_arguments = tc.arguments
             normalized_tool_calls.append(
-                tc.model_copy(update={"arguments": compact_arguments})
+                tc.model_copy(
+                    update={"name": tc.name.lower(), "arguments": compact_arguments}
+                )
             )
         content = message.content
         if content is None:
             content = ""
         elif isinstance(content, str):
             content = content.rstrip()
+        reasoning_content = message.reasoning_content or None
         normalized_message = message.model_copy(
-            update={"content": content, "tool_calls": normalized_tool_calls}
+            update={
+                "content": content,
+                "tool_calls": normalized_tool_calls,
+                "reasoning_content": reasoning_content,
+            }
         )
         return response.model_copy(update={"message": normalized_message})
 
