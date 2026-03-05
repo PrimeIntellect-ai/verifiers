@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any, cast
@@ -76,7 +77,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         memory_gb: int = 2,
         disk_size_gb: int = 5,
         gpu_count: int = 0,
-        timeout_minutes: int = 60,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
@@ -113,7 +113,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.memory_gb = memory_gb
         self.disk_size_gb = disk_size_gb
         self.gpu_count = gpu_count
-        self.timeout_minutes = timeout_minutes
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
@@ -257,7 +256,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             memory_gb=self.memory_gb,
             disk_size_gb=self.disk_size_gb,
             gpu_count=self.gpu_count,
-            timeout_minutes=self.timeout_minutes,
+            timeout_minutes=math.ceil(self.timeout_seconds / 60),
             environment_vars=env_vars,
             team_id=self.team_id,
             advanced_configs=self.advanced_configs,

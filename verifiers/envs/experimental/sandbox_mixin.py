@@ -98,6 +98,7 @@ class SandboxMixin:
             reraise=True,
         ).wraps
 
+    # OpenCodeMathEnv settings
     async def create_sandbox(self, state, request: CreateSandboxRequest) -> str:
         """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook.
 
