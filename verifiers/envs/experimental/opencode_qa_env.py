@@ -1,3 +1,5 @@
+from typing import Any
+
 from datasets import Dataset, load_dataset
 
 import verifiers as vf
@@ -48,25 +50,38 @@ class OpenCodeQAEnv(OpenCodeEnv):
     ) -> Dataset:
         """Constructs a general QA dataset."""
 
-        dataset = load_dataset(dataset_name, dataset_subset, split=dataset_split)
-
-        if question_key not in dataset.column_names:
-            raise ValueError(
-                f"Column '{question_key}' not found in dataset: {dataset.column_names}"
+        dataset_obj = load_dataset(dataset_name, dataset_subset, split=dataset_split)
+        if not isinstance(dataset_obj, Dataset):
+            raise TypeError(
+                "Expected a Dataset for the requested split, got a different dataset type."
             )
-        if answer_key not in dataset.column_names:
+        dataset = dataset_obj
+
+        column_names = dataset.column_names
+        if column_names is None:
+            raise ValueError("Dataset has no columns.")
+
+        if question_key not in column_names:
             raise ValueError(
-                f"Column '{answer_key}' not found in dataset: {dataset.column_names}"
+                f"Column '{question_key}' not found in dataset: {column_names}"
+            )
+        if answer_key not in column_names:
+            raise ValueError(
+                f"Column '{answer_key}' not found in dataset: {column_names}"
             )
 
-        def process_example(example):
+        def process_example(example: dict[str, Any]) -> dict[str, Any]:
             question = example[question_key]
             answer = example[answer_key]
+            if not isinstance(question, str):
+                question = str(question)
             return {
                 "question": instruction_prompt + question + instruction_prompt_post,
                 "answer": answer,
             }
 
-        dataset = dataset.map(process_example)
+        mapped_dataset = dataset.map(process_example)
+        if not isinstance(mapped_dataset, Dataset):
+            raise TypeError("Expected mapped dataset to be a Dataset.")
 
-        return dataset
+        return mapped_dataset
