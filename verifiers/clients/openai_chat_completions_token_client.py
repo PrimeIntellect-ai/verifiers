@@ -135,6 +135,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 return {
                     str(key): normalize_for_comparison(val)
                     for key, val in value.items()
+                    if key != "reasoning_content"
                 }
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]
@@ -163,6 +164,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 if prefix_len > len(normalized_prompt_messages):
                     continue
                 if normalized_prompt_messages[:prefix_len] != normalized_step_messages:
+                    print("GOT MISMATCH")
+                    print("normalized_prompt_messages")
+                    for k, v in normalized_prompt_messages[:prefix_len].items():
+                        print(f"{k}\n{v}")
+                    print("\nnormalized_step_messages")
+                    for k, v in normalized_step_messages[:prefix_len].items():
+                        print(f"{k}\n{v}")
                     continue
                 best_prefix_len = prefix_len
                 best_step_tokens = step_tokens

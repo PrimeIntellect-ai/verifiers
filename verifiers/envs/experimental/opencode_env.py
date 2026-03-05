@@ -277,7 +277,9 @@ class OpenCodeEnv(CliAgentEnv):
                 continue
             lowercased_name = tc.name.lower()
             try:
-                compact_arguments = json.dumps(json.loads(tc.arguments))
+                compact_arguments = json.dumps(
+                    json.loads(tc.arguments), separators=(",", ":")
+                )
             except (json.JSONDecodeError, TypeError):
                 compact_arguments = tc.arguments
             normalized_tool_calls.append(
@@ -286,10 +288,12 @@ class OpenCodeEnv(CliAgentEnv):
                 )
             )
         content = message.content
-        if isinstance(content, str) and content.endswith("\n"):
-            content = content.rstrip("\n")
+        if content is None:
+            content = ""
+        elif isinstance(content, str):
+            content = content.strip("\n")
         normalized_message = message.model_copy(
-            update={"tool_calls": normalized_tool_calls, "content": content}
+            update={"content": content, "tool_calls": normalized_tool_calls}
         )
         return response.model_copy(update={"message": normalized_message})
 

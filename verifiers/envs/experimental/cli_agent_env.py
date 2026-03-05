@@ -70,7 +70,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        poll_interval: float = 5.0,
+        poll_interval: float = 1.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,
@@ -364,68 +364,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Check if agent process has completed."""
         return state.get("agent_completed", False)
 
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """Wait for agent to make an API request OR agent completion, whichever comes first."""
-        request_id_queue = state["request_id_queue"]
-        interception_server = self._require_interception_server()
-
-        while True:
-            try:
-                # Short timeout so we can check completion frequently
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
-                )
-                # Got a request, proceed normally
-                state["current_request_id"] = request_id
-                intercept = interception_server.intercepts[request_id]
-                messages = normalize_messages(
-                    intercept["messages"], field_name="messages"
-                )
-                return self.normalize_intercepted_messages(messages)
-
-            except asyncio.TimeoutError:
-                # No request yet — check tunnel liveness first
-                dead_tunnel = next(
-                    (t for t in self._tunnels.values() if not t.is_running), None
-                )
-                if dead_tunnel is not None:
-                    frpc_output = "\n".join(dead_tunnel.recent_output)
-                    raise vf.TunnelError(
-                        f"Tunnel process died during rollout "
-                        f"tunnel_id={dead_tunnel.tunnel_id}. "
-                        f"frpc output:\n{frpc_output}"
-                    )
-                # Then check if agent finished or timed out
-                if await self.check_agent_completed(state):
-                    state["agent_completed"] = True
-                    return []
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    return []
-
-    def normalize_intercepted_messages(self, messages: Messages) -> Messages:
-        """Hook to normalize messages received from the agent before model inference.
-
-        Override in subclasses to transform the agent's reconstructed history
-        before it is used as the prompt for the next model call.
-        """
-        return messages
-
-    def normalize_response(self, response: Response) -> Response:
-        """Hook to normalize the model response before it is stored in the trajectory.
-
-        Override in subclasses to align the stored step format with the agent's
-        own message history conventions, enabling TITO prefix cache hits.
-        """
-        return response
-
-    def _normalize_intercept_tool_defs(
-        self, intercept_tools: object
-    ) -> list[Tool] | None:
+    def normalize_intercepted_tools(self, intercept_tools: object) -> list[Tool] | None:
         """Normalize intercepted request tools for the provider-agnostic runtime.
 
-        Agent requests arrive in OpenAI-native tool format. Convert that schema to
-        vf.Tool defs here so the main runtime can stay strict about tool_defs.
+        Assumes that agent requests arrive in OpenAI-tool format.
         """
         if not isinstance(intercept_tools, list):
             raise TypeError("Intercepted tools must be provided as a list.")
@@ -463,6 +405,57 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             normalized_inputs.append(raw_tool_dict)
 
         return self._normalize_tool_defs(normalized_inputs)
+
+    def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
+        """Hook to normalize messages received from the agent before model inference.
+
+        Assumes that agent requests arrive in OpenAI-format.
+        """
+        return normalize_messages(intercepted_messages)  # type: ignore
+
+    def normalize_response(self, response: Response) -> Response:
+        """Hook to normalize the model response before it is stored in the trajectory.
+
+        Override in subclasses to align the stored step format with the agent's
+        own message history conventions, enabling TITO prefix cache hits.
+        """
+        return response
+
+    async def get_prompt_messages(self, state: State) -> Messages:
+        """Wait for agent to make an API request OR agent completion, whichever comes first."""
+        request_id_queue = state["request_id_queue"]
+        interception_server = self._require_interception_server()
+
+        while True:
+            try:
+                # Short timeout so we can check completion frequently
+                request_id = await asyncio.wait_for(
+                    request_id_queue.get(),
+                    timeout=self.poll_interval,
+                )
+                # Got a request, proceed normally
+                state["current_request_id"] = request_id
+                intercept = interception_server.intercepts[request_id]
+                return self.normalize_intercepted_messages(intercept["messages"])
+
+            except asyncio.TimeoutError:
+                # No request yet — check tunnel liveness first
+                dead_tunnel = next(
+                    (t for t in self._tunnels.values() if not t.is_running), None
+                )
+                if dead_tunnel is not None:
+                    frpc_output = "\n".join(dead_tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout "
+                        f"tunnel_id={dead_tunnel.tunnel_id}. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                # Then check if agent finished or timed out
+                if await self.check_agent_completed(state):
+                    state["agent_completed"] = True
+                    return []
+                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                    return []
 
     async def get_model_response(
         self,
@@ -505,7 +498,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             intercept_tools = intercept.get("tools")
             if intercept_tools:
                 tool_defs = (
-                    self._normalize_intercept_tool_defs(intercept_tools) or tool_defs
+                    self.normalize_intercepted_tools(intercept_tools) or tool_defs
                 )
 
         response: Response | None = None
