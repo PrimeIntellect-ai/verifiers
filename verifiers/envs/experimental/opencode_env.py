@@ -29,8 +29,7 @@ OPENCODE_TOOLS = [
     "task",
 ]
 
-
-DEFAULT_OPENCODE_SYSTEM_PROMPT = """\
+DEFAULT_SYSTEM_PROMPT = """\
 You are OpenCode, the best coding agent on the planet.
 
 You are an interactive CLI tool that helps users with tasks. Use the instructions below and the tools available to you to assist the user.
@@ -48,14 +47,19 @@ If the user asks for help or wants to give feedback inform them of the following
 
 # Professional objectivity
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.
-
 """
 
-DEFAULT_OPENCODE_INSTALL_COMMAND = (
+TASK_MANAGEMENT_SYSTEM_PROMPT = """\
+# Task Management
+You have access to the TodoWrite tools to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable. It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
+"""
+
+
+DEFAULT_INSTALL_COMMAND = (
     "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
 )
 
-DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE = """\
+DEFAULT_RUN_COMMAND_TEMPLATE = """\
 set -e
 
 apt-get update && apt-get install -y curl
@@ -144,9 +148,9 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_AGENT_WORKDIR = "/app"
     DEFAULT_ASSET_DIR = "/opencode"
     DEFAULT_DISABLED_TOOLS = ["question"]
-    DEFAULT_INSTALL_COMMAND = DEFAULT_OPENCODE_INSTALL_COMMAND
-    DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE
-    DEFAULT_SYSTEM_PROMPT = DEFAULT_OPENCODE_SYSTEM_PROMPT
+    DEFAULT_INSTALL_COMMAND = DEFAULT_INSTALL_COMMAND
+    DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
+    DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
     def __init__(
         self,
@@ -170,6 +174,13 @@ class OpenCodeEnv(CliAgentEnv):
             system_prompt=system_prompt,
             install_command=install_command,
         )
+
+        if (
+            disabled_tools is not None
+            and system_prompt is not None
+            and ("todowrite" in disabled_tools or "todoread" in disabled_tools)
+        ):
+            system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
         super().__init__(
             run_command=run_command,
@@ -290,7 +301,7 @@ class OpenCodeEnv(CliAgentEnv):
         agent_workdir: str,
         disabled_tools: list[str] | None = None,
         system_prompt: str | None = None,
-        install_command: str = DEFAULT_OPENCODE_INSTALL_COMMAND,
+        install_command: str = DEFAULT_INSTALL_COMMAND,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
