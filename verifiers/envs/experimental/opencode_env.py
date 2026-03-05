@@ -261,10 +261,11 @@ class OpenCodeEnv(CliAgentEnv):
         return env_vars
 
     def normalize_response(self, response: vf.Response) -> vf.Response:
-        """Normalize model response to match OpenCode's message history conventions.
+        """Normalize model response to match OpenCode's message history conventions:
+        - Lowercase tool names
+        - Compact JSON arugments
+        - Strip trailing newlines from assistant content
 
-        OpenCode lowercases tool names, compacts JSON arguments, and strips
-        trailing newlines from assistant content when it reconstructs its history.
         Applying the same normalization to the stored step enables TITO prefix hits.
         """
         message = response.message
@@ -291,7 +292,7 @@ class OpenCodeEnv(CliAgentEnv):
         if content is None:
             content = ""
         elif isinstance(content, str):
-            content = content.rstrip("\n")
+            content = content.rstrip()
         normalized_message = message.model_copy(
             update={"content": content, "tool_calls": normalized_tool_calls}
         )
