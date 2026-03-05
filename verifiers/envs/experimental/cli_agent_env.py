@@ -28,6 +28,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.worker_utils import get_free_port
 
 logger = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
                 intercept = interception_server.intercepts[request_id]
-                return intercept["messages"]
+                return normalize_messages(intercept["messages"], field_name="messages")
 
             except asyncio.TimeoutError:
                 # No request yet — check tunnel liveness first
