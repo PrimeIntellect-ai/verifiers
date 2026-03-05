@@ -337,7 +337,7 @@ difficulty = ["easy", "hard"]
 - **Fixed `env_args`** can be set alongside swept ones (e.g. `env_args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept env_args.
 - Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
 - `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
-- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`)
+- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `env_args` — use separate `[[ablation]]` blocks for envs with different argument schemas
 
 Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
 
