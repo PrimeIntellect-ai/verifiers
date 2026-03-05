@@ -595,6 +595,8 @@ class Environment(ABC):
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
+        if "example_id" not in state_input:
+            state_input["example_id"] = 0
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=state_input)
