@@ -178,7 +178,8 @@ class OpenCodeEnv(CliAgentEnv):
         if (
             disabled_tools is not None
             and system_prompt is not None
-            and ("todowrite" in disabled_tools or "todoread" in disabled_tools)
+            and "todowrite" not in disabled_tools
+            and "todoread" not in disabled_tools
         ):
             system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
