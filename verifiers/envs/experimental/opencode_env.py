@@ -67,7 +67,17 @@ set -e
 
 apt-get update && apt-get install -y curl
 
-{install_command}
+for _oc_attempt in 1 2 3; do
+    if {install_command}; then
+        break
+    fi
+    if [ "$_oc_attempt" -eq 3 ]; then
+        echo "OpenCode installation failed after 3 attempts" >&2
+        exit 1
+    fi
+    echo "OpenCode install attempt $_oc_attempt/3 failed, retrying in 5s..." >&2
+    sleep 5
+done
 export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
@@ -94,6 +104,7 @@ class OpenCodeMonitorRubric(vf.Rubric):
         self.add_metric(self.unique_tools_used)
         self.add_metric(self.has_tool_calls)
         self.add_metric(self.agent_error)
+        self.add_metric(self.agent_timeout)
         for tool_name in self.tool_names:
             self.add_metric(self._make_tool_count_metric(tool_name))
 
@@ -126,8 +137,15 @@ class OpenCodeMonitorRubric(vf.Rubric):
         return float(bool(self._count_tool_calls(completion)))
 
     async def agent_error(self, state: vf.State) -> float:
-        """Whether the agent errored (exit_code != 0)."""
-        return float(state.get("agent_exit_code") != 0)
+        """Whether the agent errored (non-zero exit_code)."""
+        agent_exit_code = state.get("agent_exit_code")
+        if agent_exit_code is None:
+            return 0.0
+        return float(agent_exit_code != 0)
+
+    async def agent_timeout(self, state: vf.State) -> float:
+        """Whether the agent timed out."""
+        return float(bool(state.get("agent_timed_out")))
 
     def _make_tool_count_metric(self, tool_name: str) -> Callable:
         """Create a metric function that counts calls to a specific tool."""
