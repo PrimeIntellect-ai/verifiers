@@ -163,13 +163,6 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 if prefix_len > len(normalized_prompt_messages):
                     continue
                 if normalized_prompt_messages[:prefix_len] != normalized_step_messages:
-                    print("GOT MISMATCH")
-                    for msg1, msg2 in zip(
-                        normalized_prompt_messages[:prefix_len],
-                        normalized_step_messages,
-                    ):
-                        if msg1 != msg2:
-                            print(f"{msg1}\n{msg2}")
                     continue
                 best_prefix_len = prefix_len
                 best_step_tokens = step_tokens
