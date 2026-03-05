@@ -139,6 +139,7 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_DISABLED_TOOLS = ["webfetch", "question"]
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_OPENCODE_SYSTEM_PROMPT
+    DEFAULT_DISABLE_COMPACTION = True
 
     def __init__(
         self,
@@ -148,6 +149,7 @@ class OpenCodeEnv(CliAgentEnv):
         disabled_tools: list[str] | None = DEFAULT_DISABLED_TOOLS,
         system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
+        disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
         **kwargs,
     ):
         self.asset_dir = asset_dir
@@ -159,6 +161,7 @@ class OpenCodeEnv(CliAgentEnv):
             agent_workdir,
             disabled_tools=disabled_tools,
             system_prompt=system_prompt,
+            disable_compaction=disable_compaction,
         )
 
         super().__init__(
@@ -237,6 +240,7 @@ class OpenCodeEnv(CliAgentEnv):
         self,
         disabled_tools: list[str] | None = None,
         system_prompt_path: str | None = None,
+        disable_compaction: bool = True,
     ) -> str:
         """Build OpenCode config."""
         config: dict = {
@@ -264,6 +268,9 @@ class OpenCodeEnv(CliAgentEnv):
             "model": "intercepted/model",
         }
 
+        if disable_compaction:
+            config["compaction"] = {"auto": False, "prune": False}
+
         if system_prompt_path or disabled_tools:
             build_config: dict = {}
             if system_prompt_path:
@@ -280,12 +287,14 @@ class OpenCodeEnv(CliAgentEnv):
         agent_workdir: str,
         disabled_tools: list[str] | None = None,
         system_prompt: str | None = None,
+        disable_compaction: bool = True,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
         config_json = self.build_opencode_config(
             disabled_tools,
             self.remote_system_prompt_path if system_prompt else None,
+            disable_compaction=disable_compaction,
         )
 
         return run_command_template.format(
