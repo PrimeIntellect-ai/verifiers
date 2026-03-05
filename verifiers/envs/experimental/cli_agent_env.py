@@ -34,6 +34,26 @@ from verifiers.utils.worker_utils import get_free_port
 logger = logging.getLogger(__name__)
 
 
+class CliAgentMonitorRubric(vf.Rubric):
+    """Monitor rubric that tracks CLI agent execution state."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_metric(self.agent_timeout)
+        self.add_metric(self.agent_error)
+
+    async def agent_timeout(self, state: vf.State) -> float:
+        """Whether the agent timed out."""
+        return float(bool(state.get("agent_timed_out")))
+
+    async def agent_error(self, state: vf.State) -> float:
+        """Whether the agent errored (non-zero exit_code)."""
+        agent_exit_code = state.get("agent_exit_code")
+        if agent_exit_code is None:
+            return 0.0
+        return float(agent_exit_code != 0)
+
+
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     """
     Environment for running full agent code inside sandboxes.
@@ -103,6 +123,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             get_free_port() if interception_port is None else interception_port
         )
         self.init_interception(interception_port, interception_url)
+        self.add_rubric(CliAgentMonitorRubric())
 
     def init_interception(
         self,
