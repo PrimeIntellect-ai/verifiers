@@ -127,6 +127,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             raise RuntimeError("Interception server is not initialized")
         return server
 
+    def _require_interception_server(self) -> InterceptionServer:
+        if self._interception_server is None:
+            raise RuntimeError("Interception server is not initialized.")
+        return self._interception_server
+
     async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
@@ -139,8 +144,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self._tunnel = None
 
             if self._tunnel is None:
+<<<<<<< HEAD
                 server = self._require_interception_server()
                 port = server.port
+=======
+                interception_server = self._require_interception_server()
+                port = interception_server.port
+>>>>>>> 822df911 (Will/misc ty (#989))
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
@@ -162,8 +172,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
+<<<<<<< HEAD
         server = self._require_interception_server()
         await server.start()
+=======
+        interception_server = self._require_interception_server()
+        await interception_server.start()
+>>>>>>> 822df911 (Will/misc ty (#989))
 
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
@@ -197,7 +212,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
+<<<<<<< HEAD
         request_id_queue = server.register_rollout(rollout_id)
+=======
+        request_id_queue = interception_server.register_rollout(rollout_id)
+>>>>>>> 822df911 (Will/misc ty (#989))
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -288,6 +307,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Wait for agent to make an API request OR agent completion, whichever comes first."""
         request_id_queue = state["request_id_queue"]
+        interception_server = self._require_interception_server()
 
         while True:
             try:
@@ -298,8 +318,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
+<<<<<<< HEAD
                 server = self._require_interception_server()
                 intercept = server.intercepts[request_id]
+=======
+                intercept = interception_server.intercepts[request_id]
+>>>>>>> 822df911 (Will/misc ty (#989))
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
@@ -392,8 +416,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             )
 
         request_id = state.get("current_request_id")
+<<<<<<< HEAD
         server = self._require_interception_server()
         intercept = server.intercepts.get(request_id) if request_id else None
+=======
+        intercept = None
+        if request_id:
+            intercept = self._require_interception_server().intercepts.get(request_id)
+>>>>>>> 822df911 (Will/misc ty (#989))
 
         if intercept:
             # Always use the configured model from state, not the intercepted model

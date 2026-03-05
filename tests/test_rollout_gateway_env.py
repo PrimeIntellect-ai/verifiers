@@ -440,9 +440,9 @@ async def test_poll_job_completion_raises_tunnel_error_on_dead_tunnel(monkeypatc
     await env.get_gateway_tunnel_url(local_addr="10.0.0.1")
     tunnel = FakeTunnel.instances[0]
 
-    # Mock sandbox_client.get_background_job to never complete
-    env.sandbox_client = SimpleNamespace(
-        get_background_job=AsyncMock(return_value=SimpleNamespace(completed=False)),
+    # Mock get_background_job on the real sandbox client
+    env.sandbox_client.get_background_job = AsyncMock(
+        return_value=SimpleNamespace(completed=False)
     )
 
     state = {
