@@ -100,7 +100,12 @@ class Rubric:
         return_annotation = sig.return_annotation
         # Check for dict[str, float] or Dict[str, float] return type
         origin = getattr(return_annotation, "__origin__", None)
-        return origin is dict
+        result = origin is dict
+        self.logger.info(
+            f"_is_multiagent_func({func.__name__}): return_annotation={return_annotation}, "
+            f"origin={origin}, result={result}"
+        )
+        return result
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
