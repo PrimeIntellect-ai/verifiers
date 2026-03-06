@@ -15,6 +15,18 @@ logger = logging.getLogger(__name__)
 ModeType = Literal["dom", "cua"]
 
 
+def _build_default_cua_system_prompt(viewport_width: int, viewport_height: int) -> str:
+    """Build the default system prompt used for CUA mode when none is provided."""
+    return (
+        "You are a browser automation agent. Use the provided tools to interact with the current browser screenshot.\n\n"
+        f"The display resolution is {viewport_width}x{viewport_height} pixels.\n"
+        "Use integer pixel coordinates measured from the top-left corner of the page. "
+        "Center clicks on targets and rely on the latest screenshot after each action before choosing the next step.\n"
+        "If a tool call fails because of invalid arguments, repair the arguments and try again. "
+        "If the task is infeasible from the current page state, explain the failure clearly."
+    )
+
+
 class BrowserEnv(vf.StatefulToolEnv):
     """
     Unified browser environment supporting both DOM-based and CUA-based modes.
@@ -63,6 +75,7 @@ class BrowserEnv(vf.StatefulToolEnv):
         viewport_height: int = 768,
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
+        cua_max_concurrent_requests: int | None = 8,
         proxies: bool = False,
         advanced_stealth: bool = False,
         # CUA sandbox mode specific
@@ -101,6 +114,7 @@ class BrowserEnv(vf.StatefulToolEnv):
             viewport_height: Browser viewport height (default: 768)
             save_screenshots: Save screenshots to disk (default: True)
             keep_recent_screenshots: Number of recent screenshots to keep in context (default: 2)
+            cua_max_concurrent_requests: Maximum number of concurrent CUA session/action requests per environment (default: 8)
             proxies: Enable Browserbase proxies (default: False)
             advanced_stealth: Enable Browserbase Advanced Stealth mode for anti-bot detection (default: False)
             server_port: Port for CUA server in sandbox mode (default: 3000)
@@ -118,6 +132,10 @@ class BrowserEnv(vf.StatefulToolEnv):
             stop_errors: List of exception types that should trigger cleanup (default: [vf.SandboxError])
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
+        if mode == "cua" and "system_prompt" not in kwargs:
+            kwargs["system_prompt"] = _build_default_cua_system_prompt(
+                viewport_width, viewport_height
+            )
         super().__init__(
             stop_errors=stop_errors if stop_errors is not None else [vf.SandboxError],
             **kwargs,
@@ -145,6 +163,7 @@ class BrowserEnv(vf.StatefulToolEnv):
                 browserbase_project_id=project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
+                cua_max_concurrent_requests=cua_max_concurrent_requests,
                 save_screenshots=save_screenshots,
                 keep_recent_screenshots=keep_recent_screenshots,
                 proxies=proxies,

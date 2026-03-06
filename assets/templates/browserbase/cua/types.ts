@@ -79,6 +79,17 @@ export interface ActionResponse {
 }
 
 /**
+ * Structured validation detail for action argument errors
+ */
+export interface ValidationErrorDetail {
+  field: string;
+  expected: string;
+  receivedType: string;
+  receivedValue?: unknown;
+  message: string;
+}
+
+/**
  * Session Create Request
  */
 export interface SessionCreateRequest {
@@ -113,4 +124,7 @@ export interface BrowserSession {
 export interface ErrorResponse {
   error: string;
   code: string;
+  retryable?: boolean;
+  details?: ValidationErrorDetail[];
+  state?: BrowserState;
 }
