@@ -26,7 +26,6 @@ from verifiers.envs.experimental.rlm_env import (
     RLMWorkerPaths,
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
-    _InterceptionPool,
 )
 
 # =============================================================================
@@ -45,8 +44,24 @@ def make_dataset(info: dict) -> Dataset:
 
 
 def build_env(dataset: Dataset, **kwargs) -> RLMEnv:
+    interception_url = kwargs.pop("interception_url", None)
     with patch("verifiers.envs.environment.signal.signal"):
-        return RLMEnv(dataset=dataset, **kwargs)
+        env = RLMEnv(dataset=dataset, **kwargs)
+    if interception_url is not None:
+        env._interception_url_override = interception_url
+    return env
+
+
+def _seed_rollout_dirs(state: dict, tmp_path: Path) -> None:
+    rollout_dir = tmp_path / "rlm_rollout"
+    fs_root = rollout_dir / "rlm_fs"
+    control_dir = rollout_dir / "rlm_control"
+    fs_root.mkdir(parents=True, exist_ok=True)
+    control_dir.mkdir(parents=True, exist_ok=True)
+    state["rlm_rollout_dir"] = str(rollout_dir)
+    state["rlm_fs_root"] = str(fs_root)
+    state["rlm_control_dir"] = str(control_dir)
+    state["rlm_paths"] = {}
 
 
 def extract_bash_helper_source() -> str:
@@ -66,7 +81,7 @@ def rlm_env() -> RLMEnv:
     dataset = make_dataset({})
     return build_env(
         dataset,
-        max_iterations=10,
+        max_turns=10,
         max_output_length=1000,
         repl_language="python",
         interception_url="http://test.invalid",
@@ -87,7 +102,7 @@ def rlm_env_with_sub_tools() -> RLMEnv:
     return build_env(
         dataset,
         sub_tools=[sample_tool, another_tool],
-        sub_tool_max_turns=3,
+        sub_llm_max_turns=3,
         repl_language="python",
         interception_url="http://test.invalid",
     )
@@ -98,7 +113,7 @@ def rlm_env_bash() -> RLMEnv:
     dataset = make_dataset({})
     return build_env(
         dataset,
-        max_iterations=10,
+        max_turns=10,
         max_output_length=1000,
         repl_language="bash",
         interception_url="http://test.invalid",
@@ -310,23 +325,30 @@ class TestContextFilesystemSetup:
         with pytest.raises(ValueError, match="symlink"):
             await env.setup_state(state)
 
-    @pytest.mark.asyncio
-    async def test_setup_state_respects_size_limit(self, tmp_path: Path):
+    def test_copy_context_directory_respects_size_limit(self, tmp_path: Path):
         src = tmp_path / "context_src"
         src.mkdir()
+        # Create a file larger than the 1GB limit would allow, but we
+        # patch the constant to a tiny value so we don't need huge files.
         (src / "big.txt").write_bytes(b"0123456789")
 
-        dataset = make_dataset({"context_dir": str(src)})
-        env = build_env(
-            dataset, filesystem_copy_max_bytes=5, interception_url="http://test.invalid"
-        )
-        env._ensure_interception_server = AsyncMock()
-        env._executor.prepare_filesystem = AsyncMock()
-        env._executor.setup = AsyncMock()
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
 
-        state = {"info": {"context_dir": str(src)}, "model": "m", "client": MagicMock()}
-        with pytest.raises(ValueError, match="exceeds size limit"):
-            await env.setup_state(state)
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        # Mock _compute_fs_metadata to return a size exceeding the limit
+        with patch.object(
+            env,
+            "_compute_fs_metadata",
+            return_value={
+                "file_count": 1,
+                "total_size": 2_000_000_000,
+                "total_bytes": 2_000_000_000,
+            },
+        ):
+            with pytest.raises(ValueError, match="exceeds size limit"):
+                env._copy_context_directory(str(src), str(dst))
 
     @pytest.mark.asyncio
     async def test_setup_state_no_context_creates_empty_dir(self):
@@ -490,7 +512,7 @@ class TestPromptVerbosity:
     async def test_sub_prompt_verbosity(self, verbosity: str, rlm_env: RLMEnv):
         env = rlm_env
         env.sub_prompt_verbosity = verbosity
-        env.sub_tool_max_turns = 7
+        env.sub_llm_max_turns = 7
 
         captured: dict[str, Any] = {}
 
@@ -525,7 +547,7 @@ class TestPromptVerbosity:
         )
 
         expected = rlm_module._SUB_LLM_SYSTEM_PROMPT_STORE[verbosity].format(
-            num_turns=env.sub_tool_max_turns
+            num_turns=env.sub_llm_max_turns
         )
         assert captured["messages"][0]["role"] == "system"
         assert captured["messages"][0]["content"] == expected
@@ -807,13 +829,9 @@ class TestRLMEnvInitialization:
 
         assert env.sub_model is None
         assert env.sub_tools == []
-        assert env.max_iterations == 50
         assert env.max_output_length == 8192
         assert env.max_sub_llm_parallelism == 5
-        assert env.sub_llm_stagger_ms == 200
-        assert env.sub_llm_stagger_jitter_ms == 50
-        assert env.context_key == "context"
-        assert env.context_dir_key == "context_dir"
+        assert env.max_turns == 50
 
     def test_custom_configuration(self):
         def dummy_tool(x: int) -> int:
@@ -824,25 +842,17 @@ class TestRLMEnvInitialization:
             dataset,
             sub_model="gpt-4",
             sub_tools=[dummy_tool],
-            max_iterations=20,
+            max_turns=20,
             max_output_length=4096,
             max_sub_llm_parallelism=10,
-            sub_llm_stagger_ms=15,
-            sub_llm_stagger_jitter_ms=5,
-            context_key="custom_context",
-            context_dir_key="custom_context_dir",
             repl_language="python",
         )
 
         assert env.sub_model == "gpt-4"
         assert len(env.sub_tools) == 1
-        assert env.max_iterations == 20
+        assert env.max_turns == 20
         assert env.max_output_length == 4096
         assert env.max_sub_llm_parallelism == 10
-        assert env.sub_llm_stagger_ms == 15
-        assert env.sub_llm_stagger_jitter_ms == 5
-        assert env.context_key == "custom_context"
-        assert env.context_dir_key == "custom_context_dir"
 
     def test_system_prompt_customization(self):
         custom_prompt = "You are a custom RLM assistant."
@@ -1623,199 +1633,6 @@ class TestSubLLMEmptyModelResponseErrorRaised:
 
 
 # =============================================================================
-# _InterceptionPool tests
-# =============================================================================
-
-
-class TestInterceptionPool:
-    """Tests for the shared _InterceptionPool."""
-
-    @pytest.fixture(autouse=True)
-    def fresh_pool(self):
-        """Each test gets a fresh pool."""
-        self.pool = _InterceptionPool()
-
-    @pytest.mark.asyncio
-    async def test_acquire_creates_server(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        assert 0 in self.pool._entries
-        entry = self.pool._entries[0]
-        assert entry.refcount == 1
-        assert entry.server_app is not None
-        assert entry.server_site is not None
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_acquire_twice_increments_refcount(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        await self.pool.acquire_server(0, "127.0.0.1")
-        assert self.pool._entries[0].refcount == 2
-        await self.pool.release(0)
-        assert self.pool._entries[0].refcount == 1
-        await self.pool.release(0)
-        assert 0 not in self.pool._entries
-
-    @pytest.mark.asyncio
-    async def test_release_destroys_at_zero(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        await self.pool.release(0)
-        assert 0 not in self.pool._entries
-
-    @pytest.mark.asyncio
-    async def test_double_release_does_not_crash(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        await self.pool.release(0)
-        await self.pool.release(0)  # should not raise
-        assert 0 not in self.pool._entries
-
-    @pytest.mark.asyncio
-    async def test_register_and_unregister_rollout(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        sentinel = object()
-        self.pool.register_rollout(0, "roll_1", sentinel)
-        assert self.pool._entries[0].rollout_dispatch["roll_1"] is sentinel
-        self.pool.unregister_rollout(0, "roll_1")
-        assert "roll_1" not in self.pool._entries[0].rollout_dispatch
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_unregister_missing_rollout_does_not_crash(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        self.pool.unregister_rollout(0, "nonexistent")  # should not raise
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_dispatch_routes_to_correct_env(self):
-        from aiohttp import web
-        from aiohttp.test_utils import TestClient, TestServer
-
-        await self.pool.acquire_server(0, "127.0.0.1")
-        entry = self.pool._entries[0]
-
-        # Mock two env instances with different handlers
-        env_a = MagicMock()
-        env_a._handle_sub_llm_request = AsyncMock(
-            return_value=web.json_response({"from": "a"})
-        )
-        env_b = MagicMock()
-        env_b._handle_sub_llm_request = AsyncMock(
-            return_value=web.json_response({"from": "b"})
-        )
-
-        self.pool.register_rollout(0, "roll_a", env_a)
-        self.pool.register_rollout(0, "roll_b", env_b)
-
-        server = TestServer(entry.server_app)
-        client = TestClient(server)
-        await client.start_server()
-        try:
-            resp = await client.post("/rollout/roll_a/v1/chat/completions", json={})
-            assert resp.status == 200
-            env_a._handle_sub_llm_request.assert_called_once()
-            env_b._handle_sub_llm_request.assert_not_called()
-        finally:
-            await client.close()
-
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_dispatch_returns_404_for_unknown_rollout(self):
-        from aiohttp.test_utils import TestClient, TestServer
-
-        await self.pool.acquire_server(0, "127.0.0.1")
-        entry = self.pool._entries[0]
-
-        server = TestServer(entry.server_app)
-        client = TestClient(server)
-        await client.start_server()
-        try:
-            resp = await client.post("/rollout/unknown/v1/chat/completions", json={})
-            assert resp.status == 404
-        finally:
-            await client.close()
-
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_get_tunnel_url_without_server_raises(self):
-        with pytest.raises(RuntimeError, match="No server on port"):
-            await self.pool.get_tunnel_url(9999)
-
-    @pytest.mark.asyncio
-    async def test_get_tunnel_url_reuses_tunnel(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-        mock_tunnel = MagicMock()
-        mock_tunnel.is_running = True
-        mock_tunnel.url = "https://test-tunnel.example.com"
-        mock_tunnel.start = AsyncMock(return_value="https://test-tunnel.example.com")
-        mock_tunnel.stop = AsyncMock()
-
-        with patch(
-            "verifiers.envs.experimental.rlm_env.Tunnel",
-            return_value=mock_tunnel,
-        ):
-            url1 = await self.pool.get_tunnel_url(0)
-            url2 = await self.pool.get_tunnel_url(0)
-            assert url1 == url2
-            # Tunnel constructor called only once
-            mock_tunnel.start.assert_called_once()
-
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_get_tunnel_url_recreates_dead_tunnel(self):
-        await self.pool.acquire_server(0, "127.0.0.1")
-
-        dead_tunnel = MagicMock()
-        dead_tunnel.is_running = False
-        dead_tunnel.stop = AsyncMock()
-
-        new_tunnel = MagicMock()
-        new_tunnel.is_running = True
-        new_tunnel.url = "https://new-tunnel.example.com"
-        new_tunnel.start = AsyncMock(return_value="https://new-tunnel.example.com")
-
-        # Inject a dead tunnel into the entry
-        entry = self.pool._entries[0]
-        entry.tunnel = dead_tunnel
-        entry.tunnel_url = "https://old-tunnel.example.com"
-
-        with patch(
-            "verifiers.envs.experimental.rlm_env.Tunnel",
-            return_value=new_tunnel,
-        ):
-            url = await self.pool.get_tunnel_url(0)
-            assert url == "https://new-tunnel.example.com"
-            dead_tunnel.stop.assert_called_once()
-            new_tunnel.start.assert_called_once()
-
-        await self.pool.release(0)
-
-    @pytest.mark.asyncio
-    async def test_concurrent_acquire_no_double_increment(self):
-        """Verify that concurrent rollouts in one RLMEnv don't double-acquire."""
-        dataset = make_dataset({})
-        env = build_env(
-            dataset,
-            interception_port=18080,
-            interception_url="http://test.invalid",
-        )
-        # Replace the global pool with our fresh one
-        with patch("verifiers.envs.experimental.rlm_env._interception_pool", self.pool):
-            # Simulate concurrent _ensure_interception_server calls
-            import asyncio
-
-            await asyncio.gather(
-                env._ensure_interception_server(),
-                env._ensure_interception_server(),
-                env._ensure_interception_server(),
-            )
-            assert self.pool._entries[18080].refcount == 1
-            assert env._has_pool_ref is True
-            await self.pool.release(18080)
-
-
-# =============================================================================
 # Message History Upload
 # =============================================================================
 
@@ -2187,3 +2004,765 @@ class TestMessageHistory:
             assert result["_messages_uploaded_count"] == 0
         finally:
             await env.cleanup_rlm_state(result)
+
+
+# =============================================================================
+# Sub-LLM Completion Token Budget
+# =============================================================================
+
+
+class TestSubLLMCompletionTokenBudget:
+    """Tests for the sub_max_completion_tokens budget feature."""
+
+    def test_default_is_none(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.sub_max_completion_tokens is None
+
+    def test_custom_value(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            sub_max_completion_tokens=50000,
+            interception_url="http://test.invalid",
+        )
+        assert env.sub_max_completion_tokens == 50000
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_blocks_when_budget_exhausted(self, rlm_env):
+        rlm_env.sub_max_completion_tokens = 1000
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 1000,
+        }
+
+        result = await rlm_env._run_sub_llm_request(
+            state_ref=state,
+            client=MagicMock(),
+            sub_model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            batch_id="b1",
+            request_id="r1",
+            parent_turn=0,
+        )
+
+        content = result["choices"][0]["message"]["content"]
+        assert "budget exhausted" in content.lower()
+        assert "1000/1000" in content
+        assert result["_rlm_metadata"]["budget_exhausted"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_allows_when_under_budget(self, rlm_env):
+        rlm_env.sub_max_completion_tokens = 1000
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 500,
+        }
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm",
+            new=AsyncMock(
+                return_value={
+                    "final_content": "ok",
+                    "turns": [
+                        {
+                            "prompt_messages": [{"role": "user", "content": "hi"}],
+                            "response": mock_response,
+                            "tool_call_count": 0,
+                        }
+                    ],
+                    "total_prompt_tokens": 10,
+                    "total_completion_tokens": 20,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                    "max_turns_reached": False,
+                }
+            ),
+        ):
+            result = await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert result["_rlm_metadata"].get("budget_exhausted") is not True
+        assert result["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_run_sub_llm_request_allows_when_no_budget(self, rlm_env):
+        """When sub_max_completion_tokens is None, no budget check occurs."""
+        assert rlm_env.sub_max_completion_tokens is None
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 999999,
+        }
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm",
+            new=AsyncMock(
+                return_value={
+                    "final_content": "ok",
+                    "turns": [
+                        {
+                            "prompt_messages": [{"role": "user", "content": "hi"}],
+                            "response": mock_response,
+                            "tool_call_count": 0,
+                        }
+                    ],
+                    "total_prompt_tokens": 10,
+                    "total_completion_tokens": 20,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                    "max_turns_reached": False,
+                }
+            ),
+        ):
+            result = await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert result["_rlm_metadata"].get("budget_exhausted") is not True
+
+    @pytest.mark.asyncio
+    async def test_batch_early_exit_when_budget_exhausted(self, rlm_env):
+        rlm_env.sub_max_completion_tokens = 500
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": {
+                "trajectory": [],
+                "sub_llm_completion_tokens": 500,
+            },
+        }
+
+        contents, summary_lines = await rlm_env._root_llm_batch(
+            context, ["prompt1", "prompt2"]
+        )
+
+        assert len(contents) == 2
+        assert "budget exhausted" in contents[0].lower()
+        assert "budget exhausted" in contents[1].lower()
+        assert any("skipped" in line for line in summary_lines)
+        assert any("500/500" in line for line in summary_lines)
+
+    @pytest.mark.asyncio
+    async def test_batch_summary_includes_budget_when_set(self, rlm_env):
+        rlm_env.sub_max_completion_tokens = 10000
+
+        mock_response = MagicMock()
+        mock_response.message.content = "ok"
+        mock_response.message.tool_calls = None
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 200,
+        }
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": state,
+        }
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm_request",
+            new=AsyncMock(
+                return_value={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "_rlm_metadata": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "tool_call_count": 0,
+                        "num_turns": 1,
+                        "max_turns_reached": False,
+                    },
+                }
+            ),
+        ):
+            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
+
+        # Summary should include budget info
+        budget_line = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        assert len(budget_line) == 1
+        assert "/10000" in budget_line[0]
+
+    @pytest.mark.asyncio
+    async def test_batch_summary_excludes_budget_when_none(self, rlm_env):
+        assert rlm_env.sub_max_completion_tokens is None
+
+        state = {
+            "trajectory": [],
+            "sampling_args": {},
+            "sub_llm_completion_tokens": 200,
+        }
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": state,
+        }
+
+        with patch.object(
+            rlm_env,
+            "_run_sub_llm_request",
+            new=AsyncMock(
+                return_value={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "_rlm_metadata": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "tool_call_count": 0,
+                        "num_turns": 1,
+                        "max_turns_reached": False,
+                    },
+                }
+            ),
+        ):
+            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
+
+        budget_lines = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        assert len(budget_lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_includes_budget_when_set(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            sub_max_completion_tokens=50000,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "50000" in prompt
+            assert "completion tokens" in prompt
+            assert "llm_batch" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_excludes_budget_when_none(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        assert env.sub_max_completion_tokens is None
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "budget" not in prompt.lower()
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_budget_enforced_within_tool_loop(self, rlm_env_with_sub_tools):
+        """Budget is checked mid-loop: after a turn exceeds the budget,
+        the tool loop breaks and forces a final answer instead of continuing."""
+        from verifiers.types import Response, ResponseMessage, ToolCall, Usage
+
+        rlm_env_with_sub_tools.sub_max_completion_tokens = 100
+
+        # Turn 1: tool call that uses 80 completion tokens
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=50,
+                reasoning_tokens=0,
+                completion_tokens=80,
+                total_tokens=130,
+            ),
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="sample_tool",
+                        arguments='{"x": 2, "y": 3}',
+                    )
+                ],
+            ),
+        )
+        # Turn 2 (forced final answer): no tools offered
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=100,
+                reasoning_tokens=0,
+                completion_tokens=30,
+                total_tokens=130,
+            ),
+            message=ResponseMessage(
+                content="Final answer",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
+        )
+        # Turn 3 would happen if the loop continued — but it shouldn't
+        resp3 = Response(
+            id="mock3",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=200,
+                reasoning_tokens=0,
+                completion_tokens=500,
+                total_tokens=700,
+            ),
+            message=ResponseMessage(
+                content="Should not reach here",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2, resp3])
+
+        # State has 30 tokens already used; budget is 100.
+        # After turn 1 (80 tokens), total = 30 + 80 = 110 >= 100 → break.
+        state = {"sub_llm_completion_tokens": 30}
+
+        messages = [{"role": "user", "content": "test"}]
+        result = await rlm_env_with_sub_tools._run_sub_llm(
+            state, mock_client, "gpt-4", messages
+        )
+
+        # Should have called the API twice: turn 1 (tool call) + forced final answer.
+        # NOT three times (which would mean the loop didn't break).
+        assert mock_client.get_response.await_count == 2
+        assert result["final_content"] == "Final answer"
+        assert result["max_turns_reached"] is True
+        assert result["total_completion_tokens"] == 110  # 80 + 30
+
+
+class TestRootLLMMaxCompletionTokens:
+    """Tests for the root_max_completion_tokens budget feature."""
+
+    def test_default_is_none(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.root_max_completion_tokens is None
+
+    def test_custom_value(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            root_max_completion_tokens=20000,
+            interception_url="http://test.invalid",
+        )
+        assert env.root_max_completion_tokens == 20000
+
+    @pytest.mark.asyncio
+    async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
+        assert rlm_env.root_max_completion_tokens is None
+        state = {"main_rlm_completion_tokens": 999999}
+        assert rlm_env._is_root_budget_exhausted(state) is False
+
+    @pytest.mark.asyncio
+    async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
+        rlm_env.root_max_completion_tokens = 1000
+        state = {"main_rlm_completion_tokens": 500}
+        assert rlm_env._is_root_budget_exhausted(state) is False
+
+    @pytest.mark.asyncio
+    async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
+        rlm_env.root_max_completion_tokens = 1000
+        state = {"main_rlm_completion_tokens": 1000}
+        assert rlm_env._is_root_budget_exhausted(state) is True
+
+    @pytest.mark.asyncio
+    async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
+        rlm_env.root_max_completion_tokens = 1000
+        state = {"main_rlm_completion_tokens": 1500}
+        assert rlm_env._is_root_budget_exhausted(state) is True
+
+    @pytest.mark.asyncio
+    async def test_repl_output_includes_budget_when_set(self, rlm_env):
+        rlm_env.root_max_completion_tokens = 5000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {
+            "trajectory": [],
+            "context_warning_sent": False,
+            "main_rlm_completion_tokens": 1200,
+        }
+        output = await rlm_env.call_python_repl("print('test')", state)
+
+        assert "1200/5000 root completion tokens used" in output
+
+    @pytest.mark.asyncio
+    async def test_repl_output_excludes_budget_when_none(self, rlm_env):
+        assert rlm_env.root_max_completion_tokens is None
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {
+            "trajectory": [],
+            "context_warning_sent": False,
+            "main_rlm_completion_tokens": 1200,
+        }
+        output = await rlm_env.call_python_repl("print('test')", state)
+
+        assert "root completion tokens" not in output
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_includes_root_budget_when_set(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            root_max_completion_tokens=20000,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "20000" in prompt
+            assert "completion tokens" in prompt
+            assert "your own responses" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_excludes_root_budget_when_none(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        assert env.root_max_completion_tokens is None
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "your own responses" not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_env_response_sets_final_env_response_when_budget_exhausted(
+        self, rlm_env
+    ):
+        """When root budget is exhausted, env_response should execute the tool
+        and set final_env_response so the loop stops after the tool runs."""
+        rlm_env.root_max_completion_tokens = 1000
+        rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
+
+        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            result = await rlm_env.env_response([], state)
+
+        assert result is fake_tool_messages
+        assert state["final_env_response"] is fake_tool_messages
+        assert state["final_answer"] == "my answer"
+
+    @pytest.mark.asyncio
+    async def test_env_response_no_final_env_response_when_under_budget(self, rlm_env):
+        """When root budget is not exhausted, env_response should not set
+        final_env_response."""
+        rlm_env.root_max_completion_tokens = 1000
+
+        state = {"main_rlm_completion_tokens": 500}
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            result = await rlm_env.env_response([], state)
+
+        assert result is fake_tool_messages
+        assert "final_env_response" not in state
+
+    @pytest.mark.asyncio
+    async def test_env_response_final_answer_takes_priority_over_budget(self, rlm_env):
+        """When final_answer is already set (answer ready), that path takes
+        priority regardless of budget state."""
+        rlm_env.root_max_completion_tokens = 1000
+
+        state = {
+            "main_rlm_completion_tokens": 500,
+            "final_answer": "already set",
+        }
+        fake_tool_messages = [MagicMock()]
+
+        with patch(
+            "verifiers.envs.stateful_tool_env.StatefulToolEnv.env_response",
+            new=AsyncMock(return_value=fake_tool_messages),
+        ):
+            await rlm_env.env_response([], state)
+
+        assert state["final_env_response"] is fake_tool_messages
+        assert state["final_answer"] == "already set"
+
+
+# =============================================================================
+# Sandbox Backend Tests (mocked)
+# =============================================================================
+
+
+class TestExecutorIsRLMExecutor:
+    def test_default_executor_is_rlm_executor(self):
+        dataset = make_dataset({})
+        env = build_env(dataset)
+        assert env._executor.__class__.__name__ == "RLMExecutor"
+
+
+class TestWorkerScripts:
+    def test_rendered_python_worker_is_valid(self, tmp_path: Path):
+        paths = RLMWorkerPaths(
+            base_dir=str(tmp_path),
+            command_fifo=str(tmp_path / "cmd"),
+            response_fifo=str(tmp_path / "res"),
+            ready_flag=str(tmp_path / "ready"),
+            worker_path=str(tmp_path / "worker.py"),
+            worker_pid_file=str(tmp_path / "worker.pid"),
+            context_file=str(tmp_path / "context.json"),
+            answer_file=str(tmp_path / "answer.json"),
+            log_file=str(tmp_path / "worker.log"),
+        )
+        script = rlm_module._render_worker_script(paths, repl_language="python")
+        ast.parse(script)
+        assert "FilesystemJail" not in script
+
+    def test_rendered_bash_worker_is_valid(self, tmp_path: Path):
+        paths = RLMWorkerPaths(
+            base_dir=str(tmp_path),
+            command_fifo=str(tmp_path / "cmd"),
+            response_fifo=str(tmp_path / "res"),
+            ready_flag=str(tmp_path / "ready"),
+            worker_path=str(tmp_path / "worker.py"),
+            worker_pid_file=str(tmp_path / "worker.pid"),
+            context_file=str(tmp_path / "context.json"),
+            answer_file=str(tmp_path / "answer.json"),
+            log_file=str(tmp_path / "worker.log"),
+        )
+        script = rlm_module._render_worker_script(paths, repl_language="bash")
+        ast.parse(script)
+        assert "FilesystemJail" not in script
+        assert "import pty" not in script.lower()
+
+
+class TestTunnelRouting:
+    @pytest.mark.asyncio
+    async def test_uses_tunnel_when_no_interception_url(self, tmp_path: Path):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="bash")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        _seed_rollout_dirs(state, tmp_path)
+        env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
+
+        with patch("verifiers.envs.experimental.rlm_env.Tunnel") as TunnelMock:
+            tunnel = TunnelMock.return_value
+            tunnel.start = AsyncMock(return_value="https://tunnel.example")
+            tunnel.stop = AsyncMock()
+
+            result = await env.setup_state(state)
+
+        tunnel.start.assert_awaited_once()
+        assert result["interception_url"].startswith("https://tunnel.example")
+        assert result["root_tool_url"].startswith("https://tunnel.example")
+
+    @pytest.mark.asyncio
+    async def test_skips_tunnel_when_interception_url_provided(self, tmp_path: Path):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            interception_url="https://override.example/base",
+            repl_language="bash",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        _seed_rollout_dirs(state, tmp_path)
+        env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
+
+        with patch("verifiers.envs.experimental.rlm_env.Tunnel") as TunnelMock:
+            result = await env.setup_state(state)
+
+        TunnelMock.assert_not_called()
+        assert result["interception_url"].startswith("https://override.example")
+        assert result["root_tool_url"].startswith("https://override.example")
+
+
+class TestCleanupSemantics:
+    @pytest.mark.asyncio
+    async def test_cleanup_calls_executor(self, tmp_path: Path):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            interception_url="https://override.example/base",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+        env._executor.cleanup = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "m",
+            "client": MagicMock(),
+        }
+        _seed_rollout_dirs(state, tmp_path)
+        env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
+
+        result = await env.setup_state(state)
+        await env.cleanup_rlm_state(result)
+
+        env._executor.cleanup.assert_awaited_once()
+
+
+class TestFilesystemProvisioning:
+    @pytest.mark.asyncio
+    async def test_prepare_filesystem_uploads_and_sets_paths(self, tmp_path: Path):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="bash")
+        state = {
+            "rollout_id": "rlm_test",
+            "model": "m",
+            "client": MagicMock(),
+        }
+
+        env._executor.create_rollout_dirs(state)
+        fs_root = Path(state["rlm_fs_root"])
+        (fs_root / "data.txt").write_text("hi", encoding="utf-8")
+
+        executor = env._executor
+        executor.create_sandbox = AsyncMock(return_value="sbx_1")
+        executor._execute_sandbox_command = AsyncMock()
+        executor._upload_directory = AsyncMock()
+
+        await executor.prepare_filesystem(state)
+
+        executor.create_sandbox.assert_awaited_once()
+        executor._upload_directory.assert_awaited_once()
+
+        assert state["rlm_fs_staging_root"] == str(fs_root)
+        assert state["rlm_fs_root_remote"].startswith("/tmp/rlm_rlm_test/rlm_fs")
+        assert state["rlm_control_dir_remote"].startswith(
+            "/tmp/rlm_rlm_test/rlm_control"
+        )
+        assert state["rlm_paths_remote"]["base_dir"].startswith(
+            "/tmp/rlm_rlm_test/rlm_control"
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_sandbox_files_uploads_worker_and_context(self, tmp_path: Path):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="python")
+        state = {
+            "rollout_id": "rlm_test",
+            "rlm_fs_root": "/tmp/rlm_rlm_test/rlm_fs",
+            "model": "m",
+            "client": MagicMock(),
+            "interception_url": "http://example.invalid",
+            "root_tool_url": "http://example.invalid",
+        }
+
+        executor = env._executor
+        executor._sessions.clear()
+        session = executor._get_or_create_session(state)
+        session.sandbox_id = "sbx_1"
+        session.sandbox_control_dir = "/tmp/rlm_rlm_test/rlm_control"
+        session.sandbox_fs_root = "/tmp/rlm_rlm_test/rlm_fs"
+        session.paths = rlm_module._build_worker_paths(session.sandbox_control_dir)
+
+        executor.sandbox_client.upload_file = AsyncMock()
+
+        await executor._write_sandbox_files(session, state)
+
+        assert executor.sandbox_client.upload_file.await_count == 3

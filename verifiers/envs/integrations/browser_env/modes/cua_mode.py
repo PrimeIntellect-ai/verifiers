@@ -370,6 +370,20 @@ class CUAMode:
             self.logger.debug(f"Created sandbox {sandbox.id}")
         return sandbox.id
 
+    async def _create_sandbox_with_retry(self) -> str:
+        """Create a sandbox with retry, cleaning up orphaned sandboxes from failed attempts."""
+        previous_sandbox_id: str | None = None
+        async for attempt in self.retrying:  # type: ignore[union-attr]
+            with attempt:
+                if previous_sandbox_id is not None:
+                    try:
+                        await self._delete_sandbox(previous_sandbox_id)
+                    except Exception:
+                        pass
+                sandbox_id = await self._create_sandbox()
+                previous_sandbox_id = sandbox_id
+        return sandbox_id
+
     async def _wait_for_sandbox_ready(self, sandbox_id: str) -> None:
         """Wait for sandbox to be ready."""
         client = await self._get_sandbox_client()
@@ -830,21 +844,17 @@ class CUAMode:
                             f"Using prebuilt image: {self.prebuilt_image}"
                         )
 
-                    async for attempt in self.retrying:  # type: ignore[union-attr]
-                        with attempt:
-                            sandbox_id = await self._create_sandbox()
-                    await self._wait_for_sandbox_ready(sandbox_id)
+                    sandbox_id = await self._create_sandbox_with_retry()
                     state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
                     await self._wait_for_server(sandbox_id)
                 else:
                     if self.use_binary:
                         await self._ensure_binary_exists()
 
-                    async for attempt in self.retrying:  # type: ignore[union-attr]
-                        with attempt:
-                            sandbox_id = await self._create_sandbox()
-                    await self._wait_for_sandbox_ready(sandbox_id)
+                    sandbox_id = await self._create_sandbox_with_retry()
                     state["cua_sandbox_id"] = sandbox_id
+                    await self._wait_for_sandbox_ready(sandbox_id)
                     await self._upload_server_files(sandbox_id)
                     await self._start_server(sandbox_id)
                     await self._wait_for_server(sandbox_id)
