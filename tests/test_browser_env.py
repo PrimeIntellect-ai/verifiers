@@ -127,6 +127,75 @@ class TestCUAModeInit:
                 assert env._mode_impl.session_create_max_backoff_seconds == 45.0
                 assert env._mode_impl.session_create_jitter == 0.01
 
+    def test_cua_default_system_prompt_uses_configured_viewport(self):
+        """Test that BrowserEnv injects a default CUA prompt with viewport dimensions."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    viewport_width=800,
+                    viewport_height=600,
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        assert env.system_prompt is not None
+        assert "800x600" in env.system_prompt
+
+    def test_cua_custom_system_prompt_is_preserved(self):
+        """Test that custom CUA prompts override the default prompt injection."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    system_prompt="custom prompt",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        assert env.system_prompt == "custom prompt"
+
+
+class TestCUAToolDescriptions:
+    """Tests for CUA tool schema descriptions."""
+
+    def test_tool_descriptions_include_viewport_dimensions(self):
+        """Test that coordinate tools include configured viewport dimensions."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    viewport_width=800,
+                    viewport_height=600,
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        tool_descriptions = {tool.name: tool.description for tool in env.tool_defs}
+        assert "800x600" in tool_descriptions["click"]
+        assert "800x600" in tool_descriptions["scroll"]
+
 
 class TestCUASandboxModeBackwardsCompat:
     """Tests for backwards compatibility with CUASandboxMode."""
@@ -693,6 +762,46 @@ class TestCUAModeSandboxSetupCleanup:
 
         mode._delete_sandbox.assert_awaited_once_with("sandbox-3")
         assert state.get("cua_sandbox_id") == "sandbox-3"
+
+
+class TestCUAModeErrorHelpers:
+    """Tests for structured CUA error parsing and retry classification."""
+
+    def test_format_error_message_includes_validation_details(self):
+        """Test validation details are rendered in a model-repairable format."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
+        message = mode._format_error_message(
+            400,
+            {
+                "error": "Invalid arguments for click",
+                "details": [
+                    {
+                        "field": "x",
+                        "expected": "an integer pixel coordinate",
+                        "receivedType": "string",
+                        "receivedValue": "512",
+                    }
+                ],
+            },
+            "",
+        )
+
+        assert "Invalid arguments for click" in message
+        assert "x must be an integer pixel coordinate" in message
+        assert '"512"' not in message
+        assert "512" in message
+        assert "string" in message
+
+    def test_retryable_response_detects_rate_limit_payload(self):
+        """Test that retryable payloads are classified for internal retry."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
+
+        assert mode._is_retryable_response(429, {"retryable": True}) is True
+        assert mode._is_retryable_response(400, {"retryable": False}) is False
 
 
 # ============================================================================
