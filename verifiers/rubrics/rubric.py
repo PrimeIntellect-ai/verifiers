@@ -10,7 +10,6 @@ from verifiers.types import (
     GroupRewardFunc,
     MultiAgentRewardFunc,
     RewardFunc,
-    RolloutScore,
     State,
 )
 from verifiers.utils.async_utils import maybe_await
@@ -104,12 +103,7 @@ class Rubric:
         return_annotation = sig.return_annotation
         # Check for dict[str, float] or Dict[str, float] return type
         origin = getattr(return_annotation, "__origin__", None)
-        result = origin is dict
-        self.logger.info(
-            f"_is_multiagent_func({func.__name__}): return_annotation={return_annotation}, "
-            f"origin={origin}, result={result}"
-        )
-        return result
+        return origin is dict
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
@@ -120,13 +114,17 @@ class Rubric:
         ]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]
+        return [
+            func
+            for func in self.funcs
+            if not self._is_group_func(func) and not self._is_multiagent_func(func)
+        ]
 
     def _get_individual_reward_weights(self) -> list[float]:
         return [
             weight
             for func, weight in zip(self.funcs, self.weights)
-            if not self._is_group_func(func)
+            if not self._is_group_func(func) and not self._is_multiagent_func(func)
         ]
 
     async def _call_individual_reward_func(
@@ -293,40 +291,76 @@ class Rubric:
     async def score_rollout(self, state: State):
         """
         Evaluate all reward functions for a single rollout.
+        Supports individual and multi-agent reward functions (but not group functions).
         """
         reward_funcs = self._get_individual_reward_funcs()
+        multiagent_funcs = self._get_multiagent_reward_funcs()
         group_reward_funcs = self._get_group_reward_funcs()
-        assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
-            "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
+
+        has_reward_funcs = len(reward_funcs) > 0 or len(multiagent_funcs) > 0
+        assert has_reward_funcs and len(group_reward_funcs) == 0, (
+            "Rubric.score_rollout requires at least one individual-level or multi-agent "
+            "reward function and no group-level reward functions"
         )
+
         start_time = time.time()
-        reward_scores = []
-        for func in reward_funcs:
-            reward_scores.append(
-                await self._call_individual_reward_func(
-                    func=func,
-                    state=state,
-                )
+        aggregated_reward = 0.0
+        aggregated_metrics: dict[str, float] = {}
+        aggregated_agent_rewards: dict[str, float] = {}
+
+        # Process individual reward functions
+        for func, weight in zip(reward_funcs, self._get_individual_reward_weights()):
+            score = await self._call_individual_reward_func(func=func, state=state)
+            aggregated_reward += score * weight
+            aggregated_metrics[func.__name__] = score
+            # Also add to each agent's rewards (for multi-agent compatibility)
+            agent_ids = set(
+                t.get("extras", {}).get("agent_id")
+                for t in state["trajectory"]
+                if t.get("extras", {}).get("agent_id")
             )
-        rewards = RolloutScore(
-            metrics={
-                func.__name__: reward
-                for func, reward in zip(reward_funcs, reward_scores)
-            },
-            reward=sum(
-                [
-                    reward * weight
-                    for reward, weight in zip(
-                        reward_scores, self._get_individual_reward_weights()
-                    )
-                ]
-            ),
-        )
+            for agent_id in agent_ids:
+                if agent_id not in aggregated_agent_rewards:
+                    aggregated_agent_rewards[agent_id] = 0.0
+                aggregated_agent_rewards[agent_id] += score * weight
+
+        # Process multi-agent reward functions
+        multiagent_weights = [
+            weight
+            for func, weight in zip(self.funcs, self.weights)
+            if self._is_multiagent_func(func)
+        ]
+        for func, weight in zip(multiagent_funcs, multiagent_weights):
+            agent_scores = await self._call_multiagent_reward_func(
+                func=func, state=state
+            )
+            # Aggregate per-agent rewards
+            for agent_id, score_value in agent_scores.items():
+                if agent_id not in aggregated_agent_rewards:
+                    aggregated_agent_rewards[agent_id] = 0.0
+                aggregated_agent_rewards[agent_id] += score_value * weight
+            # Compute rollout-level reward (mean of agent rewards)
+            if agent_scores:
+                mean_score = sum(agent_scores.values()) / len(agent_scores)
+                aggregated_reward += mean_score * weight
+                aggregated_metrics[func.__name__] = mean_score
+
         end_time = time.time()
         state["timing"]["scoring_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
-        state["reward"] = rewards["reward"]
-        state["metrics"] = rewards["metrics"]
+        state["reward"] = aggregated_reward
+        state["metrics"] = aggregated_metrics
+
+        # Store per-agent rewards if any multi-agent funcs were used
+        if aggregated_agent_rewards:
+            state["agent_rewards"] = aggregated_agent_rewards
+            # Assign per-step rewards based on agent_id
+            for t in state["trajectory"]:
+                if t["reward"] is None:
+                    agent_id = t.get("extras", {}).get("agent_id")
+                    t["reward"] = aggregated_agent_rewards.get(
+                        agent_id, state["reward"]
+                    )
 
     async def dummy_score_group(self, states: list[State]):
         """Score a group of rollouts together with dummy rewards."""
