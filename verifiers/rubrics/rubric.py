@@ -343,6 +343,8 @@ class Rubric:
             self.logger.info(
                 f"score_rollout multiagent {func.__name__}: agent_scores={agent_scores}, "
                 f"num_steps={len(traj)}, "
+                f"error={state.get('error')}, stop_condition={state.get('stop_condition')}, "
+                f"current_agent_id={state.get('extras', {}).get('current_agent_id')}, "
                 f"is_completed={state.get('is_completed')}, is_complete={state.get('is_complete')}, "
                 f"is_truncated={state.get('is_truncated')}, "
                 f"offer={state.get('offer')}, response={state.get('response')}, "
