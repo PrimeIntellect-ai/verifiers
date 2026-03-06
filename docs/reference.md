@@ -379,6 +379,49 @@ Tool calling with stateless Python functions. Automatically converts functions t
 
 Tools requiring per-rollout state. Override `setup_state` and `update_tool_args` to inject state.
 
+#### MCPEnv
+
+```python
+class MCPEnv(StatefulToolEnv):
+    def __init__(
+        self,
+        mcp_servers: list[MCPServerConfig | dict] | None = None,
+        tools: list[Callable] | None = None,
+        transport_type: Literal["stdio", "http", "sandbox"] = "stdio",
+        connection_scope: Literal["shared", "rollout"] | None = None,
+        http_urls: dict[str, str] | None = None,
+        http_timeout: float = 30.0,
+        http_max_retries: int = 3,
+        sandbox_image: str = "python:3.11-slim",
+        sandbox_start_command: str = "tail -f /dev/null",
+        sandbox_environment_vars: dict[str, str] | None = None,
+        sandbox_cpu_cores: int = 1,
+        sandbox_memory_gb: int = 2,
+        sandbox_disk_size_gb: int = 5,
+        sandbox_timeout_minutes: int = 60,
+        sandbox_port_to_expose: int = 8000,
+        **kwargs,
+    ): ...
+```
+
+Transport-backed MCP tool environment built on `StatefulToolEnv`.
+
+**Key parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mcp_servers` | `list[MCPServerConfig \| dict] \| None` | MCP server definitions |
+| `transport_type` | `"stdio" \| "http" \| "sandbox"` | MCP transport backend |
+| `connection_scope` | `"shared" \| "rollout" \| None` | Shared transports across rollouts or isolated per-rollout transports |
+| `http_urls` | `dict[str, str] \| None` | Per-server URL overrides for HTTP transports |
+| `http_timeout` | `float` | Timeout for MCP handshake and tool calls |
+| `sandbox_image` | `str` | Docker image used for sandbox MCP servers |
+| `sandbox_start_command` | `str` | Initial sandbox start command |
+| `sandbox_environment_vars` | `dict[str, str] \| None` | Extra sandbox environment variables |
+| `sandbox_port_to_expose` | `int` | Sandbox port exposed for MCP connectivity |
+
+By default, stdio and HTTP transports use `connection_scope="shared"` while sandbox transports default to `connection_scope="rollout"`.
+
 #### SandboxEnv
 
 ```python
