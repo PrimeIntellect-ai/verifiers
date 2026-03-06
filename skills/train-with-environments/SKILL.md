@@ -31,7 +31,7 @@ uv run prime-rl configs/prime-rl/wiki-search.toml
 4. Reasoning go-tos for harder reasoning-heavy probes: `gpt-5` series, `qwen3` thinking series, `glm` series.
 
 ## First-Run Protocol
-1. Validate environment behavior before training:
+1. Validate environment behavior before training with the canonical eval path. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime env install my-env
 prime eval run my-env -m gpt-4.1-mini -n 20 -r 3 -s
