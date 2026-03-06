@@ -64,6 +64,10 @@ class MultiTurnEnv(vf.Environment):
         """Check if env_response signaled termination via final_env_response."""
         return state.get("final_env_response") is not None
 
+    @vf.stop
+    async def has_incomplete_response(self, state: State) -> bool:
+        return state.get("incomplete_response", False)
+
     async def setup_state(self, state: State) -> State:
         """Override to add environment-specific state fields."""
         return state
@@ -121,9 +125,15 @@ class MultiTurnEnv(vf.Environment):
     ):
         completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)
+        has_content = bool(response.message.content)
+        has_tool_calls = bool(response.message.tool_calls)
+        if not has_content and not has_tool_calls:
+            state["incomplete_response"] = True
         response_is_truncated = response.message.is_truncated or False
-        is_truncated = response_is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
+        is_truncated = (
+            response_is_truncated
+            or (tokens is not None and bool(tokens.get("is_truncated")))
+            or state.get("incomplete_response", False)
         )
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
