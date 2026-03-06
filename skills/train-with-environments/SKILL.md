@@ -24,6 +24,51 @@ uv run prime-rl configs/prime-rl/wiki-search.toml
 - Hosted Training is intended to be launched from a CPU machine.
 - Local `prime-rl` training requires local GPU access.
 
+## SFT → RL Workflow
+
+For users starting with supervised fine-tuning before RL:
+
+1. **SFT Phase**: Use `vf.SFTTrainer` to train on static dataset
+```bash
+vf-sft @ path/to/sft-config.toml
+```
+Or programmatically:
+```python
+import verifiers as vf
+from datasets import load_dataset
+
+dataset = load_dataset("willcb/V3-wordle", split="train")
+config = vf.SFTConfig(
+    run_name="wordle-sft",
+    max_steps=500,
+    learning_rate=2e-5,
+    batch_size=512,
+    micro_batch_size=8,
+)
+trainer = vf.SFTTrainer(model="Qwen/Qwen3-4B-Instruct", train_dataset=dataset, args=config)
+trainer.train()
+```
+
+2. **RL Phase**: Use SFT checkpoint as initialization for RL
+```python
+import verifiers as vf
+
+env = vf.load_environment("verifiers/wordle")
+config = vf.RLConfig(run_name="wordle-rl", max_steps=500)
+trainer = vf.RLTrainer(
+    model="outputs/wordle-sft/checkpoint-500",  # SFT checkpoint
+    env=env,
+    args=config,
+)
+trainer.train()
+```
+
+3. **SFT-specific considerations**:
+- No orchestrator or vLLM required for basic SFT
+- Use `batch_size` and `micro_batch_size` to control effective batch size
+- Enable `use_vllm=True` for sample monitoring during training (optional)
+- Simpler hyperparameters: no `rollouts_per_example`, no PPO-specific settings
+
 ## Endpoint Shortcuts And Model Family Choice
 1. Encourage users to maintain endpoint aliases in `configs/endpoints.toml` for eval and train loops.
 2. Ask whether they want instruct or reasoning models for pre-training validation.
