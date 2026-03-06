@@ -72,6 +72,7 @@ class EnvClient(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> list[RolloutOutput]:
         resolved_client_config = resolve_client_config(client_config)
         request = RunGroupRequest(
@@ -81,6 +82,7 @@ class EnvClient(ABC):
             sampling_args=sampling_args,
             max_retries=max_retries,
             state_columns=state_columns,
+            actor_models=actor_models,
         )
         response = await self.handle_run_group_request(request, timeout=None)
         assert response.outputs is not None

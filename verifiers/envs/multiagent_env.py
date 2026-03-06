@@ -256,14 +256,15 @@ class MultiAgentEnv(MultiTurnEnv):
                     if actor_client is not None and not isinstance(actor_client, Client):
                         actor_client = OpenAIChatCompletionsClient(actor_client)
 
-                    used_model = actor.model or state.get("model", "default")
+                    actor_models = getattr(self, "_actor_models", {})
+                    used_model = actor_models.get(actor_id) or actor.model or state.get("model", "default")
                     self.logger.info(f"[{actor_id}] using model: {used_model}")
 
                     response = await self.get_model_response(
                         state,
                         prompt_messages,
                         client=actor_client,
-                        model=actor.model,
+                        model=used_model,
                         sampling_args=merged_args,
                     )
 
@@ -394,6 +395,7 @@ class MultiAgentEnv(MultiTurnEnv):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client=None,
+        actor_models: dict[str, str] | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Run a group of rollouts, splitting into per-actor outputs.
@@ -421,6 +423,7 @@ class MultiAgentEnv(MultiTurnEnv):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         resolved_client = resolve_client(client)
@@ -442,6 +445,9 @@ class MultiAgentEnv(MultiTurnEnv):
         # so total outputs = len(group_inputs)
         games_count = len(group_inputs) // num_trainable
         game_inputs = group_inputs[:games_count]
+
+        # Store actor_models on the instance for access during rollout
+        self._actor_models = actor_models or {}
 
         async def attempt() -> list[State]:
             game_states = await asyncio.gather(*[

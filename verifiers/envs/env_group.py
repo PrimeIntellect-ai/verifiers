@@ -295,6 +295,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> list[vf.RolloutOutput]:
         env = self.get_env_for_task(group_inputs[0]["task"])
         env_client = env_client or env.env_client or self.env_client
@@ -306,6 +307,7 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env_client,
+            actor_models=actor_models,
         )
 
     @final
