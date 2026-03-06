@@ -1,15 +1,31 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
 import logging
 from collections.abc import Coroutine
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncContextManager,
+    AsyncIterator,
+    Callable,
+    Optional,
+    TypeVar,
+)
 
 import tenacity as tc
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_time
+
+if TYPE_CHECKING:
+    from verifiers.types import ClientConfig
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +55,80 @@ class NullAsyncContext:
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         return False
+
+
+@dataclass
+class EndpointSlot:
+    """Tracks one variant's client config and concurrency capacity."""
+
+    config: ClientConfig
+    max_concurrent: int
+    active: int = field(default=0, init=False)
+
+    @property
+    def available(self) -> int:
+        return self.max_concurrent - self.active
+
+
+class LeastLoadedDispatcher:
+    """Least-loaded dispatch with asyncio.Condition for blocking.
+
+    Shared across all evals hitting the same endpoint_id so that
+    per-variant concurrency limits are respected globally.
+    """
+
+    def __init__(self, variants: list[EndpointSlot]) -> None:
+        if not variants:
+            raise ValueError("LeastLoadedDispatcher requires at least one variant")
+        self._variants = variants
+        self._condition = asyncio.Condition()
+
+    async def _notify(self) -> None:
+        """Wake all waiters under the condition lock."""
+        async with self._condition:
+            self._condition.notify_all()
+
+    @asynccontextmanager
+    async def acquire(self, count: int = 1) -> AsyncIterator[EndpointSlot]:
+        """Acquire a slot on the least-loaded variant that can fit *count* concurrent items.
+
+        Raises ValueError if count exceeds every variant's max_concurrent,
+        since allowing it would defeat the configured concurrency limit.
+        """
+        largest_cap = max(v.max_concurrent for v in self._variants)
+        if count > largest_cap:
+            raise ValueError(
+                f"Group size {count} exceeds the largest variant's "
+                f"max_concurrent ({largest_cap}). Each group must fit on a "
+                f"single variant. Increase max_concurrent or reduce "
+                f"rollouts_per_example."
+            )
+        variant: EndpointSlot | None = None
+        async with self._condition:
+            while True:
+                # Find variant with most available capacity that can fit count
+                best: EndpointSlot | None = None
+                for v in self._variants:
+                    if v.available >= count and (
+                        best is None or v.available > best.available
+                    ):
+                        best = v
+                if best is not None:
+                    variant = best
+                    variant.active += count
+                    break
+
+                await self._condition.wait()
+
+        try:
+            yield variant
+        finally:
+            # Decrement synchronously — safe in asyncio's cooperative model
+            # since no other task can interleave between await points.
+            variant.active -= count
+            # Shield notification so waiters are woken even if our task
+            # is cancelled (the shielded inner task keeps running).
+            await asyncio.shield(self._notify())
 
 
 async def maybe_semaphore(
