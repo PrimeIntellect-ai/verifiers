@@ -119,7 +119,7 @@ class UltimatumTask(TaskSet):
                 {"role": "system", "content": (
                     f"Someone is splitting ${TOTAL_AMOUNT} with you. "
                     f"They are offering you ${offer} (they keep ${TOTAL_AMOUNT - offer}).\n\n"
-                    "Accept any offer — getting something is better than nothing.\n\n"
+                    "Decide whether this offer is fair enough to accept.\n\n"
                     "Output ONLY 'Accept' or 'Reject'."
                 )},
                 {"role": "user", "content": f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"},
@@ -145,7 +145,8 @@ class UltimatumTask(TaskSet):
                 offer = min(int(numbers[0]), TOTAL_AMOUNT)
                 offer = max(0, offer)
             else:
-                offer = 0
+                # No number found = invalid offer, proposer gives everything away
+                offer = TOTAL_AMOUNT
             state["extras"]["offer"] = offer
 
         elif actor_id == "responder":
