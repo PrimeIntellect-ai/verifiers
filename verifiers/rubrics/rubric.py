@@ -325,9 +325,12 @@ class Rubric:
             agent_scores = await self._call_multiagent_reward_func(
                 func=func, state=state
             )
+            traj = state.get("trajectory", [])
             self.logger.info(
                 f"score_rollout multiagent {func.__name__}: agent_scores={agent_scores}, "
-                f"state_keys={[k for k in state.keys() if k not in ('prompt', 'completion', 'trajectory', 'agent_messages')]}, "
+                f"num_steps={len(traj)}, "
+                f"is_completed={state.get('is_completed')}, is_complete={state.get('is_complete')}, "
+                f"is_truncated={state.get('is_truncated')}, "
                 f"offer={state.get('offer')}, response={state.get('response')}, "
                 f"proposer_payoff={state.get('proposer_payoff')}, responder_payoff={state.get('responder_payoff')}"
             )
