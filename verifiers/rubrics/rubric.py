@@ -298,11 +298,6 @@ class Rubric:
         group_reward_funcs = self._get_group_reward_funcs()
 
         has_reward_funcs = len(reward_funcs) > 0 or len(multiagent_funcs) > 0
-        self.logger.info(
-            f"score_rollout: individual={[f.__name__ for f in reward_funcs]}, "
-            f"multiagent={[f.__name__ for f in multiagent_funcs]}, "
-            f"group={[f.__name__ for f in group_reward_funcs]}"
-        )
         assert has_reward_funcs and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level or multi-agent "
             "reward function and no group-level reward functions"
@@ -338,17 +333,6 @@ class Rubric:
         for func, weight in zip(multiagent_funcs, multiagent_weights):
             agent_scores = await self._call_multiagent_reward_func(
                 func=func, state=state
-            )
-            traj = state.get("trajectory", [])
-            self.logger.info(
-                f"score_rollout multiagent {func.__name__}: agent_scores={agent_scores}, "
-                f"num_steps={len(traj)}, "
-                f"error={state.get('error')}, stop_condition={state.get('stop_condition')}, "
-                f"current_agent_id={state.get('extras', {}).get('current_agent_id')}, "
-                f"is_completed={state.get('is_completed')}, is_complete={state.get('is_complete')}, "
-                f"is_truncated={state.get('is_truncated')}, "
-                f"offer={state.get('offer')}, response={state.get('response')}, "
-                f"proposer_payoff={state.get('proposer_payoff')}, responder_payoff={state.get('responder_payoff')}"
             )
             # Aggregate per-agent rewards
             for agent_id, score_value in agent_scores.items():

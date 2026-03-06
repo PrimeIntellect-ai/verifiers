@@ -228,14 +228,10 @@ class MultiAgentEnv(MultiTurnEnv):
                     state["extras"]["current_agent_id"] = self.get_next_agent(state)
 
             except vf.OverlongPromptError:
-                self.logger.error(f"Overlong prompt during {agent_id}'s turn")
                 state["prompt_too_long"] = True
                 state["is_truncated"] = True
                 break
             except vf.Error as e:
-                self.logger.error(
-                    f"Error during {agent_id}'s turn: {type(e).__name__}: {e}"
-                )
                 state["error"] = e
                 break
 
