@@ -25,6 +25,7 @@ from verifiers.envs.agent import Agent
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.envs.protocol import Protocol
 from verifiers.types import Messages, State, TrajectoryStep
+from verifiers.utils.message_utils import normalize_messages
 
 
 class MultiAgentEnv(MultiTurnEnv):
@@ -209,6 +210,9 @@ class MultiAgentEnv(MultiTurnEnv):
             try:
                 # 1. Build prompt for this agent
                 prompt_messages = await self.build_agent_prompt(agent_id, state)
+                prompt_messages = normalize_messages(
+                    prompt_messages, field_name="agent_prompt"
+                )
 
                 # 2. Get model response
                 response = await self.get_model_response(state, prompt_messages)
