@@ -326,7 +326,10 @@ class Rubric:
                 func=func, state=state
             )
             self.logger.info(
-                f"score_rollout multiagent {func.__name__}: agent_scores={agent_scores}"
+                f"score_rollout multiagent {func.__name__}: agent_scores={agent_scores}, "
+                f"state_keys={[k for k in state.keys() if k not in ('prompt', 'completion', 'trajectory', 'agent_messages')]}, "
+                f"offer={state.get('offer')}, response={state.get('response')}, "
+                f"proposer_payoff={state.get('proposer_payoff')}, responder_payoff={state.get('responder_payoff')}"
             )
             # Aggregate per-agent rewards
             for agent_id, score_value in agent_scores.items():
