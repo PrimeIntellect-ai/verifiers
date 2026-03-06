@@ -1,32 +1,61 @@
 from __future__ import annotations
 
-import json
+import os
 import re
 from abc import abstractmethod
-from copy import deepcopy
 from typing import Any
+
+from datasets import load_dataset
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
-from verifiers.types import AssistantMessage, Messages, State, TrajectoryStep
+from verifiers.types import (
+    AssistantMessage,
+    Messages,
+    State,
+    SystemMessage,
+    TrajectoryStep,
+    UserMessage,
+)
 from verifiers.utils.message_utils import (
     concat_messages,
-    content_to_text,
     normalize_messages,
 )
+
+
+def content_to_text(content: Any, *, separator: str = "\n") -> str:
+    """Extract plain text from message content (string, list of parts, or other)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    chunks.append(part["text"])
+                continue
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str):
+                chunks.append(part_text)
+        return separator.join(chunks).strip()
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# MultiAgentEnv – copied from verifiers/envs/multiagent_env.py
+# (not yet published in the verifiers package)
+# Modified to use pure XML handoffs instead of JSON-in-XML.
+# ---------------------------------------------------------------------------
 
 
 class MultiAgentEnv(vf.StatefulToolEnv):
     """
     Multi-agent environment on top of StatefulToolEnv.
 
+    Each actor ends their turn with an XML tag: <tag_name>content</tag_name>.
     `state["trajectory_id"]` is the active actor id.
     """
-
-    HANDOFF_TAG_PATTERN = re.compile(
-        r"<handoff>\s*(\{.*\})\s*</handoff>\s*$",
-        flags=re.DOTALL,
-    )
 
     @abstractmethod
     def get_initial_actor_id(self, actors: dict[str, str], state: State) -> str:
@@ -41,8 +70,8 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         pass
 
     @abstractmethod
-    def get_handoff_schema(self, actor_id: str, state: State) -> dict[str, Any]:
-        """Return JSON-schema-like object for this actor's end-of-turn handoff."""
+    def get_handoff_tag(self, actor_id: str, state: State) -> str:
+        """Return the XML tag name for this actor's end-of-turn handoff."""
 
     @abstractmethod
     async def apply_handoff(
@@ -78,20 +107,20 @@ class MultiAgentEnv(vf.StatefulToolEnv):
                 f"Initial actor ID '{initial_actor_id}' not found in actors"
             )
 
-        handoff_schemas: dict[str, dict[str, Any]] = {}
+        handoff_tags: dict[str, str] = {}
         system_prompts: dict[str, str] = {}
         for actor_id, base_prompt in actors.items():
-            schema = self._normalize_handoff_schema(
-                self.get_handoff_schema(actor_id, state), actor_id
-            )
-            handoff_schemas[actor_id] = schema
-            system_prompts[actor_id] = self._compose_system_prompt_with_handoff(
-                base_prompt, schema
-            )
+            tag = self.get_handoff_tag(actor_id, state)
+            if not tag or not isinstance(tag, str):
+                raise ValueError(
+                    f"Handoff tag for actor '{actor_id}' must be a non-empty string"
+                )
+            handoff_tags[actor_id] = tag
+            system_prompts[actor_id] = self._compose_system_prompt(base_prompt, tag)
 
         state["trajectory_id"] = initial_actor_id
         state["system_prompts"] = system_prompts
-        state["handoff_schemas"] = handoff_schemas
+        state["handoff_tags"] = handoff_tags
         state["handoff_history"] = []
         state["last_handoff_by_actor"] = {}
 
@@ -102,132 +131,49 @@ class MultiAgentEnv(vf.StatefulToolEnv):
         )
         return state
 
-    def get_turn_contract_text(self, schema: dict[str, Any]) -> str:
+    def get_turn_contract_text(self, tag: str) -> str:
         """Return the instructional text appended to every actor's system prompt.
 
-        Override this to customize the turn-contract wording or to add extra
-        instructions (e.g. retry guidance, format hints) without replacing
-        the full system-prompt composition pipeline.
+        Override this to customize the turn-contract wording.
         """
-        schema_text = json.dumps(schema, indent=2, ensure_ascii=True, sort_keys=True)
         return (
-            "Turn contract:\n"
-            "- You may call tools as needed during your turn.\n"
-            "- To end your turn, output exactly one handoff block in this format:\n"
-            "  <handoff>{...}</handoff>\n"
-            "- The JSON object must match the handoff schema exactly.\n\n"
-            "Handoff schema:\n"
-            f"```json\n{schema_text}\n```"
+            "To end your turn, wrap your final response in XML tags:\n"
+            f"  <{tag}>your response</{tag}>"
         )
 
-    def _compose_system_prompt_with_handoff(
-        self, base_prompt: str, schema: dict[str, Any]
-    ) -> str:
-        return f"{base_prompt}\n\n{self.get_turn_contract_text(schema)}"
+    def _compose_system_prompt(self, base_prompt: str, tag: str) -> str:
+        return f"{base_prompt}\n\n{self.get_turn_contract_text(tag)}"
 
-    def _normalize_handoff_schema(
-        self, schema: dict[str, Any], actor_id: str
-    ) -> dict[str, Any]:
-        normalized = deepcopy(schema)
-        if normalized.get("type") != "object" or not isinstance(
-            normalized.get("properties"), dict
-        ):
-            raise ValueError(
-                f"Handoff schema for actor '{actor_id}' must have type='object' with non-empty properties"
-            )
-        if "additionalProperties" not in normalized:
-            normalized["additionalProperties"] = False
-        return normalized
-
-    def _schema_for_actor(self, actor_id: str, state: State) -> dict[str, Any]:
-        return state["handoff_schemas"][actor_id]
+    def _tag_for_actor(self, actor_id: str, state: State) -> str:
+        return state["handoff_tags"][actor_id]
 
     def parse_handoff(
         self, actor_id: str, last_message: AssistantMessage, state: State
     ) -> dict[str, Any]:
         message_text = content_to_text(last_message.content)
         if message_text.strip() == "":
+            tag = self._tag_for_actor(actor_id, state)
             raise vf.InvalidModelResponseError(
-                f"Actor '{actor_id}' produced no handoff block. Expected <handoff>{{...}}</handoff>."
+                f"Actor '{actor_id}' produced empty message. Expected <{tag}>...</{tag}>."
             )
 
-        match = self.HANDOFF_TAG_PATTERN.search(message_text)
+        tag = self._tag_for_actor(actor_id, state)
+        pattern = re.compile(
+            rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", flags=re.DOTALL
+        )
+        match = pattern.search(message_text)
         if match is None:
             raise vf.InvalidModelResponseError(
-                f"Actor '{actor_id}' must end turn with a <handoff>{{...}}</handoff> block."
+                f"Actor '{actor_id}' must end turn with <{tag}>...</{tag}> block."
             )
 
-        handoff_json = match.group(1)
-        try:
-            payload = json.loads(handoff_json)
-        except json.JSONDecodeError as e:
+        content = match.group(1).strip()
+        if not content:
             raise vf.InvalidModelResponseError(
-                f"Actor '{actor_id}' emitted invalid handoff JSON: {e.msg} (line {e.lineno}, column {e.colno})."
-            ) from e
-
-        if not isinstance(payload, dict):
-            raise vf.InvalidModelResponseError(
-                f"Actor '{actor_id}' handoff must be a JSON object."
+                f"Actor '{actor_id}' handoff <{tag}> is empty."
             )
 
-        schema = self._schema_for_actor(actor_id, state)
-        self.validate_handoff(payload, schema, actor_id)
-        return payload
-
-    def validate_handoff(
-        self, payload: dict[str, Any], schema: dict[str, Any], actor_id: str
-    ) -> None:
-        """Validate a parsed handoff *payload* against *schema*.
-
-        Override this to relax, extend, or replace the default JSON-schema
-        validation (e.g. to allow additional properties or custom constraints).
-        """
-        # Schema structure is already validated at setup in _normalize_handoff_schema.
-        properties = schema["properties"]
-        for key in schema.get("required", []):
-            if key not in payload:
-                raise vf.InvalidModelResponseError(
-                    f"Actor '{actor_id}' handoff missing required key '{key}'."
-                )
-
-        if not schema.get("additionalProperties", False):
-            extra_keys = [key for key in payload if key not in properties]
-            if extra_keys:
-                raise vf.InvalidModelResponseError(
-                    f"Actor '{actor_id}' handoff has unsupported keys: {extra_keys}."
-                )
-
-        for key, value in payload.items():
-            if key in properties:
-                self._validate_property_value(actor_id, key, value, properties[key])
-
-    _JSON_TYPE_MAP: dict[str, type | tuple[type, ...]] = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-    }
-
-    def _validate_property_value(
-        self, actor_id: str, key: str, value: Any, prop_schema: dict[str, Any]
-    ) -> None:
-        if "enum" in prop_schema and value not in prop_schema["enum"]:
-            raise vf.InvalidModelResponseError(
-                f"Actor '{actor_id}' handoff key '{key}' must be one of {prop_schema['enum']}, got {value!r}."
-            )
-
-        prop_type = prop_schema.get("type")
-        if prop_type is not None:
-            allowed = [prop_type] if isinstance(prop_type, str) else prop_type
-            if not any(
-                isinstance(value, self._JSON_TYPE_MAP.get(t, type(None)))
-                for t in allowed
-            ):
-                raise vf.InvalidModelResponseError(
-                    f"Actor '{actor_id}' handoff key '{key}' must be of type {allowed}, got {type(value).__name__}."
-                )
+        return {tag: content}
 
     def on_invalid_handoff(
         self, actor_id: str, error: vf.InvalidModelResponseError, state: State
@@ -434,3 +380,176 @@ class MultiAgentEnv(vf.StatefulToolEnv):
             )
 
         state["completion"] = completion
+
+
+# ---------------------------------------------------------------------------
+# Ethics Debate Environment
+# ---------------------------------------------------------------------------
+
+ARGUER = "arguer"
+CRITIC = "critic"
+
+
+class EthicsDebateEnv(MultiAgentEnv):
+    def __init__(self, num_rounds: int = 2, **kwargs):
+        self.num_rounds = num_rounds
+        # 2*num_rounds + 1 debate turns, +1 extra so the loop processes the final handoff
+        super().__init__(tools=[], max_turns=2 * num_rounds + 2, **kwargs)
+
+    async def setup_state(self, state: State) -> State:
+        state = await super().setup_state(state)
+        state["prompt"] = normalize_messages(state["prompt"], field_name="prompt")
+        state["current_argument"] = None
+        state["current_critique"] = None
+        state["final_argument"] = None
+        return state
+
+    def get_all_actors(self, state: State) -> dict[str, str]:
+        return {
+            ARGUER: (
+                "You are arguing an ethics question. "
+                "Present a clear position with reasoning. "
+                "When critiqued, address the weaknesses and strengthen your argument."
+            ),
+            CRITIC: (
+                "You are critiquing an ethical argument. "
+                "Identify gaps, logical fallacies, and missing perspectives. "
+                "Be specific and constructive."
+            ),
+        }
+
+    def get_initial_actor_id(self, actors: dict[str, str], state: State) -> str:
+        return ARGUER
+
+    def get_next_actor_id(self, state: State) -> str:
+        return CRITIC if state["trajectory_id"] == ARGUER else ARGUER
+
+    def get_handoff_tag(self, actor_id: str, state: State) -> str:
+        return "argument" if actor_id == ARGUER else "critique"
+
+    def get_turn_contract_text(self, tag: str) -> str:
+        return (
+            f"IMPORTANT: When you are done, wrap your final response in <{tag}>...</{tag}> tags. "
+            f"Do NOT write anything after the closing </{tag}> tag."
+        )
+
+    async def apply_handoff(
+        self, actor_id: str, handoff: dict[str, Any], state: State
+    ) -> str | None:
+        if actor_id == ARGUER:
+            state["current_argument"] = handoff["argument"]
+            # Final arguer turn: all prior rounds complete
+            if len(state["handoff_history"]) == 2 * self.num_rounds:
+                state["final_argument"] = handoff["argument"]
+                state["final_env_response"] = "Debate complete."
+                return state["final_env_response"]
+        else:
+            state["current_critique"] = handoff["critique"]
+        return None
+
+    def get_prompt_for_actor(self, messages: Messages, state: State) -> Messages:
+        actor_id = state["trajectory_id"]
+        system = SystemMessage(content=state["system_prompts"][actor_id])
+        question = content_to_text(state["prompt"][0].content)
+
+        if not messages:
+            if actor_id == ARGUER:
+                return [system, UserMessage(content=question)]
+            return [
+                system,
+                UserMessage(
+                    content=f"Question: {question}\n\nArgument to critique:\n{state['current_argument']}"
+                ),
+            ]
+
+        if actor_id == ARGUER:
+            return [
+                UserMessage(
+                    content=f"Critique received:\n{state['current_critique']}\n\nRefine your argument."
+                )
+            ]
+        return [
+            UserMessage(
+                content=f"Revised argument:\n{state['current_argument']}\n\nIdentify remaining weaknesses."
+            )
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Environment loader
+# ---------------------------------------------------------------------------
+
+
+def load_environment(
+    judge_model: str = "google/gemini-3-flash-preview",
+    judge_base_url: str = "https://api.pinference.ai/api/v1",
+    judge_api_key_var: str = "PRIME_API_KEY",
+    num_rounds: int = 2,
+    **kwargs,
+) -> vf.Environment:
+    vf.ensure_keys([judge_api_key_var])
+
+    dataset = load_dataset("ergotts/ethics_questions", split="train")
+    dataset = dataset.map(
+        lambda x: {"prompt": [{"role": "user", "content": x["question"]}]},
+        remove_columns=dataset.column_names,
+    )
+
+    judge_client = AsyncOpenAI(
+        api_key=os.environ[judge_api_key_var],
+        base_url=judge_base_url,
+    )
+
+    judge_system = (
+        "You are a philosophy professor grading ethics arguments. "
+        "Be rigorous and critical. A generic, well-intentioned argument scores 3-5. "
+        "Only arguments showing genuine philosophical rigor score 7+."
+    )
+
+    judge_user_template = (
+        "Question: {question}\n\n"
+        "Argument:\n{argument}\n\n"
+        "Score each dimension 0-2 (0=absent, 1=superficial, 2=thorough):\n\n"
+        "1. THESIS CLARITY: Does it state a specific, defensible position?\n"
+        "   A vague 'it depends' or generic both-sidesism = 0. Clear stance with defined scope = 2.\n\n"
+        "2. LOGICAL STRUCTURE: Are claims warranted by reasoning, not just asserted?\n"
+        "   Deduct for logical fallacies (slippery slope, false dichotomy, appeal to authority).\n\n"
+        "3. COUNTERARGUMENT HANDLING: Does it engage the STRONGEST version of opposing views\n"
+        "   (steel-man), or only weak caricatures (straw-man)? Explains WHY they fail, not just asserts it?\n\n"
+        "4. NUANCE: Acknowledges edge cases, limitations, or conditions where the position might not hold?\n"
+        "   Distinguishes between related but different concepts?\n\n"
+        "5. DEPTH: Goes beyond common platitudes? Engages specific ethical frameworks\n"
+        "   (utilitarianism, deontology, virtue ethics), historical examples, or thought experiments?\n\n"
+        "Sum the five scores (0-10). Respond with ONLY the total number."
+    )
+
+    async def argument_quality(state: State) -> float:
+        final_arg = state.get("final_argument")
+        if not final_arg:
+            return 0.0
+        question = content_to_text(state["prompt"][0].content)
+        resp = await judge_client.chat.completions.create(
+            model=judge_model,
+            messages=[
+                {"role": "system", "content": judge_system},
+                {
+                    "role": "user",
+                    "content": judge_user_template.format(
+                        question=question, argument=final_arg
+                    ),
+                },
+            ],
+        )
+        text = resp.choices[0].message.content or ""
+        numbers = re.findall(r"\b(10|[0-9])\b", text)
+        return float(numbers[0]) / 10.0 if numbers else 0.0
+
+    rubric = vf.Rubric(funcs=[argument_quality])
+
+    return EthicsDebateEnv(
+        dataset=dataset,
+        rubric=rubric,
+        system_prompt=None,
+        num_rounds=num_rounds,
+        **kwargs,
+    )
