@@ -637,6 +637,67 @@ class MyGameEnv(vf.MultiTurnEnv):
 
 > **Important:** Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully. This ensures correct behavior when rollouts are cancelled or interrupted, and that cleanup completes even when resources are in unexpected states.
 
+### Cleanup Handlers and post_rollout
+
+Cleanup handlers marked with `@vf.cleanup` run when a rollout completes (either successfully or via error). These are particularly useful for environments that manage external resources like sandboxes, database connections, or temporary files.
+
+**Important execution order**: Cleanup handlers run **BEFORE** `state["completion"]` is set. This means:
+
+1. Rollout loop completes (stop condition met, error, or max_turns reached)
+2. **All `@vf.cleanup` handlers run** ← post_rollout executes here
+3. `render_completion()` is called → Sets `state["completion"]`
+4. Rollout returns final state
+
+For `SandboxEnv` subclasses, the `post_rollout` method is a cleanup handler that runs before the sandbox is destroyed. This is useful for extracting sandbox state needed for reward computation:
+
+```python
+class MySandboxEnv(vf.SandboxEnv):
+    async def post_rollout(self, state: vf.State):
+        """Extract sandbox state before destruction."""
+        await super().post_rollout(state)
+
+        # IMPORTANT: Check trajectory exists before accessing
+        if not state.get("trajectory"):
+            # Early error - no trajectory steps recorded
+            state["reward"] = 0.0
+            return
+
+        # Safe access pattern
+        last_step = state["trajectory"][-1]
+        sandbox_id = state.get("sandbox_id")
+
+        # Extract sandbox state for reward computation
+        result = await self.run_in_sandbox("cat /output.json")
+        state["final_output"] = result
+```
+
+**Available state data in cleanup handlers**:
+- `state["trajectory"]`: List of trajectory steps (may be **empty** if error occurred before any turns)
+- `state["error"]`: Error if one occurred (`None` otherwise)
+- `state["is_completed"]`: bool indicating if rollout completed successfully
+- `state["is_truncated"]`: bool indicating if rollout was truncated (max_turns reached)
+- `state["sandbox_id"]`: Sandbox identifier (if applicable)
+
+**NOT available in cleanup handlers**:
+- `state["completion"]`: This is set **AFTER** cleanup handlers run
+
+**Safe trajectory access patterns**:
+
+```python
+# Pattern 1: Check before accessing
+if state.get("trajectory"):
+    last_step = state["trajectory"][-1]
+    # ... process last_step
+
+# Pattern 2: Check for error state first
+if isinstance(state.get("error"), vf.InfraError):
+    # Skip processing on infrastructure errors
+    return
+
+# Pattern 3: Use get() with defaults
+last_step = state.get("trajectory", [{}])[-1]
+```
+
 ### Signaling Early Termination
 
 To end a rollout from within `env_response` (e.g., when the game ends), set `state["final_env_response"]`:
