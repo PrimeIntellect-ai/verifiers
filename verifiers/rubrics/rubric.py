@@ -442,6 +442,8 @@ class Rubric:
                 mean_score = sum(agent_scores.values()) / len(agent_scores)
                 aggregated_reward += mean_score * weight
                 aggregated_metrics[func.__name__] = mean_score
+                for agent_id, score_value in agent_scores.items():
+                    aggregated_metrics[f"{func.__name__}/{agent_id}"] = score_value
 
         rewards = RolloutScore(
             metrics=aggregated_metrics,
