@@ -150,6 +150,7 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_INSTALL_COMMAND = DEFAULT_INSTALL_COMMAND
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+    DEFAULT_PROVIDER_TIMEOUT_MS = 1_800_000  # 30min
     DEFAULT_DISABLE_COMPACTION = True
     DEFAULT_ENABLE_INTERLEAVED = True
 
@@ -164,11 +165,13 @@ class OpenCodeEnv(CliAgentEnv):
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
         disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
         enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
+        provider_timeout_ms: int = DEFAULT_PROVIDER_TIMEOUT_MS,
         **kwargs,
     ):
         self.asset_dir = asset_dir
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
+        self.provider_timeout_ms = provider_timeout_ms
 
         run_command = self.build_run_command(
             run_command_template,
@@ -325,7 +328,7 @@ class OpenCodeEnv(CliAgentEnv):
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "intercepted",
-                        "timeout": 600000,
+                        "timeout": self.provider_timeout_ms,
                     },
                     "models": {
                         "${OPENAI_MODEL##*/}": {
