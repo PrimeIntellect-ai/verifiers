@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -489,7 +489,7 @@ class EvalDisplay(BaseDisplay):
 
         # combine all content
         space = Text("  ")
-        content_items = [config_line, space, progress]
+        content_items: list[RenderableType] = [config_line, space, progress]
         if metrics_content:
             content_items.append(metrics_content)
         else:

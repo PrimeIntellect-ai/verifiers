@@ -2654,7 +2654,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
-        results: list[dict[str, Any] | None] = [None] * len(prompts)
+        results: list[dict[str, Any] | None] = [
+            cast(dict[str, Any] | None, None)
+        ] * len(prompts)
         semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
 
         def _coerce_prompt_messages(prompt: Any, index: int) -> Messages:
@@ -2900,7 +2902,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 )
                 update_rlm_metrics_from_step(state_ref, trajectory_step)
 
-        metadata = {
+        metadata: dict[str, int | float | bool] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "tool_call_count": tool_call_count,
