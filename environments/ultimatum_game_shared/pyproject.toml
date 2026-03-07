@@ -1,0 +1,17 @@
+[project]
+name = "ultimatum-game-shared"
+description = "Ultimatum Game (shared model): both agents use the same base model"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers>=0.1.9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["ultimatum_game_shared.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1

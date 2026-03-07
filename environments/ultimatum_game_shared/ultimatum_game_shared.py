@@ -1,10 +1,9 @@
 """
-Ultimatum Game: Two-agent negotiation with asymmetric incentives.
+Ultimatum Game (Shared Model): Two-agent negotiation where both agents use the same base model.
 
-Proposer has $10 and offers a split.
-Responder accepts or rejects.
-  Accept: both get their share.
-  Reject: both get nothing.
+Same game as ultimatum_game but agents have no model override,
+so both use whatever model is specified in the training config.
+Used for testing shared-weights (mode 3) and multi-agent LoRA (mode 4).
 """
 
 import re
@@ -19,16 +18,8 @@ from verifiers.types import Messages, State
 from openai import AsyncOpenAI
 
 
-# =============================================================================
-# Model Configuration
-# =============================================================================
-
 TOTAL_AMOUNT = 10
 
-
-# =============================================================================
-# Rubric
-# =============================================================================
 
 def create_rubric() -> MultiAgentRubric:
     rubric = MultiAgentRubric()
@@ -52,11 +43,7 @@ def create_rubric() -> MultiAgentRubric:
     return rubric
 
 
-# =============================================================================
-# TaskSet
-# =============================================================================
-
-class UltimatumTask(TaskSet):
+class UltimatumTaskShared(TaskSet):
 
     def __init__(self, num_examples: int = -1):
         dataset = self._create_dataset()
@@ -64,7 +51,7 @@ class UltimatumTask(TaskSet):
             dataset = dataset.select(range(min(num_examples, len(dataset))))
 
         super().__init__(
-            name="ultimatum_game",
+            name="ultimatum_game_shared",
             dataset=dataset,
             rubric=create_rubric(),
             roles=["proposer", "responder"],
@@ -78,13 +65,11 @@ class UltimatumTask(TaskSet):
                 "answer": "",
                 "info": {"total": TOTAL_AMOUNT},
                 "example_id": i,
-                "task": "ultimatum_game",
+                "task": "ultimatum_game_shared",
             }
             for i in range(20)
         ]
         return Dataset.from_list(items)
-
-    # ---- State ----
 
     async def setup_state(self, state: State) -> State:
         state["extras"]["offer"] = 0
@@ -92,8 +77,6 @@ class UltimatumTask(TaskSet):
         state["extras"]["proposer_payoff"] = 0.0
         state["extras"]["responder_payoff"] = 0.0
         return state
-
-    # ---- Prompts ----
 
     async def build_prompt(self, role: str, state: State) -> Messages:
         if role == "proposer":
@@ -107,7 +90,7 @@ class UltimatumTask(TaskSet):
                 )},
                 {"role": "user", "content": f"You have ${TOTAL_AMOUNT}. How much do you offer the other player?"},
             ]
-        else:  # responder
+        else:
             offer = state["extras"]["offer"]
             return [
                 {"role": "system", "content": (
@@ -118,8 +101,6 @@ class UltimatumTask(TaskSet):
                 )},
                 {"role": "user", "content": f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"},
             ]
-
-    # ---- Game Logic ----
 
     async def on_turn_complete(self, state: State) -> None:
         if not state["trajectory"]:
@@ -139,7 +120,6 @@ class UltimatumTask(TaskSet):
                 offer = min(int(numbers[0]), TOTAL_AMOUNT)
                 offer = max(0, offer)
             else:
-                # No number found = invalid offer, proposer gives everything away
                 offer = TOTAL_AMOUNT
             state["extras"]["offer"] = offer
 
@@ -162,12 +142,8 @@ class UltimatumTask(TaskSet):
         pass
 
 
-# =============================================================================
-# Environment Loader
-# =============================================================================
-
 def load_environment(num_examples: int = -1, actor_endpoints: dict[str, str] | None = None):
-    task = UltimatumTask(num_examples=num_examples)
+    task = UltimatumTaskShared(num_examples=num_examples)
     actor_endpoints = actor_endpoints or {}
 
     proposer_url = actor_endpoints.get("proposer")
@@ -177,7 +153,6 @@ def load_environment(num_examples: int = -1, actor_endpoints: dict[str, str] | N
         id="proposer",
         max_tokens=32,
         is_trainable=True,
-        model="Qwen/Qwen3-4B-Instruct-2507",
         client=AsyncOpenAI(base_url=proposer_url, api_key="EMPTY") if proposer_url else None,
     )
 
@@ -185,7 +160,6 @@ def load_environment(num_examples: int = -1, actor_endpoints: dict[str, str] | N
         id="responder",
         max_tokens=32,
         is_trainable=True,
-        model="Qwen/Qwen3-4B",
         client=AsyncOpenAI(base_url=responder_url, api_key="EMPTY") if responder_url else None,
     )
 
