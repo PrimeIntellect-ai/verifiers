@@ -100,6 +100,12 @@ env = BrowserEnv(
 )
 ```
 
+When you do not pass a custom `system_prompt`, BrowserEnv now injects a default CUA prompt that includes the configured viewport resolution and tells the model to use integer pixel coordinates from the top-left corner of the page.
+
+The generated CUA tool descriptions also include the configured display dimensions, so runs with custom args such as `viewport_width=800` and `viewport_height=600` surface that context directly to the model.
+
+If you need to smooth bursty traffic to the CUA server, set `cua_max_concurrent_requests` on `BrowserEnv` to limit concurrent CUA session/action requests per environment instance.
+
 #### Manual Server Mode (Optional)
 
 For local development or debugging, you can disable sandbox mode and run the CUA server manually:
