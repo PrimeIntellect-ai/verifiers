@@ -187,7 +187,6 @@ class OpenCodeEnv(CliAgentEnv):
             disabled_tools is not None
             and system_prompt is not None
             and "todowrite" not in disabled_tools
-            and "todoread" not in disabled_tools
         ):
             system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
@@ -274,24 +273,26 @@ class OpenCodeEnv(CliAgentEnv):
         Applying the same normalization to the stored step enables TITO prefix hits.
         """
         message = response.message
-        if not message.tool_calls:
-            return response
-        normalized_tool_calls = []
-        for tc in message.tool_calls:
-            if not isinstance(tc, ToolCall):
-                normalized_tool_calls.append(tc)
-                continue
-            try:
-                compact_arguments = json.dumps(
-                    json.loads(tc.arguments), separators=(",", ":"), ensure_ascii=False
+        normalized_tool_calls = message.tool_calls or []
+        if message.tool_calls:
+            normalized_tool_calls = []
+            for tc in message.tool_calls:
+                if not isinstance(tc, ToolCall):
+                    normalized_tool_calls.append(tc)
+                    continue
+                try:
+                    compact_arguments = json.dumps(
+                        json.loads(tc.arguments),
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    compact_arguments = tc.arguments
+                normalized_tool_calls.append(
+                    tc.model_copy(
+                        update={"name": tc.name.lower(), "arguments": compact_arguments}
+                    )
                 )
-            except (json.JSONDecodeError, TypeError):
-                compact_arguments = tc.arguments
-            normalized_tool_calls.append(
-                tc.model_copy(
-                    update={"name": tc.name.lower(), "arguments": compact_arguments}
-                )
-            )
         content = message.content
         if content is None:
             content = ""
