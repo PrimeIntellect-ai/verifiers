@@ -164,11 +164,13 @@ class OpenCodeEnv(CliAgentEnv):
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
         disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
         enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
+        tool_output_max_bytes: int | None = None,
         **kwargs,
     ):
         self.asset_dir = asset_dir
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
+        self.tool_output_max_bytes = tool_output_max_bytes
 
         run_command = self.build_run_command(
             run_command_template,
@@ -264,45 +266,7 @@ class OpenCodeEnv(CliAgentEnv):
         return env_vars
 
     def normalize_response(self, response: vf.Response) -> vf.Response:
-        """Normalize model response to match OpenCode's message history conventions:
-        - Compact JSON arugments
-        - Strip trailing newlines from assistant content
-
-        Applying the same normalization to the stored step enables TITO prefix hits.
-        """
-        message = response.message
-        if not message.tool_calls:
-            return response
-        normalized_tool_calls = []
-        for tc in message.tool_calls:
-            if not isinstance(tc, ToolCall):
-                normalized_tool_calls.append(tc)
-                continue
-            try:
-                compact_arguments = json.dumps(
-                    json.loads(tc.arguments), separators=(",", ":"), ensure_ascii=False
-                )
-            except (json.JSONDecodeError, TypeError):
-                compact_arguments = tc.arguments
-            normalized_tool_calls.append(
-                tc.model_copy(
-                    update={"name": tc.name.lower(), "arguments": compact_arguments}
-                )
-            )
-        content = message.content
-        if content is None:
-            content = ""
-        elif isinstance(content, str):
-            content = content.rstrip()
-        reasoning_content = message.reasoning_content or None
-        normalized_message = message.model_copy(
-            update={
-                "content": content,
-                "tool_calls": normalized_tool_calls,
-                "reasoning_content": reasoning_content,
-            }
-        )
-        return response.model_copy(update={"message": normalized_message})
+        return response
 
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""
@@ -346,6 +310,9 @@ class OpenCodeEnv(CliAgentEnv):
 
         if disable_compaction:
             config["compaction"] = {"auto": False, "prune": False}
+
+        if self.tool_output_max_bytes is not None:
+            config["toolOutputMaxBytes"] = self.tool_output_max_bytes
 
         if system_prompt_path or disabled_tools:
             build_config: dict = {}

@@ -320,10 +320,20 @@ async def synthesize_stream(
         object="chat.completion.chunk",
     )
     content_chunk_dict = content_chunk.model_dump()
-    if message.reasoning_content:
+    has_reasoning_inject = bool(message.reasoning_content)
+    if has_reasoning_inject:
         content_chunk_dict["choices"][0]["delta"]["reasoning_content"] = (
             message.reasoning_content
         )
+    total_content_len = len(delta_content) if delta_content else 0
+    logger.info(
+        "[MITO-DEBUG] synthesize_stream: injecting_reasoning=%s "
+        "reasoning_len=%d content_len=%d num_tool_calls=%d",
+        has_reasoning_inject,
+        len(message.reasoning_content) if has_reasoning_inject else 0,
+        total_content_len,
+        len(message.tool_calls) if message.tool_calls else 0,
+    )
     await chunk_queue.put(content_chunk_dict)
 
     # Chunk 2: finish_reason only
@@ -409,6 +419,10 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
             message_payload["tool_calls"] = tool_calls
         if message.reasoning_content is not None:
             message_payload["reasoning_content"] = message.reasoning_content
+            logger.info(
+                "[MITO-DEBUG] serialize_intercept_response: adding reasoning_content len=%d",
+                len(message.reasoning_content),
+            )
 
         choice: dict[str, Any] = {
             "index": 0,

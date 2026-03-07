@@ -436,7 +436,23 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
                 intercept = interception_server.intercepts[request_id]
-                return self.normalize_intercepted_messages(intercept["messages"])
+                intercept_msgs = intercept["messages"]
+                has_reasoning = (
+                    any(
+                        isinstance(m, dict) and m.get("reasoning_content") is not None
+                        for m in intercept_msgs
+                    )
+                    if isinstance(intercept_msgs, list)
+                    else False
+                )
+                logger.info(
+                    "[MITO-DEBUG] cli_agent get_prompt_messages: intercepted request "
+                    "msg_count=%d model=%s has_reasoning_in_msgs=%s",
+                    len(intercept_msgs) if isinstance(intercept_msgs, list) else -1,
+                    intercept.get("model"),
+                    has_reasoning,
+                )
+                return self.normalize_intercepted_messages(intercept_msgs)
 
             except asyncio.TimeoutError:
                 # No request yet — check tunnel liveness first
@@ -539,12 +555,26 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         # Skip adding empty "agent completed" step - keeps trajectory clean
         if not prompt_messages:
             return
+
+        # MITO-DEBUG: log pre/post normalization
+        pre_content = response.message.content
+        pre_len = len(pre_content) if isinstance(pre_content, str) else 0
+        normalized = self.normalize_response(response)
+        post_content = normalized.message.content
+        post_len = len(post_content) if isinstance(post_content, str) else 0
+        logger.info(
+            "[MITO-DEBUG] cli_agent add_model_response turn=%d "
+            "pre_norm_content_len=%d post_norm_content_len=%d content_modified=%s",
+            len(state["trajectory"]),
+            pre_len,
+            post_len,
+            pre_len != post_len or pre_content != post_content,
+        )
+
         # On first turn, update state["prompt"] to match the agent's actual prompt
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
-        await super().add_model_response(
-            state, prompt_messages, self.normalize_response(response)
-        )
+        await super().add_model_response(state, prompt_messages, normalized)
 
     @vf.teardown
     async def teardown_resources(self):
