@@ -326,13 +326,16 @@ async def synthesize_stream(
             message.reasoning_content
         )
     total_content_len = len(delta_content) if delta_content else 0
+    content_tail = repr(delta_content[-40:]) if delta_content else "empty"
     logger.info(
         "[MITO-DEBUG] synthesize_stream: injecting_reasoning=%s "
-        "reasoning_len=%d content_len=%d num_tool_calls=%d",
+        "reasoning_len=%d content_len=%d num_tool_calls=%d "
+        "content_tail=%s",
         has_reasoning_inject,
         len(message.reasoning_content) if has_reasoning_inject else 0,
         total_content_len,
         len(message.tool_calls) if message.tool_calls else 0,
+        content_tail,
     )
     await chunk_queue.put(content_chunk_dict)
 
@@ -411,12 +414,19 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
                 }
             )
 
+        serialized_content = _response_content_to_text(message.content)
         message_payload: dict[str, Any] = {
             "role": "assistant",
-            "content": _response_content_to_text(message.content),
+            "content": serialized_content,
         }
         if tool_calls:
             message_payload["tool_calls"] = tool_calls
+            logger.info(
+                "[MITO-DEBUG] serialize_intercept_response: "
+                "content_tail=%s num_tool_calls=%d",
+                repr(serialized_content[-40:]) if serialized_content else "empty",
+                len(tool_calls),
+            )
         if message.reasoning_content is not None:
             message_payload["reasoning_content"] = message.reasoning_content
             logger.info(

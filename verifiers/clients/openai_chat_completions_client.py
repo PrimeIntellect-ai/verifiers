@@ -225,10 +225,20 @@ class OpenAIChatCompletionsClient(
             isinstance(m, AssistantMessage) and m.reasoning_content is not None
             for m in messages
         )
+        # MITO-DEBUG: log content tails of assistant messages with tool calls
+        # to detect trailing whitespace differences before vLLM tokenization
+        asst_tails = []
+        for m in messages:
+            if isinstance(m, AssistantMessage) and m.tool_calls:
+                c = m.content
+                if isinstance(c, str) and c:
+                    asst_tails.append(repr(c[-40:]))
         logger.info(
-            "[MITO-DEBUG] to_native_prompt msg_count=%d has_reasoning_content=%s",
+            "[MITO-DEBUG] to_native_prompt msg_count=%d has_reasoning_content=%s "
+            "assistant_with_tc_content_tails=%s",
             len(messages),
             has_reasoning,
+            asst_tails[-3:] if asst_tails else "[]",
         )
         return [from_chat_message(message) for message in messages], {}
 
@@ -536,13 +546,25 @@ class OpenAIChatCompletionsClient(
         reasoning = parse_reasoning_content_from_response(response)
         content = response.choices[0].message.content
 
+        # MITO-DEBUG: log content tail and completion token tail to detect trimming
+        content_str = content if isinstance(content, str) else ""
+        content_tail = repr(content_str[-40:]) if content_str else "empty"
+        comp_ids_tail = []
+        if tokens is not None:
+            comp_ids = tokens.get("completion_ids", [])
+            comp_ids_tail = list(comp_ids[-10:]) if comp_ids else []
+        has_tool_calls = bool(parse_tool_calls(response))
         logger.info(
             "[MITO-DEBUG] from_native_response has_reasoning=%s reasoning_len=%d "
-            "content_len=%d has_tokens=%s",
+            "content_len=%d has_tokens=%s has_tool_calls=%s "
+            "content_tail=%s completion_ids_tail=%s",
             reasoning is not None,
             len(reasoning) if reasoning else 0,
-            len(content) if isinstance(content, str) else 0,
+            len(content_str),
             tokens is not None,
+            has_tool_calls,
+            content_tail,
+            comp_ids_tail,
         )
 
         return Response(

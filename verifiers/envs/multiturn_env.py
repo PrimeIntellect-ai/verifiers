@@ -132,6 +132,10 @@ class MultiTurnEnv(vf.Environment):
         response: Response,
     ):
         completion_messages = await parse_response_message(response)
+        logger.info(
+            "[MITO-DEBUG] parse_response_tokens: max_seq_len=%s",
+            self.max_seq_len,
+        )
         tokens = await parse_response_tokens(response, self.max_seq_len)
         response_is_truncated = response.message.is_truncated or False
         is_truncated = response_is_truncated or (

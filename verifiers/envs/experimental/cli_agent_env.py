@@ -445,12 +445,23 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     if isinstance(intercept_msgs, list)
                     else False
                 )
+                # MITO-DEBUG: log assistant message content tails from the agent's request
+                # to detect if the agent stripped trailing whitespace
+                assistant_tails = []
+                if isinstance(intercept_msgs, list):
+                    for m in intercept_msgs:
+                        if isinstance(m, dict) and m.get("role") == "assistant":
+                            c = m.get("content", "")
+                            if isinstance(c, str) and c:
+                                assistant_tails.append(repr(c[-40:]))
                 logger.info(
                     "[MITO-DEBUG] cli_agent get_prompt_messages: intercepted request "
-                    "msg_count=%d model=%s has_reasoning_in_msgs=%s",
+                    "msg_count=%d model=%s has_reasoning_in_msgs=%s "
+                    "assistant_content_tails=%s",
                     len(intercept_msgs) if isinstance(intercept_msgs, list) else -1,
                     intercept.get("model"),
                     has_reasoning,
+                    assistant_tails[-3:] if assistant_tails else "[]",
                 )
                 return self.normalize_intercepted_messages(intercept_msgs)
 
