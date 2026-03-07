@@ -1,6 +1,8 @@
 import asyncio
+import ctypes
 import logging
 import signal
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,25 @@ from verifiers.workers.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
+
+
+def request_parent_death_signal() -> None:
+    """
+    Ask the Linux kernel to send SIGTERM when the parent process dies.
+
+    This ensures the env server subprocess shuts down cleanly even if the
+    parent is killed with SIGKILL or crashes without running cleanup handlers.
+    The server already handles SIGTERM via its signal handler, so this
+    triggers a normal graceful shutdown. Silently no-ops on non-Linux.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        pass
 
 
 class EnvServer(ABC):
@@ -86,21 +107,23 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown and cleanup."""
+        request_parent_death_signal()
+
         stop_event = asyncio.Event()
 
-        def signal_handler(sig):
-            self.logger.info(
-                f"Received signal {sig.name}, initiating graceful shutdown"
-            )
+        def signal_handler(sig, frame):
             stop_event.set()
+            if sig == signal.SIGTERM:
+                raise SystemExit(143)
+            raise KeyboardInterrupt()
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
 
         try:
             await self.serve(stop_event=stop_event)
         finally:
+            await self.env._teardown()
             await self.close()
 
     @classmethod

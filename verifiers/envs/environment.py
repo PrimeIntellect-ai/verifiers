@@ -110,6 +110,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -145,6 +146,7 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_score_rollouts(score_rollouts)
+        self.pass_threshold = pass_threshold
 
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
@@ -156,7 +158,9 @@ class Environment(ABC):
 
         if dataset is not None:
             if callable(dataset):
-                self.dataset_source: DatasetBuilder | None = dataset
+                self.dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, dataset
+                )
             else:
                 self.dataset_source = lambda ds=dataset: ds
                 self.build_dataset()  # Eagerly build for raw datasets (backwards compat)
@@ -165,7 +169,9 @@ class Environment(ABC):
 
         if eval_dataset is not None:
             if callable(eval_dataset):
-                self.eval_dataset_source: DatasetBuilder | None = eval_dataset
+                self.eval_dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, eval_dataset
+                )
             else:
                 self.eval_dataset_source = lambda ds=eval_dataset: ds
                 self.build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
@@ -622,6 +628,7 @@ class Environment(ABC):
         state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
 
         state["trajectory"] = []
+        state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
@@ -933,6 +940,7 @@ class Environment(ABC):
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
+            pass_threshold=self.pass_threshold,
         )
 
         single_client: Client | None = None
@@ -1278,7 +1286,9 @@ class Environment(ABC):
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
-        self.env_server_process = mp.get_context("spawn").Process(
+        self.env_server_process = mp.get_context(
+            "spawn"
+        ).Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
@@ -1289,7 +1299,7 @@ class Environment(ABC):
                 log_file_level,
             ),
             kwargs=dict(address=address),
-            daemon=True,  # ensure server process is terminated when parent exits
+            daemon=False,  # cannot be daemon because we spawn subprocesses from the env server
         )
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(

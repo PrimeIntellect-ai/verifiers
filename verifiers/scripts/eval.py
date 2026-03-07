@@ -10,7 +10,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
-import importlib.resources
+import importlib.util
 import json
 import logging
 from pathlib import Path
@@ -43,13 +43,53 @@ DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
-DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+
+# Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
+PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
+    "prime": {
+        "url": "https://api.pinference.ai/api/v1",
+        "key": "PRIME_API_KEY",
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1",
+        "key": "OPENROUTER_API_KEY",
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1",
+        "key": "OPENAI_API_KEY",
+    },
+    "anthropic": {
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
+        "client_type": "anthropic_messages",
+    },
+    "minimax": {
+        "url": "https://api.minimax.chat/v1",
+        "key": "MINIMAX_API_KEY",
+    },
+    "deepseek": {
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+    },
+    "glm": {
+        "url": "https://open.bigmodel.cn/api/paas/v4",
+        "key": "GLM_API_KEY",
+    },
+    "local": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+    "vllm": {
+        "url": "http://localhost:8000/v1",
+        "key": "VLLM_API_KEY",
+    },
+}
+DEFAULT_PROVIDER = "prime"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
-    """Get eval config defaults from environment package's pyproject.toml.
+    """Get eval config defaults from the environment module's pyproject.toml.
 
     Returns dict with 'num_examples' and 'rollouts_per_example' keys if found,
     otherwise returns empty dict. All errors are silently handled.
@@ -58,12 +98,24 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     module_name = env_id.replace("-", "_").split("/")[-1]
 
     try:
-        # read pyproject.toml from installed package
-        package_ref = importlib.resources.files(module_name)
-        pyproject_file = package_ref / "pyproject.toml"
+        spec = importlib.util.find_spec(module_name)
+        if spec is None:
+            raise ModuleNotFoundError(module_name)
+
+        if spec.submodule_search_locations:
+            base_dir = Path(next(iter(spec.submodule_search_locations)))
+        elif spec.origin:
+            base_dir = Path(spec.origin).parent
+        else:
+            logger.debug(
+                f"Could not determine module path for {module_name}; skipping eval defaults"
+            )
+            return defaults
+
+        pyproject_file = base_dir / "pyproject.toml"
 
         if not pyproject_file.is_file():
-            logger.debug(f"pyproject.toml not found in installed package {module_name}")
+            logger.debug(f"pyproject.toml not found for installed module {module_name}")
             return defaults
 
         with pyproject_file.open("rb") as f:
@@ -84,7 +136,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
                 f"Loaded eval defaults from {module_name} pyproject.toml: {defaults}"
             )
     except ModuleNotFoundError:
-        logger.debug(f"Package {module_name} not installed")
+        logger.debug(f"Module {module_name} not installed")
     except Exception as e:
         logger.debug(
             f"Could not load eval defaults from {module_name} pyproject.toml: {e}"
@@ -110,10 +162,22 @@ def main():
     )
     parser.add_argument(
         "--env-dir-path",
-        "-p",
         type=str,
         default=DEFAULT_ENV_DIR_PATH,
         help="Path to environments directory",
+    )
+    parser.add_argument(
+        "--provider",
+        "-p",
+        type=str,
+        default=None,
+        choices=list(PROVIDER_CONFIGS.keys()),
+        help=(
+            "Inference provider shorthand. Resolves --api-base-url and --api-key-var "
+            "automatically. Explicit --api-base-url / --api-key-var take precedence. "
+            "Overrides endpoint registry when model is in registry. "
+            "Falls back to 'prime' when model is not in registry."
+        ),
     )
     parser.add_argument(
         "--endpoints-path",
@@ -146,20 +210,14 @@ def main():
         "-k",
         type=str,
         default=None,
-        help=(
-            "Environment variable name for API key "
-            "(defaults to PRIME_API_KEY when not set and not in registry)"
-        ),
+        help="Environment variable name for API key (overrides --provider)",
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
         default=None,
-        help=(
-            "Base URL for API. "
-            "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
-        ),
+        help="Base URL for API (overrides --provider)",
     )
     parser.add_argument(
         "--header",
@@ -293,6 +351,19 @@ def main():
         help="Max retries for transient infrastructure errors (default: 0)",
     )
     parser.add_argument(
+        "--disable-env-server",
+        default=False,
+        action="store_true",
+        help="Do not start env servers when evaluating environments",
+    )
+    parser.add_argument(
+        "--abbreviated-summary",
+        "-A",
+        default=False,
+        action="store_true",
+        help="Abbreviated summary: show settings and stats only, skip example prompts/completions",
+    )
+    parser.add_argument(
         "--heartbeat-url",
         type=str,
         default=None,
@@ -388,6 +459,10 @@ def main():
                 "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
             )
 
+        # Provider resolution:
+        #   - model IN registry:  registry -> provider overrides -> CLI overrides
+        #   - model NOT in registry: provider (default: prime) -> CLI overrides
+        raw_provider = raw.get("provider")
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         client_type_override = raw_client_type is not None
@@ -399,15 +474,10 @@ def main():
             resolved_endpoint_id = endpoint_lookup_id
             endpoint = endpoint_group[0]
 
-            if api_key_override:
-                api_key_var = raw_api_key_var
-            else:
-                api_key_var = endpoint["key"]
-
-            if api_base_url_override:
-                api_base_url = raw_api_base_url
-            else:
-                api_base_url = endpoint["url"]
+            # Start from registry values
+            api_key_var = endpoint["key"]
+            api_base_url = endpoint["url"]
+            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
 
             endpoint_models = {entry["model"] for entry in endpoint_group}
             if len(endpoint_models) > 1:
@@ -416,18 +486,35 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            client_type = (
-                raw_client_type
-                if client_type_override
-                else endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
-            )
-            if api_key_override or api_base_url_override or client_type_override:
+
+            # Provider overrides registry
+            if raw_provider is not None:
+                provider_cfg = PROVIDER_CONFIGS[raw_provider]
+                api_key_var = provider_cfg["key"]
+                api_base_url = provider_cfg["url"]
+                if "client_type" in provider_cfg:
+                    client_type = provider_cfg["client_type"]
+
+            # CLI overrides provider / registry
+            if api_key_override:
+                api_key_var = raw_api_key_var
+            if api_base_url_override:
+                api_base_url = raw_api_base_url
+            if client_type_override:
+                client_type = raw_client_type
+
+            if (
+                api_key_override
+                or api_base_url_override
+                or client_type_override
+                or raw_provider is not None
+            ):
                 logger.debug(
                     "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
                     model,
-                    "override" if api_key_override else "registry",
-                    "override" if api_base_url_override else "registry",
-                    "override" if client_type_override else "registry",
+                    "override" if api_key_override or raw_provider else "registry",
+                    "override" if api_base_url_override or raw_provider else "registry",
+                    "override" if client_type_override or raw_provider else "registry",
                 )
             else:
                 logger.debug(
@@ -440,17 +527,22 @@ def main():
                 raise ValueError(
                     f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
                 )
+            # Fall back to provider (default: prime)
+            provider_cfg = PROVIDER_CONFIGS[raw_provider or DEFAULT_PROVIDER]
             logger.debug(
-                "Model '%s' not found in endpoint registry, using defaults",
+                "Model '%s' not found in endpoint registry, using provider '%s'",
                 raw_model,
+                raw_provider or DEFAULT_PROVIDER,
             )
             model = raw_model
-            api_key_var = raw_api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+            api_key_var = raw_api_key_var if api_key_override else provider_cfg["key"]
             api_base_url = (
-                raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+                raw_api_base_url if api_base_url_override else provider_cfg["url"]
             )
             client_type = (
-                raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
+                raw_client_type
+                if client_type_override
+                else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
             )
 
         # Merge sampling args
@@ -483,6 +575,7 @@ def main():
         if (
             endpoint_group is not None
             and not api_base_url_override
+            and raw_provider is None
             and len(endpoint_group) > 1
         ):
             endpoint_configs = [
@@ -552,6 +645,7 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
@@ -585,7 +679,13 @@ def main():
     if args.debug:
         asyncio.run(run_evaluations(eval_run_config))
     else:
-        asyncio.run(run_evaluations_tui(eval_run_config, tui_mode=args.tui))
+        asyncio.run(
+            run_evaluations_tui(
+                eval_run_config,
+                tui_mode=args.tui,
+                compact=args.abbreviated_summary,
+            )
+        )
 
 
 if __name__ == "__main__":

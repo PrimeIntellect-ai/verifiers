@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -207,6 +208,17 @@ def messages_to_printable(messages: Any) -> Any:
 # --- Legacy utilities (still used by save_utils, trainer, logging) ---
 
 
+# Matches control chars (except \n \t), surrogates, and private-use/non-characters
+_NON_PRINTABLE_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ud800-\udfff\ufffe\uffff]"
+)
+
+
+def _sanitize_for_display(text: str) -> str:
+    """Replace non-printable / binary characters that crash Rich's grapheme splitter."""
+    return _NON_PRINTABLE_RE.sub("\ufffd", text)
+
+
 def format_messages(messages: Any) -> Text:
     """Format messages for display. Works with both Pydantic messages and legacy dicts."""
 
@@ -232,7 +244,7 @@ def format_messages(messages: Any) -> Text:
         return {"name": name, "args": args}
 
     if isinstance(messages, str):
-        return Text(messages)
+        return Text(_sanitize_for_display(messages))
 
     out = Text()
     for idx, msg in enumerate(messages):
@@ -249,19 +261,22 @@ def format_messages(messages: Any) -> Text:
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             out.append("\n")
             out.append("[reasoning]\n", style="dim")
-            out.append(reasoning_content, style="dim")
+            out.append(_sanitize_for_display(reasoning_content), style="dim")
             out.append("\n")
 
         if content:
             if isinstance(reasoning_content, str) and reasoning_content.strip():
                 out.append("\n")
-            out.append(str(content), style=style)
+            out.append(_sanitize_for_display(str(content)), style=style)
 
         tool_calls = _attr_or_key(msg, "tool_calls")
         for tc in tool_calls or []:
             payload = _normalize_tool_call(tc)
             out.append(
-                "\n\n[tool call]\n" + json.dumps(payload, indent=2, ensure_ascii=False),
+                "\n\n[tool call]\n"
+                + _sanitize_for_display(
+                    json.dumps(payload, indent=2, ensure_ascii=False)
+                ),
                 style=style,
             )
 

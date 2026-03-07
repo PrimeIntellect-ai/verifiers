@@ -127,7 +127,10 @@ class MCPToolWrapper:
 
     def to_tool_def(self) -> Tool:
         """Convert the MCP tool metadata directly to vf.Tool."""
-        parameters = self.tool.inputSchema or {"type": "object", "properties": {}}
+        parameters = cast(
+            dict[str, object],
+            self.tool.inputSchema or {"type": "object", "properties": {}},
+        )
         return Tool(
             name=self.__name__,
             description=self.__doc__ or "",

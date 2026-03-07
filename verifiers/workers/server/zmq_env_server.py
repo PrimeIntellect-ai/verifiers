@@ -1,5 +1,5 @@
 import asyncio
-import threading
+import multiprocessing as mp
 from typing import cast
 
 import msgpack
@@ -22,6 +22,37 @@ def derive_health_address(address: str) -> str:
     return f"{prefix}:{int(port_str) + 1}"
 
 
+def run_health_responder(address: str, stop_event) -> None:
+    """
+    Synchronous health check responder that runs in a dedicated process.
+
+    Completely isolated from the main server process's GIL, so health
+    pings always receive a prompt response regardless of env workload.
+    """
+    import msgpack
+    import zmq
+
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.REP)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout for clean shutdown
+    sock.bind(address)
+
+    resp = msgpack.packb({"success": True, "error": None}, use_bin_type=True)
+
+    while not stop_event.is_set():
+        try:
+            sock.recv()
+            sock.send(resp)
+        except zmq.Again:
+            continue
+        except zmq.ZMQError:
+            break
+
+    sock.close()
+    ctx.term()
+
+
 class ZMQEnvServer(EnvServer):
     """ZMQ-based environment server."""
 
@@ -32,51 +63,32 @@ class ZMQEnvServer(EnvServer):
 
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.ROUTER)
-        self.socket.setsockopt(zmq.SNDHWM, 10000)
-        self.socket.setsockopt(zmq.RCVHWM, 10000)
-        self.socket.setsockopt(zmq.LINGER, 0)
+        # require client to receive all messages
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+        self.socket.setsockopt(zmq.SNDHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.RCVHWM, 0)  # no limit
+        self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
-        # Health check runs completely decoupled (dedicated thread and ZMQ socket)
-        self.stop_health = threading.Event()
-        self.health_thread: threading.Thread | None = None
+        # Map frame request-id -> asyncio.Task so we can cancel on demand
+        self.request_tasks: dict[str, asyncio.Task] = {}
 
-    def run_health_thread(self):
-        """Blocking health check responder on a dedicated thread."""
-        ctx = zmq.Context()
-        sock = ctx.socket(zmq.REP)
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout for clean shutdown
-        sock.bind(self.health_address)
-        self.logger.info(f"Health check responder started on {self.health_address}")
-
-        health_response = msgpack.packb(
-            {"success": True, "error": None}, use_bin_type=True
-        )
-
-        while not self.stop_health.is_set():
-            try:
-                sock.recv()  # block until request (with 1s timeout)
-                sock.send(health_response)
-            except zmq.Again:
-                continue  # recv timeout, check stop flag
-            except zmq.ZMQError:
-                break
-
-        sock.close()
-        ctx.term()
-        self.logger.debug("Health check responder stopped")
+        # Health check runs in a separate process (immune to env workload)
+        self.stop_health = mp.Event()
+        self.health_process: mp.Process | None = None
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
-        # Start health responder thread
-        self.health_thread = threading.Thread(
-            target=self.run_health_thread,
+        # Start health responder in a daemon process
+        self.health_process = mp.Process(
+            target=run_health_responder,
+            args=(self.health_address, self.stop_health),
             name="health-responder",
             daemon=True,
         )
-        self.health_thread.start()
+        self.health_process.start()
+        self.logger.info(f"Health check responder started on {self.health_address}")
 
         lag_monitor_task = self.lag_monitor.run_in_background()
 
@@ -114,6 +126,14 @@ class ZMQEnvServer(EnvServer):
 
                     client_id, request_id, payload_bytes = frames
 
+                    # Empty payload = cancel signal from client
+                    if not payload_bytes:
+                        req_id = request_id.decode()
+                        task = self.request_tasks.get(req_id)
+                        if task is not None:
+                            task.cancel()
+                        continue
+
                     # Process in background, tracking the task for cleanup
                     task = asyncio.create_task(
                         self.process_request(client_id, request_id, payload_bytes)
@@ -134,11 +154,14 @@ class ZMQEnvServer(EnvServer):
             )
 
     async def close(self):
-        # Stop health thread
+        # Stop health process
         self.stop_health.set()
-        if self.health_thread is not None:
-            self.health_thread.join(timeout=5)
-            self.health_thread = None
+        if self.health_process is not None:
+            self.health_process.join(timeout=5)
+            if self.health_process.is_alive():
+                self.health_process.terminate()
+                self.health_process.join(timeout=2)
+            self.health_process = None
 
         # Cancel and await all pending tasks
         if self.pending_tasks:
@@ -147,6 +170,8 @@ class ZMQEnvServer(EnvServer):
                 task.cancel()
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
             self.pending_tasks.clear()
+
+        self.request_tasks.clear()
 
         await self.close_cached_clients()
 
@@ -178,51 +203,64 @@ class ZMQEnvServer(EnvServer):
         payload_bytes: bytes,
     ):
         request_id = request_id_bytes.decode()
+        frame_request_id = request_id
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self.request_tasks[frame_request_id] = current_task
         response: BaseResponse
 
         try:
-            # deserialize request
-            raw = msgpack.unpackb(payload_bytes, raw=False)
-            request_type = raw.get("request_type")
-            request_id = raw.get("request_id", request_id)
+            try:
+                # deserialize request
+                raw = msgpack.unpackb(payload_bytes, raw=False)
+                request_type = raw.get("request_type")
+                request_id = raw.get("request_id", request_id)
 
-            # Health requests are handled by the dedicated health thread,
-            # so they should not arrive here. Handle just in case.
-            if request_type == "run_rollout":
-                request = RunRolloutRequest.model_validate(raw)
-                response = await self.handle_run_rollout(request)
-            elif request_type == "run_group":
-                request = RunGroupRequest.model_validate(raw)
-                response = await self.handle_run_group(request)
-            else:
-                self.logger.warning(f"Got unknown request type: {request_type}")
+                # Health requests are handled by the dedicated health process,
+                # so they should not arrive here.
+                if request_type == "run_rollout":
+                    request = RunRolloutRequest.model_validate(raw)
+                    response = await self.handle_run_rollout(request)
+                elif request_type == "run_group":
+                    request = RunGroupRequest.model_validate(raw)
+                    response = await self.handle_run_group(request)
+                else:
+                    self.logger.warning(f"Got unknown request type: {request_type}")
+                    response = BaseResponse(
+                        success=False, error=f"Unknown request type: {request_type}"
+                    )
+
+            except asyncio.CancelledError:
+                return
+
+            except Exception as e:
+                self.logger.error(
+                    f"Error processing request {request_id}: {e}", exc_info=True
+                )
                 response = BaseResponse(
-                    success=False, error=f"Unknown request type: {request_type}"
+                    success=False,
+                    error=repr(e),
                 )
 
-        except asyncio.CancelledError:
-            return
-
-        except Exception as e:
-            self.logger.error(
-                f"Error processing request {request_id}: {e}", exc_info=True
-            )
-            response = BaseResponse(
-                success=False,
-                error=repr(e),
+            # serialize response using Pydantic
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    response.model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
             )
 
-        # serialize response using Pydantic
-        response_bytes = cast(
-            bytes,
-            msgpack.packb(
-                response.model_dump(mode="python", warnings=False),
-                default=msgpack_encoder,
-                use_bin_type=True,
-            ),
-        )
-
-        # send response: [client_id, request_id, response]
-        await self.socket.send_multipart(
-            [client_id, request_id.encode(), response_bytes]
-        )
+            # send response: [client_id, request_id, response]
+            try:
+                await self.socket.send_multipart(
+                    [client_id, request_id.encode(), response_bytes]
+                )
+            except zmq.ZMQError as e:
+                self.logger.warning(
+                    f"Failed to send response for request {request_id[:7]}: {e} "
+                    f"(client likely disconnected)"
+                )
+        finally:
+            self.request_tasks.pop(frame_request_id, None)
