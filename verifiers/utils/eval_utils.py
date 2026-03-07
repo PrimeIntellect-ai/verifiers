@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import itertools
 import logging
 import math
 import os
@@ -257,10 +258,88 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
+def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
+    """Expand an [[ablation]] block into eval configs via cartesian product.
+
+    Sweep keys are lists of values under [ablation.sweep]. Environment args
+    can be swept via [ablation.sweep.env_args]. All sweep dimensions are
+    crossed to produce one eval config per combination.
+
+    Example TOML:
+        [[ablation]]
+        env_id = "my-env"
+
+        [ablation.sweep]
+        temperature = [0.0, 0.5]
+
+        [ablation.sweep.env_args]
+        difficulty = ["easy", "hard"]
+
+    This produces 4 eval configs (2 temperatures × 2 difficulties).
+    """
+    ablation = dict(ablation)  # don't mutate caller's dict
+    sweep = ablation.pop("sweep", {})
+    sweep = dict(sweep)  # copy before mutating
+    env_args_sweep = sweep.pop("env_args", {})
+
+    # Collect all sweep dimensions: [(key, [values]), ...]
+    dimensions: list[tuple[str, list]] = []
+    for key, values in sweep.items():
+        if not isinstance(values, list):
+            raise ValueError(
+                f"Ablation sweep values must be lists, got {type(values).__name__} "
+                f"for '{key}'"
+            )
+        dimensions.append((key, values))
+    for key, values in env_args_sweep.items():
+        if not isinstance(values, list):
+            raise ValueError(
+                f"Ablation sweep.env_args values must be lists, got "
+                f"{type(values).__name__} for '{key}'"
+            )
+        dimensions.append((f"env_args.{key}", values))
+
+    if not dimensions:
+        raise ValueError(
+            "[[ablation]] block must have a non-empty [ablation.sweep] section"
+        )
+
+    # Guard against same key in both fixed env_args and sweep.env_args
+    fixed_env_args = ablation.get("env_args", {})
+    if fixed_env_args and env_args_sweep:
+        overlap = set(fixed_env_args.keys()) & set(env_args_sweep.keys())
+        if overlap:
+            raise ValueError(
+                f"env_args key(s) {overlap} appear in both fixed env_args and "
+                f"sweep.env_args — use one or the other"
+            )
+
+    # Fixed fields: global defaults overridden by ablation-level fields
+    fixed = {**global_defaults, **ablation}
+
+    # Expand cartesian product
+    keys = [k for k, _ in dimensions]
+    value_lists = [v for _, v in dimensions]
+
+    expanded = []
+    for combo in itertools.product(*value_lists):
+        config = {k: (dict(v) if isinstance(v, dict) else v) for k, v in fixed.items()}
+        for key, value in zip(keys, combo):
+            if key.startswith("env_args."):
+                env_key = key[len("env_args.") :]
+                config["env_args"] = {**config.get("env_args", {}), env_key: value}
+            else:
+                config[key] = value
+        expanded.append(config)
+
+    return expanded
+
+
 def load_toml_config(path: Path) -> list[dict]:
     """Loads and validates a TOML config file.
 
-    Config format supports global defaults at the top level, with per-eval overrides:
+    Config format supports global defaults at the top level, with per-eval overrides
+    and ablation sweeps:
 
         # Global defaults (optional)
         model = "openai/gpt-4.1-mini"
@@ -273,10 +352,16 @@ def load_toml_config(path: Path) -> list[dict]:
         env_id = "math-python"
         num_examples = 5  # overrides global default
 
-    Minimal config (just a single eval):
+        # Ablation: cartesian product of sweep values
+        [[ablation]]
+        env_id = "my-env"
 
-        [[eval]]
-        env_id = "gsm8k"
+        [ablation.sweep]
+        temperature = [0.0, 0.5, 1.0]
+
+        [ablation.sweep.env_args]
+        difficulty = ["easy", "hard"]
+        # → 6 eval configs
     """
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -286,21 +371,30 @@ def load_toml_config(path: Path) -> list[dict]:
 
     # validate schema
     eval_list = raw_config.get("eval", [])
+    ablation_list = raw_config.get("ablation", [])
+
     if not isinstance(eval_list, list):
         raise ValueError(
             f"Config file uses [eval] but should use [[eval]] (double brackets) "
             f"for array of tables: {path}"
         )
-    if not eval_list:
+    if not isinstance(ablation_list, list):
         raise ValueError(
-            f"Config file must contain at least one [[eval]] section: {path}"
+            f"Config file uses [ablation] but should use [[ablation]] (double brackets) "
+            f"for array of tables: {path}"
+        )
+    if not eval_list and not ablation_list:
+        raise ValueError(
+            f"Config file must contain at least one [[eval]] or [[ablation]] section: {path}"
         )
 
     if not all("env_id" in e for e in eval_list):
         raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
 
-    # extract global defaults (everything except 'eval' key)
-    global_defaults = {k: v for k, v in raw_config.items() if k != "eval"}
+    # extract global defaults (everything except 'eval' and 'ablation' keys)
+    global_defaults = {
+        k: v for k, v in raw_config.items() if k not in ("eval", "ablation")
+    }
 
     # valid fields mirror cli args, not evalconfig
     # TODO: properly tie EvalConfig to CLI
@@ -362,7 +456,38 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
-        # Resolve endpoints_path relative to the config file location.
+        merged_eval_list.append(merged)
+
+    # expand [[ablation]] blocks into eval configs
+    for ablation in ablation_list:
+        # Validate fixed fields (everything except 'sweep')
+        ablation_fixed_keys = set(ablation.keys()) - {"sweep"}
+        invalid_fields = ablation_fixed_keys - valid_fields
+        if invalid_fields:
+            raise ValueError(
+                f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+        # Validate sweep keys (except env_args which has freeform sub-keys)
+        sweep = ablation.get("sweep", {})
+        invalid_sweep = set(sweep.keys()) - valid_fields - {"env_args"}
+        if invalid_sweep:
+            raise ValueError(
+                f"Invalid sweep field(s) {invalid_sweep} in [[ablation]] block. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+        expanded = _expand_ablation(ablation, global_defaults)
+        merged_eval_list.extend(expanded)
+
+    # Validate all expanded configs have env_id
+    for config in merged_eval_list:
+        if "env_id" not in config:
+            raise ValueError(
+                "All eval configs (including expanded ablations) must have an env_id"
+            )
+
+    # Resolve endpoints_path relative to the config file location
+    for merged in merged_eval_list:
         endpoints_path = merged.get("endpoints_path")
         if isinstance(endpoints_path, str):
             endpoints_path_obj = Path(endpoints_path)
@@ -370,7 +495,6 @@ def load_toml_config(path: Path) -> list[dict]:
                 merged["endpoints_path"] = str(
                     (path.parent / endpoints_path_obj).resolve()
                 )
-        merged_eval_list.append(merged)
 
     return merged_eval_list
 

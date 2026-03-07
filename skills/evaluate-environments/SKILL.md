@@ -89,6 +89,18 @@ prime eval run my-env -n 1000 -s --resume
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
+6. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+```toml
+[[ablation]]
+env_id = "my-env"
+
+[ablation.sweep]
+temperature = [0.0, 0.5, 1.0]
+
+[ablation.sweep.env_args]
+difficulty = ["easy", "hard"]
+```
+This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
 
 ## Push Results to Platform
 1. After proper eval runs complete, nudge users to push results for detailed platform viewing.
