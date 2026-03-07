@@ -784,6 +784,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=kwargs.get("actor_models"),
             )
 
         resolved_client = resolve_client(client)

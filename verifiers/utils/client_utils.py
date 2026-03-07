@@ -107,10 +107,15 @@ def _setup_openai_client_from_resolved(config: ClientConfig) -> AsyncOpenAI:
     )
 
 
+
 def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
     """Setup an AsyncOpenAI client from config."""
     resolved_config = resolve_client_config(config)
     return _setup_openai_client_from_resolved(resolved_config)
+
+
+# Alias used by workers.server.env_server
+setup_client = setup_openai_client
 
 
 def _setup_anthropic_client_from_resolved(config: ClientConfig) -> AsyncAnthropic:
@@ -127,3 +132,50 @@ def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
     """Setup an AsyncAnthropic client from config."""
     resolved_config = resolve_client_config(config)
     return _setup_anthropic_client_from_resolved(resolved_config)
+
+
+# =============================================================================
+# Actor Client Helper
+# =============================================================================
+
+try:
+    from configs.endpoints import ENDPOINTS as _DEFAULT_ENDPOINTS
+except ImportError:
+    _DEFAULT_ENDPOINTS: dict = {}
+
+
+def get_actor_client(
+    endpoint_key: str | None,
+    endpoints: dict | None = None,
+) -> tuple[AsyncOpenAI | None, str | None]:
+    """
+    Get client and model from an endpoint key for use with Actor.
+
+    Returns (None, None) if endpoint_key is None or not found,
+    meaning the Actor will use the default model from the eval command.
+
+    Example:
+        client, model = get_actor_client("sonnet")
+        actor = Actor(id="player", model=model, client=client)
+    """
+    if not endpoint_key:
+        return None, None
+
+    endpoints = endpoints or _DEFAULT_ENDPOINTS
+
+    if endpoint_key not in endpoints:
+        logger.warning(f"Endpoint '{endpoint_key}' not found. Using default model.")
+        return None, None
+
+    endpoint = endpoints[endpoint_key]
+    api_key = os.environ.get(endpoint["key"], "")
+
+    if endpoint["key"] == "PRIME_API_KEY" and not api_key:
+        api_key = load_prime_config().get("api_key", "")
+
+    client = AsyncOpenAI(
+        base_url=endpoint["url"],
+        api_key=api_key or "EMPTY",
+    )
+
+    return client, endpoint["model"]
