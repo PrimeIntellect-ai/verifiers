@@ -437,6 +437,8 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
 
 def _log_request(rollout_id: str, body: dict) -> None:
     """Log an intercepted request."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     log_msg = f"[{rollout_id}] <- INTERCEPTED REQUEST"
     tools = body.get("tools", [])
     log_msg += f" ({len(tools)} tool(s))"
@@ -456,6 +458,8 @@ def _log_request(rollout_id: str, body: dict) -> None:
 
 def _log_response(rollout_id: str, response: dict) -> None:
     """Log the response from the model."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     log_msg = f"[{rollout_id}] -> RESPONSE"
     msg = response.get("choices", [{}])[0].get("message", {})
     if msg.get("content"):
