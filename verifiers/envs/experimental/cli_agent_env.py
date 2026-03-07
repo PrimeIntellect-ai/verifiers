@@ -29,6 +29,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.logging_utils import truncate
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.worker_utils import get_free_port
 
@@ -281,6 +282,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
+        self.logger.debug(f"Starting agent with {truncate(self.run_command, 100)}")
         background_job: BackgroundJob = await self.sandbox_client.start_background_job(
             sandbox_id,
             self.run_command,

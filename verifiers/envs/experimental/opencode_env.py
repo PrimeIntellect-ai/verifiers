@@ -10,7 +10,7 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.types import AssistantMessage, Messages, ToolCall
-from verifiers.utils.interception_utils import _truncate as truncate
+from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
 
