@@ -186,39 +186,86 @@ class MultiTurnEnv(vf.Environment):
                 prefix_len = len(expected_prefix)
                 actual_prefix = list(curr_prompt[:prefix_len])
                 extension_holds = actual_prefix == expected_prefix
+
+                turn = len(state["trajectory"]) - 1
+                prev_prompt_len = len(prev_prompt)
+                prev_completion_len = len(prev_completion)
+                curr_prompt_len = len(curr_prompt)
+
                 if not extension_holds:
-                    # Find first mismatch position
-                    mismatch_pos = -1
-                    for i in range(min(len(expected_prefix), len(actual_prefix))):
-                        if expected_prefix[i] != actual_prefix[i]:
-                            mismatch_pos = i
-                            break
-                    if mismatch_pos == -1 and len(expected_prefix) != len(
-                        actual_prefix
-                    ):
-                        mismatch_pos = min(len(expected_prefix), len(actual_prefix))
+                    # Classify the break
+                    if curr_prompt_len < prefix_len:
+                        break_type = "TRUNCATION"
+                        mismatch_pos = curr_prompt_len
+                        section = "N/A"
+                    else:
+                        # Find first mismatch position
+                        mismatch_pos = -1
+                        for i in range(min(len(expected_prefix), len(actual_prefix))):
+                            if expected_prefix[i] != actual_prefix[i]:
+                                mismatch_pos = i
+                                break
+                        if mismatch_pos == -1:
+                            mismatch_pos = min(len(expected_prefix), len(actual_prefix))
+
+                        if mismatch_pos < prev_prompt_len:
+                            break_type = "PROMPT_MUTATION"
+                            section = f"prompt[{mismatch_pos}/{prev_prompt_len}]"
+                        else:
+                            break_type = "COMPLETION_MUTATION"
+                            comp_offset = mismatch_pos - prev_prompt_len
+                            section = f"completion[{comp_offset}/{prev_completion_len}]"
+
+                    W = 10
                     logger.warning(
-                        "[MITO-DEBUG] EXTENSION BREAK at turn=%d! "
+                        "[MITO-DEBUG] EXTENSION BREAK at turn=%d type=%s "
+                        "prev_prompt_len=%d prev_completion_len=%d "
                         "expected_prefix_len=%d curr_prompt_len=%d "
-                        "mismatch_pos=%d "
-                        "expected[pos-2:pos+3]=%s actual[pos-2:pos+3]=%s",
-                        len(state["trajectory"]) - 1,
+                        "mismatch_pos=%d section=%s "
+                        "expected[pos-%d:pos+%d]=%s actual[pos-%d:pos+%d]=%s",
+                        turn,
+                        break_type,
+                        prev_prompt_len,
+                        prev_completion_len,
                         prefix_len,
-                        len(curr_prompt),
+                        curr_prompt_len,
                         mismatch_pos,
-                        expected_prefix[max(0, mismatch_pos - 2) : mismatch_pos + 3]
+                        section,
+                        W,
+                        W,
+                        expected_prefix[max(0, mismatch_pos - W) : mismatch_pos + W]
                         if mismatch_pos >= 0
                         else "N/A",
-                        actual_prefix[max(0, mismatch_pos - 2) : mismatch_pos + 3]
+                        W,
+                        W,
+                        actual_prefix[max(0, mismatch_pos - W) : mismatch_pos + W]
                         if mismatch_pos >= 0
                         else "N/A",
                     )
+
+                    # For first extension check (turn=1), log boundary regions to spot
+                    # prompt/completion junction issues
+                    if turn == 1:
+                        logger.warning(
+                            "[MITO-DEBUG] turn=1 detail: "
+                            "prev_prompt_tail=%s prev_completion_head=%s "
+                            "prev_completion_tail=%s "
+                            "curr_prompt_at_boundary=%s",
+                            prev_prompt[-W:] if prev_prompt else "[]",
+                            list(prev_completion[:W]) if prev_completion else "[]",
+                            list(prev_completion[-W:]) if prev_completion else "[]",
+                            list(curr_prompt[prev_prompt_len - W : prev_prompt_len + W])
+                            if curr_prompt_len > prev_prompt_len
+                            else "[]",
+                        )
                 else:
                     logger.info(
-                        "[MITO-DEBUG] extension OK at turn=%d prefix_len=%d curr_prompt_len=%d",
-                        len(state["trajectory"]) - 1,
-                        prefix_len,
-                        len(curr_prompt),
+                        "[MITO-DEBUG] extension OK at turn=%d "
+                        "prev_prompt_len=%d prev_completion_len=%d curr_prompt_len=%d",
+                        turn,
+                        prev_prompt_len,
+                        prev_completion_len,
+                        curr_prompt_len,
                     )
 
     @final
