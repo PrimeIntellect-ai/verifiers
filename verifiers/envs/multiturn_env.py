@@ -71,7 +71,12 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
         if len(state["trajectory"]) == 0:
-            return normalize_messages(state["prompt"], field_name="state.prompt")
+            msgs = normalize_messages(state["prompt"], field_name="state.prompt")
+            logger.info(
+                "[MITO-DEBUG] get_prompt_messages turn=0 msg_count=%d",
+                len(msgs),
+            )
+            return msgs
         prev_turn_prompt = normalize_messages(
             state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
         )
@@ -83,7 +88,14 @@ class MultiTurnEnv(vf.Environment):
         env_response_messages = normalize_messages(
             env_response, field_name="env_response"
         )
-        return concat_messages([messages, env_response_messages])
+        result = concat_messages([messages, env_response_messages])
+        logger.info(
+            "[MITO-DEBUG] get_prompt_messages turn=%d msg_count=%d env_response_msgs=%d",
+            len(state["trajectory"]),
+            len(result),
+            len(env_response_messages),
+        )
+        return result
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
@@ -125,6 +137,30 @@ class MultiTurnEnv(vf.Environment):
         is_truncated = response_is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
+
+        # MITO-DEBUG: log response details
+        content = response.message.content
+        content_len = len(content) if isinstance(content, str) else 0
+        has_reasoning = response.message.reasoning_content is not None
+        reasoning_len = len(response.message.reasoning_content) if has_reasoning else 0
+        prompt_ids_len = 0
+        completion_ids_len = 0
+        if tokens is not None:
+            prompt_ids_len = len(tokens.get("prompt_ids", []))
+            completion_ids_len = len(tokens.get("completion_ids", []))
+        logger.info(
+            "[MITO-DEBUG] add_model_response turn=%d content_len=%d "
+            "has_reasoning=%s reasoning_len=%d "
+            "prompt_ids_len=%d completion_ids_len=%d is_truncated=%s",
+            len(state["trajectory"]),
+            content_len,
+            has_reasoning,
+            reasoning_len,
+            prompt_ids_len,
+            completion_ids_len,
+            is_truncated,
+        )
+
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
@@ -137,6 +173,53 @@ class MultiTurnEnv(vf.Environment):
             extras={},
         )
         await self.add_trajectory_step(state, trajectory_step)
+
+        # MITO-DEBUG: inline extension check against previous step
+        if len(state["trajectory"]) >= 2:
+            prev_tokens = state["trajectory"][-2].get("tokens")
+            curr_tokens = state["trajectory"][-1].get("tokens")
+            if prev_tokens is not None and curr_tokens is not None:
+                prev_prompt = prev_tokens.get("prompt_ids", [])
+                prev_completion = prev_tokens.get("completion_ids", [])
+                curr_prompt = curr_tokens.get("prompt_ids", [])
+                expected_prefix = list(prev_prompt) + list(prev_completion)
+                prefix_len = len(expected_prefix)
+                actual_prefix = list(curr_prompt[:prefix_len])
+                extension_holds = actual_prefix == expected_prefix
+                if not extension_holds:
+                    # Find first mismatch position
+                    mismatch_pos = -1
+                    for i in range(min(len(expected_prefix), len(actual_prefix))):
+                        if expected_prefix[i] != actual_prefix[i]:
+                            mismatch_pos = i
+                            break
+                    if mismatch_pos == -1 and len(expected_prefix) != len(
+                        actual_prefix
+                    ):
+                        mismatch_pos = min(len(expected_prefix), len(actual_prefix))
+                    logger.warning(
+                        "[MITO-DEBUG] EXTENSION BREAK at turn=%d! "
+                        "expected_prefix_len=%d curr_prompt_len=%d "
+                        "mismatch_pos=%d "
+                        "expected[pos-2:pos+3]=%s actual[pos-2:pos+3]=%s",
+                        len(state["trajectory"]) - 1,
+                        prefix_len,
+                        len(curr_prompt),
+                        mismatch_pos,
+                        expected_prefix[max(0, mismatch_pos - 2) : mismatch_pos + 3]
+                        if mismatch_pos >= 0
+                        else "N/A",
+                        actual_prefix[max(0, mismatch_pos - 2) : mismatch_pos + 3]
+                        if mismatch_pos >= 0
+                        else "N/A",
+                    )
+                else:
+                    logger.info(
+                        "[MITO-DEBUG] extension OK at turn=%d prefix_len=%d curr_prompt_len=%d",
+                        len(state["trajectory"]) - 1,
+                        prefix_len,
+                        len(curr_prompt),
+                    )
 
     @final
     async def rollout(
@@ -153,19 +236,31 @@ class MultiTurnEnv(vf.Environment):
             except vf.Error as e:
                 state["error"] = e
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
+            turn_idx = 0
             while not await self.is_completed(state):
                 try:
+                    logger.info(
+                        "[MITO-DEBUG] rollout turn=%d starting, trajectory_len=%d",
+                        turn_idx,
+                        len(state["trajectory"]),
+                    )
                     prompt_messages = await self.get_prompt_messages(state)
                     if state.get("final_env_response") is not None:
                         continue
                     response = await self.get_model_response(state, prompt_messages)
                     await self.add_model_response(state, prompt_messages, response)
+                    turn_idx += 1
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
+            logger.info(
+                "[MITO-DEBUG] rollout complete, total_turns=%d trajectory_len=%d",
+                turn_idx,
+                len(state["trajectory"]),
+            )
             await self.render_completion(state)
             return state
         except asyncio.CancelledError:
