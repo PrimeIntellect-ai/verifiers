@@ -601,7 +601,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         tool_counts: Counter[str] = Counter()
         for step in state.get("trajectory", []):
             for msg in step.get("completion", []):
-                if isinstance(msg, AssistantMessage) and isinstance(msg.tool_calls, list):
+                if isinstance(msg, AssistantMessage) and isinstance(
+                    msg.tool_calls, list
+                ):
                     for tc in msg.tool_calls:
                         if isinstance(tc, ToolCall):
                             tool_counts[tc.name] += 1
