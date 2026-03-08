@@ -280,7 +280,9 @@ class MultiAgentEnv(MultiTurnEnv):
                     break
                 except vf.Error as e:
                     state["error"] = e
-                    print(f"[ROLLOUT-DEBUG] {actor_id} vf.Error: {e}")
+                    import traceback
+                    print(f"[ROLLOUT-DEBUG] {actor_id} {type(e).__name__}: {repr(e)}")
+                    traceback.print_exc()
                     break
 
             completed = await self.is_completed(state)
