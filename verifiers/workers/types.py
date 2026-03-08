@@ -49,6 +49,7 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    actor_models: dict[str, str] | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -66,6 +67,7 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    actor_models: dict[str, str] | None = None
 
 
 class RunGroupResponse(BaseResponse):
