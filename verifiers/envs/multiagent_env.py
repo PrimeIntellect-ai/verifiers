@@ -371,6 +371,12 @@ class MultiAgentEnv(MultiTurnEnv):
         if actor_ids is None:
             actor_ids = self.actors
 
+        traj = state.get("trajectory", [])
+        print(f"[TRAJ-DEBUG] trajectory has {len(traj)} steps")
+        for i, step in enumerate(traj):
+            extras = step.get("extras", {})
+            print(f"[TRAJ-DEBUG] step[{i}] actor_id='{extras.get('actor_id', 'MISSING')}' extras_keys={list(extras.keys())}")
+
         actor_states = []
         for actor_id in actor_ids:
             actor_trajectory = [
