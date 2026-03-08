@@ -12,6 +12,7 @@ from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
 from verifiers.types import SamplingArgs, State
+from verifiers.utils.message_utils import normalize_messages
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -151,6 +152,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 if step_tokens is None:
                     continue
                 step_messages = cast(Any, [*step["prompt"], *step["completion"]])
+                step_messages = normalize_messages(step_messages, field_name="trajectory.step")
                 step_prompt_messages, _ = await self.to_native_prompt(step_messages)
                 normalized_step_messages = normalize_for_comparison(
                     step_prompt_messages
