@@ -172,7 +172,7 @@ class InterceptionServer:
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
-                logger.error(f"Error processing intercepted request: {e}")
+                logger.debug(f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}")
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(response)
@@ -207,12 +207,16 @@ class InterceptionServer:
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
 
-            await response_future
-
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             logger.error(f"[{rollout_id}] Streaming error: {e}")
+            return response
+
+        try:
+            await response_future
+        except Exception as e:
+            logger.debug(f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}")
 
         try:
             await response.write_eof()
