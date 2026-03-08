@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from rich.markup import escape as safe_escape
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -51,7 +50,7 @@ class RunInfo:
         meta_path = self.path / "metadata.json"
         try:
             self.metadata = json.loads(meta_path.read_text())
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             self.metadata = {}
         return self.metadata
 
@@ -252,7 +251,7 @@ def format_prompt_or_completion(prompt_or_completion) -> Text:
                     for tc_str in tool_calls_data:
                         try:
                             parsed.append(json.loads(tc_str))
-                        except Exception:
+                        except json.JSONDecodeError:
                             parsed.append(tc_str)
                     tool_calls_data = parsed
 
@@ -285,18 +284,12 @@ def _stringify_message_content(content: Any) -> str:
                 if item.get("type") == "text":
                     chunks.append(str(item.get("text", "")))
                 else:
-                    try:
-                        chunks.append(json.dumps(item, ensure_ascii=False, indent=2))
-                    except (TypeError, ValueError):
-                        chunks.append(str(item))
+                    chunks.append(_pretty_json_or_str(item))
             else:
                 chunks.append(str(item))
         return "\n".join(chunk for chunk in chunks if chunk)
     if isinstance(content, dict):
-        try:
-            return json.dumps(content, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return str(content)
+        return _pretty_json_or_str(content)
     return str(content)
 
 
@@ -373,20 +366,21 @@ def _first_non_empty_line(text: str) -> str:
     return ""
 
 
+def _pretty_json_or_str(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _format_tool_arguments(arguments: Any) -> str:
     parsed = _coerce_info_value(arguments)
     if isinstance(parsed, dict):
         if set(parsed.keys()) == {"code"}:
             return str(parsed["code"])
-        try:
-            return json.dumps(parsed, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return str(parsed)
+        return _pretty_json_or_str(parsed)
     if isinstance(parsed, list):
-        try:
-            return json.dumps(parsed, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return str(parsed)
+        return _pretty_json_or_str(parsed)
     return str(arguments) if arguments not in (None, "") else "No arguments"
 
 
@@ -438,10 +432,7 @@ def format_info_for_details(info: Any) -> str:
     """Format record info for the details panel in rollout view."""
     info_value = _coerce_info_value(info)
     if isinstance(info_value, (dict, list)):
-        try:
-            return json.dumps(info_value, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return str(info_value)
+        return _pretty_json_or_str(info_value)
     return str(info_value)
 
 
@@ -451,13 +442,7 @@ def format_info_for_details(info: Any) -> str:
 class Panel(Container):
     """A rounded panel container."""
 
-    DEFAULT_CSS = """
-    Panel {
-        border: round white;
-        padding: 1 2;
-        margin: 1;
-    }
-    """
+    pass
 
 
 # ----------------------------
@@ -591,17 +576,11 @@ def _build_run_details_text(run: RunInfo) -> Text:
 
     env_args = meta.get("env_args", {})
     out.append("\nEnv args:\n", style="bold")
-    try:
-        out.append(json.dumps(env_args, ensure_ascii=False, indent=2))
-    except Exception:
-        out.append(str(env_args))
+    out.append(_pretty_json_or_str(env_args))
 
     sampling_args = meta.get("sampling_args", {})
     out.append("\n\nSampling args:\n", style="bold")
-    try:
-        out.append(json.dumps(sampling_args, ensure_ascii=False, indent=2))
-    except Exception:
-        out.append(str(sampling_args))
+    out.append(_pretty_json_or_str(sampling_args))
 
     return out
 
@@ -639,6 +618,7 @@ class BrowseRunsScreen(Screen):
                     VerticalScroll(
                         Static("", id="run-browser-details", markup=False),
                         id="run-browser-details-scroll",
+                        classes="surface-scroll",
                     ),
                     classes="browser-details-panel",
                 )
@@ -785,286 +765,6 @@ class BrowseRunsScreen(Screen):
         details_widget.update(Text("Select a run to see details", style="dim"))
 
 
-class SelectEnvScreen(Screen):
-    """Screen for selecting an environment."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("enter", "select", "Select"),
-    ]
-
-    def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
-        super().__init__()
-        self.index = index
-        self.env_ids = sorted(index.keys())
-
-    def compose(self) -> ComposeResult:
-        with Container():
-            yield Panel(
-                Label(Text("Select Environment", style="bold"), classes="title"),
-                OptionList(id="env-list"),
-            )
-        yield Footer()
-
-    def on_mount(self) -> None:
-        option_list = self.query_one("#env-list", OptionList)
-
-        if not self.env_ids:
-            option_list.add_option(
-                Option("No completed evals found", id="__none__", disabled=True)
-            )
-            return
-
-        for env_id in self.env_ids:
-            models = self.index[env_id]
-            total_runs = sum(len(runs) for runs in models.values())
-            option_list.add_option(
-                Option(
-                    f"{safe_escape(env_id)} - Models: {len(models)}, Runs: {total_runs}",
-                    id=env_id,
-                )
-            )
-
-        option_list.focus()
-
-    @on(OptionList.OptionSelected, "#env-list")
-    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle option selection."""
-        if event.option_id and event.option_id in self.env_ids:
-            self.app.push_screen(SelectModelScreen(self.index, event.option_id))
-
-    def action_select(self) -> None:
-        """Handle Enter key."""
-        option_list = self.query_one("#env-list", OptionList)
-        if option_list.highlighted is not None:
-            option = option_list.get_option_at_index(option_list.highlighted)
-            if option and option.id in self.env_ids:
-                self.app.push_screen(SelectModelScreen(self.index, option.id))
-
-
-class SelectModelScreen(Screen):
-    """Screen for selecting a model."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b,backspace", "back", "Back"),
-        Binding("enter", "select", "Select"),
-    ]
-
-    def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]], env_id: str):
-        super().__init__()
-        self.index = index
-        self.env_id = env_id
-        self.models = sorted(index[env_id].keys())
-
-    def compose(self) -> ComposeResult:
-        with Container():
-            yield Panel(
-                Label(Text.assemble(("Environment: ", "bold"), str(self.env_id))),
-                Label(Text("Select Model")),
-                OptionList(id="model-list"),
-            )
-        yield Footer()
-
-    def on_mount(self) -> None:
-        option_list = self.query_one("#model-list", OptionList)
-
-        for model in self.models:
-            runs = self.index[self.env_id][model]
-            option_list.add_option(
-                Option(f"{safe_escape(model)} - Runs: {len(runs)}", id=model)
-            )
-
-        option_list.focus()
-
-    def action_back(self) -> None:
-        self.app.pop_screen()
-
-    @on(OptionList.OptionSelected, "#model-list")
-    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle option selection."""
-        if event.option_id and event.option_id in self.models:
-            self.app.push_screen(
-                SelectRunScreen(self.index, self.env_id, event.option_id)
-            )
-
-    def action_select(self) -> None:
-        """Handle Enter key."""
-        option_list = self.query_one("#model-list", OptionList)
-        if option_list.highlighted is not None:
-            option = option_list.get_option_at_index(option_list.highlighted)
-            if option and option.id in self.models:
-                self.app.push_screen(
-                    SelectRunScreen(self.index, self.env_id, option.id)
-                )
-
-
-class SelectRunScreen(Screen):
-    """Screen for selecting a run."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b,backspace", "back", "Back"),
-        Binding("enter", "select", "Select"),
-    ]
-
-    def __init__(
-        self, index: Dict[str, Dict[str, List[RunInfo]]], env_id: str, model: str
-    ):
-        super().__init__()
-        self.index = index
-        self.env_id = env_id
-        self.model = model
-        self.runs = index[env_id][model]
-
-    def compose(self) -> ComposeResult:
-        with Container():
-            yield Panel(
-                Label(Text.assemble(("Environment: ", "bold"), str(self.env_id))),
-                Label(Text.assemble(("Model: ", "bold"), str(self.model))),
-                Label(Text("Select Run")),
-                OptionList(id="run-list"),
-                classes="run-list-panel",
-            )
-            yield Panel(
-                VerticalScroll(
-                    Static("", id="run-details", markup=False), id="run-details-scroll"
-                ),
-                classes="run-details-panel",
-            )
-        yield Footer()
-
-    def on_mount(self) -> None:
-        option_list = self.query_one("#run-list", OptionList)
-
-        # Load metadata only for runs in this model, when the run list is shown.
-        self.runs.sort(
-            key=lambda r: (
-                r.load_metadata().get("date", ""),
-                r.load_metadata().get("time", ""),
-                r.run_id,
-            )
-        )
-
-        for i, run in enumerate(self.runs):
-            meta = run.load_metadata()
-            datetime_str = f"{meta.get('date', '')} {meta.get('time', '')}".strip()
-            reward = meta.get("avg_reward", "")
-            if isinstance(reward, (int, float)):
-                reward_str = f"Reward: {reward:.3f}"
-            else:
-                reward_str = f"Reward: {reward}"
-
-            option_list.add_option(
-                Option(
-                    f"{safe_escape(run.run_id)} - {safe_escape(datetime_str)} | {safe_escape(reward_str)}",
-                    id=str(i),
-                )
-            )
-
-        option_list.focus()
-        details_widget = self.query_one("#run-details", Static)
-        details_widget.update(Text("Select a run to see details", style="dim"))
-
-    @on(OptionList.OptionHighlighted, "#run-list")
-    def on_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id is not None:
-            self._update_details_for_index(int(event.option_id))
-
-    def action_back(self) -> None:
-        self.app.pop_screen()
-
-    @on(OptionList.OptionSelected, "#run-list")
-    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle option selection."""
-        if event.option_id is not None:
-            idx = int(event.option_id)
-            if 0 <= idx < len(self.runs):
-                self.app.push_screen(ViewRunScreen(self.runs[idx]))
-
-    def action_select(self) -> None:
-        """Handle Enter key."""
-        option_list = self.query_one("#run-list", OptionList)
-        if option_list.highlighted is not None:
-            option = option_list.get_option_at_index(option_list.highlighted)
-            if option and option.id is not None:
-                idx = int(option.id)
-                if 0 <= idx < len(self.runs):
-                    self.app.push_screen(ViewRunScreen(self.runs[idx]))
-
-    def _update_details_for_index(self, idx: int) -> None:
-        if not (0 <= idx < len(self.runs)):
-            return
-        run = self.runs[idx]
-        details = self._build_run_details(run)
-        details_widget = self.query_one("#run-details", Static)
-        details_widget.update(details)
-
-    def _build_run_details(self, run: RunInfo) -> Text:
-        meta = run.load_metadata()
-        out = Text()
-        out.append("Run ID: ", style="bold")
-        out.append(str(run.run_id))
-        out.append("\n")
-        out.append("Environment: ", style="bold")
-        out.append(str(run.env_id))
-        out.append("\n")
-        out.append("Model: ", style="bold")
-        out.append(str(run.model))
-        out.append("\n")
-        base_url = meta.get("base_url", "")
-        if base_url:
-            out.append("Base URL: ", style="bold")
-            out.append(str(base_url))
-            out.append("\n")
-
-        avg_reward = meta.get("avg_reward")
-        if isinstance(avg_reward, (int, float)):
-            out.append("Avg reward: ", style="bold")
-            out.append(f"{avg_reward:.3f}")
-            out.append("\n")
-
-        avg_metrics = meta.get("avg_metrics", {})
-        if isinstance(avg_metrics, dict) and avg_metrics:
-            out.append("Avg metrics: ", style="bold")
-            out.append("\n")
-            for key in sorted(avg_metrics.keys()):
-                value = avg_metrics.get(key)
-                if isinstance(value, (int, float)):
-                    out.append(f"  {key}: {value:.3f}\n")
-                else:
-                    out.append(f"  {key}: {value}\n")
-
-        time_ms = meta.get("time_ms")
-        if isinstance(time_ms, (int, float)):
-            seconds = time_ms / 1000.0
-            if seconds >= 60:
-                minutes = int(seconds // 60)
-                rem = seconds - minutes * 60
-                runtime_str = f"{minutes}m {rem:.1f}s"
-            else:
-                runtime_str = f"{seconds:.1f}s"
-            out.append("Runtime: ", style="bold")
-            out.append(runtime_str)
-            out.append("\n")
-
-        env_args = meta.get("env_args", {})
-        out.append("\nEnv args:\n", style="bold")
-        try:
-            out.append(json.dumps(env_args, ensure_ascii=False, indent=2))
-        except Exception:
-            out.append(str(env_args))
-
-        sampling_args = meta.get("sampling_args", {})
-        out.append("\n\nSampling args:\n", style="bold")
-        try:
-            out.append(json.dumps(sampling_args, ensure_ascii=False, indent=2))
-        except Exception:
-            out.append(str(sampling_args))
-
-        return out
-
-
 class ViewRunScreen(Screen):
     """Screen for viewing run details and rollouts."""
 
@@ -1134,22 +834,22 @@ class ViewRunScreen(Screen):
                         with TabPane("Task", id="details-task"):
                             yield VerticalScroll(
                                 Static("", id="task-content", markup=False),
-                                classes="details-scroll",
+                                classes="details-scroll surface-scroll",
                             )
                         with TabPane("Score", id="details-score"):
                             yield VerticalScroll(
                                 Static("", id="score-content", markup=False),
-                                classes="details-scroll",
+                                classes="details-scroll surface-scroll",
                             )
                         with TabPane("Usage", id="details-usage"):
                             yield VerticalScroll(
                                 Static("", id="usage-content", markup=False),
-                                classes="details-scroll",
+                                classes="details-scroll surface-scroll",
                             )
                         with TabPane("Info", id="details-info"):
                             yield VerticalScroll(
                                 Static("", id="info-content", markup=False),
-                                classes="details-scroll",
+                                classes="details-scroll surface-scroll",
                             )
         yield Footer()
 
@@ -1314,8 +1014,7 @@ class ViewRunScreen(Screen):
         self._update_responsive_layout(event.size.width)
 
     def on_unmount(self) -> None:
-        if hasattr(self.records, "close"):
-            self.records.close()
+        self.records.close()
 
     def _populate_rollout_list(self) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
@@ -1331,8 +1030,7 @@ class ViewRunScreen(Screen):
             rollout_list.add_option(self._build_rollout_option(idx))
 
         rollout_list.highlighted = self.current_record_idx
-        if hasattr(rollout_list, "scroll_to_highlight"):
-            rollout_list.scroll_to_highlight()
+        rollout_list.scroll_to_highlight()
 
     def _build_rollout_option(self, idx: int) -> Option:
         record = self.records[idx]
@@ -1449,8 +1147,7 @@ class ViewRunScreen(Screen):
             new_index = (self.current_record_idx + delta) % len(self.records)
             rollout_list = self.query_one("#rollout-list", OptionList)
             rollout_list.highlighted = new_index
-            if hasattr(rollout_list, "scroll_to_highlight"):
-                rollout_list.scroll_to_highlight()
+            rollout_list.scroll_to_highlight()
             self._set_current_record(new_index)
 
     def action_search(self) -> None:
@@ -2413,7 +2110,7 @@ class VerifiersTUI(App):
         padding: 0;
     }
 
-    .details-scroll {
+    .surface-scroll {
         height: 1fr;
         background: $surface;
         padding: 0 1;
@@ -2443,57 +2140,25 @@ class VerifiersTUI(App):
         background-tint: $foreground 4%;
     }
 
-    #run-browser-details-scroll {
-        height: 1fr;
-        background: $surface;
-        padding: 0 1;
-        scrollbar-color: $secondary;
-        scrollbar-background: $panel;
-        scrollbar-corner-color: $panel;
-    }
-
     .browser-details-panel {
         height: 1fr;
         width: 1fr;
-    }
-
-    
-    .run-list-panel {
-        height: 1fr;
-    }
-    
-    #run-list {
-        height: 1fr;
-        max-height: 100%;
-    }
-    
-    .run-details-panel {
-        height: 1fr;
-    }
-    
-    #run-details-scroll {
-        height: 1fr;
-        background: $surface;
-        padding: 0 1;
-        scrollbar-color: $secondary;
-        scrollbar-background: $panel;
-        scrollbar-corner-color: $panel;
     }
     
     Footer {
         background: $panel;
     }
     
-    .search-header {
+    .modal-header {
         height: auto;
     }
     
-    .search-columns {
+    .modal-columns {
         height: 1fr;
         layout: horizontal;
     }
     
-    .search-panel {
+    .modal-panel {
         width: 50%;
         height: 100%;
         layout: vertical;
@@ -2502,21 +2167,6 @@ class VerifiersTUI(App):
     .search-input {
         background: $surface;
         color: $text;
-    }
-
-    .copy-header {
-        height: auto;
-    }
-
-    .copy-columns {
-        height: 1fr;
-        layout: horizontal;
-    }
-
-    .copy-panel {
-        width: 50%;
-        height: 100%;
-        layout: vertical;
     }
 
     .copy-textarea {
@@ -2576,18 +2226,18 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     def compose(self) -> ComposeResult:
         with Container():
-            with Panel(classes="search-header"):
+            with Panel(classes="modal-header"):
                 yield Label(Text("Search (regex, case-insensitive)", style="bold"))
                 yield Input(
                     placeholder="regex...", id="search-input", classes="search-input"
                 )
                 yield Label("", id="search-error", classes="subtitle")
 
-            with Horizontal(classes="search-columns"):
-                with Panel(classes="search-panel"):
+            with Horizontal(classes="modal-columns"):
+                with Panel(classes="modal-panel"):
                     yield Label(Text("Prompt results", style="bold"), id="prompt-count")
                     yield OptionList(id="prompt-results")
-                with Panel(classes="search-panel"):
+                with Panel(classes="modal-panel"):
                     yield Label(
                         Text("Completion results", style="bold"),
                         id="completion-count",
@@ -2749,15 +2399,13 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         if self._active_column == "prompt" and self._prompt_cursor is not None:
             prompt_list.highlighted = self._prompt_cursor
             completion_list.highlighted = None
-            if hasattr(prompt_list, "scroll_to_highlight"):
-                prompt_list.scroll_to_highlight()
+            prompt_list.scroll_to_highlight()
         elif (
             self._active_column == "completion" and self._completion_cursor is not None
         ):
             completion_list.highlighted = self._completion_cursor
             prompt_list.highlighted = None
-            if hasattr(completion_list, "scroll_to_highlight"):
-                completion_list.scroll_to_highlight()
+            completion_list.scroll_to_highlight()
         else:
             prompt_list.highlighted = None
             completion_list.highlighted = None
@@ -2826,7 +2474,7 @@ class CopyScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Container():
-            with Panel(classes="copy-header"):
+            with Panel(classes="modal-header"):
                 yield Label(Text("Copy Mode", style="bold"))
                 yield Label(
                     Text("q: quit", style="dim"),
@@ -2854,8 +2502,8 @@ class CopyScreen(ModalScreen[None]):
                 )
                 yield Label("", id="copy-status", classes="subtitle")
 
-            with Horizontal(classes="copy-columns"):
-                with Panel(classes="copy-panel"):
+            with Horizontal(classes="modal-columns"):
+                with Panel(classes="modal-panel"):
                     yield Label(Text("Prompt", style="bold"), id="copy-prompt-label")
                     prompt_area = TextArea(
                         self._prompt_text,
@@ -2864,7 +2512,7 @@ class CopyScreen(ModalScreen[None]):
                     )
                     prompt_area.read_only = True
                     yield prompt_area
-                with Panel(classes="copy-panel"):
+                with Panel(classes="modal-panel"):
                     yield Label(
                         Text("Completion", style="bold"), id="copy-completion-label"
                     )
@@ -2969,73 +2617,15 @@ class CopyScreen(ModalScreen[None]):
 
 
 def _copy_to_clipboard(app: App, text: str) -> None:
-    if hasattr(app, "copy_to_clipboard"):
-        app.copy_to_clipboard(text)
-        return
-    clipboard = getattr(app, "clipboard", None)
-    if clipboard is None:
-        return
-    for method_name in ("write_text", "set_text", "set"):
-        method = getattr(clipboard, method_name, None)
-        if callable(method):
-            method(text)
-            return
+    app.copy_to_clipboard(text)
 
 
 def _get_text_area_selection(text_area: TextArea) -> str:
-    selected = getattr(text_area, "selected_text", None)
-    if isinstance(selected, str) and selected:
-        return selected
-    for method_name in ("get_selected_text", "selection_text"):
-        method = getattr(text_area, method_name, None)
-        if callable(method):
-            try:
-                value = method()
-            except Exception:
-                continue
-            if isinstance(value, str) and value:
-                return value
-    selection = getattr(text_area, "selection", None)
-    text = _get_text_area_full_text(text_area)
-    if selection is None or not isinstance(text, str) or not text:
-        return ""
-    start = getattr(selection, "start", None)
-    end = getattr(selection, "end", None)
-    if isinstance(start, int) and isinstance(end, int) and start != end:
-        lo, hi = sorted((start, end))
-        return text[lo:hi]
-    if isinstance(start, tuple) and isinstance(end, tuple):
-        try:
-            return _slice_text_by_row_col(text, start, end)
-        except Exception:
-            return ""
-    return ""
+    return text_area.selected_text or ""
 
 
 def _get_text_area_full_text(text_area: TextArea) -> str:
-    text = getattr(text_area, "text", None)
-    if isinstance(text, str):
-        return text
-    value = getattr(text_area, "value", None)
-    if isinstance(value, str):
-        return value
-    return ""
-
-
-def _slice_text_by_row_col(text: str, start: tuple, end: tuple) -> str:
-    start_row, start_col = start
-    end_row, end_col = end
-    if (start_row, start_col) == (end_row, end_col):
-        return ""
-    if (start_row, start_col) > (end_row, end_col):
-        start_row, end_row = end_row, start_row
-        start_col, end_col = end_col, start_col
-    lines = text.splitlines(keepends=True)
-    if start_row >= len(lines) or end_row >= len(lines):
-        return ""
-    start_offset = sum(len(lines[i]) for i in range(start_row)) + start_col
-    end_offset = sum(len(lines[i]) for i in range(end_row)) + end_col
-    return text[start_offset:end_offset]
+    return text_area.text
 
 
 def main() -> None:
