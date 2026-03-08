@@ -234,6 +234,7 @@ class MultiAgentEnv(MultiTurnEnv):
 
         while not await self.is_completed(state):
             active_actors = self.get_active_actors(state)
+            print(f"[ROLLOUT-DEBUG] active_actors={active_actors}, traj_len={len(state.get('trajectory', []))}")
 
             for actor_id in active_actors:
                 state["extras"]["current_actor_id"] = actor_id
@@ -270,16 +271,21 @@ class MultiAgentEnv(MultiTurnEnv):
 
                     await self.add_model_response(state, prompt_messages, response)
                     await self.on_turn_complete(state)
+                    print(f"[ROLLOUT-DEBUG] {actor_id} done, traj_len={len(state.get('trajectory', []))}")
 
                 except vf.OverlongPromptError:
                     state["prompt_too_long"] = True
                     state["is_truncated"] = True
+                    print(f"[ROLLOUT-DEBUG] {actor_id} OverlongPromptError")
                     break
                 except vf.Error as e:
                     state["error"] = e
+                    print(f"[ROLLOUT-DEBUG] {actor_id} vf.Error: {e}")
                     break
 
-            if await self.is_completed(state):
+            completed = await self.is_completed(state)
+            print(f"[ROLLOUT-DEBUG] bottom check: completed={completed}, stop_cond={state.get('stop_condition')}")
+            if completed:
                 break
 
         await self.on_game_end(state)
