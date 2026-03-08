@@ -7,8 +7,8 @@ from typing import Any, cast
 import verifiers as vf
 from verifiers.types import (
     GroupRewardFunc,
+    MultiAgentRewardFunc,
     RewardFunc,
-    RolloutScore,
     State,
 )
 from verifiers.utils.async_utils import maybe_await
@@ -77,6 +77,8 @@ class Rubric:
 
     def _is_group_func(self, func: RewardFunc) -> bool:
         """Check if a function is a GroupRewardFunc by inspecting its signature."""
+        if self._is_multiagent_func(func):
+            return False
         sig = inspect.signature(func)
         # GroupRewardFunc has plural parameters: states, prompts, completions, etc.
         param_names = set(sig.parameters.keys())
@@ -91,6 +93,14 @@ class Rubric:
         returns_list = inspect.signature(func).return_annotation is list
         return bool(param_names & group_indicators) or returns_list
 
+    def _is_multiagent_func(self, func: RewardFunc) -> bool:
+        """Check if a function is a MultiAgentRewardFunc by inspecting its return annotation."""
+        sig = inspect.signature(func)
+        return_annotation = sig.return_annotation
+        # Check for dict[str, float] or Dict[str, float] return type
+        origin = getattr(return_annotation, "__origin__", None)
+        return origin is dict
+
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
         return [
@@ -100,13 +110,17 @@ class Rubric:
         ]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]
+        return [
+            func
+            for func in self.funcs
+            if not self._is_group_func(func) and not self._is_multiagent_func(func)
+        ]
 
     def _get_individual_reward_weights(self) -> list[float]:
         return [
             weight
             for func, weight in zip(self.funcs, self.weights)
-            if not self._is_group_func(func)
+            if not self._is_group_func(func) and not self._is_multiagent_func(func)
         ]
 
     async def _call_individual_reward_func(
@@ -213,6 +227,48 @@ class Rubric:
                 ans = [0.0] * len(states)
         return ans
 
+    # multi-agent reward helpers
+    def _get_multiagent_reward_funcs(self) -> list[MultiAgentRewardFunc]:
+        return cast(
+            list[MultiAgentRewardFunc],
+            [func for func in self.funcs if self._is_multiagent_func(func)],
+        )
+
+    async def _call_multiagent_reward_func(
+        self,
+        func: MultiAgentRewardFunc,
+        state: State,
+    ) -> dict[str, float]:
+        """Invoke a multi-agent reward function that returns per-agent rewards."""
+        sig = inspect.signature(func)
+        merged = dict(
+            prompt=state["prompt"],
+            completion=state["completion"],
+            answer=state.get("answer", ""),
+            state=state,
+            task=state["task"],
+            info=state.get("info", {}),
+        )
+        merged.update(self.class_objects)
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            try:
+                ans = await maybe_await(func, **merged)
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling multi-agent reward function {func.__name__}: {e}"
+                )
+                ans = {}
+        else:
+            allowed = {k: v for k, v in merged.items() if k in sig.parameters}
+            try:
+                ans = await maybe_await(func, **allowed)
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling multi-agent reward function {func.__name__}: {e}"
+                )
+                ans = {}
+        return ans
+
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""
         state["reward"] = 0.0
@@ -221,40 +277,78 @@ class Rubric:
     async def score_rollout(self, state: State):
         """
         Evaluate all reward functions for a single rollout.
+        Supports individual and multi-agent reward functions (but not group functions).
         """
         reward_funcs = self._get_individual_reward_funcs()
+        multiagent_funcs = self._get_multiagent_reward_funcs()
         group_reward_funcs = self._get_group_reward_funcs()
-        assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
-            "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
+
+        has_reward_funcs = len(reward_funcs) > 0 or len(multiagent_funcs) > 0
+        assert has_reward_funcs and len(group_reward_funcs) == 0, (
+            "Rubric.score_rollout requires at least one individual-level or multi-agent "
+            "reward function and no group-level reward functions"
         )
+
         start_time = time.time()
-        reward_scores = []
-        for func in reward_funcs:
-            reward_scores.append(
-                await self._call_individual_reward_func(
-                    func=func,
-                    state=state,
-                )
+        aggregated_reward = 0.0
+        aggregated_metrics: dict[str, float] = {}
+        aggregated_agent_rewards: dict[str, float] = {}
+
+        # Process individual reward functions
+        for func, weight in zip(reward_funcs, self._get_individual_reward_weights()):
+            score = await self._call_individual_reward_func(func=func, state=state)
+            aggregated_reward += score * weight
+            aggregated_metrics[func.__name__] = score
+            # Also add to each agent's rewards (for multi-agent compatibility)
+            agent_ids = set(
+                t.get("extras", {}).get("agent_id")
+                for t in state["trajectory"]
+                if t.get("extras", {}).get("agent_id")
             )
-        rewards = RolloutScore(
-            metrics={
-                func.__name__: reward
-                for func, reward in zip(reward_funcs, reward_scores)
-            },
-            reward=sum(
-                [
-                    reward * weight
-                    for reward, weight in zip(
-                        reward_scores, self._get_individual_reward_weights()
-                    )
-                ]
-            ),
-        )
+            for agent_id in agent_ids:
+                if agent_id not in aggregated_agent_rewards:
+                    aggregated_agent_rewards[agent_id] = 0.0
+                aggregated_agent_rewards[agent_id] += score * weight
+
+        # Process multi-agent reward functions
+        multiagent_weights = [
+            weight
+            for func, weight in zip(self.funcs, self.weights)
+            if self._is_multiagent_func(func)
+        ]
+        for func, weight in zip(multiagent_funcs, multiagent_weights):
+            agent_scores = await self._call_multiagent_reward_func(
+                func=func, state=state
+            )
+            # Aggregate per-agent rewards
+            for agent_id, score_value in agent_scores.items():
+                if agent_id not in aggregated_agent_rewards:
+                    aggregated_agent_rewards[agent_id] = 0.0
+                aggregated_agent_rewards[agent_id] += score_value * weight
+            # Compute rollout-level reward (mean of agent rewards)
+            if agent_scores:
+                mean_score = sum(agent_scores.values()) / len(agent_scores)
+                aggregated_reward += mean_score * weight
+                aggregated_metrics[func.__name__] = mean_score
+                for agent_id, score_value in agent_scores.items():
+                    aggregated_metrics[f"{func.__name__}/{agent_id}"] = score_value
+
         end_time = time.time()
         state["timing"]["scoring_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
-        state["reward"] = rewards["reward"]
-        state["metrics"] = rewards["metrics"]
+        state["reward"] = aggregated_reward
+        state["metrics"] = aggregated_metrics
+
+        # Store per-agent rewards if any multi-agent funcs were used
+        if aggregated_agent_rewards:
+            state["agent_rewards"] = aggregated_agent_rewards
+            # Assign per-step rewards based on agent_id
+            for t in state["trajectory"]:
+                if t["reward"] is None:
+                    agent_id = t.get("extras", {}).get("agent_id")
+                    t["reward"] = aggregated_agent_rewards.get(
+                        agent_id, state["reward"]
+                    )
 
     async def dummy_score_group(self, states: list[State]):
         """Score a group of rollouts together with dummy rewards."""
@@ -266,6 +360,7 @@ class Rubric:
         Score a group of rollouts together.
 
         All reward functions are executed in order, parallelizing across states.
+        Supports multi-agent reward functions that return per-agent rewards.
         """
         start_time = time.time()
         num_states = len(states)
@@ -273,12 +368,41 @@ class Rubric:
             self.logger.warning("No states to score")
             return
         aggregated_rewards = [0.0] * num_states
+        # Per-agent rewards for multi-agent envs: list of dict[agent_id, reward]
+        aggregated_agent_rewards: list[dict[str, float]] = [
+            {} for _ in range(num_states)
+        ]
         aggregated_metrics: dict[str, list[float]] = {}
 
         # process functions in order
         for func, weight in zip(self.funcs, self.weights):
             is_group = self._is_group_func(func)
-            if is_group:
+            is_multiagent = self._is_multiagent_func(func)
+
+            if is_multiagent:
+                # MultiAgentRewardFunc: returns dict[str, float] per state
+                multiagent_func = cast(MultiAgentRewardFunc, func)
+                score_tasks = [
+                    self._call_multiagent_reward_func(multiagent_func, state)
+                    for state in states
+                ]
+                agent_scores_list = await asyncio.gather(*score_tasks)
+
+                func_name = func.__name__
+                for i, agent_scores in enumerate(agent_scores_list):
+                    # Aggregate per-agent rewards
+                    for agent_id, score_value in agent_scores.items():
+                        if agent_id not in aggregated_agent_rewards[i]:
+                            aggregated_agent_rewards[i][agent_id] = 0.0
+                        aggregated_agent_rewards[i][agent_id] += score_value * weight
+                    # Also compute a rollout-level reward (mean of agent rewards)
+                    if agent_scores:
+                        mean_score = sum(agent_scores.values()) / len(agent_scores)
+                        aggregated_rewards[i] += mean_score * weight
+                        if func_name not in aggregated_metrics:
+                            aggregated_metrics[func_name] = [0.0] * num_states
+                        aggregated_metrics[func_name][i] = mean_score
+            elif is_group:
                 # GroupRewardFunc: score all states together
                 group_func = cast(GroupRewardFunc, func)
                 scores = await self._call_group_reward_func(group_func, states)
@@ -289,6 +413,16 @@ class Rubric:
                     score_value = scores[i]
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
+                    # Also add to each agent's rewards (for multi-agent compatibility)
+                    agent_ids = set(
+                        t.get("extras", {}).get("agent_id")
+                        for t in states[i]["trajectory"]
+                        if t.get("extras", {}).get("agent_id")
+                    )
+                    for agent_id in agent_ids:
+                        if agent_id not in aggregated_agent_rewards[i]:
+                            aggregated_agent_rewards[i][agent_id] = 0.0
+                        aggregated_agent_rewards[i][agent_id] += score_value * weight
             else:
                 reward_func = cast(RewardFunc, func)
                 score_tasks = [
@@ -304,19 +438,67 @@ class Rubric:
                     score_value = scores[i]
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
+                    # Also add to each agent's rewards (for multi-agent compatibility)
+                    agent_ids = set(
+                        t.get("extras", {}).get("agent_id")
+                        for t in states[i]["trajectory"]
+                        if t.get("extras", {}).get("agent_id")
+                    )
+                    for agent_id in agent_ids:
+                        if agent_id not in aggregated_agent_rewards[i]:
+                            aggregated_agent_rewards[i][agent_id] = 0.0
+                        aggregated_agent_rewards[i][agent_id] += score_value * weight
 
         # update states with aggregated results
         end_time = time.time()
         scoring_ms = (end_time - start_time) * 1000
         avg_reward = sum(aggregated_rewards) / num_states
+
+        # Compute per-agent baselines for multi-agent environments
+        # Each agent's advantage is relative to that agent's mean reward
+        agent_baselines: dict[str, float] = {}
+        agent_reward_sums: dict[str, float] = {}
+        agent_reward_counts: dict[str, int] = {}
+
+        for i in range(num_states):
+            for agent_id, reward in aggregated_agent_rewards[i].items():
+                if agent_id not in agent_reward_sums:
+                    agent_reward_sums[agent_id] = 0.0
+                    agent_reward_counts[agent_id] = 0
+                agent_reward_sums[agent_id] += reward
+                agent_reward_counts[agent_id] += 1
+
+        for agent_id in agent_reward_sums:
+            agent_baselines[agent_id] = (
+                agent_reward_sums[agent_id] / agent_reward_counts[agent_id]
+            )
+
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
+
+            # Store per-agent rewards if any multi-agent funcs were used
+            agent_rewards = aggregated_agent_rewards[i]
+            if agent_rewards:
+                state["agent_rewards"] = agent_rewards
+
+            # Assign per-step rewards and advantages based on agent_id (for multi-agent)
             for t in state["trajectory"]:
-                if t["advantage"] is None:
-                    t["advantage"] = state["advantage"]
                 if t["reward"] is None:
-                    t["reward"] = state["reward"]
+                    if agent_rewards:
+                        agent_id = t.get("extras", {}).get("agent_id")
+                        t["reward"] = agent_rewards.get(agent_id, state["reward"])
+                    else:
+                        t["reward"] = state["reward"]
+
+                # Compute per-agent advantage using per-agent baseline
+                if t["advantage"] is None:
+                    agent_id = t.get("extras", {}).get("agent_id")
+                    if agent_id and agent_id in agent_baselines:
+                        t["advantage"] = t["reward"] - agent_baselines[agent_id]
+                    else:
+                        t["advantage"] = t["reward"] - avg_reward
+
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
