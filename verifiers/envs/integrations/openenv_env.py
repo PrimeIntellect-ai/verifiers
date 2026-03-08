@@ -163,10 +163,14 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
-        startup_timeout: float = 120.0,
+        # health check configs
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10m
+        recovery_timeout: float = 600.0,  # 10m
     ) -> None:
         await super().start_server(
             address=address,
@@ -174,7 +178,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             log_level=log_level,
             log_file=log_file,
             log_file_level=log_file_level,
+            health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
         )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:

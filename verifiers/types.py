@@ -160,6 +160,7 @@ class ResponseTokens(CustomBaseModel):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -196,6 +197,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
 
 
 class TokenUsage(TypedDict):
@@ -356,6 +358,9 @@ class GenerateMetadata(TypedDict):
     avg_reward: float
     avg_metrics: dict[str, float]
     avg_error: float
+    pass_at_k: dict[str, float]
+    pass_all_k: dict[str, float]
+    pass_threshold: float
     usage: TokenUsage | None
     version_info: VersionInfo
     state_columns: list[str]
@@ -486,6 +491,7 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
+    disable_env_server: bool = False
     # logging
     verbose: bool = False
     debug: bool = False

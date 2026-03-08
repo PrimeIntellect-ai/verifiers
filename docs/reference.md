@@ -176,6 +176,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
 ```
 
 Token-level data for training.
@@ -221,6 +222,11 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    avg_error: float
+    pass_at_k: dict[str, float]
+    pass_all_k: dict[str, float]
+    pass_threshold: float
+    usage: TokenUsage | None
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
@@ -267,6 +273,8 @@ class Environment(ABC):
         env_id: str | None = None,
         env_args: dict | None = None,
         max_seq_len: int | None = None,
+        score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
         **kwargs,
     ): ...
 ```
@@ -308,7 +316,6 @@ Abstract base class for all environments.
 | `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
 | `add_rubric(rubric)` | Add or merge rubric |
 | `set_max_seq_len(max_seq_len)` | Set maximum sequence length |
-| `set_interleaved_rollouts(bool)` | Enable/disable interleaved rollouts |
 | `set_score_rollouts(bool)` | Enable/disable scoring |
 
 #### SingleTurnEnv

@@ -134,7 +134,7 @@ After optimization, you'll find:
 - `pareto_frontier.jsonl` - Best prompts per validation example
 - `metadata.json` - Run configuration and summary
 
-Use `vf-eval` to verify performance before and after optimization.
+Use `prime eval run` to verify performance before and after optimization.
 
 ## RL Rules of Thumb
 
@@ -185,7 +185,7 @@ The best way to improve training is to ensure appropriate task difficulty for yo
 
 ### `vf.RLTrainer` (Legacy)
 
-The legacy `vf.RLTrainer` still exists for educational and experimental purposes via the optional `verifiers-rl` package and the `vf-rl` entrypoint, but it is not actively maintained. It is a compact single-node async RL trainer with a narrower feature set than production trainers. Its core implementation (`trainer.py` and `orchestrator.py` under `packages/verifiers-rl/verifiers_rl/rl/trainer/`) remains intentionally lightweight for algorithm experimentation. For production training and current guidance, use [`prime-rl`](#training-with-prime-rl).
+The legacy `vf.RLTrainer` still exists for educational and experimental purposes via the optional `verifiers-rl` package and the legacy RL CLI entrypoint, but it is not actively maintained. It is a compact single-node async RL trainer with a narrower feature set than production trainers. Its core implementation (`trainer.py` and `orchestrator.py` under `packages/verifiers-rl/verifiers_rl/rl/trainer/`) remains intentionally lightweight for algorithm experimentation. For production training and current guidance, use [`prime-rl`](#training-with-prime-rl).
 
 ### Tinker
 

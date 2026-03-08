@@ -328,12 +328,6 @@ class EnvGroup(vf.Environment):
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
 
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved_rollouts flag for this environment group and all sub-environments."""
-        self.interleaved_rollouts = interleaved_rollouts
-        for env in self.envs:
-            env.set_interleaved_rollouts(interleaved_rollouts)
-
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score_rollouts flag for this environment group and all sub-environments."""
         self.score_rollouts = score_rollouts

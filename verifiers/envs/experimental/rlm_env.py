@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import pickle
-import random
 import re
 import shlex
 import shutil
@@ -470,7 +469,6 @@ def _build_python_worker_script_template() -> str:
             "        answer = json.load(f)",
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
-            'ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
@@ -480,14 +478,11 @@ def _build_python_worker_script_template() -> str:
             "def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):",
             "    if not ROOT_TOOL_URL:",
             '        raise RuntimeError("Root tool URL not configured")',
-            '    if ROOT_TOOL_SERIALIZATION != "pickle":',
-            '        raise RuntimeError("Only pickle serialization is supported")',
             "",
             '    args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")',
             '    kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")',
             f"    payload = {dict_open}",
             '        "tool_name": tool_name,',
-            '        "serialization": "pickle",',
             '        "args": args_payload,',
             '        "kwargs": kwargs_payload,',
             f"    {dict_close}",
@@ -626,7 +621,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     import urllib.request
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
-    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
@@ -642,14 +636,11 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
         if not ROOT_TOOL_URL:
             raise RuntimeError("Root tool URL not configured")
-        if ROOT_TOOL_SERIALIZATION != "pickle":
-            raise RuntimeError("Only pickle serialization is supported")
 
         args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
         kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
         payload = {
             "tool_name": tool_name,
-            "serialization": "pickle",
             "args": args_payload,
             "kwargs": kwargs_payload,
         }
@@ -1167,6 +1158,21 @@ _SUB_LLM_SYSTEM_PROMPT_STORE = {
 
 
 # System prompt for RLM
+_RLM_MESSAGE_HISTORY_NOTE_PYTHON = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```python
+import json
+history = [json.loads(line) for line in open(".messages")]
+```
+"""
+
+_RLM_MESSAGE_HISTORY_NOTE_BASH = """
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+```bash
+cat .messages  # one JSON object per line
+```
+"""
+
 _RLM_PYTHON_SYSTEM_PROMPT_STORE = {
     "light": """You have the `call_python_repl` tool and a filesystem available to you.
 
@@ -1281,9 +1287,9 @@ class RLMExecutor(SandboxMixin):
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
         self.init_sandbox_client(
-            sandbox_client_max_workers=env.sandbox_client_max_workers,
-            sandbox_client_max_connections=env.sandbox_client_max_connections,
-            sandbox_client_max_keepalive_connections=env.sandbox_client_max_keepalive_connections,
+            sandbox_client_max_workers=50,
+            sandbox_client_max_connections=100,
+            sandbox_client_max_keepalive_connections=50,
         )
 
     def create_rollout_dirs(self, state: State) -> None:
@@ -1358,7 +1364,7 @@ class RLMExecutor(SandboxMixin):
         except RLMCodeExecutionTimeout:
             raise
         except Exception as e:
-            raise vf.SandboxError() from e
+            raise vf.SandboxError(f"Sandbox command failed: {e}") from e
 
         return RLMExecResult(stdout=raw, stderr="")
 
@@ -1564,7 +1570,7 @@ class RLMExecutor(SandboxMixin):
         result = await self._execute_sandbox_command(
             sandbox_id,
             cmd,
-            timeout=self.env._compute_install_wait_seconds(),
+            timeout=self.env.max_startup_wait_seconds,
         )
         self._raise_on_command_error(result, "pip install")
 
@@ -1909,7 +1915,7 @@ class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
 
-    Extends StatefulToolEnv to provide a Python REPL environment where the model can:
+    Extends StatefulToolEnv to provide a REPL environment where the model can:
     - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
@@ -1922,10 +1928,10 @@ class RLMEnv(vf.StatefulToolEnv):
     - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
     Works with any dataset that has a normal prompt. Input data can optionally
-    be provided via info[context_dir_key] (directory path) or info[context_key]
-    (legacy builtin data written to a file).
-    When using the sandbox backend, the sandbox and worker are started eagerly
-    during setup_state. Environments that need the worker to start in an existing
+    be provided via info["context_dir"] (directory path) or info["context"]
+    (JSON-serializable data written to a file).
+    The sandbox and worker are started eagerly during setup_state.
+    Environments that need the worker to start in an existing
     sandbox path can set state["rlm_fs_root_remote"] (and optionally
     state["rlm_control_dir_remote"]) before calling super().setup_state; otherwise
     the default remote paths are /tmp/rlm_<id>/rlm_fs and /tmp/rlm_<id>/rlm_control.
@@ -1935,6 +1941,7 @@ class RLMEnv(vf.StatefulToolEnv):
     executor implementation.
 
     Args:
+        max_turns: Maximum number of root-model turns (default: 50).
         tools: List of tools shared by both the root REPL and sub-LLMs.
                    These are added first in the tool documentation order.
         root_tools: List of tools available only to the root REPL.
@@ -1945,24 +1952,27 @@ class RLMEnv(vf.StatefulToolEnv):
                    then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
                    Each list is deduplicated by tool name. If two different tools
                    share a name within a list, initialization raises an error.
-        sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        sub_llm_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        sub_max_completion_tokens: Total completion-token budget shared across all
+                   sub-LLM calls in a rollout.  When set, the environment tracks
+                   cumulative sub-LLM completion tokens and refuses new calls once
+                   the budget is reached.  The root model is informed of the budget
+                   in its system prompt and in the per-batch summary printed after
+                   each llm_batch() call.  None (default) means unlimited.
+        root_max_completion_tokens: Total completion-token budget for the root
+                   model across the full rollout.  When set, the environment tracks
+                   cumulative root-model completion tokens and stops the rollout
+                   once the budget is reached, reading the current answer before
+                   halting.  The root model is informed of the budget in its system
+                   prompt and in the per-REPL-call footer appended after each code
+                   execution.  None (default) means unlimited.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
-        sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "high"
-        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "high"
-        max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
+        sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
+        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "heavy"
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
-        sub_llm_stagger_ms: Optional fixed per-call stagger delay (ms) within llm_batch.
-        sub_llm_stagger_jitter_ms: Optional random jitter (ms) added to stagger delay.
-        context_key: Key in info containing legacy context data (default: "context")
-        context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
         repl_language: REPL language to use: "bash" or "python" (default: "bash")
-        execution_backend: Deprecated, has no effect. Sandbox execution is always used.
-        interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
-        interception_port: Port for interception server (default: 0, i.e. ephemeral)
-        interception_url: Optional base URL for interception (sandbox only). If set,
-                   tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
@@ -1981,156 +1991,103 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
+        expose_message_history: If True, the model's conversation history is
+                   written to `.messages` (JSONL) in the sandbox working directory
+                   and updated incrementally before each code execution. This lets
+                   the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
-        filesystem_copy_max_bytes: Optional max bytes for context directory copy.
-        local_repl_max_workers: Deprecated, has no effect. Sandbox execution is always used.
         sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
-        sandbox_start_command: Start command for sandbox backend (default: tail -f /dev/null)
         sandbox_cpu_cores: Sandbox CPU cores (default: 1)
         sandbox_memory_gb: Sandbox memory in GB (default: 2)
         sandbox_disk_size_gb: Sandbox disk size in GB (default: 5)
         sandbox_gpu_count: Sandbox GPU count (default: 0)
         sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
         sandbox_environment_vars: Extra environment vars for sandbox (default: None)
-        sandbox_team_id: Optional team id for sandbox (default: None)
-        sandbox_advanced_configs: Optional advanced configs for sandbox (default: None)
         sandbox_labels: Optional labels for sandbox (default: None)
-        sandbox_client_max_workers: Sandbox client pool size (default: 10)
-        sandbox_client_max_connections: Sandbox client max connections (default: 100)
-        sandbox_client_max_keepalive_connections: Sandbox client keepalive conns (default: 50)
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
     def __init__(
         self,
+        max_turns: int = 50,
         tools: list[Callable] | None = None,
         root_tools: list[Callable] | None = None,
         sub_tools: list[Callable] | None = None,
-        sub_tool_max_turns: int = 5,
+        sub_llm_max_turns: int = 5,
+        sub_max_completion_tokens: int | None = None,
+        root_max_completion_tokens: int | None = None,
         sub_model: str | None = None,
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
-        max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
-        sub_llm_stagger_ms: int = 200,
-        sub_llm_stagger_jitter_ms: int = 50,
-        context_key: str = "context",
-        context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
         repl_language: Literal["bash", "python"] = "bash",
-        execution_backend: Literal["local", "sandbox"] | None = None,
-        interception_host: str | None = None,
-        interception_port: int = 0,
-        interception_url: str | None = None,
         pip_install_packages: str = "",
         include_sub_llm_in_trajectory: bool = False,
         context_warning_threshold: float = 0.80,
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
+        expose_message_history: bool = False,
         retain_filesystem_after_rollout: bool = False,
-        filesystem_copy_max_bytes: int | None = 1_000_000_000,
-        local_repl_max_workers: int | None = None,  # deprecated
         sandbox_docker_image: str = "python:3.11-slim",
-        sandbox_start_command: str = "tail -f /dev/null",
         sandbox_cpu_cores: int = 1,
         sandbox_memory_gb: int = 2,
         sandbox_disk_size_gb: int = 5,
         sandbox_gpu_count: int = 0,
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
-        sandbox_team_id: str | None = None,
-        sandbox_advanced_configs: Any | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
-        sandbox_client_max_connections: int = 100,
-        sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
         if repl_language not in {"bash", "python"}:
             raise ValueError(
                 f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
             )
-        if execution_backend is not None:
-            import warnings
-
-            warnings.warn(
-                "The 'execution_backend' parameter is deprecated and has no effect. "
-                "RLMEnv now always uses sandbox execution.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         if sub_prompt_verbosity not in {"light", "medium", "heavy"}:
             raise ValueError(
                 f"Unsupported sub_prompt_verbosity '{sub_prompt_verbosity}. "
-                "Expected 'light', 'medium', or 'high'"
+                "Expected 'light', 'medium', or 'heavy'"
             )
         if root_prompt_verbosity not in {"light", "medium", "heavy"}:
             raise ValueError(
                 f"Unsupported root_prompt_verbosity '{root_prompt_verbosity}. "
-                "Expected 'light', 'medium', or 'high'"
+                "Expected 'light', 'medium', or 'heavy'"
             )
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
         self.repl_language = repl_language
-        self.execution_backend = "sandbox"
         self.sub_model = sub_model
         self.shared_tools = tools or []
         self.root_only_tools = root_tools or []
         self.sub_only_tools = sub_tools or []
-        self.sub_tool_max_turns = sub_tool_max_turns
-        self.max_iterations = max_iterations
+        self.sub_llm_max_turns = sub_llm_max_turns
+        self.sub_max_completion_tokens = sub_max_completion_tokens
+        self.root_max_completion_tokens = root_max_completion_tokens
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
-        self.sub_llm_stagger_ms = sub_llm_stagger_ms
-        self.sub_llm_stagger_jitter_ms = sub_llm_stagger_jitter_ms
-        self.context_key = context_key
-        self.context_dir_key = context_dir_key
         self.custom_system_prompt = system_prompt
-        self.interception_host = interception_host or "127.0.0.1"
-        self.interception_port = interception_port
-        self.interception_url_override = interception_url
+        self.interception_port = 0
+        self._interception_url_override: str | None = None
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
+        self.expose_message_history = expose_message_history
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
-        self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
-        self._interception_bind_host = self.interception_host
+        self._interception_bind_host = "127.0.0.1"
         self.sandbox_docker_image = sandbox_docker_image
-        self.sandbox_start_command = sandbox_start_command
         self.sandbox_cpu_cores = sandbox_cpu_cores
         self.sandbox_memory_gb = sandbox_memory_gb
         self.sandbox_disk_size_gb = sandbox_disk_size_gb
         self.sandbox_gpu_count = sandbox_gpu_count
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
         self.sandbox_environment_vars = sandbox_environment_vars
-        self.sandbox_team_id = sandbox_team_id
-        self.sandbox_advanced_configs = sandbox_advanced_configs
         self.sandbox_labels = sandbox_labels
-        self.sandbox_client_max_workers = sandbox_client_max_workers
-        self.sandbox_client_max_connections = sandbox_client_max_connections
-        self.sandbox_client_max_keepalive_connections = (
-            sandbox_client_max_keepalive_connections
-        )
-        if local_repl_max_workers is not None:
-            import warnings
-
-            warnings.warn(
-                "The 'local_repl_max_workers' parameter is deprecated and has no effect. "
-                "RLMEnv now always uses sandbox execution.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        # Server-side timeout for LLM API calls (shorter than worker HTTP timeout)
-        # This ensures server responds before the worker request times out
-        (
-            self.sub_llm_api_timeout,
-            self.sub_llm_timeout,
-        ) = self._compute_sub_llm_timeouts()
+        self.sub_llm_timeout = max(1, code_execution_timeout - 5)
 
         fixed_root_tools = self._build_fixed_root_tools()
         self.root_tools, self.root_tool_map = _merge_tool_lists(
@@ -2155,7 +2112,6 @@ class RLMEnv(vf.StatefulToolEnv):
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
         self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
-        self.root_tool_serialization = "pickle"
         self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
             contextvars.ContextVar("rlm_root_tool_context", default=None)
         )
@@ -2173,7 +2129,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         super().__init__(
             tools=[],
-            max_turns=max_iterations,
+            max_turns=max_turns,
             **kwargs,
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
@@ -2195,15 +2151,13 @@ class RLMEnv(vf.StatefulToolEnv):
         return CreateSandboxRequest(
             name=f"rlm-{state.get('rollout_id', 'unknown')}",
             docker_image=self.sandbox_docker_image,
-            start_command=self.sandbox_start_command,
+            start_command="tail -f /dev/null",
             cpu_cores=self.sandbox_cpu_cores,
             memory_gb=self.sandbox_memory_gb,
             disk_size_gb=self.sandbox_disk_size_gb,
             gpu_count=self.sandbox_gpu_count,
             timeout_minutes=self.sandbox_timeout_minutes,
             environment_vars=env_vars,
-            team_id=self.sandbox_team_id,
-            advanced_configs=self.sandbox_advanced_configs,
             labels=self.sandbox_labels or [],
         )
 
@@ -2228,27 +2182,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # Sub-Agent Tool Infrastructure
     # =========================================================================
 
-    def _compute_sub_llm_timeouts(self) -> tuple[int, int]:
-        """Compute sub-LLM timeouts based on the overall code execution timeout."""
-        code_timeout = max(1, int(self.code_execution_timeout))
-        min_timeout = min(10, max(1, code_timeout - 1))
-
-        api_timeout = max(min_timeout, int(code_timeout * 0.8))
-        worker_timeout = max(min_timeout, int(code_timeout * 0.9))
-
-        if code_timeout > 1:
-            api_timeout = min(api_timeout, code_timeout - 1)
-            worker_timeout = min(worker_timeout, code_timeout - 1)
-
-        api_timeout = min(api_timeout, worker_timeout)
-
-        if code_timeout < 10:
-            logger.warning(
-                f"code_execution_timeout={code_timeout}s is low; sub-LLM calls may be unreliable"
-            )
-
-        return api_timeout, worker_timeout
-
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
 
@@ -2272,26 +2205,13 @@ class RLMEnv(vf.StatefulToolEnv):
         llm_batch.__name__ = "llm_batch"
         return [llm_batch]
 
-    def _compute_install_wait_seconds(self) -> int:
-        """Estimate how long to wait for pip installs based on package count."""
-        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
-        package_count = len(packages) + 1  # Always includes requests
-        estimated_seconds = 30 * package_count
-        return max(self.max_startup_wait_seconds, estimated_seconds)
-
     def _build_worker_env_vars(self, state: State) -> dict[str, str]:
-        env_vars = {
+        return {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
-            "RLM_ROOT_TOOL_SERIALIZATION": self.root_tool_serialization,
-            "RLM_SUB_MODEL": self.sub_model or state.get("model", ""),
-            "RLM_MAX_SUB_LLM_PARALLELISM": str(self.max_sub_llm_parallelism),
-            "RLM_SUB_LLM_STAGGER_MS": str(self.sub_llm_stagger_ms),
-            "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.sub_llm_stagger_jitter_ms),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
-        return env_vars
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
@@ -2423,22 +2343,19 @@ class RLMEnv(vf.StatefulToolEnv):
         }
 
     def _copy_context_directory(self, src: str, dst: str) -> None:
+        _FILESYSTEM_COPY_MAX_BYTES = 1_000_000_000
         src_path = os.fspath(src)
         if not os.path.isdir(src_path):
             raise ValueError(f"context_dir must be a directory: {src_path}")
-        size_limit = self.filesystem_copy_max_bytes
         if os.path.islink(src_path):
             raise ValueError(f"context_dir cannot be a symlink: {src_path}")
-        if size_limit is not None:
-            metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
-            total_size = metadata.get("total_size", 0)
-            if total_size > size_limit:
-                raise ValueError(
-                    "Context directory exceeds size limit: "
-                    f"{total_size} bytes > {size_limit} bytes."
-                )
-        else:
-            self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        total_size = metadata.get("total_size", 0)
+        if total_size > _FILESYSTEM_COPY_MAX_BYTES:
+            raise ValueError(
+                "Context directory exceeds size limit: "
+                f"{total_size} bytes > {_FILESYSTEM_COPY_MAX_BYTES} bytes."
+            )
         shutil.copytree(src_path, dst, dirs_exist_ok=True)
 
     def _write_builtin_context(self, context_data: Any, fs_root: str) -> None:
@@ -2508,12 +2425,10 @@ class RLMEnv(vf.StatefulToolEnv):
                     model=model,
                     tool_defs=tools,
                 ),
-                timeout=self.sub_llm_api_timeout,
+                timeout=self.sub_llm_timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-            )
+            logger.warning(f"Sub-LLM API call timed out after {self.sub_llm_timeout}s")
             return None
         except vf.EmptyModelResponseError as e:
             raise SubLLMEmptyModelResponseError(str(e)) from e
@@ -2530,7 +2445,7 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> SubLLMResult:
         """Create a SubLLMResult for timeout cases."""
         return SubLLMResult(
-            final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+            final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_timeout}s",
             turns=turns,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
@@ -2577,7 +2492,7 @@ class RLMEnv(vf.StatefulToolEnv):
         turns: list[SubLLMTurn] = []
         tools = self.sub_tool_defs if self.sub_tool_defs else None
 
-        for _ in range(self.sub_tool_max_turns):
+        for _ in range(self.sub_llm_max_turns):
             num_turns += 1
             prompt_snapshot = _clone_messages(current_messages)
 
@@ -2630,6 +2545,17 @@ class RLMEnv(vf.StatefulToolEnv):
                 from_raw_message(assistant_message.model_dump(exclude_none=True))
             )
 
+            # Check if the sub-LLM completion token budget is exceeded
+            # mid-loop. We combine already-committed tokens (state) with
+            # tokens accumulated in this call so far.
+            if self.sub_max_completion_tokens is not None:
+                committed = state.get("sub_llm_completion_tokens", 0)
+                if (
+                    committed + total_completion_tokens
+                    >= self.sub_max_completion_tokens
+                ):
+                    break
+
             for tool_call in tool_calls:
                 try:
                     tool_args = json.loads(tool_call.arguments)
@@ -2640,7 +2566,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 )
                 current_messages.append(tool_result)
 
-        # Max turns reached - add prompt for final answer and make call without tools
+        # Max turns (or token budget) reached — force a final answer without tools.
         num_turns += 1
         current_messages.append(
             UserMessage(
@@ -2685,6 +2611,17 @@ class RLMEnv(vf.StatefulToolEnv):
             max_turns_reached=True,
         )
 
+    def _sub_llm_budget_exhausted_message(self, state_ref: State) -> str:
+        """Build a human-readable budget-exhausted message."""
+        used = state_ref.get("sub_llm_completion_tokens", 0)
+        budget = self.sub_max_completion_tokens
+        return (
+            f"Sub-LLM token budget exhausted "
+            f"(used {used}/{budget} completion tokens). "
+            f"No further sub-LLM calls are available. "
+            f"Finalize your answer with the information you have."
+        )
+
     async def _root_llm_batch(
         self,
         context: dict[str, Any],
@@ -2701,6 +2638,20 @@ class RLMEnv(vf.StatefulToolEnv):
         if not client or not sub_model or state_ref is None:
             raise RuntimeError("Sub-LLM context is not available.")
 
+        # Early exit when budget is already exhausted before starting the batch.
+        if self.sub_max_completion_tokens is not None:
+            used = state_ref.get("sub_llm_completion_tokens", 0)
+            if used >= self.sub_max_completion_tokens:
+                msg = self._sub_llm_budget_exhausted_message(state_ref)
+                contents = [msg] * len(prompts)
+                summary_lines = [
+                    f"llm_batch: {len(prompts)} call(s) skipped — "
+                    f"sub-LLM token budget exhausted "
+                    f"({used}/{self.sub_max_completion_tokens} "
+                    f"completion tokens used)"
+                ]
+                return contents, summary_lines
+
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
         results: list[dict[str, Any] | None] = [None] * len(prompts)
@@ -2714,15 +2665,6 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
         async def _call_one(index: int, prompt: Any) -> None:
-            jitter_ms = (
-                random.random() * self.sub_llm_stagger_jitter_ms
-                if self.sub_llm_stagger_jitter_ms > 0
-                else 0.0
-            )
-            delay_s = max(0.0, (index * self.sub_llm_stagger_ms + jitter_ms) / 1000.0)
-            if delay_s:
-                await asyncio.sleep(delay_s)
-
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
                 start_time = perf_counter()
@@ -2785,6 +2727,11 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"{completion_tokens} completion tokens, "
                 f"{tool_calls} tool calls, {elapsed:.2f}s {status}"
             )
+
+        if self.sub_max_completion_tokens is not None:
+            used = state_ref.get("sub_llm_completion_tokens", 0)
+            budget = self.sub_max_completion_tokens
+            summary_lines.append(f"  [{used}/{budget} sub-LLM completion tokens used]")
 
         return contents, summary_lines
 
@@ -2859,10 +2806,34 @@ class RLMEnv(vf.StatefulToolEnv):
         parent_turn: int,
         elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
+        # Budget gate: refuse new sub-LLM calls when token budget is exhausted.
+        if self.sub_max_completion_tokens is not None:
+            used = state_ref.get("sub_llm_completion_tokens", 0)
+            if used >= self.sub_max_completion_tokens:
+                budget = self.sub_max_completion_tokens
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    f"Sub-LLM token budget exhausted "
+                                    f"(used {used}/{budget} completion tokens). "
+                                    f"No further sub-LLM calls are available. "
+                                    f"Finalize your answer with the information you have."
+                                )
+                            }
+                        }
+                    ],
+                    "_rlm_metadata": {
+                        "error": True,
+                        "budget_exhausted": True,
+                    },
+                }
+
         messages_with_system: Messages = [
             SystemMessage(
                 content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
-                    num_turns=self.sub_tool_max_turns
+                    num_turns=self.sub_llm_max_turns
                 )
             ),
             *messages,
@@ -2957,7 +2928,6 @@ class RLMEnv(vf.StatefulToolEnv):
             return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
         tool_name = request_body.get("tool_name", "")
-        serialization = request_body.get("serialization", "pickle")
         if not tool_name:
             return web.json_response({"error": "Tool name not provided"}, status=400)
         if tool_name not in self.root_tool_map:
@@ -2970,8 +2940,6 @@ class RLMEnv(vf.StatefulToolEnv):
             return web.json_response({"error": "State not available"}, status=500)
 
         try:
-            if serialization != "pickle":
-                raise ValueError("Only pickle serialization is supported.")
             args = pickle.loads(base64.b64decode(request_body.get("args", "")))
             kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
             if not isinstance(args, tuple):
@@ -3136,9 +3104,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # State Management
     # =========================================================================
 
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        super().set_interleaved_rollouts(interleaved_rollouts)
-
     def update_tool_args(
         self,
         tool_name: str,
@@ -3162,8 +3127,8 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> State:
         """Start interception server and register rollout."""
         await self._ensure_interception_server()
-        if self.interception_url_override:
-            base_url = self.interception_url_override.rstrip("/")
+        if self._interception_url_override:
+            base_url = self._interception_url_override.rstrip("/")
         else:
             base_url = await self._get_tunnel_url()
         interception_url = f"{base_url}/rollout/{rollout_id}/v1/chat/completions"
@@ -3206,13 +3171,13 @@ class RLMEnv(vf.StatefulToolEnv):
             fs_has_data = False
             fs_source: str | None = None
 
-            context_dir = info.get(self.context_dir_key)
+            context_dir = info.get("context_dir")
             if context_dir:
                 fs_source = str(context_dir)
                 self._copy_context_directory(fs_source, fs_root)
                 fs_has_data = True
             else:
-                context_data = info.get(self.context_key, None)
+                context_data = info.get("context", None)
                 if context_data is not None:
                     fs_has_data = True
                     self._write_builtin_context(context_data, fs_root)
@@ -3237,8 +3202,34 @@ class RLMEnv(vf.StatefulToolEnv):
             packages_docs = self._generate_packages_documentation()
             root_tools_docs = self._generate_root_tools_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
+            message_history_docs = ""
+            if self.expose_message_history:
+                if self.repl_language == "bash":
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_BASH
+                else:
+                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_PYTHON
+            root_budget_docs = ""
+            if self.root_max_completion_tokens is not None:
+                root_budget_docs = (
+                    f"\nYou have a total budget of "
+                    f"{self.root_max_completion_tokens} completion tokens "
+                    f"for your own responses across this entire rollout.\n"
+                )
+            sub_budget_docs = ""
+            if self.sub_max_completion_tokens is not None:
+                sub_budget_docs = (
+                    f"\nYou have a total budget of "
+                    f"{self.sub_max_completion_tokens} completion tokens "
+                    f"across all sub-LLM calls via llm_batch().\n"
+                )
             state["rlm_system_prompt"] = (
-                base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+                base_system_prompt
+                + packages_docs
+                + root_tools_docs
+                + sub_tools_docs
+                + root_budget_docs
+                + sub_budget_docs
+                + message_history_docs
             )
             state["rlm_packages_docs"] = packages_docs
             state["rlm_root_tools_docs"] = root_tools_docs
@@ -3266,6 +3257,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
             # Initialize FIFO sequence counter for detecting stale responses
             state["_exec_seq"] = 0
+
+            # Initialize message history upload counter
+            state["_messages_uploaded_count"] = 0
 
             _ensure_rlm_metric_state(state)
 
@@ -3446,6 +3440,55 @@ class RLMEnv(vf.StatefulToolEnv):
         return output
 
     # =========================================================================
+    # Message History Upload
+    # =========================================================================
+
+    def _build_message_history(self, state: State) -> list[dict[str, Any]]:
+        """Build the full serialized message history from the trajectory."""
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is None:
+            return []
+        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+        serialized: list[dict[str, Any]] = []
+        for msg in messages:
+            if hasattr(msg, "model_dump"):
+                serialized.append(msg.model_dump(exclude_none=True))
+            elif isinstance(msg, dict):
+                serialized.append(dict(msg))
+        return serialized
+
+    async def _upload_message_history(self, state: State) -> None:
+        """Incrementally upload new messages to .messages (JSONL) in the sandbox."""
+        messages = self._build_message_history(state)
+        uploaded_count: int = state.get("_messages_uploaded_count", 0)
+        new_messages = messages[uploaded_count:]
+        if not new_messages and uploaded_count > 0:
+            return
+
+        session = self._executor._get_session(state)
+        assert session.sandbox_id is not None, "sandbox must be initialized"
+        fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
+        remote_path = f"{fs_root}/.messages"
+
+        if new_messages:
+            lines = [json.dumps(msg, ensure_ascii=False) for msg in new_messages]
+            delta = "\n".join(lines) + "\n"
+            delta_b64 = base64.b64encode(delta.encode("utf-8")).decode("ascii")
+            cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+        else:
+            cmd = f"touch {remote_path}"
+
+        try:
+            await self._executor._execute_sandbox_command(
+                session.sandbox_id,
+                f"bash -lc {shlex.quote(cmd)}",
+                timeout=30,
+            )
+            state["_messages_uploaded_count"] = len(messages)
+        except Exception as e:
+            logger.warning("Failed to upload message history: %s", e)
+
+    # =========================================================================
     # REPL Tool
     # =========================================================================
 
@@ -3460,6 +3503,9 @@ class RLMEnv(vf.StatefulToolEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        if self.expose_message_history:
+            await self._upload_message_history(state)
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
@@ -3488,6 +3534,11 @@ class RLMEnv(vf.StatefulToolEnv):
         output = self._maybe_add_context_warning(
             output, state, ready_instruction=ready_instruction
         )
+
+        if self.root_max_completion_tokens is not None:
+            used = state.get("main_rlm_completion_tokens", 0)
+            budget = self.root_max_completion_tokens
+            output += f"\n[{used}/{budget} root completion tokens used]"
 
         return output
 
@@ -3656,51 +3707,21 @@ class RLMEnv(vf.StatefulToolEnv):
     async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
-        """Override to set final_env_response when answer is ready to avoid extra model call"""
+        """Override to set final_env_response when answer is ready or root budget is exhausted."""
         tool_messages = await super().env_response(messages, state, **kwargs)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
+        elif self._is_root_budget_exhausted(state):
+            await self._ensure_final_answer(state)
+            state["final_env_response"] = tool_messages
         return tool_messages
 
-    async def get_model_response(  # type: ignore[override]
-        self, state: State, prompt: Messages, **kwargs: Any
-    ) -> Response:
-        """Ensure get_prompt_ids sees the last main trajectory step, not a sub-LLM step.
-
-        In interleaved mode, get_prompt_ids (called from super) reads
-        state["trajectory"][-1] to build token-level prompts.  After
-        env_response adds sub-LLM steps, trajectory[-1] may be a sub-LLM
-        step with incompatible tokens.  We temporarily move trailing sub-LLM
-        steps out of the trajectory for the duration of the super call.
-        """
-        if not (self.include_sub_llm_in_trajectory and self.interleaved_rollouts):
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        trajectory = state.get("trajectory", [])
-        if not trajectory:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        main_id = state["trajectory_id"]
-        if trajectory[-1].get("trajectory_id") == main_id:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        # Find last main step and temporarily move trailing sub-LLM steps aside
-        last_main_idx = None
-        for i in range(len(trajectory) - 1, -1, -1):
-            if trajectory[i].get("trajectory_id") == main_id:
-                last_main_idx = i
-                break
-
-        if last_main_idx is None:
-            return await super().get_model_response(state, prompt, **kwargs)
-
-        trailing = trajectory[last_main_idx + 1 :]
-        del trajectory[last_main_idx + 1 :]
-        try:
-            result = await super().get_model_response(state, prompt, **kwargs)
-        finally:
-            trajectory.extend(trailing)
-        return result
+    def _is_root_budget_exhausted(self, state: State) -> bool:
+        """Check if root model completion token budget is exhausted."""
+        if self.root_max_completion_tokens is None:
+            return False
+        used = state.get("main_rlm_completion_tokens", 0)
+        return used >= self.root_max_completion_tokens
 
     # =========================================================================
     # Stop Conditions
@@ -3758,7 +3779,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
-
         try:
             await self._executor.cleanup(state)
         finally:
