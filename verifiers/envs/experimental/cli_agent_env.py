@@ -3,6 +3,7 @@ import logging
 import math
 import time
 import uuid
+from collections import Counter
 from typing import Any, cast
 
 from prime_sandboxes import (
@@ -17,13 +18,16 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
+    AssistantMessage,
     Messages,
     MessageType,
     Response,
     SamplingArgs,
     State,
     Tool,
+    ToolCall,
 )
+from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
@@ -254,6 +258,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state["agent_completed"] = False
 
         await self.start_agent(state)
+
+        prompt_preview = ""
+        for msg in state.get("prompt", []):
+            if hasattr(msg, "role") and msg.role == "user":
+                c = msg.content
+                prompt_preview = c if isinstance(c, str) else str(c)
+        logger.info(
+            f"[start] rollout_id={state['rollout_id']}"
+            f" | model={state.get('model')}"
+            f" | prompt={truncate(prompt_preview, 120)!r}"
+        )
 
         return state
 
@@ -583,7 +598,37 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
         """
-        pass
+        tool_counts: Counter[str] = Counter()
+        for step in state.get("trajectory", []):
+            for msg in step.get("completion", []):
+                if isinstance(msg, AssistantMessage) and isinstance(msg.tool_calls, list):
+                    for tc in msg.tool_calls:
+                        if isinstance(tc, ToolCall):
+                            tool_counts[tc.name] += 1
+
+        num_turns = len(state.get("trajectory", []))
+        stop_condition = state.get("stop_condition", "unknown")
+        error = state.get("error")
+        error_info = (
+            f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
+        )
+        exit_code = state.get("agent_exit_code")
+        timed_out = state.get("agent_timed_out", False)
+        duration_s = state["timing"].get("total_ms", 0) / 1000
+        tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
+        parts = [
+            f"[end]   rollout_id={state.get('rollout_id')}",
+            f"turns={num_turns}",
+            f"tools=[{tools_str}]",
+            f"stop={stop_condition}",
+            f"exit_code={exit_code}",
+            f"duration={print_time(duration_s)}",
+        ]
+        if timed_out:
+            parts.append("timed_out=True")
+        if error_info:
+            parts.append(f"error={error_info}")
+        logger.info(" | ".join(parts))
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
