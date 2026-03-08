@@ -27,12 +27,12 @@ from verifiers.types import (
     Tool,
     ToolCall,
 )
-from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.worker_utils import get_free_port
 
@@ -259,15 +259,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         await self.start_agent(state)
 
-        prompt_preview = ""
-        for msg in state.get("prompt", []):
-            if hasattr(msg, "role") and msg.role == "user":
-                c = msg.content
-                prompt_preview = c if isinstance(c, str) else str(c)
         logger.info(
-            f"[start] rollout_id={state['rollout_id']}"
-            f" | model={state.get('model')}"
-            f" | prompt={truncate(prompt_preview, 120)!r}"
+            f"[start] rollout_id={state['rollout_id']} example_id={state['example_id']}"
         )
 
         return state
