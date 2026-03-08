@@ -317,6 +317,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> vf.RolloutOutput:
         target_env_client = env_client or self.env_client
         if target_env_client is not None:
@@ -331,6 +332,7 @@ class EnvGroup(vf.Environment):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         env_name, child_input, route = self._route_child_input(input)
@@ -343,6 +345,7 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env.env_client,
+            actor_models=actor_models,
         )
         return _set_info_route(output, route)  # type: ignore[return-value]
 
@@ -356,6 +359,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> list[vf.RolloutOutput]:
         target_env_client = env_client or self.env_client
         if target_env_client is not None:
@@ -370,6 +374,7 @@ class EnvGroup(vf.Environment):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         env_name, first_child_input, route = self._route_child_input(group_inputs[0])
@@ -396,6 +401,7 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env.env_client,
+            actor_models=actor_models,
         )
         return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]
 

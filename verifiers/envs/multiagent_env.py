@@ -46,6 +46,11 @@ class MultiAgentEnv(MultiTurnEnv):
     # Subclasses should override this or set in __init__
     agents: list[str] = []
 
+    # Per-agent model routing for multi-policy training (e.g. per-agent LoRA adapters).
+    # Maps agent_id -> model name. When set, each agent's turns use its own model.
+    # When None, all agents share the single model passed to rollout().
+    actor_models: dict[str, str] | None = None
+
     def __init__(self, protocol: Protocol, **kwargs):
         """
         Initialize multi-agent environment.
@@ -214,8 +219,13 @@ class MultiAgentEnv(MultiTurnEnv):
                     prompt_messages, field_name="agent_prompt"
                 )
 
-                # 2. Get model response
-                response = await self.get_model_response(state, prompt_messages)
+                # 2. Get model response (route to per-agent model if configured)
+                agent_model = (
+                    self.actor_models.get(agent_id) if self.actor_models else None
+                )
+                response = await self.get_model_response(
+                    state, prompt_messages, model=agent_model
+                )
 
                 # 3. Store in trajectory (tags with agent_id)
                 await self.add_model_response(state, prompt_messages, response)
