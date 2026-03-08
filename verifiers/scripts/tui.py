@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rich.markup import escape as safe_escape
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
@@ -27,6 +27,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     TextArea,
+    Tree,
 )
 from textual.widgets._option_list import Option
 
@@ -53,6 +54,14 @@ class RunInfo:
         except Exception:
             self.metadata = {}
         return self.metadata
+
+
+@dataclass(frozen=True)
+class BrowserNodeData:
+    kind: str
+    env_id: str = ""
+    model: str = ""
+    run: Optional[RunInfo] = None
 
 
 def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[Path]:
@@ -475,9 +484,307 @@ def _stylize_matches(text: Text, pattern: re.Pattern, style: str) -> Text:
     return text
 
 
+def _sorted_runs(runs: List[RunInfo]) -> List[RunInfo]:
+    return sorted(
+        runs,
+        key=lambda run: (
+            run.load_metadata().get("date", ""),
+            run.load_metadata().get("time", ""),
+            run.run_id,
+        ),
+    )
+
+
+def _format_run_datetime(meta: Dict[str, Any]) -> str:
+    return f"{meta.get('date', '')} {meta.get('time', '')}".strip()
+
+
+def _build_env_tree_label(env_id: str, models: Dict[str, List[RunInfo]]) -> Text:
+    total_runs = sum(len(runs) for runs in models.values())
+    label = Text()
+    label.append(env_id, style="bold")
+    label.append("  ")
+    label.append(f"{len(models)} models", style="dim")
+    label.append("  ")
+    label.append(f"{total_runs} runs", style="dim")
+    return label
+
+
+def _build_model_tree_label(model: str, runs: List[RunInfo]) -> Text:
+    label = Text()
+    label.append(model, style="bold")
+    label.append("  ")
+    label.append(f"{len(runs)} runs", style="dim")
+    return label
+
+
+def _build_run_tree_label(run: RunInfo) -> Text:
+    meta = run.load_metadata()
+    label = Text()
+    label.append(run.run_id, style="bold")
+    datetime_str = _format_run_datetime(meta)
+    if datetime_str:
+        label.append("  ")
+        label.append(datetime_str, style="dim")
+    avg_reward = meta.get("avg_reward")
+    if avg_reward is not None:
+        label.append("  ")
+        label.append("reward ", style="dim")
+        label.append(_format_reward_value(avg_reward), style=_reward_style(avg_reward))
+    return label
+
+
+def _build_run_details_text(run: RunInfo) -> Text:
+    meta = run.load_metadata()
+    out = Text()
+    out.append("Run ID: ", style="bold")
+    out.append(str(run.run_id))
+    out.append("\n")
+    out.append("Environment: ", style="bold")
+    out.append(str(run.env_id))
+    out.append("\n")
+    out.append("Model: ", style="bold")
+    out.append(str(run.model))
+    out.append("\n")
+
+    datetime_str = _format_run_datetime(meta)
+    if datetime_str:
+        out.append("Created: ", style="bold")
+        out.append(datetime_str)
+        out.append("\n")
+
+    base_url = meta.get("base_url", "")
+    if base_url:
+        out.append("Base URL: ", style="bold")
+        out.append(str(base_url))
+        out.append("\n")
+
+    avg_reward = meta.get("avg_reward")
+    if isinstance(avg_reward, (int, float)):
+        out.append("Avg reward: ", style="bold")
+        out.append(f"{avg_reward:.3f}")
+        out.append("\n")
+
+    avg_metrics = meta.get("avg_metrics", {})
+    if isinstance(avg_metrics, dict) and avg_metrics:
+        out.append("Avg metrics: ", style="bold")
+        out.append("\n")
+        for key in sorted(avg_metrics.keys()):
+            value = avg_metrics.get(key)
+            if isinstance(value, (int, float)):
+                out.append(f"  {key}: {value:.3f}\n")
+            else:
+                out.append(f"  {key}: {value}\n")
+
+    time_ms = meta.get("time_ms")
+    if isinstance(time_ms, (int, float)):
+        seconds = time_ms / 1000.0
+        if seconds >= 60:
+            minutes = int(seconds // 60)
+            rem = seconds - minutes * 60
+            runtime_str = f"{minutes}m {rem:.1f}s"
+        else:
+            runtime_str = f"{seconds:.1f}s"
+        out.append("Runtime: ", style="bold")
+        out.append(runtime_str)
+        out.append("\n")
+
+    env_args = meta.get("env_args", {})
+    out.append("\nEnv args:\n", style="bold")
+    try:
+        out.append(json.dumps(env_args, ensure_ascii=False, indent=2))
+    except Exception:
+        out.append(str(env_args))
+
+    sampling_args = meta.get("sampling_args", {})
+    out.append("\n\nSampling args:\n", style="bold")
+    try:
+        out.append(json.dumps(sampling_args, ensure_ascii=False, indent=2))
+    except Exception:
+        out.append(str(sampling_args))
+
+    return out
+
+
 # ----------------------------
 # Screens
 # ----------------------------
+class BrowseRunsScreen(Screen):
+    """Single-screen browser for environments, models, and runs."""
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("tab", "focus_next_pane", "Next pane"),
+        Binding("shift+tab", "focus_prev_pane", show=False),
+    ]
+
+    def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
+        super().__init__()
+        self.index = index
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            with Horizontal(classes="browser-columns"):
+                yield Panel(
+                    Label(Text("Eval Browser", style="bold"), classes="title"),
+                    Label(
+                        Text("Enter opens runs  Space toggles folders"),
+                        classes="subtitle",
+                    ),
+                    Tree("Completed evals", id="run-browser-tree"),
+                    classes="browser-tree-panel",
+                )
+                yield Panel(
+                    Label(Text("Selection Details", style="bold"), classes="title"),
+                    VerticalScroll(
+                        Static("", id="run-browser-details", markup=False),
+                        id="run-browser-details-scroll",
+                    ),
+                    classes="browser-details-panel",
+                )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        tree = self.query_one("#run-browser-tree", Tree)
+        tree.show_root = False
+        tree.auto_expand = False
+        tree.guide_depth = 2
+
+        details_widget = self.query_one("#run-browser-details", Static)
+        first_run_node = self._populate_tree(tree)
+        tree.focus()
+
+        if first_run_node is not None:
+            self.call_after_refresh(
+                lambda: self._select_initial_run_node(first_run_node)
+            )
+        else:
+            details_widget.update(Text("No completed evals found", style="dim"))
+
+    def action_focus_next_pane(self) -> None:
+        self.focus_next()
+
+    def action_focus_prev_pane(self) -> None:
+        self.focus_previous()
+
+    def _select_initial_run_node(self, node: Any) -> None:
+        tree = self.query_one("#run-browser-tree", Tree)
+        tree.move_cursor(node)
+        self._update_details_for_node(node)
+
+    def _populate_tree(self, tree: Tree) -> Any:
+        root = tree.root
+        root.expand()
+
+        if not self.index:
+            root.add("No completed evals found", allow_expand=False)
+            return None
+
+        first_run_node = None
+        sorted_env_ids = sorted(self.index.keys())
+        for env_idx, env_id in enumerate(sorted_env_ids):
+            models = self.index[env_id]
+            env_node = root.add(
+                _build_env_tree_label(env_id, models),
+                data=BrowserNodeData(kind="env", env_id=env_id),
+                expand=env_idx == 0,
+            )
+            for model_idx, model in enumerate(sorted(models.keys())):
+                runs = _sorted_runs(models[model])
+                model_node = env_node.add(
+                    _build_model_tree_label(model, runs),
+                    data=BrowserNodeData(kind="model", env_id=env_id, model=model),
+                    expand=env_idx == 0 and model_idx == 0,
+                )
+                for run in runs:
+                    run_node = model_node.add(
+                        _build_run_tree_label(run),
+                        data=BrowserNodeData(
+                            kind="run",
+                            env_id=env_id,
+                            model=model,
+                            run=run,
+                        ),
+                        allow_expand=False,
+                    )
+                    if first_run_node is None:
+                        first_run_node = run_node
+        return first_run_node
+
+    @on(Tree.NodeHighlighted, "#run-browser-tree")
+    def on_tree_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        self._update_details_for_node(event.node)
+
+    @on(Tree.NodeSelected, "#run-browser-tree")
+    def on_tree_selected(self, event: Tree.NodeSelected) -> None:
+        payload = event.node.data
+        if not isinstance(payload, BrowserNodeData):
+            return
+        if payload.kind == "run" and payload.run is not None:
+            self.app.push_screen(ViewRunScreen(payload.run))
+            return
+        if event.node.allow_expand:
+            event.node.toggle()
+
+    def _update_details_for_node(self, node: Any) -> None:
+        details_widget = self.query_one("#run-browser-details", Static)
+        payload = getattr(node, "data", None)
+        if not isinstance(payload, BrowserNodeData):
+            details_widget.update(Text("Select a run to see details", style="dim"))
+            return
+
+        if payload.kind == "run" and payload.run is not None:
+            details_widget.update(_build_run_details_text(payload.run))
+            return
+
+        if payload.kind == "env":
+            models = self.index.get(payload.env_id, {})
+            total_runs = sum(len(runs) for runs in models.values())
+            out = Text()
+            out.append("Environment\n", style="bold dim")
+            out.append(payload.env_id, style="bold")
+            out.append("\n\n")
+            out.append("Models: ", style="bold")
+            out.append(str(len(models)))
+            out.append("\n")
+            out.append("Runs: ", style="bold")
+            out.append(str(total_runs))
+            if models:
+                out.append("\n\nModels\n", style="bold dim")
+                for model in sorted(models.keys()):
+                    out.append(model, style="bold")
+                    out.append(f"  {len(models[model])} runs\n", style="dim")
+            details_widget.update(out)
+            return
+
+        if payload.kind == "model":
+            runs = _sorted_runs(
+                self.index.get(payload.env_id, {}).get(payload.model, [])
+            )
+            out = Text()
+            out.append("Model\n", style="bold dim")
+            out.append(payload.model, style="bold")
+            out.append("\n\n")
+            out.append("Environment: ", style="bold")
+            out.append(payload.env_id)
+            out.append("\n")
+            out.append("Runs: ", style="bold")
+            out.append(str(len(runs)))
+            if runs:
+                latest = runs[-1]
+                latest_meta = latest.load_metadata()
+                out.append("\n")
+                out.append("Latest run: ", style="bold")
+                out.append(latest.run_id)
+                datetime_str = _format_run_datetime(latest_meta)
+                if datetime_str:
+                    out.append(f"  {datetime_str}", style="dim")
+            details_widget.update(out)
+            return
+
+        details_widget.update(Text("Select a run to see details", style="dim"))
+
+
 class SelectEnvScreen(Screen):
     """Screen for selecting an environment."""
 
@@ -761,6 +1068,8 @@ class SelectRunScreen(Screen):
 class ViewRunScreen(Screen):
     """Screen for viewing run details and rollouts."""
 
+    COMPACT_LAYOUT_WIDTH = 150
+
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
@@ -803,11 +1112,11 @@ class ViewRunScreen(Screen):
                     yield Static("", id="metadata-metrics", markup=False)
                     yield Static("", id="metadata-reward", markup=False)
             with Horizontal(classes="view-columns"):
-                with Panel(classes="rollouts-panel"):
+                with Panel(id="rollouts-panel", classes="rollouts-panel"):
                     yield Label(Text("Rollouts", style="bold"), classes="column-header")
                     yield Label("", id="rollout-summary", classes="subtitle")
                     yield OptionList(id="rollout-list")
-                with Panel(classes="history-panel"):
+                with Panel(id="history-panel", classes="history-panel"):
                     yield Label(
                         Text("Completion History", style="bold"),
                         classes="column-header",
@@ -819,7 +1128,7 @@ class ViewRunScreen(Screen):
                         *self._completion_section_widgets_for_current_record(),
                         id="completion-scroll",
                     )
-                with Panel(classes="details-panel"):
+                with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
                         with TabPane("Task", id="details-task"):
@@ -999,6 +1308,10 @@ class ViewRunScreen(Screen):
         self._populate_rollout_list()
         self.query_one("#rollout-list", OptionList).focus()
         self.update_display(rebuild_sections=False)
+        self._update_responsive_layout(self.size.width)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_responsive_layout(event.size.width)
 
     def on_unmount(self) -> None:
         if hasattr(self.records, "close"):
@@ -1221,6 +1534,19 @@ class ViewRunScreen(Screen):
                 ),
             )
         )
+
+    def _update_responsive_layout(self, width: int) -> None:
+        compact = width < self.COMPACT_LAYOUT_WIDTH
+        rollouts_panel = self.query_one("#rollouts-panel", Panel)
+        details_panel = self.query_one("#details-panel", Panel)
+        rollouts_panel.display = not compact
+        details_panel.display = not compact
+        if compact and (
+            rollouts_panel.has_focus_within or details_panel.has_focus_within
+        ):
+            self.call_after_refresh(
+                lambda: self._focus_primary_content(prefer_expanded=False)
+            )
 
     def _set_current_record(self, index: int, *, focus_history: bool = False) -> None:
         if not (0 <= index < len(self.records)):
@@ -1660,6 +1986,14 @@ class ViewRunScreen(Screen):
         if title_widget is not None and getattr(title_widget, "can_focus", False):
             title_widget.focus()
 
+    @on(Collapsible.Expanded)
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        collapsible = event.collapsible
+        if not collapsible.has_class("history-section"):
+            return
+        collapsible.add_class("just-expanded")
+        self.set_timer(0.24, lambda: collapsible.remove_class("just-expanded"))
+
     def _build_score_text(self, record: Dict[str, Any]) -> Text:
         reward = record.get("reward")
         out = Text()
@@ -1978,6 +2312,10 @@ class VerifiersTUI(App):
         background-tint: $foreground 4%;
     }
 
+    .history-section.just-expanded {
+        background-tint: $primary 10%;
+    }
+
     .history-section > CollapsibleTitle {
         text-style: bold;
         padding: 0 1;
@@ -2084,6 +2422,41 @@ class VerifiersTUI(App):
         scrollbar-corner-color: $panel;
     }
 
+    .browser-columns {
+        height: 1fr;
+        layout: horizontal;
+    }
+
+    .browser-tree-panel {
+        width: 48;
+        height: 1fr;
+        layout: vertical;
+    }
+
+    #run-browser-tree {
+        height: 1fr;
+        background: $surface;
+        color: $text;
+    }
+
+    #run-browser-tree:focus {
+        background-tint: $foreground 4%;
+    }
+
+    #run-browser-details-scroll {
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-color: $secondary;
+        scrollbar-background: $panel;
+        scrollbar-corner-color: $panel;
+    }
+
+    .browser-details-panel {
+        height: 1fr;
+        width: 1fr;
+    }
+
     
     .run-list-panel {
         height: 1fr;
@@ -2168,7 +2541,7 @@ class VerifiersTUI(App):
         self.register_theme(self.WHITE_WARM_THEME)
         # Start with dark theme
         self.theme = "black-warm"
-        self.push_screen(SelectEnvScreen(self.index))
+        self.push_screen(BrowseRunsScreen(self.index))
 
     async def action_quit(self) -> None:
         """Quit the application."""
