@@ -81,25 +81,25 @@ class UltimatumTaskShared(TaskSet):
     async def build_prompt(self, role: str, state: State) -> Messages:
         if role == "proposer":
             return [
-                {"role": "system", "content": (
+                {"role": "user", "content": (
                     f"You have ${TOTAL_AMOUNT} to split with another player. "
                     "You must propose how much to give them. "
                     "If they reject your offer, you BOTH get nothing.\n\n"
                     "Make a fair offer so they accept.\n\n"
-                    "Output ONLY a single number (0-10) representing how much you offer the other player."
+                    "Output ONLY a single number (0-10) representing how much you offer the other player.\n\n"
+                    f"You have ${TOTAL_AMOUNT}. How much do you offer the other player?"
                 )},
-                {"role": "user", "content": f"You have ${TOTAL_AMOUNT}. How much do you offer the other player?"},
             ]
         else:
             offer = state["extras"]["offer"]
             return [
-                {"role": "system", "content": (
+                {"role": "user", "content": (
                     f"Someone is splitting ${TOTAL_AMOUNT} with you. "
                     f"They are offering you ${offer} (they keep ${TOTAL_AMOUNT - offer}).\n\n"
                     "Decide whether this offer is fair enough to accept.\n\n"
-                    "Output ONLY 'Accept' or 'Reject'."
+                    "Output ONLY 'Accept' or 'Reject'.\n\n"
+                    f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"
                 )},
-                {"role": "user", "content": f"/no_think They offer you ${offer} out of ${TOTAL_AMOUNT}. Accept or Reject?"},
             ]
 
     async def on_turn_complete(self, state: State) -> None:
