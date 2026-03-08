@@ -413,8 +413,8 @@ class MultiAgentEnv(MultiTurnEnv):
                 raise ValueError(
                     f"client must be ClientConfig in server mode, got {type(client)}"
                 )
-            return await env_client.run_group(
-                [input],
+            return await env_client.run_rollout(
+                input,
                 resolved_config,
                 model,
                 sampling_args,

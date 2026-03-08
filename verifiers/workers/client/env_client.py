@@ -51,7 +51,7 @@ class EnvClient(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         actor_models: dict[str, str] | None = None,
-    ) -> RolloutOutput:
+    ) -> RolloutOutput | list[RolloutOutput]:
         resolved_client_config = resolve_client_config(client_config)
         request = RunRolloutRequest(
             input=input,
@@ -63,6 +63,8 @@ class EnvClient(ABC):
             actor_models=actor_models,
         )
         response = await self.handle_run_rollout_request(request, timeout=None)
+        if response.outputs is not None:
+            return response.outputs
         assert response.output is not None
         return response.output
 

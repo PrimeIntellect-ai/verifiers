@@ -54,6 +54,7 @@ class RunRolloutRequest(BaseRequest):
 
 class RunRolloutResponse(BaseResponse):
     output: CoercedRolloutOutput | None = None
+    outputs: list[CoercedRolloutOutput] | None = None
 
 
 class RunGroupRequest(BaseRequest):
