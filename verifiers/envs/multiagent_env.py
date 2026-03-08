@@ -261,6 +261,8 @@ class MultiAgentEnv(MultiTurnEnv):
                     used_model = actor_models.get(actor_id) or actor.model or state.get("model", "default")
                     self.logger.info(f"[{actor_id}] using model: {used_model}")
 
+                    print(f"[ROLLOUT-DEBUG] {actor_id} prompt_messages={prompt_messages}", flush=True)
+
                     response = await self.get_model_response(
                         state,
                         prompt_messages,
@@ -280,9 +282,10 @@ class MultiAgentEnv(MultiTurnEnv):
                     break
                 except vf.Error as e:
                     state["error"] = e
+                    cause = e.__cause__ or e
+                    print(f"[ROLLOUT-DEBUG] {actor_id} {type(e).__name__}: {cause}", flush=True)
                     import traceback
-                    print(f"[ROLLOUT-DEBUG] {actor_id} {type(e).__name__}: {repr(e)}")
-                    traceback.print_exc()
+                    traceback.print_exc(file=__import__('sys').stdout)
                     break
 
             completed = await self.is_completed(state)
