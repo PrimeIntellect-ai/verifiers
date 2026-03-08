@@ -259,9 +259,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         await self.start_agent(state)
 
-        logger.info(
-            f"[start] rollout_id={state['rollout_id']} example_id={state['example_id']}"
-        )
+        parts = [
+            f"Started  rollout_id={state['rollout_id']}",
+            f"example_id={state['example_id']}",
+        ]
+        logger.info(" | ".join(parts))
 
         return state
 
@@ -601,6 +603,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         if isinstance(tc, ToolCall):
                             tool_counts[tc.name] += 1
 
+        example_id = state.get("example_id")
         num_turns = len(state.get("trajectory", []))
         stop_condition = state.get("stop_condition", "unknown")
         error = state.get("error")
@@ -612,7 +615,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         duration_s = state["timing"].get("total_ms", 0) / 1000
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
-            f"[end]   rollout_id={state.get('rollout_id')}",
+            f"Finished rollout_id={state.get('rollout_id')}",
+            f"example_id={example_id}",
             f"turns={num_turns}",
             f"tools=[{tools_str}]",
             f"stop={stop_condition}",

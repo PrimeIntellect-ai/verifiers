@@ -172,7 +172,9 @@ class InterceptionServer:
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
-                logger.debug(f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}")
+                logger.debug(
+                    f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}"
+                )
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(response)
@@ -216,7 +218,9 @@ class InterceptionServer:
         try:
             await response_future
         except Exception as e:
-            logger.debug(f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}")
+            logger.debug(
+                f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+            )
 
         try:
             await response.write_eof()
@@ -447,7 +451,7 @@ def _log_request(rollout_id: str, body: dict) -> None:
     tools = body.get("tools", [])
     log_msg += f" ({len(tools)} tool(s))"
     if tools:
-        log_msg += f"\n[tools]\n{', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
+        log_msg += f"\n[tools] {', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):
