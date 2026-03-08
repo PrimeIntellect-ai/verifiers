@@ -366,6 +366,12 @@ def _first_non_empty_line(text: str) -> str:
     return ""
 
 
+def _numeric_reward(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 def _pretty_json_or_str(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, indent=2)
@@ -434,6 +440,56 @@ def format_info_for_details(info: Any) -> str:
     if isinstance(info_value, (dict, list)):
         return _pretty_json_or_str(info_value)
     return str(info_value)
+
+
+def _run_average_rewards(runs: List[RunInfo]) -> List[float]:
+    rewards: List[float] = []
+    for run in runs:
+        reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+        if reward is not None:
+            rewards.append(reward)
+    return rewards
+
+
+def _append_reward_histogram(out: Text, values: List[float], heading: str) -> None:
+    if out.plain:
+        out.append("\n\n")
+    out.append(f"{heading}\n", style="bold dim")
+    if not values:
+        out.append("No reward data", style="dim")
+        return
+
+    avg_reward = sum(values) / len(values)
+    out.append("count ", style="bold")
+    out.append(str(len(values)))
+    out.append("   avg ", style="bold")
+    out.append(f"{avg_reward:.3f}", style=_reward_style(avg_reward))
+    out.append("   min ", style="bold")
+    out.append(f"{min(values):.3f}", style=_reward_style(min(values)))
+    out.append("   max ", style="bold")
+    out.append(f"{max(values):.3f}", style=_reward_style(max(values)))
+    out.append("\n")
+
+    buckets = [
+        ("<0", lambda reward: reward < 0, "bold red"),
+        ("0-0.25", lambda reward: 0 <= reward < 0.25, "red"),
+        ("0.25-0.5", lambda reward: 0.25 <= reward < 0.5, "yellow"),
+        ("0.5-0.75", lambda reward: 0.5 <= reward < 0.75, "yellow"),
+        ("0.75-1.0", lambda reward: 0.75 <= reward < 1.0, "green"),
+        (">=1.0", lambda reward: reward >= 1.0, "bold green"),
+    ]
+    bucket_counts = [
+        (label, sum(1 for reward in values if predicate(reward)), style)
+        for label, predicate, style in buckets
+    ]
+    peak_count = max(count for _, count, _ in bucket_counts) or 1
+    for label, count, style in bucket_counts:
+        bar_width = max(1, round((count / peak_count) * 18)) if count else 1
+        bar = ("#" * bar_width) if count else "."
+        out.append(label.rjust(8), style="dim")
+        out.append("  ")
+        out.append(bar.ljust(18), style=style)
+        out.append(f" {count}\n", style="dim")
 
 
 # ----------------------------
@@ -519,72 +575,6 @@ def _build_run_tree_label(run: RunInfo) -> Text:
     return label
 
 
-def _build_run_details_text(run: RunInfo) -> Text:
-    meta = run.load_metadata()
-    out = Text()
-    out.append("Run ID: ", style="bold")
-    out.append(str(run.run_id))
-    out.append("\n")
-    out.append("Environment: ", style="bold")
-    out.append(str(run.env_id))
-    out.append("\n")
-    out.append("Model: ", style="bold")
-    out.append(str(run.model))
-    out.append("\n")
-
-    datetime_str = _format_run_datetime(meta)
-    if datetime_str:
-        out.append("Created: ", style="bold")
-        out.append(datetime_str)
-        out.append("\n")
-
-    base_url = meta.get("base_url", "")
-    if base_url:
-        out.append("Base URL: ", style="bold")
-        out.append(str(base_url))
-        out.append("\n")
-
-    avg_reward = meta.get("avg_reward")
-    if isinstance(avg_reward, (int, float)):
-        out.append("Avg reward: ", style="bold")
-        out.append(f"{avg_reward:.3f}")
-        out.append("\n")
-
-    avg_metrics = meta.get("avg_metrics", {})
-    if isinstance(avg_metrics, dict) and avg_metrics:
-        out.append("Avg metrics: ", style="bold")
-        out.append("\n")
-        for key in sorted(avg_metrics.keys()):
-            value = avg_metrics.get(key)
-            if isinstance(value, (int, float)):
-                out.append(f"  {key}: {value:.3f}\n")
-            else:
-                out.append(f"  {key}: {value}\n")
-
-    time_ms = meta.get("time_ms")
-    if isinstance(time_ms, (int, float)):
-        seconds = time_ms / 1000.0
-        if seconds >= 60:
-            minutes = int(seconds // 60)
-            rem = seconds - minutes * 60
-            runtime_str = f"{minutes}m {rem:.1f}s"
-        else:
-            runtime_str = f"{seconds:.1f}s"
-        out.append("Runtime: ", style="bold")
-        out.append(runtime_str)
-        out.append("\n")
-
-    env_args = meta.get("env_args", {})
-    out.append("\nEnv args:\n", style="bold")
-    out.append(_pretty_json_or_str(env_args))
-
-    sampling_args = meta.get("sampling_args", {})
-    out.append("\n\nSampling args:\n", style="bold")
-    out.append(_pretty_json_or_str(sampling_args))
-
-    return out
-
-
 # ----------------------------
 # Screens
 # ----------------------------
@@ -600,6 +590,7 @@ class BrowseRunsScreen(Screen):
     def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
         super().__init__()
         self.index = index
+        self._run_reward_cache: Dict[Path, List[float]] = {}
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -714,55 +705,165 @@ class BrowseRunsScreen(Screen):
             return
 
         if payload.kind == "run" and payload.run is not None:
-            details_widget.update(_build_run_details_text(payload.run))
+            details_widget.update(self._build_run_details(payload.run))
             return
 
         if payload.kind == "env":
-            models = self.index.get(payload.env_id, {})
-            total_runs = sum(len(runs) for runs in models.values())
-            out = Text()
-            out.append("Environment\n", style="bold dim")
-            out.append(payload.env_id, style="bold")
-            out.append("\n\n")
-            out.append("Models: ", style="bold")
-            out.append(str(len(models)))
-            out.append("\n")
-            out.append("Runs: ", style="bold")
-            out.append(str(total_runs))
-            if models:
-                out.append("\n\nModels\n", style="bold dim")
-                for model in sorted(models.keys()):
-                    out.append(model, style="bold")
-                    out.append(f"  {len(models[model])} runs\n", style="dim")
-            details_widget.update(out)
+            details_widget.update(self._build_env_details(payload.env_id))
             return
 
         if payload.kind == "model":
-            runs = _sorted_runs(
-                self.index.get(payload.env_id, {}).get(payload.model, [])
+            details_widget.update(
+                self._build_model_details(payload.env_id, payload.model)
             )
-            out = Text()
-            out.append("Model\n", style="bold dim")
-            out.append(payload.model, style="bold")
-            out.append("\n\n")
-            out.append("Environment: ", style="bold")
-            out.append(payload.env_id)
-            out.append("\n")
-            out.append("Runs: ", style="bold")
-            out.append(str(len(runs)))
-            if runs:
-                latest = runs[-1]
-                latest_meta = latest.load_metadata()
-                out.append("\n")
-                out.append("Latest run: ", style="bold")
-                out.append(latest.run_id)
-                datetime_str = _format_run_datetime(latest_meta)
-                if datetime_str:
-                    out.append(f"  {datetime_str}", style="dim")
-            details_widget.update(out)
             return
 
         details_widget.update(Text("Select a run to see details", style="dim"))
+
+    def _run_rewards(self, run: RunInfo) -> List[float]:
+        cached = self._run_reward_cache.get(run.path)
+        if cached is not None:
+            return cached
+
+        rewards: List[float] = []
+        records = load_run_results(run)
+        try:
+            for idx in range(len(records)):
+                reward = _numeric_reward(records[idx].get("reward"))
+                if reward is not None:
+                    rewards.append(reward)
+        finally:
+            records.close()
+
+        self._run_reward_cache[run.path] = rewards
+        return rewards
+
+    def _build_env_details(self, env_id: str) -> Text:
+        models = self.index.get(env_id, {})
+        runs = [run for model_runs in models.values() for run in model_runs]
+        rewards = _run_average_rewards(runs)
+
+        out = Text()
+        out.append("Environment\n", style="bold dim")
+        out.append(env_id, style="bold")
+        out.append("\n")
+        out.append(f"{len(models)} models   {len(runs)} runs", style="dim")
+        _append_reward_histogram(out, rewards, "Run avg rewards")
+
+        if models:
+            ranked_models = sorted(
+                models.items(),
+                key=lambda item: (-len(item[1]), item[0]),
+            )[:4]
+            out.append("\n\nModel activity\n", style="bold dim")
+            for model, model_runs in ranked_models:
+                model_rewards = _run_average_rewards(model_runs)
+                out.append(model, style="bold")
+                out.append(f"  {len(model_runs)} runs", style="dim")
+                if model_rewards:
+                    avg_reward = sum(model_rewards) / len(model_rewards)
+                    out.append("  avg ", style="dim")
+                    out.append(
+                        f"{avg_reward:.3f}",
+                        style=_reward_style(avg_reward),
+                    )
+                out.append("\n")
+
+        return out
+
+    def _build_model_details(self, env_id: str, model: str) -> Text:
+        runs = _sorted_runs(self.index.get(env_id, {}).get(model, []))
+        rewards = _run_average_rewards(runs)
+
+        out = Text()
+        out.append("Model\n", style="bold dim")
+        out.append(model, style="bold")
+        out.append("\n")
+        out.append(f"{env_id}   {len(runs)} runs", style="dim")
+        _append_reward_histogram(out, rewards, "Run avg rewards")
+
+        if runs:
+            latest = runs[-1]
+            best = max(
+                runs,
+                key=lambda run: (
+                    _numeric_reward(run.load_metadata().get("avg_reward"))
+                    if _numeric_reward(run.load_metadata().get("avg_reward"))
+                    is not None
+                    else float("-inf")
+                ),
+            )
+            out.append("\n\nRecent runs\n", style="bold dim")
+            self._append_run_row(out, "latest", latest)
+            self._append_run_row(out, "best", best)
+
+        return out
+
+    def _build_run_details(self, run: RunInfo) -> Text:
+        meta = run.load_metadata()
+        rewards = self._run_rewards(run)
+
+        out = Text()
+        out.append("Run\n", style="bold dim")
+        out.append(run.run_id, style="bold")
+        out.append("\n")
+        out.append(f"{run.env_id}   {run.model}", style="dim")
+
+        summary_parts: List[Tuple[str, str, Optional[str]]] = []
+        created = _format_run_datetime(meta)
+        if created:
+            summary_parts.append(("created", created, None))
+        avg_reward = _numeric_reward(meta.get("avg_reward"))
+        if avg_reward is not None:
+            summary_parts.append(
+                ("avg reward", f"{avg_reward:.3f}", _reward_style(avg_reward))
+            )
+        if rewards:
+            summary_parts.append(("rollouts", str(len(rewards)), None))
+        elif meta.get("num_examples") not in (None, ""):
+            summary_parts.append(("examples", str(meta.get("num_examples")), None))
+        if summary_parts:
+            out.append("\n\n")
+            for idx, (label, value, style) in enumerate(summary_parts):
+                if idx:
+                    out.append("   ")
+                out.append(f"{label} ", style="bold")
+                out.append(value, style=style or "")
+
+        _append_reward_histogram(out, rewards, "Rollout rewards")
+
+        pass_rates = []
+        for key, prefix in (("pass_at_k", "pass@"), ("pass_all_k", "pass-all@")):
+            values = meta.get(key)
+            if isinstance(values, dict):
+                for bucket, value in sorted(
+                    values.items(), key=lambda item: str(item[0])
+                ):
+                    numeric = _numeric_reward(value)
+                    if numeric is None:
+                        continue
+                    pass_rates.append((f"{prefix}{bucket}", numeric))
+        if pass_rates:
+            out.append("\n\nPass rates\n", style="bold dim")
+            for idx, (label, value) in enumerate(pass_rates[:6]):
+                if idx and idx % 3 == 0:
+                    out.append("\n")
+                elif idx:
+                    out.append("   ")
+                out.append(f"{label} ", style="bold")
+                out.append(f"{value:.3f}", style=_reward_style(value))
+
+        return out
+
+    def _append_run_row(self, out: Text, label: str, run: RunInfo) -> None:
+        reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+        out.append(label, style="bold")
+        out.append("  ")
+        out.append(run.run_id)
+        if reward is not None:
+            out.append("  reward ", style="dim")
+            out.append(f"{reward:.3f}", style=_reward_style(reward))
+        out.append("\n")
 
 
 class ViewRunScreen(Screen):
@@ -1688,8 +1789,31 @@ class ViewRunScreen(Screen):
         collapsible = event.collapsible
         if not collapsible.has_class("history-section"):
             return
+        collapsible.remove_class("expand-settle")
         collapsible.add_class("just-expanded")
-        self.set_timer(0.24, lambda: collapsible.remove_class("just-expanded"))
+        self.set_timer(
+            0.10,
+            lambda: self._shift_expand_pulse(collapsible),
+        )
+        self.set_timer(
+            0.22,
+            lambda: self._clear_expand_pulse(collapsible),
+        )
+        collapsible.call_after_refresh(
+            lambda: collapsible.scroll_visible(duration=0.18, easing="out_cubic")
+        )
+
+    def _shift_expand_pulse(self, collapsible: Collapsible) -> None:
+        if not collapsible.is_mounted:
+            return
+        collapsible.remove_class("just-expanded")
+        collapsible.add_class("expand-settle")
+
+    def _clear_expand_pulse(self, collapsible: Collapsible) -> None:
+        if not collapsible.is_mounted:
+            return
+        collapsible.remove_class("just-expanded")
+        collapsible.remove_class("expand-settle")
 
     def _build_score_text(self, record: Dict[str, Any]) -> Text:
         reward = record.get("reward")
@@ -2009,8 +2133,14 @@ class VerifiersTUI(App):
         background-tint: $foreground 4%;
     }
 
-    .history-section.just-expanded {
-        background-tint: $primary 10%;
+    .history-section.just-expanded > CollapsibleTitle {
+        background: $primary 18%;
+        color: $text;
+    }
+
+    .history-section.expand-settle > CollapsibleTitle {
+        background: $primary 10%;
+        color: $text;
     }
 
     .history-section > CollapsibleTitle {
