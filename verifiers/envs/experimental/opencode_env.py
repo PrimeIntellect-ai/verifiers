@@ -46,6 +46,12 @@ You are an interactive CLI tool that helps users with tasks. Use the instruction
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.
 """
 
+TASK_MANAGEMENT_SYSTEM_PROMPT = """\
+# Task Management
+You have access to tools to help you manage and plan tasks. Use these tools frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable. It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
+"""
+
+
 DEFAULT_INSTALL_COMMAND = (
     "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
 )
@@ -166,6 +172,13 @@ class OpenCodeEnv(CliAgentEnv):
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
         self.provider_timeout_ms = provider_timeout_ms
+
+        if (
+            disabled_tools is not None
+            and system_prompt is not None
+            and "todowrite" not in disabled_tools
+        ):
+            system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
         run_command = self.build_run_command(
             run_command_template,
