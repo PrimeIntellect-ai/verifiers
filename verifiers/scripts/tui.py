@@ -14,7 +14,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
 from textual.widgets import (
@@ -766,6 +766,10 @@ class ViewRunScreen(Screen):
         Binding("b,backspace", "back", "Back"),
         Binding("left,p", "prev_record", "Prev rollout"),
         Binding("right,n", "next_record", "Next rollout"),
+        Binding("pageup", "history_page_up", show=False),
+        Binding("pagedown", "history_page_down", show=False),
+        Binding("home", "history_home", show=False),
+        Binding("end", "history_end", show=False),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
         Binding("e", "expand_all", "Expand all"),
@@ -788,6 +792,8 @@ class ViewRunScreen(Screen):
         self._highlight_timer = None
         self._completion_sections_version = 0
         self._focus_after_completion_rebuild = False
+        if self.records:
+            self._set_record_text_state(self.records[self.current_record_idx])
 
     def compose(self) -> ComposeResult:
         with Container(id="view-container"):
@@ -810,7 +816,7 @@ class ViewRunScreen(Screen):
                         "", id="history-summary", classes="subtitle", markup=False
                     )
                     yield VerticalScroll(
-                        Vertical(id="completion-sections"),
+                        *self._completion_section_widgets_for_current_record(),
                         id="completion-scroll",
                     )
                 with Panel(classes="details-panel"):
@@ -922,6 +928,8 @@ class ViewRunScreen(Screen):
             (f"{user_messages} user turns", "dim"),
             ("  ", ""),
             ("Enter toggles", "dim"),
+            ("  ", ""),
+            ("PgUp/PgDn scroll", "dim"),
         )
 
     def _build_header_metric_text(self) -> Text:
@@ -989,8 +997,8 @@ class ViewRunScreen(Screen):
 
     def on_mount(self) -> None:
         self._populate_rollout_list()
-        self._focus_after_completion_rebuild = True
-        self.update_display()
+        self.query_one("#rollout-list", OptionList).focus()
+        self.update_display(rebuild_sections=False)
 
     def on_unmount(self) -> None:
         if hasattr(self.records, "close"):
@@ -1072,11 +1080,7 @@ class ViewRunScreen(Screen):
             return _truncate_preview(str(prompt), 56)
         return "Empty rollout"
 
-    def update_display(self) -> None:
-        if not self.records:
-            return
-
-        record = self.records[self.current_record_idx]
+    def _set_record_text_state(self, record: Dict[str, Any]) -> None:
         prompt_text = format_prompt_or_completion(record.get("prompt", ""))
         completion_text = format_prompt_or_completion(record.get("completion", ""))
 
@@ -1090,6 +1094,13 @@ class ViewRunScreen(Screen):
         self._completion_text = completion_text.plain
         self._prompt_lines = prompt_text.plain.split("\n")
         self._completion_lines = completion_text.plain.split("\n")
+
+    def update_display(self, *, rebuild_sections: bool = True) -> None:
+        if not self.records:
+            return
+
+        record = self.records[self.current_record_idx]
+        self._set_record_text_state(record)
 
         self.query_one("#metadata-summary", Static).update(
             self._build_header_summary_text()
@@ -1108,7 +1119,8 @@ class ViewRunScreen(Screen):
         self.query_one("#usage-content", Static).update(self._build_usage_text(record))
         self.query_one("#info-content", Static).update(self._build_info_text(record))
         self._update_rollout_summary(record)
-        self._build_completion_sections(record)
+        if rebuild_sections:
+            self._build_completion_sections(record)
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -1158,6 +1170,22 @@ class ViewRunScreen(Screen):
 
     def action_focus_prev_pane(self) -> None:
         self.focus_previous()
+
+    def action_history_page_up(self) -> None:
+        self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
+            animate=False
+        )
+
+    def action_history_page_down(self) -> None:
+        self.query_one("#completion-scroll", VerticalScroll).scroll_page_down(
+            animate=False
+        )
+
+    def action_history_home(self) -> None:
+        self.query_one("#completion-scroll", VerticalScroll).scroll_home(animate=False)
+
+    def action_history_end(self) -> None:
+        self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
 
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
         if result is None:
@@ -1226,20 +1254,32 @@ class ViewRunScreen(Screen):
             return
         self._set_current_record(int(event.option_id), focus_history=True)
 
-    def _build_completion_sections(self, record: Dict[str, Any]) -> None:
-        self._completion_sections_version += 1
-        version = self._completion_sections_version
+    def _completion_section_widgets_for_current_record(self) -> List[Collapsible]:
+        if not self.records:
+            return []
+        return self._completion_section_widgets(self.records[self.current_record_idx])
 
+    def _completion_section_widgets(self, record: Dict[str, Any]) -> List[Collapsible]:
         sections: List[Any] = []
+        sections.append(
+            self._build_simple_section(
+                title="Initial Prompt",
+                body=self._prompt_text or "No prompt context",
+                column="prompt",
+                collapsed=True,
+                section_id="prompt-context",
+                classes="history-section prompt-section",
+            )
+        )
+
         completion = record.get("completion")
         if isinstance(completion, list) and completion:
             groups = self._history_groups(completion)
-            expanded_idx = self._default_expanded_group_index(groups)
             for idx, group in enumerate(groups, start=1):
                 sections.append(
                     self._build_group_section(
                         idx,
-                        collapsed=idx != expanded_idx,
+                        collapsed=True,
                         group=group,
                     )
                 )
@@ -1255,17 +1295,12 @@ class ViewRunScreen(Screen):
                 )
             )
 
-        sections.append(
-            self._build_simple_section(
-                title="Prompt Context",
-                body=self._prompt_text or "No prompt context",
-                column="prompt",
-                collapsed=True,
-                section_id="prompt-context",
-                classes="history-section prompt-section",
-            )
-        )
+        return sections
 
+    def _build_completion_sections(self, record: Dict[str, Any]) -> None:
+        self._completion_sections_version += 1
+        version = self._completion_sections_version
+        sections = self._completion_section_widgets(record)
         self._rebuild_completion_sections(version, sections)
 
     @work(group="completion-sections", exclusive=True)
@@ -1274,7 +1309,7 @@ class ViewRunScreen(Screen):
     ) -> None:
         if not self.is_mounted or version != self._completion_sections_version:
             return
-        container = self.query_one("#completion-sections", Vertical)
+        container = self.query_one("#completion-scroll", VerticalScroll)
         async with container.batch():
             await container.remove_children()
             if not self.is_mounted or version != self._completion_sections_version:
@@ -1316,19 +1351,6 @@ class ViewRunScreen(Screen):
             groups.append({"kind": "message", "message": message})
             idx += 1
         return groups
-
-    def _default_expanded_group_index(self, groups: List[Dict[str, Any]]) -> int:
-        for idx in range(len(groups), 0, -1):
-            group = groups[idx - 1]
-            message = group.get("message")
-            if not isinstance(message, dict):
-                return idx
-            content = _stringify_message_content(message.get("content", "")).strip()
-            if message.get("role") == "assistant" and (
-                content or group.get("tool_calls")
-            ):
-                return idx
-        return len(groups)
 
     def _build_group_section(
         self,
@@ -1617,11 +1639,11 @@ class ViewRunScreen(Screen):
         return default
 
     def _completion_sections(self) -> List[Collapsible]:
-        container = self.query_one("#completion-sections", Vertical)
+        container = self.query_one("#completion-scroll", VerticalScroll)
         return list(container.query(Collapsible))
 
     def _focus_primary_content(self, *, prefer_expanded: bool = True) -> None:
-        container = self.query_one("#completion-sections", Vertical)
+        container = self.query_one("#completion-scroll", VerticalScroll)
         sections = [
             child for child in container.children if isinstance(child, Collapsible)
         ]
@@ -1932,17 +1954,18 @@ class VerifiersTUI(App):
     }
     
     #completion-scroll {
+        layout: vertical;
         height: 1fr;
         background: $surface;
         padding: 0 1;
-        scrollbar-color: $secondary;
-        scrollbar-background: $panel;
+        scrollbar-size-vertical: 2;
+        scrollbar-color: $primary 40%;
+        scrollbar-color-hover: $primary 70%;
+        scrollbar-color-active: $accent;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
         scrollbar-corner-color: $panel;
-    }
-
-    #completion-sections {
-        layout: vertical;
-        width: 100%;
     }
 
     .history-section {
@@ -1958,6 +1981,16 @@ class VerifiersTUI(App):
     .history-section > CollapsibleTitle {
         text-style: bold;
         padding: 0 1;
+    }
+
+    .history-section > CollapsibleTitle:hover {
+        background: $primary 12%;
+        color: $text;
+    }
+
+    .history-section > CollapsibleTitle:focus {
+        background: $primary 28%;
+        color: $text;
     }
 
     .assistant-section {
