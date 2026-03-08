@@ -806,6 +806,9 @@ class ViewRunScreen(Screen):
                         Text("Completion History", style="bold"),
                         classes="column-header",
                     )
+                    yield Static(
+                        "", id="history-summary", classes="subtitle", markup=False
+                    )
                     yield VerticalScroll(
                         Vertical(id="completion-sections"),
                         id="completion-scroll",
@@ -838,6 +841,8 @@ class ViewRunScreen(Screen):
     def _build_header_summary_text(self) -> Text:
         meta = self.run.load_metadata()
         lines: List[Text] = []
+
+        lines.append(Text("Run Summary", style="bold dim"))
 
         identity = Text()
         identity.append("Environment: ", style="bold")
@@ -893,6 +898,31 @@ class ViewRunScreen(Screen):
             lines.append(usage_line)
 
         return Text("\n").join(lines)
+
+    def _build_history_summary_text(self, record: Dict[str, Any]) -> Text:
+        completion = record.get("completion")
+        if not isinstance(completion, list) or not completion:
+            return Text("No completion events", style="dim")
+
+        groups = self._history_groups(completion)
+        tool_groups = sum(
+            1 for group in groups if group.get("kind") == "assistant-tools"
+        )
+        user_messages = sum(
+            1
+            for group in groups
+            if isinstance(group.get("message"), dict)
+            and group["message"].get("role") == "user"
+        )
+        return Text.assemble(
+            (f"{len(groups)} events", "bold"),
+            ("  ", ""),
+            (f"{tool_groups} tool exchanges", "dim"),
+            ("  ", ""),
+            (f"{user_messages} user turns", "dim"),
+            ("  ", ""),
+            ("Enter toggles", "dim"),
+        )
 
     def _build_header_metric_text(self) -> Text:
         meta = self.run.load_metadata()
@@ -1069,6 +1099,9 @@ class ViewRunScreen(Screen):
         )
         self.query_one("#metadata-reward", Static).update(
             self._build_header_reward_text(record)
+        )
+        self.query_one("#history-summary", Static).update(
+            self._build_history_summary_text(record)
         )
         self.query_one("#task-content", Static).update(self._build_task_text(record))
         self.query_one("#score-content", Static).update(self._build_score_text(record))
@@ -1328,23 +1361,27 @@ class ViewRunScreen(Screen):
         if isinstance(message, dict):
             content = _stringify_message_content(message.get("content", "")).strip()
 
-        summary_parts = [f"{len(tool_calls)} tool call(s)"]
-        if tool_outputs:
-            summary_parts.append(f"{len(tool_outputs)} tool result(s)")
-        body = content or "  |  ".join(summary_parts)
+        body = content
+
+        group_collapsed = self._assistant_tool_group_collapsed(
+            collapsed=collapsed,
+            body=body,
+            tool_calls=tool_calls,
+            tool_outputs=tool_outputs,
+        )
 
         nested_sections = self._build_tool_exchange_sections(
             turn_idx=idx,
             tool_calls=tool_calls,
             tool_outputs=tool_outputs,
-            parent_collapsed=collapsed,
+            parent_collapsed=group_collapsed,
         )
 
         return self._build_section(
             title=title,
             body=body,
             column="completion",
-            collapsed=self._section_collapsed(collapsed, body, "completion"),
+            collapsed=group_collapsed,
             section_id=f"turn-{idx}",
             classes="history-section assistant-section",
             nested_sections=nested_sections,
@@ -1386,6 +1423,34 @@ class ViewRunScreen(Screen):
             section_id=f"turn-{idx}",
             classes=classes,
         )
+
+    def _assistant_tool_group_collapsed(
+        self,
+        *,
+        collapsed: bool,
+        body: str,
+        tool_calls: List[Any],
+        tool_outputs: List[Any],
+    ) -> bool:
+        if not self._highlight_regex or self._highlight_column != "completion":
+            return collapsed
+        if body and self._highlight_regex.search(body):
+            return False
+        for tool_call in tool_calls:
+            name, arguments, _ = _tool_call_parts(tool_call)
+            if self._highlight_regex.search(name) or self._highlight_regex.search(
+                arguments
+            ):
+                return False
+        for output in tool_outputs:
+            output_text = (
+                _stringify_message_content(output.get("content", ""))
+                if isinstance(output, dict)
+                else str(output)
+            )
+            if self._highlight_regex.search(output_text):
+                return False
+        return collapsed
 
     def _build_tool_exchange_sections(
         self,
@@ -1521,13 +1586,15 @@ class ViewRunScreen(Screen):
         classes: str,
         nested_sections: Optional[List[Any]] = None,
     ) -> Collapsible:
-        content = Static(
-            self._render_section_body(body, column),
-            id=f"{section_id}-body",
-            classes="section-body",
-            markup=False,
-        )
-        children: List[Any] = [content]
+        children: List[Any] = []
+        if body or not nested_sections:
+            content = Static(
+                self._render_section_body(body, column),
+                id=f"{section_id}-body",
+                classes="section-body",
+                markup=False,
+            )
+            children.append(content)
         children.extend(nested_sections or [])
         return Collapsible(
             *children,
@@ -1819,17 +1886,19 @@ class VerifiersTUI(App):
 
     #metadata-summary {
         width: 2fr;
+        padding: 0 1;
     }
 
     #metadata-metrics {
         width: 1.5fr;
-        padding: 0 2;
+        padding: 0 1;
         color: $text;
     }
 
     #metadata-reward {
         width: 1fr;
-        text-align: right;
+        padding: 0 1;
+        text-align: left;
     }
     
     .view-columns {
@@ -1857,8 +1926,8 @@ class VerifiersTUI(App):
     
     .column-header {
         height: auto;
-        margin-bottom: 1;
-        text-align: center;
+        margin-bottom: 0;
+        text-align: left;
         text-style: bold;
     }
     
@@ -1888,9 +1957,11 @@ class VerifiersTUI(App):
 
     .history-section > CollapsibleTitle {
         text-style: bold;
+        padding: 0 1;
     }
 
     .assistant-section {
+        background: $success 6%;
         border: round $success;
     }
 
@@ -1899,6 +1970,7 @@ class VerifiersTUI(App):
     }
 
     .tool-section {
+        background: $warning 6%;
         border: round $warning;
     }
 
@@ -1907,6 +1979,7 @@ class VerifiersTUI(App):
     }
 
     .prompt-section {
+        background: $secondary 4%;
         border: round $secondary;
     }
 
@@ -1919,6 +1992,7 @@ class VerifiersTUI(App):
     }
 
     .tool-call-section {
+        background: $accent 8%;
         border: round $accent;
     }
 
@@ -1927,11 +2001,11 @@ class VerifiersTUI(App):
     }
 
     .nested-section {
-        margin: 1 0 0 2;
+        margin: 0 0 0 1;
     }
 
     .section-body {
-        padding: 0 1 1 2;
+        padding: 0 1 0 1;
         color: $text;
     }
 
