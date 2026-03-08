@@ -443,6 +443,9 @@ class MultiAgentEnv(MultiTurnEnv):
             return actor_states
 
         actor_states = await maybe_retry(attempt, max_retries=max_retries)()
+        for s in actor_states:
+            aid = s.get("extras", {}).get("current_actor_id", "?")
+            print(f"[ENV-DEBUG] actor='{aid}' traj_len={len(s.get('trajectory', []))}")
         return [state_to_output(s, state_columns) for s in actor_states]
 
     async def run_group(
