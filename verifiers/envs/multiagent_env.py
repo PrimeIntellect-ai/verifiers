@@ -386,6 +386,65 @@ class MultiAgentEnv(MultiTurnEnv):
     # Training Support
     # -------------------------------------------------------------------------
 
+    async def run_rollout(
+        self,
+        input: RolloutInput,
+        client,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client=None,
+        actor_models: dict[str, str] | None = None,
+    ) -> list[RolloutOutput]:
+        """Run one game and split into per-actor RolloutOutputs.
+
+        Returns a list with one RolloutOutput per trainable actor, each scored
+        independently. For single-actor envs this returns a one-element list.
+        """
+        env_client = env_client or getattr(self, "env_client", None)
+        if env_client is not None:
+            resolved_config = (
+                resolve_client_config(client)
+                if isinstance(client, ClientConfig)
+                else None
+            )
+            if resolved_config is None:
+                raise ValueError(
+                    f"client must be ClientConfig in server mode, got {type(client)}"
+                )
+            return await env_client.run_group(
+                [input],
+                resolved_config,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+                actor_models=actor_models,
+            )
+
+        resolved_client = resolve_client(client)
+        state_columns = list(state_columns or [])
+
+        if actor_models is not None:
+            self._actor_models = actor_models
+
+        trainable_ids = [
+            aid for aid, a in self._agents.items() if a.is_trainable
+        ]
+
+        async def attempt() -> list[State]:
+            state = await self.rollout(input, resolved_client, model, sampling_args)
+            actor_states = self.create_actor_states(state, actor_ids=trainable_ids)
+            if self.score_rollouts:
+                await self.rubric.score_group(actor_states)
+            else:
+                await self.rubric.dummy_score_group(actor_states)
+            return actor_states
+
+        actor_states = await maybe_retry(attempt, max_retries=max_retries)()
+        return [state_to_output(s, state_columns) for s in actor_states]
+
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
