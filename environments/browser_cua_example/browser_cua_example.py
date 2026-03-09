@@ -28,7 +28,10 @@ import verifiers as vf
 from verifiers.envs.integrations.browser_env import BrowserEnv
 from datasets import Dataset
 
-CUA_SYSTEM_PROMPT = """You are a browser automation agent. You can control a web browser using the provided tools.
+CUA_SYSTEM_PROMPT_TEMPLATE = """You are a browser automation agent. You can control a web browser using the provided tools.
+
+The display resolution is {viewport_width}x{viewport_height} pixels.
+Use integer pixel coordinates measured from the top-left corner of the page.
 
 Available tools:
 - click(x, y, button): Click at coordinates
@@ -118,7 +121,7 @@ async def judge_answer(
 def load_environment(
     max_turns: int = 15,
     judge_model: str = "gpt-4o-mini",
-    system_prompt: str = CUA_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
     # CUA mode configuration
     use_sandbox: bool = True,
     server_url: str = "http://localhost:3000",
@@ -201,6 +204,13 @@ def load_environment(
         # Manual mode (for local development)
         >>> env = load_environment(use_sandbox=False, server_url="http://localhost:3000")
     """
+    # Build system prompt with viewport dimensions
+    if system_prompt is None:
+        system_prompt = CUA_SYSTEM_PROMPT_TEMPLATE.format(
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+        )
+
     # Create inline dataset
     dataset = create_example_dataset()
 
