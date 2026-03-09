@@ -105,6 +105,9 @@ rl = [
 [tool.uv]
 preview = true
 
+[tool.uv.sources]
+textarena = { git = "https://github.com/nph4rd/TextArena.git", branch = "fix/kuhn-poker-phantom-ante" }
+
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 
