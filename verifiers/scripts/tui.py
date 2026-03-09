@@ -2567,21 +2567,14 @@ class VerifiersTUI(App):
         margin: 0 0 1 0;
     }
 
-    #details-tabs Underline {
-        display: none;
-    }
-
     #details-tabs Tab {
         background: $surface;
         color: $text-muted;
         min-width: 8;
-        padding: 0 2;
     }
 
     #details-tabs Tab.-active {
         color: $text;
-        background: $primary 18%;
-        text-style: bold;
     }
 
     #details-tabs ContentSwitcher {
