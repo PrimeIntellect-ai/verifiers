@@ -7,6 +7,7 @@ import zmq
 import zmq.asyncio
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
+from verifiers.utils.async_utils import EventLoopBlockingDetector
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
     BaseResponse,
@@ -91,6 +92,14 @@ class ZMQEnvServer(EnvServer):
 
         lag_monitor_task = self.lag_monitor.run_in_background()
 
+        # Start blocking detector (captures stack traces when event loop is blocked >10s)
+        blocking_detector = EventLoopBlockingDetector(
+            loop=asyncio.get_event_loop(),
+            threshold=10.0,
+            logger=self.logger,
+        )
+        blocking_detector.start()
+
         # Start statistics logger
         log_stats_task = asyncio.create_task(self.log_stats_loop())
 
@@ -145,6 +154,7 @@ class ZMQEnvServer(EnvServer):
                 except Exception as e:
                     self.logger.error(f"Error in server loop: {e}", exc_info=True)
         finally:
+            blocking_detector.stop()
             poller.unregister(self.socket)
             for t in (log_stats_task, lag_monitor_task):
                 t.cancel()
