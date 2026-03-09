@@ -343,10 +343,23 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         while True:
-            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job
-            )
+            try:
+                status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
+                    sandbox_id, background_job
+                )
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(
+                    f"Polling error ({consecutive_errors}/{max_consecutive_errors}): {e}"
+                )
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                await asyncio.sleep(2)
+                continue
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
