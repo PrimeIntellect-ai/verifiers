@@ -39,6 +39,10 @@ from verifiers.utils.worker_utils import get_free_port
 logger = logging.getLogger(__name__)
 
 
+class AgentError(vf.InfraError):
+    """Raised when the agent process fails or exits unexpectedly."""
+
+
 class CliAgentMonitorRubric(vf.Rubric):
     """Monitor rubric that tracks CLI agent execution state."""
 
@@ -324,7 +328,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            logger.debug(f"Completion wait ended: {e}")
+            error = AgentError(f"Agent polling failed: {e}")
+            state["error"] = error
+            raise error from e
         finally:
             state["agent_completed"] = True
 
