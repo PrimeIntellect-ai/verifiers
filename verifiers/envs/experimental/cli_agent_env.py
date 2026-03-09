@@ -296,10 +296,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_id = state["sandbox_id"]
 
         self.logger.debug(f"Starting agent in sandbox {sandbox_id}")
-        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
-            sandbox_id,
-            self.run_command,
-        )
+        try:
+            background_job: BackgroundJob = (
+                await self.sandbox_client.start_background_job(
+                    sandbox_id,
+                    self.run_command,
+                )
+            )
+        except Exception as e:
+            raise vf.SandboxError(f"Failed to start agent: {e}") from e
         state["background_job"] = background_job
         state["agent_start_time"] = time.time()
 
