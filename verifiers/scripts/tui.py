@@ -3242,7 +3242,9 @@ class CopyScreen(ModalScreen[None]):
         self._prompt_label = prompt_label
         self._completion_label = completion_label
         self._title = title
-        self._active_column = start_column
+        self._active_column = (
+            start_column if start_column in ("prompt", "completion") else "completion"
+        )
         self._last_copied_selection = ""
 
     def compose(self) -> ComposeResult:

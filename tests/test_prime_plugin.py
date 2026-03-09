@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import verifiers.cli.plugins.prime as prime_plugin
 
@@ -40,6 +41,26 @@ def test_resolve_workspace_python_prefers_workspace_venv_over_uv_env(
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 
     assert prime_plugin._resolve_workspace_python(env_dir) == str(workspace_python)
+
+
+def test_resolve_tui_python_skips_uv_env_without_tui_module(
+    tmp_path: Path, monkeypatch
+):
+    workspace, _ = _make_workspace(tmp_path)
+    uv_env = tmp_path / "other-project" / ".venv"
+    uv_python = _touch_python(uv_env)
+    calls: list[tuple[str, str, str]] = []
+
+    def can_import(python_executable: str, module_name: str, cwd: str) -> bool:
+        calls.append((python_executable, module_name, cwd))
+        return False
+
+    monkeypatch.setattr(prime_plugin, "_python_can_import_module", can_import)
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(uv_env))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+    assert prime_plugin._resolve_tui_python(workspace) == sys.executable
+    assert calls == [(str(uv_python), "verifiers.cli.tui", str(workspace))]
 
 
 def test_build_module_command_install_adds_workspace_env_path(

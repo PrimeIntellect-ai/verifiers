@@ -42,15 +42,27 @@ def _python_can_import_module(
 
 
 def _resolve_workspace_python(cwd: Path | None = None) -> str:
+    return _resolve_module_python(
+        "verifiers.cli.commands.eval",
+        cwd,
+        search_parent_projects=True,
+    )
+
+
+def _resolve_module_python(
+    module_name: str,
+    cwd: Path | None = None,
+    *,
+    search_parent_projects: bool = False,
+) -> str:
     workspace = (cwd or Path.cwd()).resolve()
     workspace_root = _find_workspace_root(workspace)
     workspace_for_probe = workspace_root or workspace
     workspace_str = str(workspace_for_probe)
-    module = "verifiers.cli.commands.eval"
 
     def _usable(candidate: Path) -> bool:
         return candidate.exists() and _python_can_import_module(
-            str(candidate), module, workspace_str
+            str(candidate), module_name, workspace_str
         )
 
     if workspace_root is not None:
@@ -70,37 +82,18 @@ def _resolve_workspace_python(cwd: Path | None = None) -> str:
         if _usable(candidate):
             return str(candidate)
 
-    for directory in [workspace, *workspace.parents]:
-        if (directory / "pyproject.toml").is_file():
-            candidate = _venv_python(directory / ".venv")
-            if _usable(candidate):
-                return str(candidate)
+    if search_parent_projects:
+        for directory in [workspace, *workspace.parents]:
+            if (directory / "pyproject.toml").is_file():
+                candidate = _venv_python(directory / ".venv")
+                if _usable(candidate):
+                    return str(candidate)
 
     return sys.executable
 
 
 def _resolve_tui_python(cwd: Path | None = None) -> str:
-    workspace = (cwd or Path.cwd()).resolve()
-    workspace_root = _find_workspace_root(workspace)
-
-    if workspace_root is not None:
-        candidate = _venv_python(workspace_root / ".venv")
-        if candidate.exists():
-            return str(candidate)
-
-    uv_project_env = os.environ.get("UV_PROJECT_ENVIRONMENT")
-    if uv_project_env:
-        candidate = _venv_python(Path(uv_project_env))
-        if candidate.exists():
-            return str(candidate)
-
-    virtual_env = os.environ.get("VIRTUAL_ENV")
-    if virtual_env:
-        candidate = _venv_python(Path(virtual_env))
-        if candidate.exists():
-            return str(candidate)
-
-    return sys.executable
+    return _resolve_module_python("verifiers.cli.tui", cwd)
 
 
 def _find_workspace_root(start: Path) -> Path | None:

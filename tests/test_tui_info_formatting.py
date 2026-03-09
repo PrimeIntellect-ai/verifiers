@@ -178,6 +178,12 @@ def test_copy_screen_uses_custom_labels() -> None:
     assert copy_screen._completion_text == "details text"
 
 
+def test_copy_screen_defaults_invalid_start_column_to_completion() -> None:
+    copy_screen = CopyScreen("prompt text", "completion text", "sideways")
+
+    assert copy_screen._active_column == "completion"
+
+
 def test_populate_tree_includes_run_reward_in_label(tmp_path) -> None:
     run_dir = tmp_path / "demo-run"
     run_dir.mkdir()
