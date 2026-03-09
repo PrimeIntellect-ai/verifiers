@@ -14,33 +14,27 @@ from verifiers.utils.interception_utils import _truncate as truncate
 
 logger = logging.getLogger(__name__)
 
-# Default OpenCode tools to track individually
+# https://opencode.ai/docs/tools/#built-in
 OPENCODE_TOOLS = [
     "bash",
-    "glob",
-    "grep",
-    "read",
     "edit",
     "write",
+    "read",
+    "grep",
+    "glob",
+    "skill",
     "todowrite",
-    "todoread",
     "webfetch",
-    "question",
+    "websearch",
+    "codesearch",
     "task",
+    "question",
 ]
 
-
-DEFAULT_OPENCODE_SYSTEM_PROMPT = """\
+DEFAULT_SYSTEM_PROMPT = """\
 You are OpenCode, the best coding agent on the planet.
 
-You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
-
-IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
-
-If the user asks for help or wants to give feedback inform them of the following:
-- ctrl+p to list available actions
-- To give feedback, users should report the issue at
-  https://github.com/anomalyco/opencode
+You are an interactive CLI tool that helps users with tasks. Use the instructions below and the tools available to you to assist the user.
 
 # Tone and style
 - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
@@ -50,20 +44,34 @@ If the user asks for help or wants to give feedback inform them of the following
 
 # Professional objectivity
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.
-
-# Task Management
-You have access to the TodoWrite tools to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.
-These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable.
-
-It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
 """
 
-DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE = """\
+TASK_MANAGEMENT_SYSTEM_PROMPT = """\
+# Task Management
+You have access to the TodoWrite tools to help you manage and plan tasks. Use these tools frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable. It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
+"""
+
+
+DEFAULT_INSTALL_COMMAND = (
+    "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
+)
+
+DEFAULT_RUN_COMMAND_TEMPLATE = """\
 set -e
 
 apt-get update && apt-get install -y curl
 
-curl -fsSL https://opencode.ai/install | bash
+for install_attempt in 1 2 3; do
+    if {install_command}; then
+        break
+    fi
+    if [ "$install_attempt" -eq 3 ]; then
+        echo "OpenCode installation failed after 3 attempts" >&2
+        exit 1
+    fi
+    echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
+    sleep 5
+done
 export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
@@ -136,30 +144,51 @@ class OpenCodeEnv(CliAgentEnv):
 
     DEFAULT_AGENT_WORKDIR = "/app"
     DEFAULT_ASSET_DIR = "/opencode"
-    DEFAULT_DISABLED_TOOLS = ["webfetch", "question"]
-    DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_OPENCODE_RUN_COMMAND_TEMPLATE
-    DEFAULT_SYSTEM_PROMPT = DEFAULT_OPENCODE_SYSTEM_PROMPT
+    # 'question' requires user interaction
+    # 'task' spawns subagents which gives non-linear env histories
+    DEFAULT_DISABLED_TOOLS = ["question", "task"]
+    DEFAULT_INSTALL_COMMAND = DEFAULT_INSTALL_COMMAND
+    DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
+    DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+    DEFAULT_PROVIDER_TIMEOUT_MS = 1_800_000  # 30min
+    DEFAULT_DISABLE_COMPACTION = True
+    DEFAULT_ENABLE_INTERLEAVED = True
 
     def __init__(
         self,
         dataset: Dataset,
         asset_dir: str = DEFAULT_ASSET_DIR,
         agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-        disabled_tools: list[str] | None = DEFAULT_DISABLED_TOOLS,
+        disabled_tools: list[str] = DEFAULT_DISABLED_TOOLS,
         system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
+        install_command: str = DEFAULT_INSTALL_COMMAND,
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
+        disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
+        enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
+        provider_timeout_ms: int = DEFAULT_PROVIDER_TIMEOUT_MS,
         **kwargs,
     ):
         self.asset_dir = asset_dir
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
+        self.provider_timeout_ms = provider_timeout_ms
 
         run_command = self.build_run_command(
             run_command_template,
             agent_workdir,
             disabled_tools=disabled_tools,
             system_prompt=system_prompt,
+            install_command=install_command,
+            disable_compaction=disable_compaction,
+            enable_interleaved=enable_interleaved,
         )
+
+        if (
+            disabled_tools is not None
+            and system_prompt is not None
+            and "todowrite" not in disabled_tools
+        ):
+            system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
         super().__init__(
             run_command=run_command,
@@ -229,6 +258,56 @@ class OpenCodeEnv(CliAgentEnv):
             finally:
                 Path(local_system_prompt_path).unlink(missing_ok=True)
 
+    async def build_env_vars(self, state: vf.State) -> dict[str, str]:
+        """Build environment variables for the sandbox. Override to add custom vars."""
+        env_vars = await super().build_env_vars(state)
+        if "websearch" not in self.disabled_tools:
+            env_vars["OPENCODE_ENABLE_EXA"] = str(1)
+        return env_vars
+
+    def normalize_response(self, response: vf.Response) -> vf.Response:
+        """Normalize model response to match OpenCode's message history conventions:
+        - Compact JSON arugments
+        - Strip trailing newlines from assistant content
+
+        Applying the same normalization to the stored step enables TITO prefix hits.
+        """
+        message = response.message
+        normalized_tool_calls = message.tool_calls or []
+        if message.tool_calls:
+            normalized_tool_calls = []
+            for tc in message.tool_calls:
+                if not isinstance(tc, ToolCall):
+                    normalized_tool_calls.append(tc)
+                    continue
+                try:
+                    compact_arguments = json.dumps(
+                        json.loads(tc.arguments),
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    compact_arguments = tc.arguments
+                normalized_tool_calls.append(
+                    tc.model_copy(
+                        update={"name": tc.name.lower(), "arguments": compact_arguments}
+                    )
+                )
+        content = message.content
+        if content is None:
+            content = ""
+        elif isinstance(content, str):
+            content = content.rstrip()
+        reasoning_content = message.reasoning_content or None
+        normalized_message = message.model_copy(
+            update={
+                "content": content,
+                "tool_calls": normalized_tool_calls,
+                "reasoning_content": reasoning_content,
+            }
+        )
+        return response.model_copy(update={"message": normalized_message})
+
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""
         return state["prompt"][-1]["content"]
@@ -237,32 +316,40 @@ class OpenCodeEnv(CliAgentEnv):
         self,
         disabled_tools: list[str] | None = None,
         system_prompt_path: str | None = None,
+        disable_compaction: bool = True,
+        enable_interleaved: bool = True,
     ) -> str:
         """Build OpenCode config."""
         config: dict = {
             "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
             "provider": {
-                "intercepted": {
+                "${OPENAI_MODEL%%/*}": {
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "Intercepted",
+                    "name": "${OPENAI_MODEL%%/*}",
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "intercepted",
-                        "timeout": 600000,
+                        "timeout": self.provider_timeout_ms,
                     },
                     "models": {
-                        "model": {
-                            "name": "Intercepted Model",
+                        "${OPENAI_MODEL##*/}": {
+                            "name": "${OPENAI_MODEL##*/}",
                             "modalities": {
                                 "input": ["text", "image"],
                                 "output": ["text"],
                             },
+                            "interleaved": {"field": "reasoning_content"}
+                            if enable_interleaved
+                            else False,
                         }
                     },
                 }
             },
-            "model": "intercepted/model",
+            "model": "$OPENAI_MODEL",
         }
+
+        if disable_compaction:
+            config["compaction"] = {"auto": False, "prune": False}
 
         if system_prompt_path or disabled_tools:
             build_config: dict = {}
@@ -280,12 +367,17 @@ class OpenCodeEnv(CliAgentEnv):
         agent_workdir: str,
         disabled_tools: list[str] | None = None,
         system_prompt: str | None = None,
+        install_command: str = DEFAULT_INSTALL_COMMAND,
+        disable_compaction: bool = True,
+        enable_interleaved: bool = True,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
         config_json = self.build_opencode_config(
             disabled_tools,
             self.remote_system_prompt_path if system_prompt else None,
+            disable_compaction=disable_compaction,
+            enable_interleaved=enable_interleaved,
         )
 
         return run_command_template.format(
@@ -293,4 +385,5 @@ class OpenCodeEnv(CliAgentEnv):
             agent_workdir=agent_workdir,
             prompt_path=self.remote_prompt_path,
             logs_path=self.remote_logs_path,
+            install_command=install_command,
         )

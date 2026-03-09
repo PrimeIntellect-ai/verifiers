@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any, cast
@@ -14,7 +15,7 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
     Messages,
     MessageType,
@@ -34,6 +35,26 @@ from verifiers.utils.worker_utils import get_free_port
 logger = logging.getLogger(__name__)
 
 
+class CliAgentMonitorRubric(vf.Rubric):
+    """Monitor rubric that tracks CLI agent execution state."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_metric(self.agent_timeout)
+        self.add_metric(self.agent_error)
+
+    async def agent_timeout(self, state: vf.State) -> float:
+        """Whether the agent timed out."""
+        return float(bool(state.get("agent_timed_out")))
+
+    async def agent_error(self, state: vf.State) -> float:
+        """Whether the agent errored (non-zero exit_code)."""
+        agent_exit_code = state.get("agent_exit_code")
+        if agent_exit_code is None:
+            return 0.0
+        return float(agent_exit_code != 0)
+
+
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     """
     Environment for running full agent code inside sandboxes.
@@ -49,14 +70,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        poll_interval: float = 5.0,
+        poll_interval: float = 1.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,
         memory_gb: int = 2,
         disk_size_gb: int = 5,
         gpu_count: int = 0,
-        timeout_minutes: int = 60,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
@@ -93,20 +113,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.memory_gb = memory_gb
         self.disk_size_gb = disk_size_gb
         self.gpu_count = gpu_count
-        self.timeout_minutes = timeout_minutes
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
         self.labels = labels
 
-        self._interception_server: InterceptionServer | None = None
-        self._tunnel: Tunnel | None = None
-        self._tunnel_lock = asyncio.Lock()
-
         interception_port = (
             get_free_port() if interception_port is None else interception_port
         )
         self.init_interception(interception_port, interception_url)
+        self.add_rubric(SandboxMonitorRubric())
+        self.add_rubric(CliAgentMonitorRubric())
 
     def init_interception(
         self,
@@ -118,6 +135,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
+        self._tunnel_monitor_task: asyncio.Task | None = None
         self._interception_server = InterceptionServer(port=interception_port)
 
     def _require_interception_server(self) -> InterceptionServer:
@@ -148,10 +166,46 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     self._tunnel = Tunnel(local_port=port)
                 url = await self._tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
+
+                # Lazily start health monitor on first tunnel creation
+                if (
+                    self._tunnel_monitor_task is None
+                    or self._tunnel_monitor_task.done()
+                ):
+                    self._tunnel_monitor_task = asyncio.create_task(
+                        self._tunnel_health_monitor()
+                    )
+
                 return url
             else:
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
+
+    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
+        """Background task that checks tunnel liveness and restarts a dead tunnel."""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with self._tunnel_lock:
+                    if self._tunnel is not None and not self._tunnel.is_running:
+                        frpc_output = "\n".join(self._tunnel.recent_output)
+                        logger.warning(
+                            f"Health monitor: tunnel dead. frpc output:\n{frpc_output}"
+                        )
+                        self._tunnel.sync_stop()
+                        interception_server = self._require_interception_server()
+                        port = interception_server.port
+                        if logger.isEnabledFor(logging.DEBUG):
+                            self._tunnel = Tunnel(
+                                local_port=port,
+                                log_level="debug",
+                            )
+                        else:
+                            self._tunnel = Tunnel(local_port=port)
+                        url = await self._tunnel.start()
+                        logger.info(f"Health monitor: restarted tunnel url={url}")
+        except asyncio.CancelledError:
+            return
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -182,7 +236,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             memory_gb=self.memory_gb,
             disk_size_gb=self.disk_size_gb,
             gpu_count=self.gpu_count,
-            timeout_minutes=self.timeout_minutes,
+            timeout_minutes=math.ceil(self.timeout_seconds / 60),
             environment_vars=env_vars,
             team_id=self.team_id,
             advanced_configs=self.advanced_configs,
@@ -275,7 +329,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
                 state["agent_stderr"] = status.stderr
-                logger.debug(f"Agent completed with exit_code={status.exit_code}")
+                if status.exit_code == 0:
+                    logger.debug(
+                        f"Agent completed successfully (exit_code={status.exit_code})"
+                    )
+                else:
+                    logger.warning(
+                        f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
+                    )
                 return
             await asyncio.sleep(1)
 
@@ -283,45 +344,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Check if agent process has completed."""
         return state.get("agent_completed", False)
 
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """Wait for agent to make an API request OR agent completion, whichever comes first."""
-        request_id_queue = state["request_id_queue"]
-        interception_server = self._require_interception_server()
-
-        while True:
-            try:
-                # Short timeout so we can check completion frequently
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
-                )
-                # Got a request, proceed normally
-                state["current_request_id"] = request_id
-                intercept = interception_server.intercepts[request_id]
-                return normalize_messages(intercept["messages"], field_name="messages")
-
-            except asyncio.TimeoutError:
-                # No request yet — check tunnel liveness first
-                if self._tunnel is not None and not self._tunnel.is_running:
-                    frpc_output = "\n".join(self._tunnel.recent_output)
-                    raise vf.TunnelError(
-                        f"Tunnel process died during rollout. "
-                        f"frpc output:\n{frpc_output}"
-                    )
-                # Then check if agent finished or timed out
-                if await self.check_agent_completed(state):
-                    state["agent_completed"] = True
-                    return []
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    return []
-
-    def _normalize_intercept_tool_defs(
-        self, intercept_tools: object
-    ) -> list[Tool] | None:
+    def normalize_intercepted_tools(self, intercept_tools: object) -> list[Tool] | None:
         """Normalize intercepted request tools for the provider-agnostic runtime.
 
-        Agent requests arrive in OpenAI-native tool format. Convert that schema to
-        vf.Tool defs here so the main runtime can stay strict about tool_defs.
+        Assumes that agent requests arrive in OpenAI-tool format.
         """
         if not isinstance(intercept_tools, list):
             raise TypeError("Intercepted tools must be provided as a list.")
@@ -359,6 +385,53 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             normalized_inputs.append(raw_tool_dict)
 
         return self._normalize_tool_defs(normalized_inputs)
+
+    def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
+        """Hook to normalize messages received from the agent before model inference.
+
+        Assumes that agent requests arrive in OpenAI-format.
+        """
+        return normalize_messages(intercepted_messages)  # type: ignore
+
+    def normalize_response(self, response: Response) -> Response:
+        """Hook to normalize the model response before it is stored in the trajectory.
+
+        Override in subclasses to align the stored step format with the agent's
+        own message history conventions, enabling TITO prefix cache hits.
+        """
+        return response
+
+    async def get_prompt_messages(self, state: State) -> Messages:
+        """Wait for agent to make an API request OR agent completion, whichever comes first."""
+        request_id_queue = state["request_id_queue"]
+        interception_server = self._require_interception_server()
+
+        while True:
+            try:
+                # Short timeout so we can check completion frequently
+                request_id = await asyncio.wait_for(
+                    request_id_queue.get(),
+                    timeout=self.poll_interval,
+                )
+                # Got a request, proceed normally
+                state["current_request_id"] = request_id
+                intercept = interception_server.intercepts[request_id]
+                return self.normalize_intercepted_messages(intercept["messages"])
+
+            except asyncio.TimeoutError:
+                # No request yet — check tunnel liveness first
+                if self._tunnel is not None and not self._tunnel.is_running:
+                    frpc_output = "\n".join(self._tunnel.recent_output)
+                    raise vf.TunnelError(
+                        f"Tunnel process died during rollout. "
+                        f"frpc output:\n{frpc_output}"
+                    )
+                # Then check if agent finished or timed out
+                if await self.check_agent_completed(state):
+                    state["agent_completed"] = True
+                    return []
+                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                    return []
 
     async def get_model_response(
         self,
@@ -401,7 +474,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             intercept_tools = intercept.get("tools")
             if intercept_tools:
                 tool_defs = (
-                    self._normalize_intercept_tool_defs(intercept_tools) or tool_defs
+                    self.normalize_intercepted_tools(intercept_tools) or tool_defs
                 )
 
         response: Response | None = None
@@ -445,11 +518,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         # On first turn, update state["prompt"] to match the agent's actual prompt
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
-        await super().add_model_response(state, prompt_messages, response)
+        await super().add_model_response(
+            state, prompt_messages, self.normalize_response(response)
+        )
 
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
+        if (
+            self._tunnel_monitor_task is not None
+            and not self._tunnel_monitor_task.done()
+        ):
+            self._tunnel_monitor_task.cancel()
+            try:
+                await self._tunnel_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._tunnel_monitor_task = None
+
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:

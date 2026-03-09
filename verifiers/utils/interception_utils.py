@@ -142,7 +142,9 @@ class InterceptionServer:
         is_streaming = request_body.get("stream", False)
         request_id = f"req_{uuid.uuid4().hex[:8]}"
 
-        chunk_queue: asyncio.Queue | None = asyncio.Queue() if is_streaming else None
+        chunk_queue: asyncio.Queue[dict | None] | None = (
+            asyncio.Queue() if is_streaming else None
+        )
 
         intercept = {
             "request_id": request_id,
@@ -180,7 +182,7 @@ class InterceptionServer:
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict
     ) -> Any:
-        chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+        chunk_queue = cast(asyncio.Queue[dict | None], intercept["chunk_queue"])
         response_future = cast(asyncio.Future[Any], intercept["response_future"])
 
         response = web.StreamResponse(
@@ -195,15 +197,12 @@ class InterceptionServer:
 
         try:
             while True:
-                chunk = await chunk_queue.get()
+                chunk_dict = await chunk_queue.get()
 
-                if chunk is None:
+                if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
                     break
 
-                chunk_dict = (
-                    chunk.model_dump() if hasattr(chunk, "model_dump") else dict(chunk)
-                )
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
 
@@ -246,7 +245,7 @@ async def synthesize_stream(
       put chunk(s) on chunk_queue → put None (EOF) → resolve response_future.
     """
     chunk_queue = cast(
-        asyncio.Queue[ChatCompletionChunk | None] | None,
+        asyncio.Queue[dict | None] | None,
         intercept.get("chunk_queue"),
     )
     future = cast(asyncio.Future[Any] | None, intercept.get("response_future"))
@@ -320,7 +319,12 @@ async def synthesize_stream(
         model=response.model,
         object="chat.completion.chunk",
     )
-    await chunk_queue.put(content_chunk)
+    content_chunk_dict = content_chunk.model_dump()
+    if message.reasoning_content:
+        content_chunk_dict["choices"][0]["delta"]["reasoning_content"] = (
+            message.reasoning_content
+        )
+    await chunk_queue.put(content_chunk_dict)
 
     # Chunk 2: finish_reason only
     finish_chunk = ChatCompletionChunk(
@@ -336,7 +340,8 @@ async def synthesize_stream(
         model=response.model,
         object="chat.completion.chunk",
     )
-    await chunk_queue.put(finish_chunk)
+    finish_chunk_dict = finish_chunk.model_dump()
+    await chunk_queue.put(finish_chunk_dict)
 
     # EOF sentinel + resolve future
     await chunk_queue.put(None)
@@ -402,6 +407,8 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
         }
         if tool_calls:
             message_payload["tool_calls"] = tool_calls
+        if message.reasoning_content is not None:
+            message_payload["reasoning_content"] = message.reasoning_content
 
         choice: dict[str, Any] = {
             "index": 0,
@@ -434,7 +441,10 @@ def _truncate(s: str, limit: int = 200) -> str:
 def _log_request(rollout_id: str, body: dict) -> None:
     """Log an intercepted request."""
     log_msg = f"[{rollout_id}] <- INTERCEPTED REQUEST"
-    log_msg += f" ({len(body.get('tools', []))} tool(s))"
+    tools = body.get("tools", [])
+    log_msg += f" ({len(tools)} tool(s))"
+    if tools:
+        log_msg += f"\n[tools]\n{', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):
