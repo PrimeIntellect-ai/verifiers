@@ -1,4 +1,4 @@
-from math_verify import parse, verify
+from math_verify import parse, verify  # type: ignore[unresolved-import]
 from openai import AsyncOpenAI
 
 import verifiers as vf

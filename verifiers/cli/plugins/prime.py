@@ -42,27 +42,15 @@ def _python_can_import_module(
 
 
 def _resolve_workspace_python(cwd: Path | None = None) -> str:
-    return _resolve_module_python(
-        "verifiers.cli.commands.eval",
-        cwd,
-        search_parent_projects=True,
-    )
-
-
-def _resolve_module_python(
-    module_name: str,
-    cwd: Path | None = None,
-    *,
-    search_parent_projects: bool = False,
-) -> str:
     workspace = (cwd or Path.cwd()).resolve()
     workspace_root = _find_workspace_root(workspace)
     workspace_for_probe = workspace_root or workspace
     workspace_str = str(workspace_for_probe)
+    module = "verifiers.cli.commands.eval"
 
     def _usable(candidate: Path) -> bool:
         return candidate.exists() and _python_can_import_module(
-            str(candidate), module_name, workspace_str
+            str(candidate), module, workspace_str
         )
 
     if workspace_root is not None:
@@ -82,18 +70,13 @@ def _resolve_module_python(
         if _usable(candidate):
             return str(candidate)
 
-    if search_parent_projects:
-        for directory in [workspace, *workspace.parents]:
-            if (directory / "pyproject.toml").is_file():
-                candidate = _venv_python(directory / ".venv")
-                if _usable(candidate):
-                    return str(candidate)
+    for directory in [workspace, *workspace.parents]:
+        if (directory / "pyproject.toml").is_file():
+            candidate = _venv_python(directory / ".venv")
+            if _usable(candidate):
+                return str(candidate)
 
     return sys.executable
-
-
-def _resolve_tui_python(cwd: Path | None = None) -> str:
-    return _resolve_module_python("verifiers.cli.tui", cwd)
 
 
 def _find_workspace_root(start: Path) -> Path | None:
@@ -168,7 +151,6 @@ class PrimeCLIPlugin:
     init_module: str = "verifiers.cli.commands.init"
     setup_module: str = "verifiers.cli.commands.setup"
     build_module: str = "verifiers.cli.commands.build"
-    tui_module: str = "verifiers.cli.tui"
 
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None
@@ -199,12 +181,7 @@ class PrimeCLIPlugin:
                 cwd=cwd,
             )
 
-        python_executable = (
-            _resolve_tui_python(cwd)
-            if module_name == self.tui_module
-            else _resolve_workspace_python(cwd)
-        )
-        command = [python_executable, "-m", module_name]
+        command = [_resolve_workspace_python(cwd), "-m", module_name]
         if normalized_args:
             command.extend(normalized_args)
         return command
