@@ -51,7 +51,7 @@ DEFAULT_INSTALL_COMMAND = (
 )
 
 DEFAULT_RUN_COMMAND_TEMPLATE = """\
-set -e
+set -eo pipefail
 
 apt-get update && apt-get install -y curl
 
