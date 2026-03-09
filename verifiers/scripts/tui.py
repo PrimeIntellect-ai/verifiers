@@ -83,71 +83,42 @@ class RunOverviewStats:
     metric_summaries: List[MetricSummary]
 
 
-_METRIC_CATEGORY_ORDER = {
-    "Tokens": 0,
-    "Calls": 1,
-    "Flow": 2,
-    "Errors": 3,
-    "Timing": 4,
-    "Scores": 5,
-    "Other": 6,
-}
-
-
-def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[str]:
-    roots: List[str] = []
-    env_dir_str = os.fspath(env_dir)
-    if os.path.isdir(env_dir_str):
-        for child_name in sorted(os.listdir(env_dir_str)):
-            candidate = os.path.join(env_dir_str, child_name, "outputs", "evals")
-            if os.path.isdir(candidate):
-                roots.append(candidate)
-    global_root = os.path.join(os.fspath(global_outputs_dir), "evals")
-    if os.path.isdir(global_root):
-        roots.append(global_root)
-    return roots
-
-
-def _parse_env_and_model(dir_name: str) -> Optional[Tuple[str, str]]:
-    if "--" not in dir_name:
-        return None
-    env, model_part = dir_name.split("--", 1)
-    model = model_part.replace("--", "/")
-    return env, model
-
-
 def discover_results(
     env_dir_path: str = "./environments", outputs_dir_path: str = "./outputs"
 ) -> Dict[str, Dict[str, List[RunInfo]]]:
     """
     Returns mapping: env_id -> model -> list[RunInfo]
     """
+    roots: List[Path] = []
     env_dir = Path(env_dir_path)
-    global_outputs_dir = Path(outputs_dir_path)
-    roots = _iter_eval_roots(env_dir, global_outputs_dir)
+    if env_dir.is_dir():
+        for env_path in sorted(env_dir.iterdir(), key=lambda path: path.name):
+            candidate = env_path / "outputs" / "evals"
+            if candidate.is_dir():
+                roots.append(candidate)
+
+    global_root = Path(outputs_dir_path) / "evals"
+    if global_root.is_dir():
+        roots.append(global_root)
 
     discovered: Dict[str, Dict[str, List[RunInfo]]] = {}
     for root in roots:
-        for env_model_name in sorted(os.listdir(root)):
-            env_model_dir = os.path.join(root, env_model_name)
-            if not os.path.isdir(env_model_dir):
+        for env_model_dir in sorted(root.iterdir(), key=lambda path: path.name):
+            if not env_model_dir.is_dir() or "--" not in env_model_dir.name:
                 continue
-            parsed = _parse_env_and_model(env_model_name)
-            if parsed is None:
-                continue
-            env_id, model = parsed
-            for run_name in sorted(os.listdir(env_model_dir)):
-                run_dir = os.path.join(env_model_dir, run_name)
-                if not os.path.isdir(run_dir):
+            env_id, model_part = env_model_dir.name.split("--", 1)
+            model = model_part.replace("--", "/")
+            for run_dir in sorted(env_model_dir.iterdir(), key=lambda path: path.name):
+                if not run_dir.is_dir():
                     continue
-                meta = os.path.join(run_dir, "metadata.json")
-                results = os.path.join(run_dir, "results.jsonl")
-                if os.path.isfile(meta) and os.path.isfile(results):
+                if (run_dir / "metadata.json").is_file() and (
+                    run_dir / "results.jsonl"
+                ).is_file():
                     run = RunInfo(
                         env_id=env_id,
                         model=model,
-                        run_id=run_name,
-                        path=Path(run_dir),
+                        run_id=run_dir.name,
+                        path=run_dir,
                     )
                     discovered.setdefault(env_id, {}).setdefault(model, []).append(run)
 
@@ -243,64 +214,9 @@ class LazyRunResults:
         return line is not None
 
 
-def load_run_results(run: RunInfo) -> LazyRunResults:
-    """Open results.jsonl lazily."""
-    return LazyRunResults(run)
-
-
 # ----------------------------
 # Formatting helpers
 # ----------------------------
-
-
-def format_prompt_or_completion(prompt_or_completion) -> Text:
-    """Format completion for display."""
-    out = Text()
-    if isinstance(prompt_or_completion, list):
-        for msg in prompt_or_completion:
-            if not isinstance(msg, dict):
-                out.append(str(msg))
-                out.append("\n\n")
-                continue
-            role = msg.get("role", "")
-            content = _stringify_message_content(msg.get("content", ""))
-            # Style by role
-            if role == "assistant":
-                out.append("assistant: ", style="bold")
-                out.append(content)
-            elif role == "tool":
-                out.append("tool result: ", style="bold dim")
-                out.append(content)
-            else:
-                out.append(f"{role}: ", style="bold dim")
-                out.append(content)
-            out.append("\n")
-            # Tool calls
-            tool_calls_data = msg.get("tool_calls", [])
-            if isinstance(tool_calls_data, list) and tool_calls_data:
-                if isinstance(tool_calls_data[0], str):
-                    parsed = []
-                    for tc_str in tool_calls_data:
-                        try:
-                            parsed.append(json.loads(tc_str))
-                        except json.JSONDecodeError:
-                            parsed.append(tc_str)
-                    tool_calls_data = parsed
-
-                for tc in tool_calls_data:
-                    out.append("\ntool call: ", style="bold")
-                    if isinstance(tc, dict) and "function" in tc:
-                        fn = tc["function"]
-                        out.append(str(fn.get("name", "")))
-                        out.append("\n")
-                        out.append(str(fn.get("arguments", "")))
-                    else:
-                        out.append(str(tc))
-                    out.append("\n")
-            out.append("\n")
-        return out
-    out.append(str(prompt_or_completion))
-    return out
 
 
 def _stringify_message_content(content: Any) -> str:
@@ -328,16 +244,7 @@ def _stringify_message_content(content: Any) -> str:
 def _parse_tool_calls(tool_calls: Any) -> List[Any]:
     if not isinstance(tool_calls, list):
         return []
-    parsed: List[Any] = []
-    for tool_call in tool_calls:
-        if isinstance(tool_call, str):
-            try:
-                parsed.append(json.loads(tool_call))
-            except json.JSONDecodeError:
-                parsed.append(tool_call)
-        else:
-            parsed.append(tool_call)
-    return parsed
+    return [_parse_jsonish_string(tool_call) for tool_call in tool_calls]
 
 
 def _truncate_preview(text: str, limit: int = 72) -> str:
@@ -347,10 +254,7 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     return collapsed[: limit - 1].rstrip() + "…"
 
 
-def _format_message_preview(message: Any, fallback: str) -> str:
-    if not isinstance(message, dict):
-        return _truncate_preview(str(message), 56) or fallback
-
+def _format_message_preview(message: Dict[str, Any]) -> str:
     content = _stringify_message_content(message.get("content", ""))
     tool_calls = _parse_tool_calls(message.get("tool_calls"))
     if content:
@@ -359,10 +263,10 @@ def _format_message_preview(message: Any, fallback: str) -> str:
         first = tool_calls[0]
         if isinstance(first, dict):
             function = first.get("function", {})
-            name = function.get("name") or first.get("name") or "tool call"
-            return f"calls {name}"
+            name = function.get("name") or first.get("name") or ""
+            return f"calls {name}" if name else ""
         return f"calls {_truncate_preview(str(first), 48)}"
-    return fallback
+    return ""
 
 
 def _reward_style(value: Any) -> str:
@@ -378,7 +282,7 @@ def _reward_style(value: Any) -> str:
 def _format_reward_value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return f"{value:.3f}"
-    return str(value) if value not in (None, "") else "N/A"
+    return str(value)
 
 
 def _format_compact_metric(value: Any) -> str:
@@ -389,13 +293,6 @@ def _format_compact_metric(value: Any) -> str:
             return str(int(value))
         return f"{value:.2f}".rstrip("0").rstrip(".")
     return str(value)
-
-
-def _first_non_empty_line(text: str) -> str:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip()
-    return ""
 
 
 def _numeric_reward(value: Any) -> Optional[float]:
@@ -411,27 +308,25 @@ def _pretty_json_or_str(value: Any) -> str:
         return str(value)
 
 
-def _format_tool_arguments(arguments: Any) -> str:
-    parsed = _coerce_info_value(arguments)
-    if isinstance(parsed, dict):
-        if set(parsed.keys()) == {"code"}:
-            return str(parsed["code"])
-        return _pretty_json_or_str(parsed)
-    if isinstance(parsed, list):
-        return _pretty_json_or_str(parsed)
-    return str(arguments) if arguments not in (None, "") else "No arguments"
-
-
 def _tool_call_parts(tool_call: Any) -> Tuple[str, str, Optional[str]]:
     if not isinstance(tool_call, dict):
-        return "tool call", str(tool_call), None
+        return str(tool_call), "", None
 
     function = tool_call.get("function")
     payload = function if isinstance(function, dict) else tool_call
-    name = str(payload.get("name") or tool_call.get("name") or "tool call")
-    arguments = _format_tool_arguments(
-        payload.get("arguments", tool_call.get("arguments", ""))
-    )
+    name = str(payload.get("name") or tool_call.get("name") or "")
+    raw_arguments = payload.get("arguments", tool_call.get("arguments", ""))
+    parsed_arguments = _parse_jsonish_string(raw_arguments)
+    if isinstance(parsed_arguments, dict):
+        arguments = (
+            str(parsed_arguments["code"])
+            if set(parsed_arguments.keys()) == {"code"}
+            else _pretty_json_or_str(parsed_arguments)
+        )
+    elif isinstance(parsed_arguments, list):
+        arguments = _pretty_json_or_str(parsed_arguments)
+    else:
+        arguments = str(raw_arguments) if raw_arguments not in (None, "") else ""
     call_id = tool_call.get("id")
     return name, arguments, str(call_id) if call_id not in (None, "") else None
 
@@ -440,35 +335,39 @@ def _tool_output_preview(message: Any) -> str:
     if not isinstance(message, dict):
         return _truncate_preview(str(message), 44)
     content = _stringify_message_content(message.get("content", ""))
-    first_line = _first_non_empty_line(content)
-    return _truncate_preview(first_line or content or "No output yet", 44)
+    for line in content.splitlines():
+        if line.strip():
+            return _truncate_preview(line.strip(), 44)
+    return _truncate_preview(content, 44)
 
 
 def _tool_group_preview(message: Any, tool_outputs: List[Any]) -> str:
-    base = _format_message_preview(message, "tool work")
+    base = _format_message_preview(message)
     if not tool_outputs:
         return base
-    return _truncate_preview(f"{base} -> {_tool_output_preview(tool_outputs[0])}", 68)
+    output_preview = _tool_output_preview(tool_outputs[0])
+    if not base:
+        return output_preview
+    return _truncate_preview(f"{base} -> {output_preview}", 68)
 
 
-def _coerce_info_value(info: Any) -> Any:
-    """Return parsed JSON when info is a JSON string, otherwise original value."""
-    if not isinstance(info, str):
-        return info
-    stripped = info.strip()
+def _parse_jsonish_string(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
     if not stripped:
         return ""
     if stripped[0] not in "[{":
-        return info
+        return value
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        return info
+        return value
 
 
 def format_info_for_details(info: Any) -> str:
     """Format record info for the details panel in rollout view."""
-    info_value = _coerce_info_value(info)
+    info_value = _parse_jsonish_string(info)
     if isinstance(info_value, (dict, list)):
         return _pretty_json_or_str(info_value)
     return str(info_value)
@@ -504,7 +403,7 @@ def _extract_numeric_metric_values(record: Dict[str, Any]) -> Dict[str, float]:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 metric_values[key] = float(value)
 
-    info = _coerce_info_value(record.get("info"))
+    info = _parse_jsonish_string(record.get("info"))
     if isinstance(info, dict):
         reward_signals = info.get("reward_signals")
         if isinstance(reward_signals, dict):
@@ -521,53 +420,9 @@ def _extract_numeric_metric_values(record: Dict[str, Any]) -> Dict[str, float]:
     return metric_values
 
 
-def _summarize_metric_values(
-    records: LazyRunResults,
-) -> List[MetricSummary]:
-    metric_values: Dict[str, List[float]] = defaultdict(list)
-
-    for idx in range(len(records)):
-        for name, value in _extract_numeric_metric_values(records[idx]).items():
-            metric_values[name].append(value)
-
-    return [
-        MetricSummary(
-            name=name,
-            count=len(values),
-            avg=sum(values) / len(values),
-            min_value=min(values),
-            max_value=max(values),
-        )
-        for name, values in sorted(metric_values.items())
-        if values
-    ]
-
-
-def _run_average_rewards(runs: List[RunInfo]) -> List[float]:
-    rewards: List[float] = []
-    for run in runs:
-        reward = _numeric_reward(run.load_metadata().get("avg_reward"))
-        if reward is not None:
-            rewards.append(reward)
-    return rewards
-
-
-def _make_text_bar(fraction: float, width: int = 24, style: str = "cyan") -> Text:
-    fraction = max(0.0, min(1.0, fraction))
-    filled_cells = round(fraction * width)
-    filled = "█" * filled_cells
-    empty = "░" * max(0, width - len(filled))
-    bar = Text()
-    if filled:
-        bar.append(filled, style=style)
-    if empty:
-        bar.append(empty, style="dim")
-    return bar
-
-
 def _build_reward_distribution_table(values: List[float], heading: str) -> Group | Text:
     if not values:
-        return Text("No reward data", style="dim")
+        return Text()
 
     avg_reward = sum(values) / len(values)
     summary = Text()
@@ -610,11 +465,18 @@ def _build_reward_distribution_table(values: List[float], heading: str) -> Group
 
     for label, count, style in bucket_counts:
         share = (count / len(values)) if values else 0.0
+        fraction = count / peak_count if peak_count else 0.0
+        filled_cells = round(max(0.0, min(1.0, fraction)) * 24)
+        bar = Text()
+        if filled_cells:
+            bar.append("█" * filled_cells, style=style)
+        if filled_cells < 24:
+            bar.append("░" * (24 - filled_cells), style="dim")
         table.add_row(
             label,
             f"{count:,}",
             f"{share:.1%}",
-            _make_text_bar(count / peak_count if peak_count else 0.0, style=style),
+            bar,
         )
 
     return Group(summary, table)
@@ -638,61 +500,9 @@ def _format_metric_stat_value(value: float) -> str:
     return f"{value:,.{precision}f}".rstrip("0").rstrip(".")
 
 
-def _metric_category(name: str) -> str:
-    lowered = name.lower()
-    if "token" in lowered:
-        return "Tokens"
-    if "call" in lowered:
-        return "Calls"
-    if "turn" in lowered or "step" in lowered or "batch" in lowered:
-        return "Flow"
-    if "error" in lowered:
-        return "Errors"
-    if "time" in lowered or lowered.endswith("_ms"):
-        return "Timing"
-    if "reward" in lowered or "score" in lowered or "task" in lowered:
-        return "Scores"
-    return "Other"
-
-
-def _metric_display_name(name: str) -> str:
-    label = name.replace("_", " ")
-    replacements = (
-        ("sub llm", "sub-LLM"),
-        ("main rlm", "main RLM"),
-        ("root rlm", "root RLM"),
-        ("llm", "LLM"),
-        ("repl", "REPL"),
-    )
-    for source, target in replacements:
-        label = label.replace(source, target)
-    return label
-
-
-def _metric_sort_key(summary: MetricSummary) -> tuple[int, int, str]:
-    name = summary.name.lower()
-    category = _metric_category(summary.name)
-
-    prefix_rank = 4
-    if name.startswith("sub_llm_"):
-        prefix_rank = 0
-    elif name.startswith("main_rlm_"):
-        prefix_rank = 1
-    elif name.startswith("root_"):
-        prefix_rank = 2
-    elif name.startswith("repl_"):
-        prefix_rank = 3
-
-    return (
-        _METRIC_CATEGORY_ORDER.get(category, 99),
-        prefix_rank,
-        _metric_display_name(summary.name),
-    )
-
-
 def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table | Text:
     if not metric_summaries:
-        return Text("No rollout metrics", style="dim")
+        return Text()
 
     counts = {summary.count for summary in metric_summaries}
     show_count_column = len(counts) > 1
@@ -720,14 +530,70 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     if show_count_column:
         table.add_column("N", justify="right", style="dim", width=7, no_wrap=True)
 
+    category_order = {
+        "Tokens": 0,
+        "Calls": 1,
+        "Flow": 2,
+        "Errors": 3,
+        "Timing": 4,
+        "Scores": 5,
+        "Other": 6,
+    }
+    replacements = (
+        ("sub llm", "sub-LLM"),
+        ("main rlm", "main RLM"),
+        ("root rlm", "root RLM"),
+        ("llm", "LLM"),
+        ("repl", "REPL"),
+    )
+    prepared: List[Tuple[int, int, str, str, MetricSummary]] = []
+    for summary in metric_summaries:
+        lowered = summary.name.lower()
+        if "token" in lowered:
+            category = "Tokens"
+        elif "call" in lowered:
+            category = "Calls"
+        elif "turn" in lowered or "step" in lowered or "batch" in lowered:
+            category = "Flow"
+        elif "error" in lowered:
+            category = "Errors"
+        elif "time" in lowered or lowered.endswith("_ms"):
+            category = "Timing"
+        elif "reward" in lowered or "score" in lowered or "task" in lowered:
+            category = "Scores"
+        else:
+            category = "Other"
+
+        prefix_rank = 4
+        if lowered.startswith("sub_llm_"):
+            prefix_rank = 0
+        elif lowered.startswith("main_rlm_"):
+            prefix_rank = 1
+        elif lowered.startswith("root_"):
+            prefix_rank = 2
+        elif lowered.startswith("repl_"):
+            prefix_rank = 3
+
+        display_name = summary.name.replace("_", " ")
+        for source, target in replacements:
+            display_name = display_name.replace(source, target)
+        prepared.append(
+            (
+                category_order.get(category, 99),
+                prefix_rank,
+                display_name,
+                category,
+                summary,
+            )
+        )
+
     previous_category: str | None = None
-    for summary in sorted(metric_summaries, key=_metric_sort_key):
-        category = _metric_category(summary.name)
+    for _, _, display_name, category, summary in sorted(prepared):
         if previous_category is not None and category != previous_category:
             table.add_section()
 
         row = [
-            _metric_display_name(summary.name),
+            display_name,
             _format_metric_stat_value(summary.avg),
             f"{_format_metric_stat_value(summary.min_value)} -> {_format_metric_stat_value(summary.max_value)}",
         ]
@@ -738,18 +604,6 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
         previous_category = category
 
     return table
-
-
-def _render_renderable_to_text(renderable: Any, width: int = 120) -> str:
-    buffer = StringIO()
-    console = Console(
-        file=buffer,
-        force_terminal=False,
-        color_system=None,
-        width=max(40, width),
-    )
-    console.print(renderable)
-    return buffer.getvalue().rstrip()
 
 
 # ----------------------------
@@ -774,7 +628,6 @@ class SearchHit:
 @dataclass(frozen=True)
 class SearchResult:
     column: str
-    line_index: int
     pattern: str
 
 
@@ -798,41 +651,6 @@ def _sorted_runs(runs: List[RunInfo]) -> List[RunInfo]:
 
 def _format_run_datetime(meta: Dict[str, Any]) -> str:
     return f"{meta.get('date', '')} {meta.get('time', '')}".strip()
-
-
-def _build_env_tree_label(env_id: str, models: Dict[str, List[RunInfo]]) -> Text:
-    total_runs = sum(len(runs) for runs in models.values())
-    label = Text()
-    label.append(env_id, style="bold")
-    label.append("  ")
-    label.append(f"{len(models)} models", style="dim")
-    label.append("  ")
-    label.append(f"{total_runs} runs", style="dim")
-    return label
-
-
-def _build_model_tree_label(model: str, runs: List[RunInfo]) -> Text:
-    label = Text()
-    label.append(model, style="bold")
-    label.append("  ")
-    label.append(f"{len(runs)} runs", style="dim")
-    return label
-
-
-def _build_run_tree_label(run: RunInfo) -> Text:
-    meta = run.load_metadata()
-    label = Text()
-    label.append(run.run_id, style="bold")
-    datetime_str = _format_run_datetime(meta)
-    if datetime_str:
-        label.append("  ")
-        label.append(datetime_str, style="dim")
-    avg_reward = meta.get("avg_reward")
-    if avg_reward is not None:
-        label.append("  ")
-        label.append("reward ", style="dim")
-        label.append(_format_reward_value(avg_reward), style=_reward_style(avg_reward))
-    return label
 
 
 # ----------------------------
@@ -887,12 +705,12 @@ class BrowseRunsScreen(Screen):
         first_run_node = self._populate_tree(tree)
         tree.focus()
 
-        if first_run_node is not None:
-            self.call_after_refresh(
-                lambda: self._select_initial_run_node(first_run_node)
-            )
-        else:
+        if first_run_node is None:
             details_widget.update(Text("No completed evals found", style="dim"))
+            return
+
+        details_widget.update(self._details_for(getattr(first_run_node, "data", None)))
+        self.call_after_refresh(lambda: tree.move_cursor(first_run_node))
 
     def action_focus_next_pane(self) -> None:
         self.focus_next()
@@ -903,14 +721,28 @@ class BrowseRunsScreen(Screen):
     def action_copy(self) -> None:
         tree = self.query_one("#run-browser-tree", Tree)
         node = tree.cursor_node
-        copy_screen = self._build_copy_screen_for_node(node)
-        if copy_screen is not None:
-            self.app.push_screen(copy_screen)
-
-    def _select_initial_run_node(self, node: Any) -> None:
-        tree = self.query_one("#run-browser-tree", Tree)
-        tree.move_cursor(node)
-        self._update_details_for_node(node)
+        payload = getattr(node, "data", None)
+        if not isinstance(payload, BrowserNodeData):
+            return
+        label = getattr(node, "label", "")
+        label_text = label.plain if isinstance(label, Text) else str(label)
+        buffer = StringIO()
+        Console(
+            file=buffer,
+            force_terminal=False,
+            color_system=None,
+            width=180,
+        ).print(self._details_for(payload))
+        self.app.push_screen(
+            CopyScreen(
+                label_text,
+                buffer.getvalue().rstrip(),
+                "completion",
+                prompt_label="Selection",
+                completion_label="Details",
+                title="Copy Details",
+            )
+        )
 
     def _populate_tree(self, tree: Tree) -> Any:
         root = tree.root
@@ -924,21 +756,47 @@ class BrowseRunsScreen(Screen):
         sorted_env_ids = sorted(self.index.keys())
         for env_idx, env_id in enumerate(sorted_env_ids):
             models = self.index[env_id]
+            total_runs = sum(len(runs) for runs in models.values())
+            env_label = Text()
+            env_label.append(env_id, style="bold")
+            env_label.append("  ")
+            env_label.append(f"{len(models)} models", style="dim")
+            env_label.append("  ")
+            env_label.append(f"{total_runs} runs", style="dim")
             env_node = root.add(
-                _build_env_tree_label(env_id, models),
+                env_label,
                 data=BrowserNodeData(kind="env", env_id=env_id),
                 expand=env_idx == 0,
             )
             for model_idx, model in enumerate(sorted(models.keys())):
                 runs = _sorted_runs(models[model])
+                model_label = Text()
+                model_label.append(model, style="bold")
+                model_label.append("  ")
+                model_label.append(f"{len(runs)} runs", style="dim")
                 model_node = env_node.add(
-                    _build_model_tree_label(model, runs),
+                    model_label,
                     data=BrowserNodeData(kind="model", env_id=env_id, model=model),
                     expand=env_idx == 0 and model_idx == 0,
                 )
                 for run in runs:
+                    meta = run.load_metadata()
+                    run_label = Text()
+                    run_label.append(run.run_id, style="bold")
+                    datetime_str = _format_run_datetime(meta)
+                    if datetime_str:
+                        run_label.append("  ")
+                        run_label.append(datetime_str, style="dim")
+                    avg_reward = meta.get("avg_reward")
+                    if avg_reward is not None:
+                        run_label.append("  ")
+                        run_label.append("reward ", style="dim")
+                        run_label.append(
+                            _format_reward_value(avg_reward),
+                            style=_reward_style(avg_reward),
+                        )
                     run_node = model_node.add(
-                        _build_run_tree_label(run),
+                        run_label,
                         data=BrowserNodeData(
                             kind="run",
                             env_id=env_id,
@@ -953,7 +811,9 @@ class BrowseRunsScreen(Screen):
 
     @on(Tree.NodeHighlighted, "#run-browser-tree")
     def on_tree_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        self._update_details_for_node(event.node)
+        self.query_one("#run-browser-details", Static).update(
+            self._details_for(getattr(event.node, "data", None))
+        )
 
     @on(Tree.NodeSelected, "#run-browser-tree")
     def on_tree_selected(self, event: Tree.NodeSelected) -> None:
@@ -966,34 +826,9 @@ class BrowseRunsScreen(Screen):
         if event.node.allow_expand:
             event.node.toggle()
 
-    def _update_details_for_node(self, node: Any) -> None:
-        details_widget = self.query_one("#run-browser-details", Static)
-        payload = getattr(node, "data", None)
-        details_widget.update(self._build_details_renderable(payload))
-
-    def _build_copy_screen_for_node(self, node: Any) -> Optional["CopyScreen"]:
-        payload = getattr(node, "data", None)
+    def _details_for(self, payload: Any) -> Any:
         if not isinstance(payload, BrowserNodeData):
-            return None
-
-        label = getattr(node, "label", "")
-        label_text = label.plain if isinstance(label, Text) else str(label)
-        details_text = _render_renderable_to_text(
-            self._build_details_renderable(payload),
-            width=180,
-        )
-        return CopyScreen(
-            label_text,
-            details_text,
-            "completion",
-            prompt_label="Selection",
-            completion_label="Details",
-            title="Copy Details",
-        )
-
-    def _build_details_renderable(self, payload: Any) -> Any:
-        if not isinstance(payload, BrowserNodeData):
-            return Text("Select a run to see details", style="dim")
+            return Text()
 
         if payload.kind == "run" and payload.run is not None:
             return self._build_run_details(payload.run)
@@ -1004,13 +839,7 @@ class BrowseRunsScreen(Screen):
         if payload.kind == "model":
             return self._build_model_details(payload.env_id, payload.model)
 
-        return Text("Select a run to see details", style="dim")
-
-    def _run_rewards(self, run: RunInfo) -> List[float]:
-        return self._run_overview_stats(run).rewards
-
-    def _run_metric_summaries(self, run: RunInfo) -> List[MetricSummary]:
-        return self._run_overview_stats(run).metric_summaries
+        return Text()
 
     def _run_overview_stats(self, run: RunInfo) -> RunOverviewStats:
         cached = self._run_overview_cache.get(run.path)
@@ -1018,20 +847,32 @@ class BrowseRunsScreen(Screen):
             return cached
 
         rewards: List[float] = []
-        records = load_run_results(run)
+        metric_values: Dict[str, List[float]] = defaultdict(list)
+        records = LazyRunResults(run)
         try:
             for idx in range(len(records)):
                 record = records[idx]
                 reward = _numeric_reward(record.get("reward"))
                 if reward is not None:
                     rewards.append(reward)
-            metric_summaries = _summarize_metric_values(records)
+                for name, value in _extract_numeric_metric_values(record).items():
+                    metric_values[name].append(value)
         finally:
             records.close()
 
         stats = RunOverviewStats(
             rewards=rewards,
-            metric_summaries=metric_summaries,
+            metric_summaries=[
+                MetricSummary(
+                    name=name,
+                    count=len(values),
+                    avg=sum(values) / len(values),
+                    min_value=min(values),
+                    max_value=max(values),
+                )
+                for name, values in sorted(metric_values.items())
+                if values
+            ],
         )
         self._run_overview_cache[run.path] = stats
         return stats
@@ -1039,13 +880,23 @@ class BrowseRunsScreen(Screen):
     def _build_env_details(self, env_id: str) -> Group:
         models = self.index.get(env_id, {})
         runs = [run for model_runs in models.values() for run in model_runs]
-        rewards = _run_average_rewards(runs)
+        rewards = [
+            reward
+            for run in runs
+            for reward in [_numeric_reward(run.load_metadata().get("avg_reward"))]
+            if reward is not None
+        ]
 
         summary = Text()
         summary.append("Environment\n", style="bold dim")
         summary.append(env_id, style="bold")
         summary.append("\n")
         summary.append(f"{len(models)} models   {len(runs)} runs", style="dim")
+        items: List[Any] = [
+            summary,
+            Text(""),
+            _build_reward_distribution_table(rewards, "Run avg rewards"),
+        ]
 
         if models:
             ranked_models = sorted(
@@ -1055,7 +906,14 @@ class BrowseRunsScreen(Screen):
             model_activity = Text()
             model_activity.append("Model activity\n", style="bold dim")
             for model, model_runs in ranked_models:
-                model_rewards = _run_average_rewards(model_runs)
+                model_rewards = [
+                    reward
+                    for run in model_runs
+                    for reward in [
+                        _numeric_reward(run.load_metadata().get("avg_reward"))
+                    ]
+                    if reward is not None
+                ]
                 model_activity.append(model, style="bold")
                 model_activity.append(f"  {len(model_runs)} runs", style="dim")
                 if model_rewards:
@@ -1066,29 +924,29 @@ class BrowseRunsScreen(Screen):
                         style=_reward_style(avg_reward),
                     )
                 model_activity.append("\n")
-            return Group(
-                summary,
-                Text(""),
-                _build_reward_distribution_table(rewards, "Run avg rewards"),
-                Text(""),
-                model_activity,
-            )
+            items.extend([Text(""), model_activity])
 
-        return Group(
-            summary,
-            Text(""),
-            _build_reward_distribution_table(rewards, "Run avg rewards"),
-        )
+        return Group(*items)
 
     def _build_model_details(self, env_id: str, model: str) -> Group:
         runs = _sorted_runs(self.index.get(env_id, {}).get(model, []))
-        rewards = _run_average_rewards(runs)
+        rewards = [
+            reward
+            for run in runs
+            for reward in [_numeric_reward(run.load_metadata().get("avg_reward"))]
+            if reward is not None
+        ]
 
         summary = Text()
         summary.append("Model\n", style="bold dim")
         summary.append(model, style="bold")
         summary.append("\n")
         summary.append(f"{env_id}   {len(runs)} runs", style="dim")
+        items: List[Any] = [
+            summary,
+            Text(""),
+            _build_reward_distribution_table(rewards, "Run avg rewards"),
+        ]
 
         if runs:
             latest = runs[-1]
@@ -1103,26 +961,24 @@ class BrowseRunsScreen(Screen):
             )
             recent = Text()
             recent.append("Recent runs\n", style="bold dim")
-            self._append_run_row(recent, "latest", latest)
-            self._append_run_row(recent, "best", best)
-            return Group(
-                summary,
-                Text(""),
-                _build_reward_distribution_table(rewards, "Run avg rewards"),
-                Text(""),
-                recent,
-            )
+            for label, run in (("latest", latest), ("best", best)):
+                reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+                recent.append(label, style="bold")
+                recent.append("  ")
+                recent.append(run.run_id)
+                if reward is not None:
+                    recent.append("  reward ", style="dim")
+                    recent.append(f"{reward:.3f}", style=_reward_style(reward))
+                recent.append("\n")
+            items.extend([Text(""), recent])
 
-        return Group(
-            summary,
-            Text(""),
-            _build_reward_distribution_table(rewards, "Run avg rewards"),
-        )
+        return Group(*items)
 
     def _build_run_details(self, run: RunInfo) -> Group:
         meta = run.load_metadata()
-        rewards = self._run_rewards(run)
-        metric_summaries = self._run_metric_summaries(run)
+        stats = self._run_overview_stats(run)
+        rewards = stats.rewards
+        metric_summaries = stats.metric_summaries
 
         summary = Text()
         summary.append("Run\n", style="bold dim")
@@ -1182,16 +1038,6 @@ class BrowseRunsScreen(Screen):
 
         return Group(*items)
 
-    def _append_run_row(self, out: Text, label: str, run: RunInfo) -> None:
-        reward = _numeric_reward(run.load_metadata().get("avg_reward"))
-        out.append(label, style="bold")
-        out.append("  ")
-        out.append(run.run_id)
-        if reward is not None:
-            out.append("  reward ", style="dim")
-            out.append(f"{reward:.3f}", style=_reward_style(reward))
-        out.append("\n")
-
 
 class ViewRunScreen(Screen):
     """Screen for viewing run details and rollouts."""
@@ -1219,7 +1065,7 @@ class ViewRunScreen(Screen):
     def __init__(self, run: RunInfo):
         super().__init__()
         self.run = run
-        self.records = load_run_results(run)
+        self.records = LazyRunResults(run)
         self.current_record_idx = 0
         self._prompt_lines: List[str] = []
         self._completion_lines: List[str] = []
@@ -1228,8 +1074,6 @@ class ViewRunScreen(Screen):
         self._highlight_regex: Optional[re.Pattern] = None
         self._highlight_column: Optional[str] = None
         self._highlight_timer = None
-        self._completion_sections_version = 0
-        self._focus_after_completion_rebuild = False
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
@@ -1253,10 +1097,7 @@ class ViewRunScreen(Screen):
                     yield Static(
                         "", id="history-summary", classes="subtitle", markup=False
                     )
-                    yield VerticalScroll(
-                        *self._completion_section_widgets_for_current_record(),
-                        id="completion-scroll",
-                    )
+                    yield VerticalScroll(id="completion-scroll")
                 with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
@@ -1346,7 +1187,7 @@ class ViewRunScreen(Screen):
     def _build_history_summary_text(self, record: Dict[str, Any]) -> Text:
         completion = record.get("completion")
         if not isinstance(completion, list) or not completion:
-            return Text("No completion events", style="dim")
+            return Text()
 
         groups = self._history_groups(completion)
         tool_groups = sum(
@@ -1398,7 +1239,7 @@ class ViewRunScreen(Screen):
                     stats.append((label, avg_metrics[key]))
 
         if not stats:
-            return Text("Run metrics unavailable", style="dim")
+            return Text()
 
         out = Text()
         out.append("Run Metrics\n", style="bold dim")
@@ -1417,26 +1258,51 @@ class ViewRunScreen(Screen):
             out.append(_format_compact_metric(pass_threshold))
         return out
 
-    def _build_header_reward_text(self, record: Dict[str, Any]) -> Text:
+    def _build_reward_text(
+        self,
+        record: Dict[str, Any],
+        *,
+        heading: str,
+        multiline: bool,
+        limit: Optional[int] = None,
+    ) -> Text:
         reward = record.get("reward")
         out = Text()
-        out.append("Current Reward\n", style="bold dim")
+        out.append(f"{heading}\n", style="bold dim")
         out.append(_format_reward_value(reward), style=_reward_style(reward))
 
         breakdown = self._extract_reward_metrics(record)
         if breakdown:
-            out.append("\n")
-            for idx, (name, value) in enumerate(breakdown[:3]):
-                if idx:
-                    out.append("   ")
-                out.append(f"{name} ", style="bold")
-                out.append(_format_reward_value(value), style=_reward_style(value))
+            breakdown = breakdown[:limit] if limit is not None else breakdown
+            if multiline:
+                out.append("\n\nBreakdown\n", style="bold dim")
+                width = max(len(name) for name, _ in breakdown)
+                for name, value in breakdown:
+                    out.append(name.ljust(width), style="bold")
+                    out.append("  ")
+                    out.append(_format_reward_value(value), style=_reward_style(value))
+                    out.append("\n")
+            else:
+                out.append("\n")
+                for idx, (name, value) in enumerate(breakdown):
+                    if idx:
+                        out.append("   ")
+                    out.append(f"{name} ", style="bold")
+                    out.append(_format_reward_value(value), style=_reward_style(value))
         return out
+
+    def _build_header_reward_text(self, record: Dict[str, Any]) -> Text:
+        return self._build_reward_text(
+            record,
+            heading="Current Reward",
+            multiline=False,
+            limit=3,
+        )
 
     def on_mount(self) -> None:
         self._populate_rollout_list()
         self.query_one("#rollout-list", OptionList).focus()
-        self.update_display(rebuild_sections=False)
+        self.update_display()
         self._update_responsive_layout(self.size.width)
 
     def on_resize(self, event: events.Resize) -> None:
@@ -1450,9 +1316,6 @@ class ViewRunScreen(Screen):
         rollout_list.clear_options()
 
         if not self.records:
-            rollout_list.add_option(
-                Option("No rollouts in this run", id="__empty__", disabled=True)
-            )
             return
 
         for idx in range(len(self.records)):
@@ -1472,42 +1335,20 @@ class ViewRunScreen(Screen):
         label.append("reward ", style="dim")
         label.append(reward_text, style=_reward_style(reward))
         label.append("\n")
-        label.append(
-            _truncate_preview(preview or "No completion yet", 38),
-            style="dim",
-        )
+        label.append(_truncate_preview(preview, 38), style="dim")
         return Option(label, id=str(idx))
 
     def _record_preview(self, record: Dict[str, Any]) -> str:
         completion = record.get("completion")
-        if isinstance(completion, list):
-            idx = len(completion) - 1
-            while idx >= 0:
-                message = completion[idx]
-                if not isinstance(message, dict) or message.get("role") != "assistant":
-                    idx -= 1
-                    continue
-                tool_calls = _parse_tool_calls(message.get("tool_calls"))
-                if tool_calls:
-                    tool_outputs: List[Any] = []
-                    next_idx = idx + 1
-                    while next_idx < len(completion):
-                        next_message = completion[next_idx]
-                        if (
-                            not isinstance(next_message, dict)
-                            or next_message.get("role") != "tool"
-                        ):
-                            break
-                        tool_outputs.append(next_message)
-                        next_idx += 1
-                    preview = _tool_group_preview(message, tool_outputs)
+        if isinstance(completion, list) and completion:
+            for group in reversed(self._history_groups(completion)):
+                if group.get("kind") == "assistant-tools":
+                    preview = _tool_group_preview(
+                        group.get("message"),
+                        group.get("tool_outputs", []),
+                    )
                 else:
-                    preview = _format_message_preview(message, "")
-                if preview:
-                    return preview
-                idx -= 1
-            for message in reversed(completion):
-                preview = _format_message_preview(message, "")
+                    preview = _format_message_preview(group.get("message"))
                 if preview:
                     return preview
         if completion not in (None, ""):
@@ -1515,14 +1356,46 @@ class ViewRunScreen(Screen):
 
         prompt = record.get("prompt")
         if isinstance(prompt, list) and prompt:
-            return _format_message_preview(prompt[-1], "Prompt only")
+            return _format_message_preview(prompt[-1])
         if prompt not in (None, ""):
             return _truncate_preview(str(prompt), 56)
-        return "Empty rollout"
+        return ""
+
+    def _format_prompt_or_completion(self, prompt_or_completion: Any) -> Text:
+        out = Text()
+        if not isinstance(prompt_or_completion, list):
+            out.append(str(prompt_or_completion))
+            return out
+
+        for message in prompt_or_completion:
+            role = str(message.get("role", ""))
+            content = _stringify_message_content(message.get("content", ""))
+            if role == "assistant":
+                out.append("assistant: ", style="bold")
+            elif role == "tool":
+                out.append("tool result: ", style="bold dim")
+            else:
+                out.append(f"{role}: ", style="bold dim")
+            out.append(content)
+            out.append("\n")
+
+            for tool_call in _parse_tool_calls(message.get("tool_calls")):
+                name, arguments, _ = _tool_call_parts(tool_call)
+                out.append("\ntool call: ", style="bold")
+                out.append(name)
+                out.append("\n")
+                out.append(arguments)
+                out.append("\n")
+
+            out.append("\n")
+
+        return out
 
     def _set_record_text_state(self, record: Dict[str, Any]) -> None:
-        prompt_text = format_prompt_or_completion(record.get("prompt", ""))
-        completion_text = format_prompt_or_completion(record.get("completion", ""))
+        prompt_text = self._format_prompt_or_completion(record.get("prompt", ""))
+        completion_text = self._format_prompt_or_completion(
+            record.get("completion", "")
+        )
 
         error = record.get("error")
         if error is not None:
@@ -1535,7 +1408,7 @@ class ViewRunScreen(Screen):
         self._prompt_lines = prompt_text.plain.split("\n")
         self._completion_lines = completion_text.plain.split("\n")
 
-    def update_display(self, *, rebuild_sections: bool = True) -> None:
+    def update_display(self, *, focus_history: bool = False) -> None:
         if not self.records:
             return
 
@@ -1563,8 +1436,7 @@ class ViewRunScreen(Screen):
         self.query_one("#usage-content", Static).update(usage_text)
         self.query_one("#info-content", Static).update(info_text)
         self._update_rollout_summary(record)
-        if rebuild_sections:
-            self._build_completion_sections(record)
+        self._rebuild_completion_sections(record, focus_history)
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -1599,12 +1471,14 @@ class ViewRunScreen(Screen):
         )
 
     def action_expand_all(self) -> None:
-        for section in self._completion_sections():
+        container = self.query_one("#completion-scroll", VerticalScroll)
+        for section in container.query(Collapsible):
             section.collapsed = False
         self._focus_primary_content()
 
     def action_collapse_all(self) -> None:
-        for section in self._completion_sections():
+        container = self.query_one("#completion-scroll", VerticalScroll)
+        for section in container.query(Collapsible):
             section.collapsed = True
         self._focus_primary_content(prefer_expanded=False)
 
@@ -1631,25 +1505,30 @@ class ViewRunScreen(Screen):
         self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
 
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
-        if result is None:
-            return
-        try:
-            compiled = re.compile(result.pattern, re.IGNORECASE)
-        except re.error:
-            return
-        self._highlight_regex = compiled
-        self._highlight_column = result.column
+        if result is not None:
+            self._set_highlight(result)
+
+    def _set_highlight(
+        self, result: Optional[SearchResult], *, repaint: bool = True
+    ) -> None:
         if self._highlight_timer is not None:
             self._highlight_timer.stop()
-        self.update_display()
-        self._highlight_timer = self.set_timer(3.0, self._clear_highlight)
-
-    def _clear_highlight(self) -> None:
-        if not self.is_mounted:
-            return
+            self._highlight_timer = None
         self._highlight_regex = None
         self._highlight_column = None
-        self.update_display()
+
+        if result is not None:
+            try:
+                self._highlight_regex = re.compile(result.pattern, re.IGNORECASE)
+            except re.error:
+                return
+            self._highlight_column = result.column
+            self._highlight_timer = self.set_timer(
+                3.0, lambda: self._set_highlight(None)
+            )
+
+        if repaint and self.is_mounted:
+            self.update_display()
 
     def _update_rollout_summary(self, record: Dict[str, Any]) -> None:
         summary = self.query_one("#rollout-summary", Label)
@@ -1682,19 +1561,11 @@ class ViewRunScreen(Screen):
         if not (0 <= index < len(self.records)):
             return
         self.current_record_idx = index
-        self._clear_search_state()
-        self._focus_after_completion_rebuild = focus_history
-        self.update_display()
+        self._set_highlight(None, repaint=False)
+        self.update_display(focus_history=focus_history)
         self.query_one("#completion-scroll", VerticalScroll).scroll_y = 0
         for scroll in self.query(".details-scroll"):
             scroll.scroll_y = 0
-
-    def _clear_search_state(self) -> None:
-        if self._highlight_timer is not None:
-            self._highlight_timer.stop()
-            self._highlight_timer = None
-        self._highlight_regex = None
-        self._highlight_column = None
 
     @on(OptionList.OptionHighlighted, "#rollout-list")
     def on_rollout_highlighted(self, event: OptionList.OptionHighlighted) -> None:
@@ -1710,40 +1581,175 @@ class ViewRunScreen(Screen):
             return
         self._set_current_record(int(event.option_id), focus_history=True)
 
-    def _completion_section_widgets_for_current_record(self) -> List[Collapsible]:
-        if not self.records:
-            return []
-        return self._completion_section_widgets(self.records[self.current_record_idx])
+    @work(group="completion-sections", exclusive=True)
+    async def _rebuild_completion_sections(
+        self, record: Dict[str, Any], focus_history: bool = False
+    ) -> None:
+        if not self.is_mounted:
+            return
 
-    def _completion_section_widgets(self, record: Dict[str, Any]) -> List[Collapsible]:
-        sections: List[Any] = []
-        sections.append(
-            self._build_simple_section(
+        sections: List[Collapsible] = [
+            self._make_section(
                 title="Initial Prompt",
-                body=self._prompt_text or "No prompt context",
+                body=self._prompt_text,
                 column="prompt",
                 collapsed=True,
                 section_id="prompt-context",
                 classes="history-section prompt-section",
             )
-        )
-
+        ]
         completion = record.get("completion")
         if isinstance(completion, list) and completion:
-            groups = self._history_groups(completion)
-            for idx, group in enumerate(groups, start=1):
+            for idx, group in enumerate(self._history_groups(completion), start=1):
+                if group.get("kind") != "assistant-tools":
+                    message = group.get("message")
+                    role = str(message.get("role", "message"))
+                    title = f"{idx}. {role}"
+                    preview = _format_message_preview(message)
+                    if preview:
+                        title += f"  {preview}"
+
+                    sections.append(
+                        self._make_section(
+                            title=title,
+                            body=_stringify_message_content(
+                                message.get("content", "")
+                            ).strip(),
+                            column="completion",
+                            collapsed=True,
+                            section_id=f"turn-{idx}",
+                            classes=(
+                                "history-section tool-section"
+                                if role == "tool"
+                                else (
+                                    "history-section prompt-section"
+                                    if role not in ("assistant", "tool")
+                                    else "history-section assistant-section"
+                                )
+                            ),
+                        )
+                    )
+                    continue
+
+                message = group.get("message")
+                tool_calls = group.get("tool_calls", [])
+                tool_outputs = group.get("tool_outputs", [])
+                preview = _tool_group_preview(
+                    message, tool_outputs
+                ) or _format_message_preview(message)
+                title = f"{idx}. assistant"
+                if preview:
+                    title += f"  {preview}"
+
+                body = _stringify_message_content(message.get("content", "")).strip()
+                collapsed = True
+                if self._highlight_regex and self._highlight_column == "completion":
+                    collapsed = not (body and self._highlight_regex.search(body))
+                    if collapsed:
+                        for tool_call in tool_calls:
+                            name, arguments, _ = _tool_call_parts(tool_call)
+                            if self._highlight_regex.search(
+                                name
+                            ) or self._highlight_regex.search(arguments):
+                                collapsed = False
+                                break
+                    if collapsed:
+                        for output in tool_outputs:
+                            output_text = (
+                                _stringify_message_content(output.get("content", ""))
+                                if isinstance(output, dict)
+                                else str(output)
+                            )
+                            if self._highlight_regex.search(output_text):
+                                collapsed = False
+                                break
+
+                nested_sections: List[Collapsible] = []
+                used_output_indexes: set[int] = set()
+                for tool_idx, tool_call in enumerate(tool_calls, start=1):
+                    name, arguments, call_id = _tool_call_parts(tool_call)
+                    matched_output = None
+                    if call_id is not None:
+                        for output_idx, candidate in enumerate(tool_outputs):
+                            if (
+                                isinstance(candidate, dict)
+                                and candidate.get("tool_call_id") == call_id
+                            ):
+                                matched_output = candidate
+                                used_output_indexes.add(output_idx)
+                                break
+                    if matched_output is None:
+                        for output_idx, candidate in enumerate(tool_outputs):
+                            if output_idx not in used_output_indexes:
+                                matched_output = candidate
+                                used_output_indexes.add(output_idx)
+                                break
+
+                    output_text = (
+                        _stringify_message_content(matched_output.get("content", ""))
+                        if isinstance(matched_output, dict)
+                        else (str(matched_output) if matched_output is not None else "")
+                    )
+                    nested_sections.append(
+                        self._make_section(
+                            title=(
+                                f"tool {tool_idx}  {name}  -> "
+                                f"{_tool_output_preview(matched_output)}"
+                            ),
+                            body="\n".join(
+                                [
+                                    "Call",
+                                    arguments,
+                                    "",
+                                    "Output",
+                                    output_text,
+                                ]
+                            ),
+                            column="completion",
+                            collapsed=collapsed or tool_idx > 1,
+                            section_id=f"turn-{idx}-tool-{tool_idx}",
+                            classes="history-section tool-call-section nested-section",
+                        )
+                    )
+
+                for extra_idx, output_message in enumerate(tool_outputs, start=1):
+                    if (extra_idx - 1) in used_output_indexes:
+                        continue
+                    output_text = (
+                        _stringify_message_content(output_message.get("content", ""))
+                        if isinstance(output_message, dict)
+                        else str(output_message)
+                    )
+                    nested_sections.append(
+                        self._make_section(
+                            title=(
+                                f"tool output {len(nested_sections) + 1}  "
+                                f"{_tool_output_preview(output_message)}"
+                            ),
+                            body=output_text,
+                            column="completion",
+                            collapsed=True,
+                            section_id=f"turn-{idx}-tool-extra-{extra_idx}",
+                            classes="history-section tool-section nested-section",
+                        )
+                    )
+
                 sections.append(
-                    self._build_group_section(
-                        idx,
-                        collapsed=True,
-                        group=group,
+                    self._make_section(
+                        title=title,
+                        body=body,
+                        column="completion",
+                        collapsed=collapsed,
+                        section_id=f"turn-{idx}",
+                        classes="history-section assistant-section",
+                        nested_sections=nested_sections,
                     )
                 )
         else:
             sections.append(
-                self._build_simple_section(
+                self._make_section(
                     title="Completion",
-                    body=self._completion_text or "No completion",
+                    body=self._completion_text,
                     column="completion",
                     collapsed=False,
                     section_id="completion-empty",
@@ -1751,28 +1757,13 @@ class ViewRunScreen(Screen):
                 )
             )
 
-        return sections
-
-    def _build_completion_sections(self, record: Dict[str, Any]) -> None:
-        self._completion_sections_version += 1
-        version = self._completion_sections_version
-        sections = self._completion_section_widgets(record)
-        self._rebuild_completion_sections(version, sections)
-
-    @work(group="completion-sections", exclusive=True)
-    async def _rebuild_completion_sections(
-        self, version: int, sections: List[Collapsible]
-    ) -> None:
-        if not self.is_mounted or version != self._completion_sections_version:
-            return
         container = self.query_one("#completion-scroll", VerticalScroll)
         async with container.batch():
             await container.remove_children()
-            if not self.is_mounted or version != self._completion_sections_version:
+            if not self.is_mounted:
                 return
             await container.mount(*sections)
-        if self._focus_after_completion_rebuild:
-            self._focus_after_completion_rebuild = False
+        if focus_history:
             self.call_after_refresh(self._focus_primary_content)
 
     def _history_groups(self, completion: List[Any]) -> List[Dict[str, Any]]:
@@ -1780,17 +1771,14 @@ class ViewRunScreen(Screen):
         idx = 0
         while idx < len(completion):
             message = completion[idx]
-            if isinstance(message, dict) and message.get("role") == "assistant":
+            if message.get("role") == "assistant":
                 tool_calls = _parse_tool_calls(message.get("tool_calls"))
                 if tool_calls:
                     tool_outputs: List[Any] = []
                     next_idx = idx + 1
                     while next_idx < len(completion):
                         next_message = completion[next_idx]
-                        if (
-                            not isinstance(next_message, dict)
-                            or next_message.get("role") != "tool"
-                        ):
+                        if next_message.get("role") != "tool":
                             break
                         tool_outputs.append(next_message)
                         next_idx += 1
@@ -1808,252 +1796,7 @@ class ViewRunScreen(Screen):
             idx += 1
         return groups
 
-    def _build_group_section(
-        self,
-        idx: int,
-        *,
-        group: Dict[str, Any],
-        collapsed: bool,
-    ) -> Collapsible:
-        if group.get("kind") != "assistant-tools":
-            return self._build_message_section(
-                idx,
-                group.get("message"),
-                column="completion",
-                collapsed=collapsed,
-            )
-
-        message = group.get("message")
-        tool_calls = group.get("tool_calls", [])
-        tool_outputs = group.get("tool_outputs", [])
-
-        preview = _tool_group_preview(message, tool_outputs) or _format_message_preview(
-            message,
-            f"{len(tool_calls)} tool call(s)",
-        )
-        title = f"{idx}. assistant"
-        if preview:
-            title += f"  {preview}"
-
-        content = ""
-        if isinstance(message, dict):
-            content = _stringify_message_content(message.get("content", "")).strip()
-
-        body = content
-
-        group_collapsed = self._assistant_tool_group_collapsed(
-            collapsed=collapsed,
-            body=body,
-            tool_calls=tool_calls,
-            tool_outputs=tool_outputs,
-        )
-
-        nested_sections = self._build_tool_exchange_sections(
-            turn_idx=idx,
-            tool_calls=tool_calls,
-            tool_outputs=tool_outputs,
-            parent_collapsed=group_collapsed,
-        )
-
-        return self._build_section(
-            title=title,
-            body=body,
-            column="completion",
-            collapsed=group_collapsed,
-            section_id=f"turn-{idx}",
-            classes="history-section assistant-section",
-            nested_sections=nested_sections,
-        )
-
-    def _build_message_section(
-        self, idx: int, message: Any, *, column: str, collapsed: bool
-    ) -> Collapsible:
-        if not isinstance(message, dict):
-            return self._build_simple_section(
-                title=f"{idx}. item",
-                body=str(message),
-                column=column,
-                collapsed=collapsed,
-                section_id=f"turn-{idx}",
-                classes="history-section assistant-section",
-            )
-
-        role = str(message.get("role", "message"))
-        preview = _format_message_preview(message, "empty")
-        title = f"{idx}. {role}"
-        if preview:
-            title += f"  {preview}"
-
-        content = _stringify_message_content(message.get("content", "")).strip()
-        body = content or "No text content"
-
-        classes = "history-section assistant-section"
-        if role == "tool":
-            classes = "history-section tool-section"
-        elif role not in ("assistant", "tool"):
-            classes = "history-section prompt-section"
-
-        return self._build_section(
-            title=title,
-            body=body,
-            column=column,
-            collapsed=self._section_collapsed(collapsed, body, column),
-            section_id=f"turn-{idx}",
-            classes=classes,
-        )
-
-    def _assistant_tool_group_collapsed(
-        self,
-        *,
-        collapsed: bool,
-        body: str,
-        tool_calls: List[Any],
-        tool_outputs: List[Any],
-    ) -> bool:
-        if not self._highlight_regex or self._highlight_column != "completion":
-            return collapsed
-        if body and self._highlight_regex.search(body):
-            return False
-        for tool_call in tool_calls:
-            name, arguments, _ = _tool_call_parts(tool_call)
-            if self._highlight_regex.search(name) or self._highlight_regex.search(
-                arguments
-            ):
-                return False
-        for output in tool_outputs:
-            output_text = (
-                _stringify_message_content(output.get("content", ""))
-                if isinstance(output, dict)
-                else str(output)
-            )
-            if self._highlight_regex.search(output_text):
-                return False
-        return collapsed
-
-    def _build_tool_exchange_sections(
-        self,
-        *,
-        turn_idx: int,
-        tool_calls: List[Any],
-        tool_outputs: List[Any],
-        parent_collapsed: bool,
-    ) -> List[Collapsible]:
-        sections: List[Collapsible] = []
-        used_output_indexes: set[int] = set()
-
-        for tool_idx, tool_call in enumerate(tool_calls, start=1):
-            name, arguments, call_id = _tool_call_parts(tool_call)
-            matched_output = None
-            if call_id is not None:
-                for output_idx, candidate in enumerate(tool_outputs):
-                    if (
-                        isinstance(candidate, dict)
-                        and candidate.get("tool_call_id") == call_id
-                    ):
-                        matched_output = candidate
-                        used_output_indexes.add(output_idx)
-                        break
-            if matched_output is None:
-                for output_idx, candidate in enumerate(tool_outputs):
-                    if output_idx not in used_output_indexes:
-                        matched_output = candidate
-                        used_output_indexes.add(output_idx)
-                        break
-
-            sections.append(
-                self._build_tool_exchange_section(
-                    turn_idx=turn_idx,
-                    tool_idx=tool_idx,
-                    tool_name=name,
-                    arguments=arguments,
-                    output_message=matched_output,
-                    collapsed=parent_collapsed or tool_idx > 1,
-                )
-            )
-
-        for extra_idx, output_message in enumerate(tool_outputs, start=1):
-            if (extra_idx - 1) in used_output_indexes:
-                continue
-            output_text = (
-                _stringify_message_content(output_message.get("content", ""))
-                if isinstance(output_message, dict)
-                else str(output_message)
-            )
-            sections.append(
-                self._build_section(
-                    title=f"tool output {len(sections) + 1}  {_tool_output_preview(output_message)}",
-                    body=output_text or "No tool output recorded",
-                    column="completion",
-                    collapsed=self._section_collapsed(True, output_text, "completion"),
-                    section_id=f"turn-{turn_idx}-tool-extra-{extra_idx}",
-                    classes="history-section tool-section nested-section",
-                )
-            )
-
-        return sections
-
-    def _build_tool_exchange_section(
-        self,
-        turn_idx: int,
-        tool_idx: int,
-        tool_name: str,
-        arguments: str,
-        output_message: Any,
-        *,
-        collapsed: bool,
-    ) -> Collapsible:
-        output_text = ""
-        if output_message is not None:
-            if isinstance(output_message, dict):
-                output_text = _stringify_message_content(
-                    output_message.get("content", "")
-                )
-            else:
-                output_text = str(output_message)
-
-        output_preview = (
-            _tool_output_preview(output_message) if output_message else "No output"
-        )
-        title = f"tool {tool_idx}  {tool_name}  -> {output_preview}"
-        body = "\n".join(
-            [
-                "Call",
-                arguments,
-                "",
-                "Output",
-                output_text or "No tool output recorded",
-            ]
-        )
-
-        return self._build_section(
-            title=title,
-            body=body,
-            column="completion",
-            collapsed=self._section_collapsed(collapsed, body, "completion"),
-            section_id=f"turn-{turn_idx}-tool-{tool_idx}",
-            classes="history-section tool-call-section nested-section",
-        )
-
-    def _build_simple_section(
-        self,
-        *,
-        title: str,
-        body: str,
-        column: str,
-        collapsed: bool,
-        section_id: str,
-        classes: str,
-    ) -> Collapsible:
-        return self._build_section(
-            title=title,
-            body=body,
-            column=column,
-            collapsed=self._section_collapsed(collapsed, body, column),
-            section_id=section_id,
-            classes=classes,
-        )
-
-    def _build_section(
+    def _make_section(
         self,
         *,
         title: str,
@@ -2064,10 +1807,19 @@ class ViewRunScreen(Screen):
         classes: str,
         nested_sections: Optional[List[Any]] = None,
     ) -> Collapsible:
+        if (
+            self._highlight_regex
+            and self._highlight_column == column
+            and self._highlight_regex.search(body)
+        ):
+            collapsed = False
         children: List[Any] = []
         if body or not nested_sections:
+            text = Text(body)
+            if self._highlight_regex and self._highlight_column == column:
+                _stylize_matches(text, self._highlight_regex, "reverse")
             content = Static(
-                self._render_section_body(body, column),
+                text,
                 id=f"{section_id}-body",
                 classes="section-body",
                 markup=False,
@@ -2081,22 +1833,6 @@ class ViewRunScreen(Screen):
             id=section_id,
             classes=classes,
         )
-
-    def _render_section_body(self, body: str, column: str) -> Text:
-        text = Text(body or "No content")
-        if self._highlight_regex and self._highlight_column == column:
-            _stylize_matches(text, self._highlight_regex, "reverse")
-        return text
-
-    def _section_collapsed(self, default: bool, body: str, column: str) -> bool:
-        if self._highlight_regex and self._highlight_column == column:
-            if self._highlight_regex.search(body):
-                return False
-        return default
-
-    def _completion_sections(self) -> List[Collapsible]:
-        container = self.query_one("#completion-scroll", VerticalScroll)
-        return list(container.query(Collapsible))
 
     def _focus_primary_content(self, *, prefer_expanded: bool = True) -> None:
         container = self.query_one("#completion-scroll", VerticalScroll)
@@ -2148,20 +1884,7 @@ class ViewRunScreen(Screen):
         collapsible.remove_class("expand-settle")
 
     def _build_score_text(self, record: Dict[str, Any]) -> Text:
-        reward = record.get("reward")
-        out = Text()
-        out.append("Reward\n", style="bold dim")
-        out.append(_format_reward_value(reward), style=_reward_style(reward))
-
-        metrics = self._extract_reward_metrics(record)
-        if metrics:
-            out.append("\n\nBreakdown\n", style="bold dim")
-            width = max(len(name) for name, _ in metrics)
-            for name, value in metrics:
-                out.append(name.ljust(width), style="bold")
-                out.append("  ")
-                out.append(_format_reward_value(value), style=_reward_style(value))
-                out.append("\n")
+        out = self._build_reward_text(record, heading="Reward", multiline=True)
 
         record_metrics = record.get("metrics")
         if isinstance(record_metrics, dict) and record_metrics:
@@ -2184,9 +1907,6 @@ class ViewRunScreen(Screen):
         self._append_context_section(
             out, "Stop condition", record.get("stop_condition")
         )
-
-        if not out.plain.strip():
-            return Text("No task details for this rollout", style="dim")
         return out
 
     def _build_usage_text(self, record: Dict[str, Any]) -> Text:
@@ -2210,9 +1930,6 @@ class ViewRunScreen(Screen):
                 if value is not None:
                     timing_lines.append(f"{key}: {_format_compact_metric(value)}")
             self._append_context_section(out, "Timing", "\n".join(timing_lines))
-
-        if not out.plain.strip():
-            return Text("No usage metrics for this rollout", style="dim")
         return out
 
     def _build_info_text(self, record: Dict[str, Any]) -> Text:
@@ -2224,9 +1941,6 @@ class ViewRunScreen(Screen):
         info = record.get("info")
         if info not in (None, {}, ""):
             self._append_context_section(out, "Info", format_info_for_details(info))
-
-        if not out.plain.strip():
-            return Text("No info payload for this rollout", style="dim")
         return out
 
     def _append_context_section(self, out: Text, title: str, value: Any) -> None:
@@ -2599,13 +2313,9 @@ class VerifiersTUI(App):
 
     """
 
-    def __init__(
-        self, env_dir_path: str = "./environments", outputs_dir_path: str = "./outputs"
-    ):
+    def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
         super().__init__()
-        self.env_dir_path = env_dir_path
-        self.outputs_dir_path = outputs_dir_path
-        self.index = discover_results(env_dir_path, outputs_dir_path)
+        self.index = index
 
     def on_mount(self) -> None:
         # Register both custom themes
@@ -2638,13 +2348,19 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     def __init__(self, prompt_lines: List[str], completion_lines: List[str]):
         super().__init__()
-        self._prompt_lines = prompt_lines
-        self._completion_lines = completion_lines
-        self._prompt_hits: List[SearchHit] = []
-        self._completion_hits: List[SearchHit] = []
+        self._lines = {
+            "prompt": prompt_lines,
+            "completion": completion_lines,
+        }
+        self._hits = {
+            "prompt": [],
+            "completion": [],
+        }
+        self._cursors = {
+            "prompt": None,
+            "completion": None,
+        }
         self._active_column: Optional[str] = None
-        self._prompt_cursor: Optional[int] = None
-        self._completion_cursor: Optional[int] = None
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -2679,35 +2395,19 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     @on(OptionList.OptionHighlighted, "#prompt-results")
     def on_prompt_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id is None:
-            return
-        self._active_column = "prompt"
-        self._prompt_cursor = int(event.option_id)
-        self._sync_highlights()
+        self._set_active_hit("prompt", event.option_id)
 
     @on(OptionList.OptionHighlighted, "#completion-results")
     def on_completion_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id is None:
-            return
-        self._active_column = "completion"
-        self._completion_cursor = int(event.option_id)
-        self._sync_highlights()
+        self._set_active_hit("completion", event.option_id)
 
     @on(OptionList.OptionSelected, "#prompt-results")
     def on_prompt_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_id is None:
-            return
-        self._active_column = "prompt"
-        self._prompt_cursor = int(event.option_id)
-        self.action_select()
+        self._set_active_hit("prompt", event.option_id, select=True)
 
     @on(OptionList.OptionSelected, "#completion-results")
     def on_completion_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_id is None:
-            return
-        self._active_column = "completion"
-        self._completion_cursor = int(event.option_id)
-        self.action_select()
+        self._set_active_hit("completion", event.option_id, select=True)
 
     def on_key(self, event) -> None:
         if event.key in ("left", "right", "up", "down"):
@@ -2730,32 +2430,39 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         if selection is None:
             return
         pattern = self.query_one("#search-input", Input).value
-        self.dismiss(
-            SearchResult(
-                column=selection.column,
-                line_index=selection.line_index,
-                pattern=pattern,
-            )
-        )
+        self.dismiss(SearchResult(column=selection.column, pattern=pattern))
+
+    def _set_active_hit(
+        self, column: str, option_id: Optional[str], *, select: bool = False
+    ) -> None:
+        if option_id is None:
+            return
+        self._active_column = column
+        self._cursors[column] = int(option_id)
+        self._sync_highlights()
+        if select:
+            self.action_select()
 
     def _update_results(self, pattern: str) -> None:
-        prompt_list = self.query_one("#prompt-results", OptionList)
-        completion_list = self.query_one("#completion-results", OptionList)
+        option_lists = {
+            "prompt": self.query_one("#prompt-results", OptionList),
+            "completion": self.query_one("#completion-results", OptionList),
+        }
+        labels = {
+            "prompt": self.query_one("#prompt-count", Label),
+            "completion": self.query_one("#completion-count", Label),
+        }
         error_label = self.query_one("#search-error", Label)
-        prompt_label = self.query_one("#prompt-count", Label)
-        completion_label = self.query_one("#completion-count", Label)
 
-        prompt_list.clear_options()
-        completion_list.clear_options()
-        self._prompt_hits = []
-        self._completion_hits = []
-        self._prompt_cursor = None
-        self._completion_cursor = None
+        for column, option_list in option_lists.items():
+            option_list.clear_options()
+            self._hits[column] = []
+            self._cursors[column] = None
 
         if not pattern:
             error_label.update("")
-            prompt_label.update(Text("Prompt results", style="bold"))
-            completion_label.update(Text("Completion results", style="bold"))
+            labels["prompt"].update(Text("Prompt results", style="bold"))
+            labels["completion"].update(Text("Completion results", style="bold"))
             self._active_column = None
             return
 
@@ -2763,116 +2470,93 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
             compiled = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             error_label.update(Text(f"Invalid regex: {exc}", style="red"))
-            prompt_label.update(Text("Prompt results", style="bold"))
-            completion_label.update(Text("Completion results", style="bold"))
+            labels["prompt"].update(Text("Prompt results", style="bold"))
+            labels["completion"].update(Text("Completion results", style="bold"))
             self._active_column = None
             return
 
         error_label.update("")
-        self._prompt_hits = self._find_hits("prompt", self._prompt_lines, compiled)
-        self._completion_hits = self._find_hits(
-            "completion", self._completion_lines, compiled
-        )
+        for column, lines in self._lines.items():
+            hits: List[SearchHit] = []
+            for line_index, line in enumerate(lines):
+                if not compiled.search(line):
+                    continue
+                hits.append(
+                    SearchHit(column=column, line_index=line_index, line_text=line)
+                )
+                content = Text(line)
+                _stylize_matches(content, compiled, "reverse")
+                option_lists[column].add_option(
+                    Option(
+                        Text(f"{line_index + 1:>5} | ", style="dim") + content,
+                        id=str(len(hits) - 1),
+                    )
+                )
+            self._hits[column] = hits
+            labels[column].update(
+                Text(
+                    f"{column.capitalize()} results ({len(hits)})",
+                    style="bold",
+                )
+            )
 
-        for idx, hit in enumerate(self._prompt_hits):
-            prompt_list.add_option(self._build_option(hit, compiled, idx))
-        for idx, hit in enumerate(self._completion_hits):
-            completion_list.add_option(self._build_option(hit, compiled, idx))
-
-        prompt_label.update(
-            Text(f"Prompt results ({len(self._prompt_hits)})", style="bold")
-        )
-        completion_label.update(
-            Text(f"Completion results ({len(self._completion_hits)})", style="bold")
-        )
-
-        if self._completion_hits:
+        if self._hits["completion"]:
             self._active_column = "completion"
-            self._completion_cursor = 0
-        elif self._prompt_hits:
+            self._cursors["completion"] = 0
+        elif self._hits["prompt"]:
             self._active_column = "prompt"
-            self._prompt_cursor = 0
+            self._cursors["prompt"] = 0
         else:
             self._active_column = None
 
         self._sync_highlights()
 
-    def _find_hits(
-        self, column: str, lines: List[str], pattern: re.Pattern
-    ) -> List[SearchHit]:
-        hits: List[SearchHit] = []
-        for idx, line in enumerate(lines):
-            if pattern.search(line):
-                hits.append(SearchHit(column=column, line_index=idx, line_text=line))
-        return hits
-
-    def _build_option(
-        self, hit: SearchHit, pattern: re.Pattern, option_index: int
-    ) -> Option:
-        prefix = Text(f"{hit.line_index + 1:>5} | ", style="dim")
-        content = Text(hit.line_text)
-        _stylize_matches(content, pattern, "reverse")
-        return Option(prefix + content, id=str(option_index))
-
     def _sync_highlights(self) -> None:
-        prompt_list = self.query_one("#prompt-results", OptionList)
-        completion_list = self.query_one("#completion-results", OptionList)
-
-        if self._active_column == "prompt" and self._prompt_cursor is not None:
-            prompt_list.highlighted = self._prompt_cursor
-            completion_list.highlighted = None
-            prompt_list.scroll_to_highlight()
-        elif (
-            self._active_column == "completion" and self._completion_cursor is not None
+        for column, option_list in (
+            ("prompt", self.query_one("#prompt-results", OptionList)),
+            ("completion", self.query_one("#completion-results", OptionList)),
         ):
-            completion_list.highlighted = self._completion_cursor
-            prompt_list.highlighted = None
-            completion_list.scroll_to_highlight()
-        else:
-            prompt_list.highlighted = None
-            completion_list.highlighted = None
+            if self._active_column == column and self._cursors[column] is not None:
+                option_list.highlighted = self._cursors[column]
+                option_list.scroll_to_highlight()
+            else:
+                option_list.highlighted = None
 
     def _switch_column(self, target: str) -> None:
-        if target == "prompt" and self._prompt_hits:
+        if target == "prompt" and self._hits["prompt"]:
             self._active_column = "prompt"
-            if self._prompt_cursor is None:
-                self._prompt_cursor = 0
-        elif target == "completion" and self._completion_hits:
+            if self._cursors["prompt"] is None:
+                self._cursors["prompt"] = 0
+        elif target == "completion" and self._hits["completion"]:
             self._active_column = "completion"
-            if self._completion_cursor is None:
-                self._completion_cursor = 0
+            if self._cursors["completion"] is None:
+                self._cursors["completion"] = 0
         self._sync_highlights()
 
     def _move_selection(self, delta: int) -> None:
-        if self._active_column == "prompt" and self._prompt_hits:
-            if self._prompt_cursor is None:
-                self._prompt_cursor = 0
-            else:
-                self._prompt_cursor = max(
-                    0, min(len(self._prompt_hits) - 1, self._prompt_cursor + delta)
-                )
-        elif self._active_column == "completion" and self._completion_hits:
-            if self._completion_cursor is None:
-                self._completion_cursor = 0
-            else:
-                self._completion_cursor = max(
-                    0,
-                    min(
-                        len(self._completion_hits) - 1, self._completion_cursor + delta
-                    ),
-                )
+        if self._active_column is None:
+            return
+        hits = self._hits[self._active_column]
+        cursor = self._cursors[self._active_column]
+        if not hits:
+            return
+        if cursor is None:
+            self._cursors[self._active_column] = 0
+        else:
+            self._cursors[self._active_column] = max(
+                0,
+                min(len(hits) - 1, cursor + delta),
+            )
         self._sync_highlights()
 
     def _current_selection(self) -> Optional[SearchHit]:
-        if self._active_column == "prompt" and self._prompt_hits:
-            if self._prompt_cursor is None:
-                return None
-            return self._prompt_hits[self._prompt_cursor]
-        if self._active_column == "completion" and self._completion_hits:
-            if self._completion_cursor is None:
-                return None
-            return self._completion_hits[self._completion_cursor]
-        return None
+        if self._active_column is None:
+            return None
+        cursor = self._cursors[self._active_column]
+        hits = self._hits[self._active_column]
+        if cursor is None or not hits:
+            return None
+        return hits[cursor]
 
 
 class CopyScreen(ModalScreen[None]):
@@ -2880,7 +2564,6 @@ class CopyScreen(ModalScreen[None]):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
-        Binding("q", "quit", "Quit"),
         Binding("tab", "cycle_column", "Next column"),
         Binding("shift+tab", "cycle_column", show=False),
         Binding("c", "copy", "Copy"),
@@ -2903,9 +2586,7 @@ class CopyScreen(ModalScreen[None]):
         self._prompt_label = prompt_label
         self._completion_label = completion_label
         self._title = title
-        self._active_column = (
-            start_column if start_column in ("prompt", "completion") else "completion"
-        )
+        self._active_column = start_column
         self._last_copied_selection = ""
 
     def compose(self) -> ComposeResult:
@@ -2913,27 +2594,11 @@ class CopyScreen(ModalScreen[None]):
             with Panel(classes="modal-header"):
                 yield Label(Text(self._title, style="bold"))
                 yield Label(
-                    Text("q: quit", style="dim"),
-                    id="copy-hint-q",
-                    classes="copy-hint",
-                )
-                yield Label(
-                    Text("Tab: switch columns", style="dim"),
-                    id="copy-hint-1",
-                    classes="copy-hint",
-                )
-                yield Label(
                     Text(
-                        "Highlight text with mouse drag or Shift+Arrow (auto-copy)",
+                        "Highlight text to auto-copy. Tab switches columns, c copies the active column.",
                         style="dim",
                     ),
-                    id="copy-hint-2",
-                    classes="copy-hint",
-                )
-                yield Label("", id="copy-hint-3", classes="copy-hint")
-                yield Label(
-                    Text("Esc: close", style="dim"),
-                    id="copy-hint-4",
+                    id="copy-hint",
                     classes="copy-hint",
                 )
                 yield Label("", id="copy-status", classes="subtitle")
@@ -2966,39 +2631,22 @@ class CopyScreen(ModalScreen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._sync_focus()
-        self._update_copy_hint()
-
-    @property
-    def active_bindings(self) -> dict[str, Any]:
-        bindings = super().active_bindings
-        ordered: dict[str, Any] = {}
-        for key in ("q", "escape", "tab", "c"):
-            if key in bindings:
-                ordered[key] = bindings[key]
-        for key, binding in bindings.items():
-            if key not in ordered:
-                ordered[key] = binding
-        return ordered
+        self._refresh_ui(focus_text_area=True)
 
     @on(TextArea.SelectionChanged)
     def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         if event.text_area is self._active_text_area():
-            selected = _get_text_area_selection(event.text_area)
+            selected = event.text_area.selected_text or ""
             if selected and selected != self._last_copied_selection:
-                _copy_to_clipboard(self.app, selected)
+                self.app.copy_to_clipboard(selected)
                 self._last_copied_selection = selected
-                status = self.query_one("#copy-status", Label)
-                status.update(
+                self.query_one("#copy-status", Label).update(
                     Text(f"Copied selection ({len(selected)} chars).", style="dim")
                 )
-            self._update_copy_hint()
+            self._refresh_ui()
 
     def action_close(self) -> None:
         self.dismiss(None)
-
-    def action_quit(self) -> None:
-        self.app.exit()
 
     def on_key(self, event) -> None:
         if event.key in ("tab", "shift+tab", "backtab"):
@@ -3010,37 +2658,32 @@ class CopyScreen(ModalScreen[None]):
         self._active_column = (
             "completion" if self._active_column == "prompt" else "prompt"
         )
-        self._sync_focus()
-        self._update_copy_hint()
+        self._refresh_ui(focus_text_area=True)
 
     def action_copy(self) -> None:
         text_area = self._active_text_area()
-        selected = _get_text_area_selection(text_area)
-        full_text = _get_text_area_full_text(text_area)
+        selected = text_area.selected_text or ""
         if not selected:
-            selected = full_text
+            selected = text_area.text
             copied_label = "full column"
         else:
             copied_label = "selection"
-        if not isinstance(selected, str):
-            selected = str(selected)
         if selected:
-            _copy_to_clipboard(self.app, selected)
+            self.app.copy_to_clipboard(selected)
             self._last_copied_selection = selected
-        status = self.query_one("#copy-status", Label)
-        status.update(
+        self.query_one("#copy-status", Label).update(
             Text(f"Copied {copied_label} ({len(selected)} chars).", style="dim")
             if selected
-            else Text("Nothing to copy.", style="dim")
+            else Text()
         )
-        self._update_copy_hint()
+        self._refresh_ui()
 
     def _active_text_area(self) -> TextArea:
         if self._active_column == "prompt":
             return self.query_one("#copy-prompt", TextArea)
         return self.query_one("#copy-completion", TextArea)
 
-    def _sync_focus(self) -> None:
+    def _refresh_ui(self, *, focus_text_area: bool = False) -> None:
         prompt_label = self.query_one("#copy-prompt-label", Label)
         completion_label = self.query_one("#copy-completion-label", Label)
         if self._active_column == "prompt":
@@ -3051,10 +2694,10 @@ class CopyScreen(ModalScreen[None]):
             completion_label.update(
                 Text(f"{self._completion_label} (active)", style="bold")
             )
-        self._active_text_area().focus()
-
-    def _update_copy_hint(self) -> None:
-        selected = _get_text_area_selection(self._active_text_area())
+        text_area = self._active_text_area()
+        if focus_text_area:
+            text_area.focus()
+        selected = text_area.selected_text or ""
         if selected:
             count = len(selected)
             unit = "char" if count == 1 else "chars"
@@ -3066,28 +2709,13 @@ class CopyScreen(ModalScreen[None]):
                 else self._completion_label
             ).lower()
             copy_text = f"c / ctrl+c: copy {active_label}"
-        hint = self.query_one("#copy-hint-3", Label)
-        hint.update(Text(copy_text, style="dim"))
-
-
-def _copy_to_clipboard(app: App, text: str) -> None:
-    app.copy_to_clipboard(text)
-
-
-def _get_text_area_selection(text_area: TextArea) -> str:
-    return text_area.selected_text or ""
-
-
-def _get_text_area_full_text(text_area: TextArea) -> str:
-    return text_area.text
+        self.query_one("#copy-hint", Label).update(Text(copy_text, style="dim"))
 
 
 def main() -> None:
-    # Optional args via env vars
     env_dir = os.environ.get("VF_ENV_DIR", "./environments")
     outputs_dir = os.environ.get("VF_OUTPUTS_DIR", "./outputs")
-    app = VerifiersTUI(env_dir, outputs_dir)
-    app.run()
+    VerifiersTUI(discover_results(env_dir, outputs_dir)).run()
 
 
 if __name__ == "__main__":
