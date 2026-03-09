@@ -238,9 +238,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                                 self._tunnel = Tunnel(local_port=port)
                             url = await self._tunnel.start()
                             consecutive_failures = 0
-                            logger.info(
-                                f"Health monitor: restarted tunnel url={url}"
-                            )
+                            logger.info(f"Health monitor: restarted tunnel url={url}")
         except asyncio.CancelledError:
             return
 
