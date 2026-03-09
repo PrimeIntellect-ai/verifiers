@@ -528,6 +528,10 @@ class EvalDisplay(BaseDisplay):
 
         content_items.append(Text(""))
 
+        # No top padding when args are shown (they sit right under the title)
+        has_args = bool(args_dict)
+        top_pad = 0 if has_args else 1
+
         # Compute log lines by measuring the actual rendered height of content.
         # We render content_items to a temporary buffer to count lines because
         # items like the metrics row can wrap to multiple terminal lines depending
@@ -543,18 +547,14 @@ class EvalDisplay(BaseDisplay):
             measure_console = Console(file=buf, width=inner_width, highlight=False)
             measure_console.print(Group(*content_items))
             rendered_lines = buf.getvalue().count("\n")
-            # Outer panel: 2 borders + 2 padding; logs panel: 2 borders
-            overhead = rendered_lines + 4 + 2
+            # Outer panel: 2 borders + top_pad + 1 bottom pad; logs panel: 2 borders
+            overhead = rendered_lines + 2 + top_pad + 1 + 2
             log_max_lines = max(3, available_height - overhead)
         else:
             log_max_lines = 20
 
         logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(logs_panel)
-
-        # No top padding when args are shown (they sit right under the title)
-        has_args = bool(args_dict)
-        top_pad = 0 if has_args else 1
 
         return Panel(
             Group(*content_items),
