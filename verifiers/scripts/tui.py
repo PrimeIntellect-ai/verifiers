@@ -38,6 +38,13 @@ from textual.widgets._option_list import Option
 from verifiers.utils.display_utils import format_numeric
 
 AnimationLevel = Literal["none", "basic", "full"]
+TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
+
+
+def _binding_key(binding: TreeBinding) -> str:
+    if isinstance(binding, Binding):
+        return binding.key
+    return binding[0]
 
 
 # ----------------------------
@@ -92,7 +99,7 @@ class RunBrowserTree(Tree[BrowserNodeData]):
         *(
             binding
             for binding in Tree.BINDINGS
-            if binding.key not in {"enter", "space"}
+            if _binding_key(binding) not in {"enter", "space"}
         ),
         Binding("enter", "select_cursor", "Open/toggle", show=True),
         Binding("space", "toggle_node", "Toggle folder", show=True),
