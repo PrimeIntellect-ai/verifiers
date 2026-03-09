@@ -3,7 +3,6 @@ Agent: A concrete entity that can respond. Model + config.
 
 Agent + Task = Rollout.
 
-Agent.respond() works standalone with any OpenAI-compatible client.
 Agent duck-types as the old Actor — same fields + merge_sampling_args().
 """
 
@@ -40,33 +39,6 @@ class Agent:
     model: str | None = None
     client: "AsyncOpenAI | None" = None
     sampling_args: dict[str, Any] = field(default_factory=dict)
-
-    async def respond(
-        self,
-        prompt: "Messages",
-        default_client: "AsyncOpenAI | None" = None,
-        default_model: str | None = None,
-        default_sampling_args: dict[str, Any] | None = None,
-    ) -> Any:
-        """
-        Generate a response using this agent's model.
-
-        Works standalone outside verifiers with any OpenAI-compatible client.
-        """
-        client = self.client or default_client
-        if client is None:
-            raise ValueError(f"Agent '{self.id}' has no client and no default provided")
-        model = self.model or default_model
-        if model is None:
-            raise ValueError(f"Agent '{self.id}' has no model and no default provided")
-
-        args = self.merge_sampling_args(default_sampling_args or {})
-        response = await client.chat.completions.create(
-            model=model,
-            messages=prompt,
-            **args,
-        )
-        return response
 
     def merge_sampling_args(self, base_args: dict[str, Any]) -> dict[str, Any]:
         """Merge agent's sampling args with base args (agent takes precedence).

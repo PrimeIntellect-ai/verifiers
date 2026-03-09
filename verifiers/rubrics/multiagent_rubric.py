@@ -139,13 +139,12 @@ class MultiAgentRubric(Rubric):
                     if step.get("reward") is None:
                         step["reward"] = state["reward"]
 
-        # Timing tracking DISABLED for debugging
-        # end_time = time.time()
-        # scoring_ms = (end_time - start_time) * 1000
-        # for state in states:
-        #     if "timing" in state:
-        #         state["timing"]["scoring_ms"] = scoring_ms
-        #         state["timing"]["total_ms"] += scoring_ms
+        end_time = time.time()
+        scoring_ms = (end_time - start_time) * 1000
+        for state in states:
+            if "timing" in state:
+                state["timing"]["scoring_ms"] = scoring_ms
+                state["timing"]["total_ms"] += scoring_ms
 
     async def _score_states(
         self,
