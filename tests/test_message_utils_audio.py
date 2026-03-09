@@ -2,6 +2,7 @@
 from verifiers.utils.message_utils import (
     message_to_printable,
     messages_to_printable,
+    normalize_messages,
 )
 
 DUMMY_B64 = "ZHVtbXk="
@@ -45,10 +46,10 @@ def test_messages_to_printable_order_and_joining():
     assert "[audio]" in printable and "describe" in printable
 
 
-def test_dataset_map_introduces_none_fields_and_stripping_fixes():
+def test_normalize_messages_strips_none_fields_after_dataset_map():
     """
-    Demonstrates that HuggingFace Dataset.map() introduces None values
-    when content items have different schemas, and stripping Nones fixes this.
+    Dataset-backed prompts may pick up schema-padding None fields when content
+    items have different shapes. Message normalization should strip them.
     """
     from datasets import Dataset
 
@@ -76,33 +77,18 @@ def test_dataset_map_introduces_none_fields_and_stripping_fixes():
     prompt = ds[0]["prompt"]
     content = prompt[0]["content"]
 
-    # Dataset.map() unifies schemas, adding None for missing keys
-    assert "image_url" in content[0], (
-        "Dataset.map should add image_url key to text item"
-    )
-    assert content[0]["image_url"] is None, "text item should have image_url=None"
-    assert "text" in content[1], "Dataset.map should add text key to image_url item"
-    assert content[1]["text"] is None, "image_url item should have text=None"
+    # Some `datasets` versions materialize the padding fields, others do not.
+    content[0].setdefault("image_url", None)
+    content[1].setdefault("text", None)
 
-    # Strip None values (same logic as in get_model_response)
-    for msg in prompt:
-        msg_content = msg.get("content")
-        if isinstance(msg_content, list):
-            msg["content"] = [
-                {k: v for k, v in c.items() if v is not None}
-                if isinstance(c, dict)
-                else c
-                for c in msg_content
-            ]
+    normalized = normalize_messages(prompt, field_name="prompt")
+    normalized_content = normalized[0]["content"]
+    assert isinstance(normalized_content, list)
+    cleaned_content = [
+        part.model_dump() if hasattr(part, "model_dump") else part
+        for part in normalized_content
+    ]
 
-    cleaned_content = prompt[0]["content"]
-
-    assert "image_url" not in cleaned_content[0], (
-        "stripping should remove image_url from text item"
-    )
-    assert "text" not in cleaned_content[1], (
-        "stripping should remove text from image_url item"
-    )
     assert cleaned_content[0] == {"type": "text", "text": "What is this?"}
     assert cleaned_content[1] == {
         "type": "image_url",

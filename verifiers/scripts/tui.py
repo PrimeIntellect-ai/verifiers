@@ -1557,13 +1557,13 @@ class ViewRunScreen(Screen):
         if not self.records:
             return
 
-        count = self._record_count if self._record_count is not None else 1
-        self._set_rollout_option_count(count)
-        self._hydrate_rollout_option(self.current_record_idx)
+        self._record_count = len(self.records)
+        for idx in range(self._record_count):
+            rollout_list.add_option(
+                Option(self._build_rollout_prompt(idx, self.records[idx]), id=str(idx))
+            )
         rollout_list.highlighted = self.current_record_idx
         rollout_list.scroll_to_highlight()
-        if self._record_count is None:
-            self._load_record_count()
 
     def _build_rollout_prompt(
         self,
