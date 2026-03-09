@@ -349,19 +349,12 @@ class EvalDisplay(BaseDisplay):
 
     def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
-        tokens_text = Text()
-        tokens_text.append("╰─ ", style="dim")
-        token_items = [
-            ("input", usage.get("input_tokens", 0.0)),
-            ("output", usage.get("output_tokens", 0.0)),
-        ]
-        for i, (name, value) in enumerate(token_items):
-            value_str = format_numeric(value)
-            tokens_text.append(name, style="dim")
-            tokens_text.append(" ", style="dim")
-            tokens_text.append(value_str, style="bold")
-            if i < len(token_items) - 1:
-                tokens_text.append("   ")
+        tokens_text = make_kv_line(
+            {
+                "input": format_numeric(usage.get("input_tokens", 0.0)),
+                "output": format_numeric(usage.get("output_tokens", 0.0)),
+            }
+        )
         return make_aligned_row(tokens_text, Text())
 
     @staticmethod
