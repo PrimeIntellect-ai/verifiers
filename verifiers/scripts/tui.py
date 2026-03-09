@@ -7,11 +7,12 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from rich import box
-from rich.console import Group
+from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
@@ -739,6 +740,18 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     return table
 
 
+def _render_renderable_to_text(renderable: Any, width: int = 120) -> str:
+    buffer = StringIO()
+    console = Console(
+        file=buffer,
+        force_terminal=False,
+        color_system=None,
+        width=max(40, width),
+    )
+    console.print(renderable)
+    return buffer.getvalue().rstrip()
+
+
 # ----------------------------
 # Custom Panel Widget
 # ----------------------------
@@ -832,6 +845,8 @@ class BrowseRunsScreen(Screen):
         Binding("q", "quit", "Quit"),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
+        Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
     ]
 
     def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
@@ -845,7 +860,7 @@ class BrowseRunsScreen(Screen):
                 yield Panel(
                     Label(Text("Eval Browser", style="bold"), classes="title"),
                     Label(
-                        Text("Enter opens runs  Space toggles folders"),
+                        Text("Enter opens runs  Space toggles folders  c copies"),
                         classes="subtitle",
                     ),
                     Tree("Completed evals", id="run-browser-tree"),
@@ -884,6 +899,13 @@ class BrowseRunsScreen(Screen):
 
     def action_focus_prev_pane(self) -> None:
         self.focus_previous()
+
+    def action_copy(self) -> None:
+        tree = self.query_one("#run-browser-tree", Tree)
+        node = tree.cursor_node
+        copy_screen = self._build_copy_screen_for_node(node)
+        if copy_screen is not None:
+            self.app.push_screen(copy_screen)
 
     def _select_initial_run_node(self, node: Any) -> None:
         tree = self.query_one("#run-browser-tree", Tree)
@@ -947,25 +969,42 @@ class BrowseRunsScreen(Screen):
     def _update_details_for_node(self, node: Any) -> None:
         details_widget = self.query_one("#run-browser-details", Static)
         payload = getattr(node, "data", None)
+        details_widget.update(self._build_details_renderable(payload))
+
+    def _build_copy_screen_for_node(self, node: Any) -> Optional["CopyScreen"]:
+        payload = getattr(node, "data", None)
         if not isinstance(payload, BrowserNodeData):
-            details_widget.update(Text("Select a run to see details", style="dim"))
-            return
+            return None
+
+        label = getattr(node, "label", "")
+        label_text = label.plain if isinstance(label, Text) else str(label)
+        details_text = _render_renderable_to_text(
+            self._build_details_renderable(payload),
+            width=180,
+        )
+        return CopyScreen(
+            label_text,
+            details_text,
+            "completion",
+            prompt_label="Selection",
+            completion_label="Details",
+            title="Copy Details",
+        )
+
+    def _build_details_renderable(self, payload: Any) -> Any:
+        if not isinstance(payload, BrowserNodeData):
+            return Text("Select a run to see details", style="dim")
 
         if payload.kind == "run" and payload.run is not None:
-            details_widget.update(self._build_run_details(payload.run))
-            return
+            return self._build_run_details(payload.run)
 
         if payload.kind == "env":
-            details_widget.update(self._build_env_details(payload.env_id))
-            return
+            return self._build_env_details(payload.env_id)
 
         if payload.kind == "model":
-            details_widget.update(
-                self._build_model_details(payload.env_id, payload.model)
-            )
-            return
+            return self._build_model_details(payload.env_id, payload.model)
 
-        details_widget.update(Text("Select a run to see details", style="dim"))
+        return Text("Select a run to see details", style="dim")
 
     def _run_rewards(self, run: RunInfo) -> List[float]:
         return self._run_overview_stats(run).rewards
@@ -1174,6 +1213,7 @@ class ViewRunScreen(Screen):
         Binding("x", "collapse_all", "Collapse all"),
         Binding("s", "search", "Search"),
         Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
     ]
 
     def __init__(self, run: RunInfo):
@@ -1501,6 +1541,10 @@ class ViewRunScreen(Screen):
 
         record = self.records[self.current_record_idx]
         self._set_record_text_state(record)
+        task_text = self._build_task_text(record)
+        score_text = self._build_score_text(record)
+        usage_text = self._build_usage_text(record)
+        info_text = self._build_info_text(record)
 
         self.query_one("#metadata-summary", Static).update(
             self._build_header_summary_text()
@@ -1514,10 +1558,10 @@ class ViewRunScreen(Screen):
         self.query_one("#history-summary", Static).update(
             self._build_history_summary_text(record)
         )
-        self.query_one("#task-content", Static).update(self._build_task_text(record))
-        self.query_one("#score-content", Static).update(self._build_score_text(record))
-        self.query_one("#usage-content", Static).update(self._build_usage_text(record))
-        self.query_one("#info-content", Static).update(self._build_info_text(record))
+        self.query_one("#task-content", Static).update(task_text)
+        self.query_one("#score-content", Static).update(score_text)
+        self.query_one("#usage-content", Static).update(usage_text)
+        self.query_one("#info-content", Static).update(info_text)
         self._update_rollout_summary(record)
         if rebuild_sections:
             self._build_completion_sections(record)
@@ -2541,7 +2585,7 @@ class VerifiersTUI(App):
         height: 100%;
         layout: vertical;
     }
-    
+
     .search-input {
         background: $surface;
         color: $text;
@@ -2840,20 +2884,34 @@ class CopyScreen(ModalScreen[None]):
         Binding("tab", "cycle_column", "Next column"),
         Binding("shift+tab", "cycle_column", show=False),
         Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
     ]
 
-    def __init__(self, prompt_text: str, completion_text: str, start_column: str):
+    def __init__(
+        self,
+        prompt_text: str,
+        completion_text: str,
+        start_column: str,
+        *,
+        prompt_label: str = "Prompt",
+        completion_label: str = "Completion",
+        title: str = "Copy Mode",
+    ):
         super().__init__()
         self._prompt_text = prompt_text
         self._completion_text = completion_text
+        self._prompt_label = prompt_label
+        self._completion_label = completion_label
+        self._title = title
         self._active_column = (
             start_column if start_column in ("prompt", "completion") else "completion"
         )
+        self._last_copied_selection = ""
 
     def compose(self) -> ComposeResult:
         with Container():
             with Panel(classes="modal-header"):
-                yield Label(Text("Copy Mode", style="bold"))
+                yield Label(Text(self._title, style="bold"))
                 yield Label(
                     Text("q: quit", style="dim"),
                     id="copy-hint-q",
@@ -2866,7 +2924,7 @@ class CopyScreen(ModalScreen[None]):
                 )
                 yield Label(
                     Text(
-                        "Highlight text with mouse drag or Shift+Arrow",
+                        "Highlight text with mouse drag or Shift+Arrow (auto-copy)",
                         style="dim",
                     ),
                     id="copy-hint-2",
@@ -2882,7 +2940,10 @@ class CopyScreen(ModalScreen[None]):
 
             with Horizontal(classes="modal-columns"):
                 with Panel(classes="modal-panel"):
-                    yield Label(Text("Prompt", style="bold"), id="copy-prompt-label")
+                    yield Label(
+                        Text(self._prompt_label, style="bold"),
+                        id="copy-prompt-label",
+                    )
                     prompt_area = TextArea(
                         self._prompt_text,
                         id="copy-prompt",
@@ -2892,7 +2953,8 @@ class CopyScreen(ModalScreen[None]):
                     yield prompt_area
                 with Panel(classes="modal-panel"):
                     yield Label(
-                        Text("Completion", style="bold"), id="copy-completion-label"
+                        Text(self._completion_label, style="bold"),
+                        id="copy-completion-label",
                     )
                     completion_area = TextArea(
                         self._completion_text,
@@ -2922,6 +2984,14 @@ class CopyScreen(ModalScreen[None]):
     @on(TextArea.SelectionChanged)
     def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         if event.text_area is self._active_text_area():
+            selected = _get_text_area_selection(event.text_area)
+            if selected and selected != self._last_copied_selection:
+                _copy_to_clipboard(self.app, selected)
+                self._last_copied_selection = selected
+                status = self.query_one("#copy-status", Label)
+                status.update(
+                    Text(f"Copied selection ({len(selected)} chars).", style="dim")
+                )
             self._update_copy_hint()
 
     def action_close(self) -> None:
@@ -2956,6 +3026,7 @@ class CopyScreen(ModalScreen[None]):
             selected = str(selected)
         if selected:
             _copy_to_clipboard(self.app, selected)
+            self._last_copied_selection = selected
         status = self.query_one("#copy-status", Label)
         status.update(
             Text(f"Copied {copied_label} ({len(selected)} chars).", style="dim")
@@ -2973,11 +3044,13 @@ class CopyScreen(ModalScreen[None]):
         prompt_label = self.query_one("#copy-prompt-label", Label)
         completion_label = self.query_one("#copy-completion-label", Label)
         if self._active_column == "prompt":
-            prompt_label.update(Text("Prompt (active)", style="bold"))
-            completion_label.update(Text("Completion", style="bold"))
+            prompt_label.update(Text(f"{self._prompt_label} (active)", style="bold"))
+            completion_label.update(Text(self._completion_label, style="bold"))
         else:
-            prompt_label.update(Text("Prompt", style="bold"))
-            completion_label.update(Text("Completion (active)", style="bold"))
+            prompt_label.update(Text(self._prompt_label, style="bold"))
+            completion_label.update(
+                Text(f"{self._completion_label} (active)", style="bold")
+            )
         self._active_text_area().focus()
 
     def _update_copy_hint(self) -> None:
@@ -2985,11 +3058,14 @@ class CopyScreen(ModalScreen[None]):
         if selected:
             count = len(selected)
             unit = "char" if count == 1 else "chars"
-            copy_text = f"c: copy selection ({count} {unit})"
-        elif self._active_column == "prompt":
-            copy_text = "c: copy prompt"
+            copy_text = f"c / ctrl+c: copy selection ({count} {unit})"
         else:
-            copy_text = "c: copy completion"
+            active_label = (
+                self._prompt_label
+                if self._active_column == "prompt"
+                else self._completion_label
+            ).lower()
+            copy_text = f"c / ctrl+c: copy {active_label}"
         hint = self.query_one("#copy-hint-3", Label)
         hint.update(Text(copy_text, style="dim"))
 

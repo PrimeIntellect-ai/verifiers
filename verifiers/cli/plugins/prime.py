@@ -79,6 +79,30 @@ def _resolve_workspace_python(cwd: Path | None = None) -> str:
     return sys.executable
 
 
+def _resolve_tui_python(cwd: Path | None = None) -> str:
+    workspace = (cwd or Path.cwd()).resolve()
+    workspace_root = _find_workspace_root(workspace)
+
+    if workspace_root is not None:
+        candidate = _venv_python(workspace_root / ".venv")
+        if candidate.exists():
+            return str(candidate)
+
+    uv_project_env = os.environ.get("UV_PROJECT_ENVIRONMENT")
+    if uv_project_env:
+        candidate = _venv_python(Path(uv_project_env))
+        if candidate.exists():
+            return str(candidate)
+
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        candidate = _venv_python(Path(virtual_env))
+        if candidate.exists():
+            return str(candidate)
+
+    return sys.executable
+
+
 def _find_workspace_root(start: Path) -> Path | None:
     for directory in [start, *start.parents]:
         if (
@@ -151,6 +175,7 @@ class PrimeCLIPlugin:
     init_module: str = "verifiers.cli.commands.init"
     setup_module: str = "verifiers.cli.commands.setup"
     build_module: str = "verifiers.cli.commands.build"
+    tui_module: str = "verifiers.cli.tui"
 
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None
@@ -181,7 +206,12 @@ class PrimeCLIPlugin:
                 cwd=cwd,
             )
 
-        command = [_resolve_workspace_python(cwd), "-m", module_name]
+        python_executable = (
+            _resolve_tui_python(cwd)
+            if module_name == self.tui_module
+            else _resolve_workspace_python(cwd)
+        )
+        command = [python_executable, "-m", module_name]
         if normalized_args:
             command.extend(normalized_args)
         return command
