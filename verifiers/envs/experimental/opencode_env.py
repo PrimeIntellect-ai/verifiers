@@ -46,12 +46,6 @@ You are an interactive CLI tool that helps users with tasks. Use the instruction
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.
 """
 
-TASK_MANAGEMENT_SYSTEM_PROMPT = """\
-# Task Management
-You have access to tools to help you manage and plan tasks. Use these tools frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable. It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
-"""
-
-
 DEFAULT_INSTALL_COMMAND = (
     "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
 )
@@ -153,6 +147,8 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_PROVIDER_TIMEOUT_MS = 1_800_000  # 30min
     DEFAULT_DISABLE_COMPACTION = True
     DEFAULT_ENABLE_INTERLEAVED = True
+    DEFAULT_INCLUDE_TASK_SYSTEM_PROMPT = False
+    DEFAULT_TASK_SYSTEM_PROMPT = ""
 
     def __init__(
         self,
@@ -166,6 +162,8 @@ class OpenCodeEnv(CliAgentEnv):
         disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
         enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
         provider_timeout_ms: int = DEFAULT_PROVIDER_TIMEOUT_MS,
+        task_system_prompt: str = DEFAULT_TASK_SYSTEM_PROMPT,
+        include_task_system_prompt: bool = DEFAULT_INCLUDE_TASK_SYSTEM_PROMPT,
         **kwargs,
     ):
         self.asset_dir = asset_dir
@@ -173,12 +171,8 @@ class OpenCodeEnv(CliAgentEnv):
         self.disabled_tools = disabled_tools
         self.provider_timeout_ms = provider_timeout_ms
 
-        if (
-            disabled_tools is not None
-            and system_prompt is not None
-            and "todowrite" not in disabled_tools
-        ):
-            system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
+        if system_prompt is not None and include_task_system_prompt:
+            system_prompt += "\n" + task_system_prompt
 
         run_command = self.build_run_command(
             run_command_template,
