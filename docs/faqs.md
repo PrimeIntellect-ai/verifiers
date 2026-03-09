@@ -19,7 +19,7 @@ The `-s` flag prints sample outputs so you can see what's happening.
 ```bash
 prime eval tui
 ```
-In the TUI, press `c` to open Copy Mode for prompt/completion text; highlight and press `c` again to copy.
+In the TUI, press `c` to open Copy Mode. In the rollout viewer it mirrors the current sections, so you can copy the full snapshot, details tabs, or individual history entries.
 
 **If using the Python API** (`env.generate()` / `env.evaluate()`):
 

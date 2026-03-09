@@ -9,13 +9,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from rich import box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
-from textual import events, on, work
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
@@ -36,6 +36,8 @@ from textual.widgets import (
 from textual.widgets._option_list import Option
 
 from verifiers.utils.display_utils import format_numeric
+
+AnimationLevel = Literal["none", "basic", "full"]
 
 
 # ----------------------------
@@ -254,7 +256,9 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     return collapsed[: limit - 1].rstrip() + "…"
 
 
-def _format_message_preview(message: Dict[str, Any]) -> str:
+def _format_message_preview(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
     content = _stringify_message_content(message.get("content", ""))
     tool_calls = _parse_tool_calls(message.get("tool_calls"))
     if content:
@@ -348,7 +352,48 @@ def _tool_group_preview(message: Any, tool_outputs: List[Any]) -> str:
     output_preview = _tool_output_preview(tool_outputs[0])
     if not base:
         return output_preview
-    return _truncate_preview(f"{base} -> {output_preview}", 68)
+    return _truncate_preview(f"{base} ... {output_preview}", 68)
+
+
+def _raw_preview(value: Any, *, limit: int = 56) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, str):
+        return _truncate_preview(value, limit)
+    if isinstance(value, list):
+        for item in value:
+            preview = _raw_preview(item, limit=limit)
+            if preview:
+                return preview
+        return ""
+    if isinstance(value, dict):
+        content = _stringify_message_content(value.get("content", ""))
+        if content:
+            return _truncate_preview(content, limit)
+        for key in ("text", "message", "error", "detail", "details", "type", "name"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return _truncate_preview(candidate, limit)
+        return ""
+    return _truncate_preview(str(value), limit)
+
+
+def _error_preview(error: Any) -> str:
+    parsed = _parse_jsonish_string(error)
+    if isinstance(parsed, dict):
+        chain = parsed.get("error_chain_str")
+        if isinstance(chain, str) and chain.strip():
+            return _truncate_preview(chain, 56)
+
+        name = parsed.get("error")
+        if isinstance(name, str) and name.strip():
+            return _truncate_preview(name, 56)
+
+        chain_repr = parsed.get("error_chain_repr")
+        if isinstance(chain_repr, str) and chain_repr.strip():
+            return _truncate_preview(chain_repr, 56)
+
+    return _raw_preview(parsed, limit=56)
 
 
 def _parse_jsonish_string(value: Any) -> Any:
@@ -456,6 +501,8 @@ def _build_reward_distribution_table(values: List[float], heading: str) -> Group
         expand=True,
         show_edge=False,
         pad_edge=False,
+        padding=(0, 1),
+        collapse_padding=True,
         row_styles=["none", "dim"],
     )
     table.add_column("Range", style="dim", width=10, no_wrap=True)
@@ -507,28 +554,6 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     counts = {summary.count for summary in metric_summaries}
     show_count_column = len(counts) > 1
     title_suffix = f" (n={next(iter(counts)):,})" if len(counts) == 1 else ""
-
-    table = Table(
-        title=f"Rollout metrics{title_suffix}",
-        title_style="bold dim",
-        box=box.SIMPLE_HEAD,
-        expand=True,
-        show_edge=False,
-        pad_edge=False,
-        row_styles=["none", "dim"],
-    )
-    table.add_column(
-        "Metric",
-        style="bold cyan",
-        ratio=1,
-        min_width=34,
-        no_wrap=True,
-        overflow="ellipsis",
-    )
-    table.add_column("Average", justify="right", width=12, no_wrap=True)
-    table.add_column("Range", justify="right", width=22, no_wrap=True)
-    if show_count_column:
-        table.add_column("N", justify="right", style="dim", width=7, no_wrap=True)
 
     category_order = {
         "Tokens": 0,
@@ -587,21 +612,76 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
             )
         )
 
+    rows: List[Tuple[str, str, str, str, Optional[str], bool]] = []
+    metric_width = len("Metric")
+    average_width = len("Average")
+    min_width = len("Min")
+    max_width = len("Max")
+    count_width = len("N")
+
     previous_category: str | None = None
     for _, _, display_name, category, summary in sorted(prepared):
-        if previous_category is not None and category != previous_category:
-            table.add_section()
+        avg_text = _format_metric_stat_value(summary.avg)
+        min_text = _format_metric_stat_value(summary.min_value)
+        max_text = _format_metric_stat_value(summary.max_value)
+        count_text = f"{summary.count:,}" if show_count_column else None
+        rows.append(
+            (
+                display_name,
+                avg_text,
+                min_text,
+                max_text,
+                count_text,
+                previous_category is not None and category != previous_category,
+            )
+        )
+        metric_width = max(metric_width, len(display_name))
+        average_width = max(average_width, len(avg_text))
+        min_width = max(min_width, len(min_text))
+        max_width = max(max_width, len(max_text))
+        if count_text is not None:
+            count_width = max(count_width, len(count_text))
+        previous_category = category
 
+    table = Table(
+        title=f"Rollout metrics{title_suffix}",
+        title_style="bold dim",
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+        padding=(0, 1),
+        collapse_padding=True,
+        row_styles=["none", "dim"],
+    )
+    table.add_column(
+        "Metric",
+        style="bold cyan",
+        ratio=1,
+        min_width=min(max(metric_width, 28), 38),
+        no_wrap=True,
+        overflow="ellipsis",
+    )
+    table.add_column("Average", justify="right", width=average_width, no_wrap=True)
+    table.add_column("Min", justify="right", width=min_width, no_wrap=True)
+    table.add_column("Max", justify="right", width=max_width, no_wrap=True)
+    if show_count_column:
+        table.add_column(
+            "N", justify="right", style="dim", width=count_width, no_wrap=True
+        )
+
+    for display_name, avg_text, min_text, max_text, count_text, add_section in rows:
+        if add_section:
+            table.add_section()
         row = [
             display_name,
-            _format_metric_stat_value(summary.avg),
-            f"{_format_metric_stat_value(summary.min_value)} -> {_format_metric_stat_value(summary.max_value)}",
+            avg_text,
+            min_text,
+            max_text,
         ]
-        if show_count_column:
-            row.append(f"{summary.count:,}")
-
+        if count_text is not None:
+            row.append(count_text)
         table.add_row(*row)
-        previous_category = category
 
     return table
 
@@ -631,6 +711,23 @@ class SearchResult:
     pattern: str
 
 
+@dataclass(frozen=True)
+class HistorySectionData:
+    title: str
+    body: str
+    column: str
+    collapsed: bool
+    classes: str
+    nested_sections: Tuple["HistorySectionData", ...] = ()
+
+
+@dataclass(frozen=True)
+class RolloutCopyItem:
+    key: str
+    label: str
+    body: str
+
+
 def _stylize_matches(text: Text, pattern: re.Pattern, style: str) -> Text:
     plain = text.plain
     for match in pattern.finditer(plain):
@@ -639,18 +736,19 @@ def _stylize_matches(text: Text, pattern: re.Pattern, style: str) -> Text:
 
 
 def _sorted_runs(runs: List[RunInfo]) -> List[RunInfo]:
-    return sorted(
-        runs,
-        key=lambda run: (
-            run.load_metadata().get("date", ""),
-            run.load_metadata().get("time", ""),
-            run.run_id,
-        ),
-    )
+    return sorted(runs, key=lambda run: run.run_id)
 
 
 def _format_run_datetime(meta: Dict[str, Any]) -> str:
     return f"{meta.get('date', '')} {meta.get('time', '')}".strip()
+
+
+def _text_to_plain(text: Text) -> str:
+    return text.plain.rstrip()
+
+
+def _indent_block(text: str, prefix: str) -> str:
+    return "\n".join(f"{prefix}{line}" if line else "" for line in text.splitlines())
 
 
 # ----------------------------
@@ -701,15 +799,15 @@ class BrowseRunsScreen(Screen):
         tree.auto_expand = False
         tree.guide_depth = 2
 
-        details_widget = self.query_one("#run-browser-details", Static)
         first_run_node = self._populate_tree(tree)
         tree.focus()
 
         if first_run_node is None:
-            details_widget.update(Text("No completed evals found", style="dim"))
+            self.query_one("#run-browser-details", Static).update(
+                Text("No completed evals found", style="dim")
+            )
             return
 
-        details_widget.update(self._details_for(getattr(first_run_node, "data", None)))
         self.call_after_refresh(lambda: tree.move_cursor(first_run_node))
 
     def action_focus_next_pane(self) -> None:
@@ -783,14 +881,9 @@ class BrowseRunsScreen(Screen):
                     meta = run.load_metadata()
                     run_label = Text()
                     run_label.append(run.run_id, style="bold")
-                    datetime_str = _format_run_datetime(meta)
-                    if datetime_str:
-                        run_label.append("  ")
-                        run_label.append(datetime_str, style="dim")
-                    avg_reward = meta.get("avg_reward")
+                    avg_reward = _numeric_reward(meta.get("avg_reward"))
                     if avg_reward is not None:
                         run_label.append("  ")
-                        run_label.append("reward ", style="dim")
                         run_label.append(
                             _format_reward_value(avg_reward),
                             style=_reward_style(avg_reward),
@@ -848,17 +941,22 @@ class BrowseRunsScreen(Screen):
 
         rewards: List[float] = []
         metric_values: Dict[str, List[float]] = defaultdict(list)
-        records = LazyRunResults(run)
         try:
-            for idx in range(len(records)):
-                record = records[idx]
-                reward = _numeric_reward(record.get("reward"))
-                if reward is not None:
-                    rewards.append(reward)
-                for name, value in _extract_numeric_metric_values(record).items():
-                    metric_values[name].append(value)
-        finally:
-            records.close()
+            with (run.path / "results.jsonl").open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    reward = _numeric_reward(record.get("reward"))
+                    if reward is not None:
+                        rewards.append(reward)
+                    for name, value in _extract_numeric_metric_values(record).items():
+                        metric_values[name].append(value)
+        except OSError:
+            pass
 
         stats = RunOverviewStats(
             rewards=rewards,
@@ -1074,10 +1172,16 @@ class ViewRunScreen(Screen):
         self._highlight_regex: Optional[re.Pattern] = None
         self._highlight_column: Optional[str] = None
         self._highlight_timer = None
+        self._previous_animation_level: Optional[AnimationLevel] = None
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
     def compose(self) -> ComposeResult:
+        completion_sections = (
+            self._completion_sections(self.records[self.current_record_idx])
+            if self.records
+            else []
+        )
         with Container(id="view-container"):
             with Panel(classes="metadata-panel"):
                 with Horizontal(classes="metadata-layout"):
@@ -1097,7 +1201,7 @@ class ViewRunScreen(Screen):
                     yield Static(
                         "", id="history-summary", classes="subtitle", markup=False
                     )
-                    yield VerticalScroll(id="completion-scroll")
+                    yield VerticalScroll(*completion_sections, id="completion-scroll")
                 with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
@@ -1184,7 +1288,9 @@ class ViewRunScreen(Screen):
 
         return Text("\n").join(lines)
 
-    def _build_history_summary_text(self, record: Dict[str, Any]) -> Text:
+    def _build_history_summary_text(
+        self, record: Dict[str, Any], *, include_hints: bool = True
+    ) -> Text:
         completion = record.get("completion")
         if not isinstance(completion, list) or not completion:
             return Text()
@@ -1199,17 +1305,23 @@ class ViewRunScreen(Screen):
             if isinstance(group.get("message"), dict)
             and group["message"].get("role") == "user"
         )
-        return Text.assemble(
+        parts: List[Tuple[str, str]] = [
             (f"{len(groups)} events", "bold"),
             ("  ", ""),
             (f"{tool_groups} tool exchanges", "dim"),
             ("  ", ""),
             (f"{user_messages} user turns", "dim"),
-            ("  ", ""),
-            ("Enter toggles", "dim"),
-            ("  ", ""),
-            ("PgUp/PgDn scroll", "dim"),
-        )
+        ]
+        if include_hints:
+            parts.extend(
+                [
+                    ("  ", ""),
+                    ("Enter toggles", "dim"),
+                    ("  ", ""),
+                    ("PgUp/PgDn scroll", "dim"),
+                ]
+            )
+        return Text.assemble(*parts)
 
     def _build_header_metric_text(self) -> Text:
         meta = self.run.load_metadata()
@@ -1300,6 +1412,9 @@ class ViewRunScreen(Screen):
         )
 
     def on_mount(self) -> None:
+        app = cast(App[Any], self.app)
+        self._previous_animation_level = app.animation_level
+        app.animation_level = "none"
         self._populate_rollout_list()
         self.query_one("#rollout-list", OptionList).focus()
         self.update_display()
@@ -1310,6 +1425,8 @@ class ViewRunScreen(Screen):
 
     def on_unmount(self) -> None:
         self.records.close()
+        if self._previous_animation_level is not None:
+            cast(App[Any], self.app).animation_level = self._previous_animation_level
 
     def _populate_rollout_list(self) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
@@ -1319,46 +1436,65 @@ class ViewRunScreen(Screen):
             return
 
         for idx in range(len(self.records)):
-            rollout_list.add_option(self._build_rollout_option(idx))
+            rollout_list.add_option(
+                Option(self._build_rollout_prompt(idx, self.records[idx]), id=str(idx))
+            )
 
         rollout_list.highlighted = self.current_record_idx
         rollout_list.scroll_to_highlight()
 
-    def _build_rollout_option(self, idx: int) -> Option:
-        record = self.records[idx]
-        preview = self._record_preview(record)
-        reward = record.get("reward")
-        reward_text = _format_reward_value(reward)
+    def _build_rollout_prompt(
+        self,
+        idx: int,
+        record: Optional[Dict[str, Any]] = None,
+    ) -> Text:
         label = Text()
         label.append(f"#{idx}", style="bold")
+        if record is None:
+            return label
+
+        reward = record.get("reward")
         label.append("  ")
         label.append("reward ", style="dim")
-        label.append(reward_text, style=_reward_style(reward))
+        label.append(_format_reward_value(reward), style=_reward_style(reward))
         label.append("\n")
-        label.append(_truncate_preview(preview, 38), style="dim")
-        return Option(label, id=str(idx))
+        label.append(_truncate_preview(self._record_preview(record), 38), style="dim")
+        return label
 
     def _record_preview(self, record: Dict[str, Any]) -> str:
         completion = record.get("completion")
         if isinstance(completion, list) and completion:
             for group in reversed(self._history_groups(completion)):
+                message = group["message"]
                 if group.get("kind") == "assistant-tools":
                     preview = _tool_group_preview(
-                        group.get("message"),
-                        group.get("tool_outputs", []),
+                        message,
+                        group["tool_outputs"],
                     )
                 else:
-                    preview = _format_message_preview(group.get("message"))
+                    preview = _format_message_preview(message)
                 if preview:
                     return preview
-        if completion not in (None, ""):
-            return _truncate_preview(str(completion), 56)
+        completion_preview = _raw_preview(completion, limit=56)
+        if completion_preview:
+            return completion_preview
+
+        error_preview = _error_preview(record.get("error"))
+        if error_preview:
+            return error_preview
 
         prompt = record.get("prompt")
         if isinstance(prompt, list) and prompt:
-            return _format_message_preview(prompt[-1])
-        if prompt not in (None, ""):
-            return _truncate_preview(str(prompt), 56)
+            if isinstance(prompt[-1], dict):
+                preview = _format_message_preview(prompt[-1])
+                if preview:
+                    return preview
+            prompt_preview = _raw_preview(prompt[-1], limit=56)
+            if prompt_preview:
+                return prompt_preview
+        prompt_preview = _raw_preview(prompt, limit=56)
+        if prompt_preview:
+            return prompt_preview
         return ""
 
     def _format_prompt_or_completion(self, prompt_or_completion: Any) -> Text:
@@ -1466,8 +1602,13 @@ class ViewRunScreen(Screen):
     def action_copy(self) -> None:
         if not self.records:
             return
+        record = self.records[self.current_record_idx]
         self.app.push_screen(
-            CopyScreen(self._prompt_text, self._completion_text, "completion")
+            RolloutCopyScreen(
+                self._build_rollout_copy_items(record),
+                start_key=self._rollout_copy_start_key(),
+                title=f"Copy Rollout #{self.current_record_idx}",
+            )
         )
 
     def action_expand_all(self) -> None:
@@ -1530,18 +1671,20 @@ class ViewRunScreen(Screen):
         if repaint and self.is_mounted:
             self.update_display()
 
+    def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
+        return Text.assemble(
+            (f"{self.current_record_idx + 1}/{len(self.records)}", "bold"),
+            ("  ", ""),
+            ("reward ", "dim"),
+            (
+                _format_reward_value(record.get("reward")),
+                _reward_style(record.get("reward")),
+            ),
+        )
+
     def _update_rollout_summary(self, record: Dict[str, Any]) -> None:
-        summary = self.query_one("#rollout-summary", Label)
-        summary.update(
-            Text.assemble(
-                (f"{self.current_record_idx + 1}/{len(self.records)}", "bold"),
-                ("  ", ""),
-                ("reward ", "dim"),
-                (
-                    _format_reward_value(record.get("reward")),
-                    _reward_style(record.get("reward")),
-                ),
-            )
+        self.query_one("#rollout-summary", Label).update(
+            self._build_rollout_summary_text(record)
         )
 
     def _update_responsive_layout(self, width: int) -> None:
@@ -1581,196 +1724,399 @@ class ViewRunScreen(Screen):
             return
         self._set_current_record(int(event.option_id), focus_history=True)
 
-    @work(group="completion-sections", exclusive=True)
-    async def _rebuild_completion_sections(
+    def _history_section_data(self, record: Dict[str, Any]) -> List[HistorySectionData]:
+        sections: List[HistorySectionData] = [
+            HistorySectionData(
+                title="Initial Prompt",
+                body=self._prompt_text,
+                column="prompt",
+                collapsed=True,
+                classes="history-section prompt-section",
+            )
+        ]
+        completion = record.get("completion")
+        if not isinstance(completion, list) or not completion:
+            sections.append(
+                HistorySectionData(
+                    title="Completion",
+                    body=self._completion_text,
+                    column="completion",
+                    collapsed=False,
+                    classes="history-section assistant-section",
+                )
+            )
+            return sections
+
+        for idx, group in enumerate(self._history_groups(completion), start=1):
+            message = group["message"]
+            if group["kind"] != "assistant-tools":
+                role = str(message.get("role", "message"))
+                title = f"{idx}. {role}"
+                preview = _format_message_preview(message)
+                if preview:
+                    title += f"  {preview}"
+
+                sections.append(
+                    HistorySectionData(
+                        title=title,
+                        body=_stringify_message_content(
+                            message.get("content", "")
+                        ).strip(),
+                        column="completion",
+                        collapsed=True,
+                        classes=(
+                            "history-section tool-section"
+                            if role == "tool"
+                            else (
+                                "history-section prompt-section"
+                                if role not in ("assistant", "tool")
+                                else "history-section assistant-section"
+                            )
+                        ),
+                    )
+                )
+                continue
+
+            tool_calls = group["tool_calls"]
+            tool_outputs = group["tool_outputs"]
+            preview = _tool_group_preview(
+                message, tool_outputs
+            ) or _format_message_preview(message)
+            title = f"{idx}. assistant"
+            if preview:
+                title += f"  {preview}"
+
+            body = _stringify_message_content(message.get("content", "")).strip()
+            collapsed = True
+            if self._highlight_regex and self._highlight_column == "completion":
+                collapsed = not (body and self._highlight_regex.search(body))
+                if collapsed:
+                    for tool_call in tool_calls:
+                        name, arguments, _ = _tool_call_parts(tool_call)
+                        if self._highlight_regex.search(
+                            name
+                        ) or self._highlight_regex.search(arguments):
+                            collapsed = False
+                            break
+                if collapsed:
+                    for output in tool_outputs:
+                        output_text = (
+                            _stringify_message_content(output.get("content", ""))
+                            if isinstance(output, dict)
+                            else str(output)
+                        )
+                        if self._highlight_regex.search(output_text):
+                            collapsed = False
+                            break
+
+            nested_sections: List[HistorySectionData] = []
+            used_output_indexes: set[int] = set()
+            for tool_idx, tool_call in enumerate(tool_calls, start=1):
+                name, arguments, call_id = _tool_call_parts(tool_call)
+                matched_output = None
+                if call_id is not None:
+                    for output_idx, candidate in enumerate(tool_outputs):
+                        if (
+                            isinstance(candidate, dict)
+                            and candidate.get("tool_call_id") == call_id
+                        ):
+                            matched_output = candidate
+                            used_output_indexes.add(output_idx)
+                            break
+                if matched_output is None:
+                    for output_idx, candidate in enumerate(tool_outputs):
+                        if output_idx not in used_output_indexes:
+                            matched_output = candidate
+                            used_output_indexes.add(output_idx)
+                            break
+
+                output_text = (
+                    _stringify_message_content(matched_output.get("content", ""))
+                    if isinstance(matched_output, dict)
+                    else (str(matched_output) if matched_output is not None else "")
+                )
+                nested_sections.append(
+                    HistorySectionData(
+                        title=(
+                            f"tool {tool_idx}  {name}  ... "
+                            f"{_tool_output_preview(matched_output)}"
+                        ),
+                        body="\n".join(
+                            [
+                                "Call",
+                                arguments,
+                                "",
+                                "Output",
+                                output_text,
+                            ]
+                        ),
+                        column="completion",
+                        collapsed=collapsed or tool_idx > 1,
+                        classes="history-section tool-call-section nested-section",
+                    )
+                )
+
+            for extra_idx, output_message in enumerate(tool_outputs, start=1):
+                if (extra_idx - 1) in used_output_indexes:
+                    continue
+                output_text = (
+                    _stringify_message_content(output_message.get("content", ""))
+                    if isinstance(output_message, dict)
+                    else str(output_message)
+                )
+                nested_sections.append(
+                    HistorySectionData(
+                        title=(
+                            f"tool output {len(nested_sections) + 1}  "
+                            f"{_tool_output_preview(output_message)}"
+                        ),
+                        body=output_text,
+                        column="completion",
+                        collapsed=True,
+                        classes="history-section tool-section nested-section",
+                    )
+                )
+
+            sections.append(
+                HistorySectionData(
+                    title=title,
+                    body=body,
+                    column="completion",
+                    collapsed=collapsed,
+                    classes="history-section assistant-section",
+                    nested_sections=tuple(nested_sections),
+                )
+            )
+
+        return sections
+
+    def _completion_sections(self, record: Dict[str, Any]) -> List[Collapsible]:
+        return [
+            self._make_section(section)
+            for section in self._history_section_data(record)
+        ]
+
+    def _rebuild_completion_sections(
         self, record: Dict[str, Any], focus_history: bool = False
     ) -> None:
         if not self.is_mounted:
             return
 
-        sections: List[Collapsible] = [
-            self._make_section(
-                title="Initial Prompt",
-                body=self._prompt_text,
-                column="prompt",
-                collapsed=True,
-                section_id="prompt-context",
-                classes="history-section prompt-section",
-            )
-        ]
-        completion = record.get("completion")
-        if isinstance(completion, list) and completion:
-            for idx, group in enumerate(self._history_groups(completion), start=1):
-                if group.get("kind") != "assistant-tools":
-                    message = group.get("message")
-                    role = str(message.get("role", "message"))
-                    title = f"{idx}. {role}"
-                    preview = _format_message_preview(message)
-                    if preview:
-                        title += f"  {preview}"
-
-                    sections.append(
-                        self._make_section(
-                            title=title,
-                            body=_stringify_message_content(
-                                message.get("content", "")
-                            ).strip(),
-                            column="completion",
-                            collapsed=True,
-                            section_id=f"turn-{idx}",
-                            classes=(
-                                "history-section tool-section"
-                                if role == "tool"
-                                else (
-                                    "history-section prompt-section"
-                                    if role not in ("assistant", "tool")
-                                    else "history-section assistant-section"
-                                )
-                            ),
-                        )
-                    )
-                    continue
-
-                message = group.get("message")
-                tool_calls = group.get("tool_calls", [])
-                tool_outputs = group.get("tool_outputs", [])
-                preview = _tool_group_preview(
-                    message, tool_outputs
-                ) or _format_message_preview(message)
-                title = f"{idx}. assistant"
-                if preview:
-                    title += f"  {preview}"
-
-                body = _stringify_message_content(message.get("content", "")).strip()
-                collapsed = True
-                if self._highlight_regex and self._highlight_column == "completion":
-                    collapsed = not (body and self._highlight_regex.search(body))
-                    if collapsed:
-                        for tool_call in tool_calls:
-                            name, arguments, _ = _tool_call_parts(tool_call)
-                            if self._highlight_regex.search(
-                                name
-                            ) or self._highlight_regex.search(arguments):
-                                collapsed = False
-                                break
-                    if collapsed:
-                        for output in tool_outputs:
-                            output_text = (
-                                _stringify_message_content(output.get("content", ""))
-                                if isinstance(output, dict)
-                                else str(output)
-                            )
-                            if self._highlight_regex.search(output_text):
-                                collapsed = False
-                                break
-
-                nested_sections: List[Collapsible] = []
-                used_output_indexes: set[int] = set()
-                for tool_idx, tool_call in enumerate(tool_calls, start=1):
-                    name, arguments, call_id = _tool_call_parts(tool_call)
-                    matched_output = None
-                    if call_id is not None:
-                        for output_idx, candidate in enumerate(tool_outputs):
-                            if (
-                                isinstance(candidate, dict)
-                                and candidate.get("tool_call_id") == call_id
-                            ):
-                                matched_output = candidate
-                                used_output_indexes.add(output_idx)
-                                break
-                    if matched_output is None:
-                        for output_idx, candidate in enumerate(tool_outputs):
-                            if output_idx not in used_output_indexes:
-                                matched_output = candidate
-                                used_output_indexes.add(output_idx)
-                                break
-
-                    output_text = (
-                        _stringify_message_content(matched_output.get("content", ""))
-                        if isinstance(matched_output, dict)
-                        else (str(matched_output) if matched_output is not None else "")
-                    )
-                    nested_sections.append(
-                        self._make_section(
-                            title=(
-                                f"tool {tool_idx}  {name}  -> "
-                                f"{_tool_output_preview(matched_output)}"
-                            ),
-                            body="\n".join(
-                                [
-                                    "Call",
-                                    arguments,
-                                    "",
-                                    "Output",
-                                    output_text,
-                                ]
-                            ),
-                            column="completion",
-                            collapsed=collapsed or tool_idx > 1,
-                            section_id=f"turn-{idx}-tool-{tool_idx}",
-                            classes="history-section tool-call-section nested-section",
-                        )
-                    )
-
-                for extra_idx, output_message in enumerate(tool_outputs, start=1):
-                    if (extra_idx - 1) in used_output_indexes:
-                        continue
-                    output_text = (
-                        _stringify_message_content(output_message.get("content", ""))
-                        if isinstance(output_message, dict)
-                        else str(output_message)
-                    )
-                    nested_sections.append(
-                        self._make_section(
-                            title=(
-                                f"tool output {len(nested_sections) + 1}  "
-                                f"{_tool_output_preview(output_message)}"
-                            ),
-                            body=output_text,
-                            column="completion",
-                            collapsed=True,
-                            section_id=f"turn-{idx}-tool-extra-{extra_idx}",
-                            classes="history-section tool-section nested-section",
-                        )
-                    )
-
-                sections.append(
-                    self._make_section(
-                        title=title,
-                        body=body,
-                        column="completion",
-                        collapsed=collapsed,
-                        section_id=f"turn-{idx}",
-                        classes="history-section assistant-section",
-                        nested_sections=nested_sections,
-                    )
-                )
-        else:
-            sections.append(
-                self._make_section(
-                    title="Completion",
-                    body=self._completion_text,
-                    column="completion",
-                    collapsed=False,
-                    section_id="completion-empty",
-                    classes="history-section assistant-section",
-                )
-            )
-
         container = self.query_one("#completion-scroll", VerticalScroll)
-        async with container.batch():
-            await container.remove_children()
-            if not self.is_mounted:
-                return
-            await container.mount(*sections)
+        container.remove_children()
+        container.mount(*self._completion_sections(record))
         if focus_history:
             self.call_after_refresh(self._focus_primary_content)
+
+    def _rollout_copy_start_key(self) -> str:
+        if self.is_mounted and self.query_one("#details-panel", Panel).has_focus_within:
+            return f"details:{self._active_details_tab_id()}"
+        if self.is_mounted and self.query_one("#history-panel", Panel).has_focus_within:
+            return "history"
+        if (
+            self.is_mounted
+            and self.query_one("#rollouts-panel", Panel).has_focus_within
+        ):
+            return "rollout"
+        return "snapshot"
+
+    def _active_details_tab_id(self) -> str:
+        if not self.is_mounted:
+            return "details-task"
+        active = self.query_one("#details-tabs", TabbedContent).active
+        return active or "details-task"
+
+    def _detail_copy_sections(
+        self, record: Dict[str, Any]
+    ) -> List[Tuple[str, str, str]]:
+        sections = [
+            ("details-task", "Task", _text_to_plain(self._build_task_text(record))),
+            ("details-score", "Score", _text_to_plain(self._build_score_text(record))),
+            ("details-usage", "Usage", _text_to_plain(self._build_usage_text(record))),
+            ("details-info", "Info", _text_to_plain(self._build_info_text(record))),
+        ]
+        return [section for section in sections if section[2]]
+
+    def _render_detail_copy_text(self, sections: List[Tuple[str, str, str]]) -> str:
+        return "\n\n".join(f"{label}\n{body}" for _, label, body in sections if body)
+
+    def _render_history_section_copy_text(
+        self, section: HistorySectionData, *, depth: int = 0
+    ) -> str:
+        indent = "  " * depth
+        parts = [f"{indent}{section.title}"]
+        if section.body:
+            parts.append(_indent_block(section.body, f"{indent}  "))
+        parts.extend(
+            self._render_history_section_copy_text(child, depth=depth + 1)
+            for child in section.nested_sections
+        )
+        return "\n\n".join(part for part in parts if part)
+
+    def _render_history_copy_text(self, sections: List[HistorySectionData]) -> str:
+        return "\n\n".join(
+            self._render_history_section_copy_text(section) for section in sections
+        )
+
+    def _append_history_copy_items(
+        self,
+        items: List[RolloutCopyItem],
+        sections: List[HistorySectionData],
+        *,
+        depth: int = 0,
+        prefix: str = "history",
+    ) -> None:
+        for idx, section in enumerate(sections, start=1):
+            key = f"{prefix}:{idx}"
+            indent = "  " * depth
+            items.append(
+                RolloutCopyItem(
+                    key=key,
+                    label=f"History: {indent}{section.title}",
+                    body=self._render_history_section_copy_text(section),
+                )
+            )
+            self._append_history_copy_items(
+                items,
+                list(section.nested_sections),
+                depth=depth + 1,
+                prefix=key,
+            )
+
+    def _build_rollout_snapshot_text(
+        self,
+        record: Dict[str, Any],
+        history_sections: List[HistorySectionData],
+        detail_sections: List[Tuple[str, str, str]],
+    ) -> str:
+        blocks = [
+            _text_to_plain(self._build_header_summary_text()),
+            _text_to_plain(self._build_header_metric_text()),
+            _text_to_plain(self._build_header_reward_text(record)),
+            f"Current Rollout\n{self._build_rollout_prompt(self.current_record_idx, record).plain}",
+        ]
+
+        history_summary = _text_to_plain(
+            self._build_history_summary_text(record, include_hints=False)
+        )
+        history_text = self._render_history_copy_text(history_sections)
+        history_parts = ["Completion History"]
+        if history_summary:
+            history_parts.append(history_summary)
+        if history_text:
+            history_parts.append(history_text)
+        blocks.append("\n\n".join(history_parts))
+
+        active_tab_id = self._active_details_tab_id()
+        active_tab_label = next(
+            (
+                label
+                for detail_id, label, _ in [
+                    ("details-task", "Task", ""),
+                    ("details-score", "Score", ""),
+                    ("details-usage", "Usage", ""),
+                    ("details-info", "Info", ""),
+                ]
+                if detail_id == active_tab_id
+            ),
+            "Task",
+        )
+        detail_text = self._render_detail_copy_text(detail_sections)
+        detail_heading = f"Details (active: {active_tab_label})"
+        if detail_text:
+            blocks.append(f"{detail_heading}\n\n{detail_text}")
+        else:
+            blocks.append(detail_heading)
+
+        return "\n\n".join(block for block in blocks if block)
+
+    def _build_rollout_copy_items(
+        self, record: Dict[str, Any]
+    ) -> List[RolloutCopyItem]:
+        history_sections = self._history_section_data(record)
+        detail_sections = self._detail_copy_sections(record)
+        items: List[RolloutCopyItem] = [
+            RolloutCopyItem(
+                key="snapshot",
+                label="Full rollout snapshot",
+                body=self._build_rollout_snapshot_text(
+                    record,
+                    history_sections,
+                    detail_sections,
+                ),
+            ),
+            RolloutCopyItem(
+                key="rollout",
+                label="Rollout card",
+                body=self._build_rollout_prompt(self.current_record_idx, record).plain,
+            ),
+            RolloutCopyItem(
+                key="summary",
+                label="Run summary",
+                body=_text_to_plain(self._build_header_summary_text()),
+            ),
+        ]
+
+        run_metrics = _text_to_plain(self._build_header_metric_text())
+        if run_metrics:
+            items.append(
+                RolloutCopyItem(
+                    key="metrics",
+                    label="Run metrics",
+                    body=run_metrics,
+                )
+            )
+
+        reward_text = _text_to_plain(self._build_header_reward_text(record))
+        if reward_text:
+            items.append(
+                RolloutCopyItem(
+                    key="reward",
+                    label="Current reward",
+                    body=reward_text,
+                )
+            )
+
+        history_text = self._render_history_copy_text(history_sections)
+        if history_text:
+            items.append(
+                RolloutCopyItem(
+                    key="history",
+                    label="Completion history",
+                    body=history_text,
+                )
+            )
+
+        detail_text = self._render_detail_copy_text(detail_sections)
+        if detail_text:
+            items.append(
+                RolloutCopyItem(
+                    key="details",
+                    label="Details panel",
+                    body=detail_text,
+                )
+            )
+
+        for detail_id, label, body in detail_sections:
+            items.append(
+                RolloutCopyItem(
+                    key=f"details:{detail_id}",
+                    label=f"Details: {label}",
+                    body=body,
+                )
+            )
+
+        self._append_history_copy_items(items, history_sections)
+        return items
 
     def _history_groups(self, completion: List[Any]) -> List[Dict[str, Any]]:
         groups: List[Dict[str, Any]] = []
         idx = 0
         while idx < len(completion):
             message = completion[idx]
+            if not isinstance(message, dict):
+                idx += 1
+                continue
             if message.get("role") == "assistant":
                 tool_calls = _parse_tool_calls(message.get("tool_calls"))
                 if tool_calls:
@@ -1778,6 +2124,8 @@ class ViewRunScreen(Screen):
                     next_idx = idx + 1
                     while next_idx < len(completion):
                         next_message = completion[next_idx]
+                        if not isinstance(next_message, dict):
+                            break
                         if next_message.get("role") != "tool":
                             break
                         tool_outputs.append(next_message)
@@ -1796,42 +2144,34 @@ class ViewRunScreen(Screen):
             idx += 1
         return groups
 
-    def _make_section(
-        self,
-        *,
-        title: str,
-        body: str,
-        column: str,
-        collapsed: bool,
-        section_id: str,
-        classes: str,
-        nested_sections: Optional[List[Any]] = None,
-    ) -> Collapsible:
+    def _make_section(self, section: HistorySectionData) -> Collapsible:
+        collapsed = section.collapsed
         if (
             self._highlight_regex
-            and self._highlight_column == column
-            and self._highlight_regex.search(body)
+            and self._highlight_column == section.column
+            and self._highlight_regex.search(section.body)
         ):
             collapsed = False
         children: List[Any] = []
-        if body or not nested_sections:
-            text = Text(body)
-            if self._highlight_regex and self._highlight_column == column:
+        if section.body or not section.nested_sections:
+            text = Text(section.body)
+            if self._highlight_regex and self._highlight_column == section.column:
                 _stylize_matches(text, self._highlight_regex, "reverse")
             content = Static(
                 text,
-                id=f"{section_id}-body",
                 classes="section-body",
                 markup=False,
             )
             children.append(content)
-        children.extend(nested_sections or [])
+        children.extend(
+            self._make_section(nested_section)
+            for nested_section in section.nested_sections
+        )
         return Collapsible(
             *children,
-            title=title,
+            title=section.title,
             collapsed=collapsed,
-            id=section_id,
-            classes=classes,
+            classes=section.classes,
         )
 
     def _focus_primary_content(self, *, prefer_expanded: bool = True) -> None:
@@ -1860,15 +2200,15 @@ class ViewRunScreen(Screen):
         collapsible.remove_class("expand-settle")
         collapsible.add_class("just-expanded")
         self.set_timer(
-            0.10,
+            0.04,
             lambda: self._shift_expand_pulse(collapsible),
         )
         self.set_timer(
-            0.22,
+            0.10,
             lambda: self._clear_expand_pulse(collapsible),
         )
         collapsible.call_after_refresh(
-            lambda: collapsible.scroll_visible(duration=0.18, easing="out_cubic")
+            lambda: collapsible.scroll_visible(duration=0.06, easing="out_cubic")
         )
 
     def _shift_expand_pulse(self, collapsible: Collapsible) -> None:
@@ -2227,14 +2567,21 @@ class VerifiersTUI(App):
         margin: 0 0 1 0;
     }
 
+    #details-tabs Underline {
+        display: none;
+    }
+
     #details-tabs Tab {
         background: $surface;
         color: $text-muted;
         min-width: 8;
+        padding: 0 2;
     }
 
     #details-tabs Tab.-active {
         color: $text;
+        background: $primary 18%;
+        text-style: bold;
     }
 
     #details-tabs ContentSwitcher {
@@ -2253,6 +2600,16 @@ class VerifiersTUI(App):
         scrollbar-color: $secondary;
         scrollbar-background: $panel;
         scrollbar-corner-color: $panel;
+    }
+
+    #run-browser-details-scroll {
+        padding: 0 1 0 2;
+        scrollbar-size-vertical: 2;
+        scrollbar-gutter: stable;
+    }
+
+    #run-browser-details {
+        margin-right: 8;
     }
 
     .browser-columns {
@@ -2305,6 +2662,12 @@ class VerifiersTUI(App):
         color: $text;
     }
 
+    .copy-targets {
+        height: 1fr;
+        background: $surface;
+        color: $text;
+    }
+
     .copy-textarea {
         height: 1fr;
         background: $surface;
@@ -2348,15 +2711,15 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     def __init__(self, prompt_lines: List[str], completion_lines: List[str]):
         super().__init__()
-        self._lines = {
+        self._lines: Dict[str, List[str]] = {
             "prompt": prompt_lines,
             "completion": completion_lines,
         }
-        self._hits = {
+        self._hits: Dict[str, List[SearchHit]] = {
             "prompt": [],
             "completion": [],
         }
-        self._cursors = {
+        self._cursors: Dict[str, Optional[int]] = {
             "prompt": None,
             "completion": None,
         }
@@ -2557,6 +2920,177 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         if cursor is None or not hits:
             return None
         return hits[cursor]
+
+
+class RolloutCopyScreen(ModalScreen[None]):
+    """Modal screen for copying rollout viewer sections."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("tab", "focus_next_pane", "Next pane"),
+        Binding("shift+tab", "focus_prev_pane", show=False),
+        Binding("enter", "copy", "Copy"),
+        Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
+    ]
+
+    def __init__(
+        self,
+        items: List[RolloutCopyItem],
+        *,
+        start_key: Optional[str] = None,
+        title: str = "Copy Rollout",
+    ):
+        super().__init__()
+        self._items = items
+        self._items_by_key = {item.key: item for item in items}
+        self._start_key = (
+            start_key
+            if start_key in self._items_by_key
+            else (items[0].key if items else None)
+        )
+        self._title = title
+        self._current_key = self._start_key
+        self._last_copied_selection = ""
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            with Panel(classes="modal-header"):
+                yield Label(Text(self._title, style="bold"))
+                yield Label(
+                    Text(
+                        "Choose a viewer section on the left. Tab switches panes; enter or c copies the current target.",
+                        style="dim",
+                    ),
+                    id="rollout-copy-hint",
+                    classes="copy-hint",
+                )
+                yield Label("", id="rollout-copy-status", classes="subtitle")
+
+            with Horizontal(classes="modal-columns"):
+                with Panel(classes="modal-panel"):
+                    yield Label(Text("Copy targets", style="bold"))
+                    yield OptionList(id="rollout-copy-targets", classes="copy-targets")
+                with Panel(classes="modal-panel"):
+                    yield Label(
+                        Text("Preview", style="bold"), id="rollout-copy-preview-label"
+                    )
+                    preview = TextArea(
+                        "", id="rollout-copy-preview", classes="copy-textarea"
+                    )
+                    preview.read_only = True
+                    yield preview
+        yield Footer()
+
+    def on_mount(self) -> None:
+        option_list = self.query_one("#rollout-copy-targets", OptionList)
+        for item in self._items:
+            option_list.add_option(Option(Text(item.label), id=item.key))
+
+        if self._start_key is not None:
+            for idx, item in enumerate(self._items):
+                if item.key == self._start_key:
+                    option_list.highlighted = idx
+                    option_list.scroll_to_highlight()
+                    break
+
+        self._sync_preview()
+        option_list.focus()
+
+    @on(OptionList.OptionHighlighted, "#rollout-copy-targets")
+    def _on_target_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is None:
+            return
+        self._current_key = event.option_id
+        self._sync_preview()
+
+    @on(TextArea.SelectionChanged)
+    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area.id != "rollout-copy-preview":
+            return
+        selected = event.text_area.selected_text or ""
+        if selected and selected != self._last_copied_selection:
+            self.app.copy_to_clipboard(selected)
+            self._last_copied_selection = selected
+            self.query_one("#rollout-copy-status", Label).update(
+                Text(f"Copied selection ({len(selected):,} chars).", style="dim")
+            )
+        self._update_hint()
+
+    def on_key(self, event) -> None:
+        if event.key in ("tab", "shift+tab", "backtab"):
+            if event.key == "tab":
+                self.action_focus_next_pane()
+            else:
+                self.action_focus_prev_pane()
+            event.prevent_default()
+            event.stop()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_focus_next_pane(self) -> None:
+        self.focus_next()
+
+    def action_focus_prev_pane(self) -> None:
+        self.focus_previous()
+
+    def action_copy(self) -> None:
+        item = self._current_item()
+        if item is None:
+            return
+
+        preview = self.query_one("#rollout-copy-preview", TextArea)
+        selected = preview.selected_text or ""
+        copied_text = selected or item.body
+        if not copied_text:
+            self.query_one("#rollout-copy-status", Label).update(
+                Text("Nothing to copy.", style="dim")
+            )
+            self._update_hint()
+            return
+
+        self.app.copy_to_clipboard(copied_text)
+        self._last_copied_selection = copied_text
+        if selected:
+            message = f"Copied selection ({len(copied_text):,} chars)."
+        else:
+            message = f"Copied {item.label} ({len(copied_text):,} chars)."
+        self.query_one("#rollout-copy-status", Label).update(Text(message, style="dim"))
+        self._update_hint()
+
+    def _current_item(self) -> Optional[RolloutCopyItem]:
+        if self._current_key is None:
+            return self._items[0] if self._items else None
+        return self._items_by_key.get(self._current_key)
+
+    def _sync_preview(self) -> None:
+        item = self._current_item()
+        preview_label = self.query_one("#rollout-copy-preview-label", Label)
+        preview = self.query_one("#rollout-copy-preview", TextArea)
+        if item is None:
+            preview_label.update(Text("Preview", style="bold"))
+            preview.load_text("")
+            self._update_hint()
+            return
+
+        preview_label.update(
+            Text(f"{item.label}  ({len(item.body):,} chars)", style="bold")
+        )
+        preview.load_text(item.body)
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        item = self._current_item()
+        preview = self.query_one("#rollout-copy-preview", TextArea)
+        selected = preview.selected_text or ""
+        if selected:
+            hint = f"Enter/c copies the selection ({len(selected):,} chars)."
+        elif item is not None:
+            hint = f"Enter/c copies {item.label.lower()}. Tab switches panes."
+        else:
+            hint = "Choose a copy target. Tab switches panes."
+        self.query_one("#rollout-copy-hint", Label).update(Text(hint, style="dim"))
 
 
 class CopyScreen(ModalScreen[None]):
