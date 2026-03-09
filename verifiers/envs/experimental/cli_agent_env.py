@@ -279,9 +279,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
-        env_vars.setdefault("OPENAI_TIMEOUT", "600")
-        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
-        env_vars.setdefault("HTTPX_TIMEOUT", "600")
+        env_vars.setdefault("OPENAI_TIMEOUT", "1800")
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "1800")
+        env_vars.setdefault("HTTPX_TIMEOUT", "1800")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
@@ -347,8 +347,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         max_consecutive_errors = 5
         while True:
             try:
-                status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                    sandbox_id, background_job
+                status: BackgroundJobStatus = (
+                    await self.sandbox_client.get_background_job(
+                        sandbox_id, background_job
+                    )
                 )
                 consecutive_errors = 0
             except Exception as e:
