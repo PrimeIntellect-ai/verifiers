@@ -128,7 +128,7 @@ function validateClickLikeArgs(
   return { x: x as number, y: y as number };
 }
 
-function validateOptionalInteger(
+function validateOptionalScrollInteger(
   field: string,
   value: unknown,
   defaultValue: number,
@@ -243,10 +243,10 @@ export async function executeAction(
       }
 
       case "scroll": {
-        const x = validateOptionalInteger("x", action.x, 0, "an integer pixel coordinate");
-        const y = validateOptionalInteger("y", action.y, 0, "an integer pixel coordinate");
-        const scroll_x = validateOptionalInteger("scroll_x", action.scroll_x, 0, "an integer pixel delta");
-        const scroll_y = validateOptionalInteger("scroll_y", action.scroll_y, 0, "an integer pixel delta");
+        const x = validateOptionalScrollInteger("x", action.x, 0, "an integer pixel coordinate");
+        const y = validateOptionalScrollInteger("y", action.y, 0, "an integer pixel coordinate");
+        const scroll_x = validateOptionalScrollInteger("scroll_x", action.scroll_x, 0, "an integer pixel delta");
+        const scroll_y = validateOptionalScrollInteger("scroll_y", action.scroll_y, 0, "an integer pixel delta");
         await page.scroll(
           x,
           y,
@@ -356,10 +356,7 @@ export async function executeAction(
       { action: action.type, duration, success: false, error: errorMessage },
       `[Action] Exception: ${action.type} after ${duration}ms - ${errorMessage}`
     );
-    
-    return {
-      success: false,
-      error: errorMessage,
-    };
+
+    throw error;
   }
 }
