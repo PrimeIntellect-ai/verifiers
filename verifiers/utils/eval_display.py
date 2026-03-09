@@ -25,7 +25,12 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
-from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
+from verifiers.utils.display_utils import (
+    BaseDisplay,
+    format_numeric,
+    make_aligned_row,
+    make_kv_line,
+)
 from verifiers.utils.message_utils import format_messages
 
 
@@ -330,22 +335,7 @@ class EvalDisplay(BaseDisplay):
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
         metrics = {"reward": reward, **metrics}
 
-        # build the left-aligned metrics text
-        metrics_text = Text()
-        metrics_text.append("╰─ ", style="dim")
-
-        for i, (name, value) in enumerate(metrics.items()):
-            # format value
-            value_str = format_numeric(value)
-
-            # add metric with dotted leader
-            metrics_text.append(name, style="dim")
-            metrics_text.append(" ", style="dim")
-            metrics_text.append(value_str, style="bold")
-
-            # add separator between metrics
-            if i < len(metrics) - 1:
-                metrics_text.append("   ")  # 3 spaces between metrics
+        metrics_text = make_kv_line({k: format_numeric(v) for k, v in metrics.items()})
 
         # build the right-aligned error_rate text
         error_text = Text()
@@ -489,7 +479,25 @@ class EvalDisplay(BaseDisplay):
 
         # combine all content
         space = Text("  ")
-        content_items: list[RenderableType] = [config_line, space, progress]
+        content_items: list[RenderableType] = []
+
+        # Show env_args and sampling_args above config line
+        args_dict: dict[str, object] = {}
+        if config.env_args:
+            args_dict.update(config.env_args)
+        if config.sampling_args and any(
+            v is not None for v in config.sampling_args.values()
+        ):
+            args_dict.update(
+                {k: v for k, v in config.sampling_args.items() if v is not None}
+            )
+        if args_dict:
+            content_items.append(
+                make_kv_line(args_dict, prefix="args: ", prefix_style="white")
+            )
+            content_items.append(space)
+
+        content_items.extend([config_line, space, progress])
         if metrics_content:
             content_items.append(metrics_content)
         else:
@@ -544,12 +552,16 @@ class EvalDisplay(BaseDisplay):
         logs_panel = self._make_logs_panel(env_idx, max_lines=log_max_lines)
         content_items.append(logs_panel)
 
+        # No top padding when args are shown (they sit right under the title)
+        has_args = bool(args_dict)
+        top_pad = 0 if has_args else 1
+
         return Panel(
             Group(*content_items),
             title=title,
             title_align="left",
             border_style=border_style,
-            padding=(1, 1),
+            padding=(top_pad, 1, 1, 1),
             expand=True,
         )
 
