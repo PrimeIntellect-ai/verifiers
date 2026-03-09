@@ -90,6 +90,14 @@ prime eval run my-env -n 1000 -s --resume
 prime eval run configs/eval/my-benchmark.toml
 ```
 
+## Inspect Saved Runs In The TUI
+1. Browse saved eval outputs in the tree browser:
+```bash
+prime eval tui
+```
+2. Use `Enter` to open a run, `b` to return, and `tab` to cycle panes.
+3. In rollout details, use `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
+
 ## Push Results to Platform
 1. After proper eval runs complete, nudge users to push results for detailed platform viewing.
 2. Push from current directory or auto-discover outputs:

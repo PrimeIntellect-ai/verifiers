@@ -15,7 +15,7 @@ from rich import box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
-from textual import events, on
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
@@ -229,6 +229,9 @@ class LazyRunResults:
         line = self._read_next_line()
         return line is not None
 
+    def count_hint(self) -> Optional[int]:
+        return self._count
+
 
 # ----------------------------
 # Formatting helpers
@@ -268,6 +271,50 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _count_result_records(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for _ in handle)
+    except OSError:
+        return 0
+
+
+def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
+    rewards: List[float] = []
+    metric_values: Dict[str, List[float]] = defaultdict(list)
+    try:
+        with (run.path / "results.jsonl").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                reward = _numeric_reward(record.get("reward"))
+                if reward is not None:
+                    rewards.append(reward)
+                for name, value in _extract_numeric_metric_values(record).items():
+                    metric_values[name].append(value)
+    except OSError:
+        pass
+
+    return RunOverviewStats(
+        rewards=rewards,
+        metric_summaries=[
+            MetricSummary(
+                name=name,
+                count=len(values),
+                avg=sum(values) / len(values),
+                min_value=min(values),
+                max_value=max(values),
+            )
+            for name, values in sorted(metric_values.items())
+            if values
+        ],
+    )
 
 
 def _format_message_preview(message: Any) -> str:
@@ -934,7 +981,10 @@ class BrowseRunsScreen(Screen):
             return Text()
 
         if payload.kind == "run" and payload.run is not None:
-            return self._build_run_details(payload.run)
+            stats = self._run_overview_cache.get(payload.run.path)
+            if stats is None:
+                self._load_run_overview_stats(payload.run)
+            return self._build_run_details(payload.run, stats)
 
         if payload.kind == "env":
             return self._build_env_details(payload.env_id)
@@ -944,46 +994,35 @@ class BrowseRunsScreen(Screen):
 
         return Text()
 
-    def _run_overview_stats(self, run: RunInfo) -> RunOverviewStats:
-        cached = self._run_overview_cache.get(run.path)
-        if cached is not None:
-            return cached
+    @work(
+        thread=True,
+        group="run-overview",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_run_overview_stats(self, run: RunInfo) -> None:
+        if run.path in self._run_overview_cache:
+            return
+        stats = _compute_run_overview_stats(run)
+        self.app.call_from_thread(self._finish_loading_run_overview_stats, run, stats)
 
-        rewards: List[float] = []
-        metric_values: Dict[str, List[float]] = defaultdict(list)
-        try:
-            with (run.path / "results.jsonl").open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
-                    reward = _numeric_reward(record.get("reward"))
-                    if reward is not None:
-                        rewards.append(reward)
-                    for name, value in _extract_numeric_metric_values(record).items():
-                        metric_values[name].append(value)
-        except OSError:
-            pass
-
-        stats = RunOverviewStats(
-            rewards=rewards,
-            metric_summaries=[
-                MetricSummary(
-                    name=name,
-                    count=len(values),
-                    avg=sum(values) / len(values),
-                    min_value=min(values),
-                    max_value=max(values),
-                )
-                for name, values in sorted(metric_values.items())
-                if values
-            ],
-        )
+    def _finish_loading_run_overview_stats(
+        self, run: RunInfo, stats: RunOverviewStats
+    ) -> None:
+        if not self.is_mounted:
+            return
         self._run_overview_cache[run.path] = stats
-        return stats
+        tree = self.query_one("#run-browser-tree", Tree)
+        payload = getattr(getattr(tree, "cursor_node", None), "data", None)
+        if not isinstance(payload, BrowserNodeData):
+            return
+        if payload.kind != "run" or payload.run is None:
+            return
+        if payload.run.path != run.path:
+            return
+        self.query_one("#run-browser-details", Static).update(
+            self._build_run_details(run, stats)
+        )
 
     def _build_env_details(self, env_id: str) -> Group:
         models = self.index.get(env_id, {})
@@ -1082,11 +1121,13 @@ class BrowseRunsScreen(Screen):
 
         return Group(*items)
 
-    def _build_run_details(self, run: RunInfo) -> Group:
+    def _build_run_details(
+        self,
+        run: RunInfo,
+        stats: Optional[RunOverviewStats] = None,
+    ) -> Group:
         meta = run.load_metadata()
-        stats = self._run_overview_stats(run)
-        rewards = stats.rewards
-        metric_summaries = stats.metric_summaries
+        rewards = stats.rewards if stats is not None else []
 
         summary = Text()
         summary.append("Run\n", style="bold dim")
@@ -1115,8 +1156,6 @@ class BrowseRunsScreen(Screen):
                 summary.append(f"{label} ", style="bold")
                 summary.append(value, style=style or "")
 
-        reward_summary = _build_reward_distribution_table(rewards, "Rollout rewards")
-
         pass_rates = []
         for key, prefix in (("pass_at_k", "pass@"), ("pass_all_k", "pass-all@")):
             values = meta.get(key)
@@ -1139,8 +1178,25 @@ class BrowseRunsScreen(Screen):
                 pass_rate_text.append(f"{label} ", style="bold")
                 pass_rate_text.append(f"{value:.3f}", style=_reward_style(value))
 
-        items: List[Any] = [summary, Text(""), reward_summary, Text("")]
-        items.append(_build_metric_summary_table(metric_summaries))
+        items: List[Any] = [summary, Text("")]
+        if stats is None:
+            loading = Text("Loading rollout metrics…", style="dim")
+            loading.append(
+                "\nOpen the run to inspect rollouts immediately.", style="dim"
+            )
+            items.append(loading)
+        else:
+            reward_summary = _build_reward_distribution_table(
+                stats.rewards,
+                "Rollout rewards",
+            )
+            items.extend(
+                [
+                    reward_summary,
+                    Text(""),
+                    _build_metric_summary_table(stats.metric_summaries),
+                ]
+            )
         if pass_rate_text.plain:
             items.extend([Text(""), pass_rate_text])
 
@@ -1174,6 +1230,7 @@ class ViewRunScreen(Screen):
         super().__init__()
         self.run = run
         self.records = LazyRunResults(run)
+        self._record_count = self.records.count_hint()
         self.current_record_idx = 0
         self._prompt_lines: List[str] = []
         self._completion_lines: List[str] = []
@@ -1256,7 +1313,7 @@ class ViewRunScreen(Screen):
 
         progress = Text()
         progress.append("Record: ", style="bold")
-        progress.append(f"{self.current_record_idx + 1}/{len(self.records)}")
+        progress.append(self._record_progress_label())
         progress.append("   ")
         progress.append("Examples: ", style="bold")
         progress.append(str(meta.get("num_examples", "")))
@@ -1438,6 +1495,54 @@ class ViewRunScreen(Screen):
         if self._previous_animation_level is not None:
             cast(App[Any], self.app).animation_level = self._previous_animation_level
 
+    def _available_record_count(self) -> int:
+        if self.is_mounted:
+            return self.query_one("#rollout-list", OptionList).option_count
+        if self._record_count is not None:
+            return self._record_count
+        return 1 if self.records else 0
+
+    def _record_progress_label(self) -> str:
+        total = "?" if self._record_count is None else str(self._record_count)
+        return f"{self.current_record_idx + 1}/{total}"
+
+    def _set_rollout_option_count(self, count: int) -> None:
+        rollout_list = self.query_one("#rollout-list", OptionList)
+        while rollout_list.option_count < count:
+            idx = rollout_list.option_count
+            rollout_list.add_option(
+                Option(self._build_rollout_prompt(idx), id=str(idx))
+            )
+
+    def _hydrate_rollout_option(self, index: int) -> None:
+        rollout_list = self.query_one("#rollout-list", OptionList)
+        if not (0 <= index < rollout_list.option_count):
+            return
+        rollout_list.replace_option_prompt_at_index(
+            index,
+            self._build_rollout_prompt(index, self.records[index]),
+        )
+
+    @work(
+        thread=True,
+        group="rollout-count",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_record_count(self) -> None:
+        count = _count_result_records(self.run.path / "results.jsonl")
+        self.app.call_from_thread(self._finish_loading_record_count, count)
+
+    def _finish_loading_record_count(self, count: int) -> None:
+        self._record_count = count
+        if not self.is_mounted:
+            return
+        self._set_rollout_option_count(count)
+        rollout_list = self.query_one("#rollout-list", OptionList)
+        rollout_list.highlighted = self.current_record_idx
+        rollout_list.scroll_to_highlight()
+        self.update_display()
+
     def _populate_rollout_list(self) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
         rollout_list.clear_options()
@@ -1445,13 +1550,13 @@ class ViewRunScreen(Screen):
         if not self.records:
             return
 
-        for idx in range(len(self.records)):
-            rollout_list.add_option(
-                Option(self._build_rollout_prompt(idx, self.records[idx]), id=str(idx))
-            )
-
+        count = self._record_count if self._record_count is not None else 1
+        self._set_rollout_option_count(count)
+        self._hydrate_rollout_option(self.current_record_idx)
         rollout_list.highlighted = self.current_record_idx
         rollout_list.scroll_to_highlight()
+        if self._record_count is None:
+            self._load_record_count()
 
     def _build_rollout_prompt(
         self,
@@ -1460,7 +1565,7 @@ class ViewRunScreen(Screen):
     ) -> Text:
         label = Text()
         label.append(f"#{idx}", style="bold")
-        if record is None:
+        if not record:
             return label
 
         reward = record.get("reward")
@@ -1514,6 +1619,10 @@ class ViewRunScreen(Screen):
             return out
 
         for message in prompt_or_completion:
+            if not isinstance(message, dict):
+                out.append(str(message))
+                out.append("\n\n")
+                continue
             role = str(message.get("role", ""))
             content = _stringify_message_content(message.get("content", ""))
             if role == "assistant":
@@ -1594,12 +1703,14 @@ class ViewRunScreen(Screen):
         self._move_record_cursor(1)
 
     def _move_record_cursor(self, delta: int) -> None:
-        if self.records:
-            new_index = (self.current_record_idx + delta) % len(self.records)
-            rollout_list = self.query_one("#rollout-list", OptionList)
-            rollout_list.highlighted = new_index
-            rollout_list.scroll_to_highlight()
-            self._set_current_record(new_index)
+        record_count = self._available_record_count()
+        if record_count <= 0:
+            return
+        new_index = (self.current_record_idx + delta) % record_count
+        rollout_list = self.query_one("#rollout-list", OptionList)
+        rollout_list.highlighted = new_index
+        rollout_list.scroll_to_highlight()
+        self._set_current_record(new_index)
 
     def action_search(self) -> None:
         if not self.records:
@@ -1683,7 +1794,7 @@ class ViewRunScreen(Screen):
 
     def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
         return Text.assemble(
-            (f"{self.current_record_idx + 1}/{len(self.records)}", "bold"),
+            (self._record_progress_label(), "bold"),
             ("  ", ""),
             ("reward ", "dim"),
             (
@@ -1711,9 +1822,10 @@ class ViewRunScreen(Screen):
             )
 
     def _set_current_record(self, index: int, *, focus_history: bool = False) -> None:
-        if not (0 <= index < len(self.records)):
+        if not (0 <= index < self._available_record_count()):
             return
         self.current_record_idx = index
+        self._hydrate_rollout_option(index)
         self._set_highlight(None, repaint=False)
         self.update_display(focus_history=focus_history)
         self.query_one("#completion-scroll", VerticalScroll).scroll_y = 0

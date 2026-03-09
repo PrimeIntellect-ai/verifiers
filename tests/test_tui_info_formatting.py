@@ -16,6 +16,7 @@ from verifiers.scripts.tui import (
     RunInfo,
     VerifiersTUI,
     ViewRunScreen,
+    _compute_run_overview_stats,
     _extract_numeric_metric_values,
     format_info_for_details,
 )
@@ -144,7 +145,9 @@ def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
         path=run_dir,
     )
 
-    rendered = _render_to_text(BrowseRunsScreen({})._build_run_details(run))
+    rendered = _render_to_text(
+        BrowseRunsScreen({})._build_run_details(run, _compute_run_overview_stats(run))
+    )
 
     assert "Rollout metrics" in rendered
     assert "Average" in rendered
@@ -268,7 +271,7 @@ async def test_browse_run_screen_offsets_details_content_from_scrollbar(
 
 
 @pytest.mark.asyncio
-async def test_view_run_screen_loads_rollout_previews_after_mount(tmp_path) -> None:
+async def test_view_run_screen_lazily_hydrates_rollout_previews(tmp_path) -> None:
     run_dir = tmp_path / "demo-run"
     run_dir.mkdir()
     (run_dir / "metadata.json").write_text(
@@ -343,13 +346,25 @@ async def test_view_run_screen_loads_rollout_previews_after_mount(tmp_path) -> N
             third_prompt.plain if isinstance(third_prompt, Text) else str(third_prompt)
         )
 
-        assert screen.records._cache.keys() == {0, 1, 2}
+        assert screen.records._cache.keys() == {0}
         assert "reward 0.100" in first_text
         assert "first sample" in first_text
+        assert second_text == "#1"
+        assert third_text == "#2"
+
+        await pilot.press("n")
+        await pilot.pause()
+
+        second_prompt = rollout_list.get_option_at_index(1).prompt
+        second_text = (
+            second_prompt.plain
+            if isinstance(second_prompt, Text)
+            else str(second_prompt)
+        )
+
+        assert screen.records._cache.keys() == {0, 1}
         assert "reward 0.200" in second_text
         assert "second sample" in second_text
-        assert "reward 0.300" in third_text
-        assert "third sample" in third_text
 
 
 def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) -> None:
@@ -381,6 +396,31 @@ def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) ->
     assert "ModelError" in preview
     assert "BadRequestError" in preview
     assert "original prompt" not in preview
+
+
+def test_format_prompt_or_completion_handles_non_dict_entries(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    rendered = screen._format_prompt_or_completion(
+        [
+            "raw message",
+            {"role": "assistant", "content": "structured message"},
+        ]
+    )
+
+    assert rendered.plain == "raw message\n\nassistant: structured message\n\n"
 
 
 def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
