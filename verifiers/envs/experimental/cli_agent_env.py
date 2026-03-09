@@ -6,6 +6,8 @@ import uuid
 from collections import Counter
 from typing import Any, cast
 
+import httpx
+
 from prime_sandboxes import (
     AdvancedConfigs,
     BackgroundJob,
@@ -190,28 +192,55 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 return self._tunnel.url
 
     async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that checks tunnel liveness and restarts a dead tunnel."""
+        """Background task that probes tunnel liveness and restarts on failure.
+
+        Sends an HTTP request through the tunnel every `interval` seconds.
+        Any response (even 404) confirms the tunnel is routing traffic.
+        After 3 consecutive failures the tunnel is torn down and recreated.
+        """
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         try:
             while True:
                 await asyncio.sleep(interval)
                 async with self._tunnel_lock:
-                    if self._tunnel is not None and not self._tunnel.is_running:
-                        frpc_output = "\n".join(self._tunnel.recent_output)
-                        logger.warning(
-                            f"Health monitor: tunnel dead. frpc output:\n{frpc_output}"
-                        )
-                        self._tunnel.sync_stop()
-                        interception_server = self._require_interception_server()
-                        port = interception_server.port
-                        if logger.isEnabledFor(logging.DEBUG):
-                            self._tunnel = Tunnel(
-                                local_port=port,
-                                log_level="debug",
+                    if self._tunnel is None or self._tunnel.url is None:
+                        continue
+
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            await client.get(
+                                f"{self._tunnel.url}/health",
+                                timeout=10.0,
                             )
-                        else:
-                            self._tunnel = Tunnel(local_port=port)
-                        url = await self._tunnel.start()
-                        logger.info(f"Health monitor: restarted tunnel url={url}")
+                        consecutive_failures = 0
+                    except Exception as e:
+                        consecutive_failures += 1
+                        logger.warning(
+                            f"Health monitor: tunnel probe failed "
+                            f"({consecutive_failures}/{max_consecutive_failures}): {e}"
+                        )
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning(
+                                f"Health monitor: tunnel unreachable after "
+                                f"{max_consecutive_failures} consecutive probes, "
+                                f"restarting"
+                            )
+                            self._tunnel.sync_stop()
+                            interception_server = self._require_interception_server()
+                            port = interception_server.port
+                            if logger.isEnabledFor(logging.DEBUG):
+                                self._tunnel = Tunnel(
+                                    local_port=port,
+                                    log_level="debug",
+                                )
+                            else:
+                                self._tunnel = Tunnel(local_port=port)
+                            url = await self._tunnel.start()
+                            consecutive_failures = 0
+                            logger.info(
+                                f"Health monitor: restarted tunnel url={url}"
+                            )
         except asyncio.CancelledError:
             return
 
