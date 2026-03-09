@@ -474,19 +474,10 @@ class EvalDisplay(BaseDisplay):
         space = Text("  ")
         content_items: list[RenderableType] = []
 
-        # Show env_args and sampling_args above config line
-        args_dict: dict[str, object] = {}
+        # Show env_args above config line (sampling_args shown on config line instead)
         if config.env_args:
-            args_dict.update(config.env_args)
-        if config.sampling_args and any(
-            v is not None for v in config.sampling_args.values()
-        ):
-            args_dict.update(
-                {k: v for k, v in config.sampling_args.items() if v is not None}
-            )
-        if args_dict:
             content_items.append(
-                make_kv_line(args_dict, prefix="args: ", prefix_style="white")
+                make_kv_line(config.env_args, prefix="args: ", prefix_style="white")
             )
             content_items.append(space)
 
@@ -522,7 +513,7 @@ class EvalDisplay(BaseDisplay):
         content_items.append(Text(""))
 
         # No top padding when args are shown (they sit right under the title)
-        has_args = bool(args_dict)
+        has_args = bool(config.env_args)
         top_pad = 0 if has_args else 1
 
         # Compute log lines by measuring the actual rendered height of content.
