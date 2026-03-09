@@ -85,6 +85,20 @@ class RunOverviewStats:
     metric_summaries: List[MetricSummary]
 
 
+class RunBrowserTree(Tree[BrowserNodeData]):
+    """Tree with footer-visible shortcuts for the eval browser."""
+
+    BINDINGS = [
+        *(
+            binding
+            for binding in Tree.BINDINGS
+            if binding.key not in {"enter", "space"}
+        ),
+        Binding("enter", "select_cursor", "Open/toggle", show=True),
+        Binding("space", "toggle_node", "Toggle folder", show=True),
+    ]
+
+
 def discover_results(
     env_dir_path: str = "./environments", outputs_dir_path: str = "./outputs"
 ) -> Dict[str, Dict[str, List[RunInfo]]]:
@@ -775,11 +789,7 @@ class BrowseRunsScreen(Screen):
             with Horizontal(classes="browser-columns"):
                 yield Panel(
                     Label(Text("Eval Browser", style="bold"), classes="title"),
-                    Label(
-                        Text("Enter opens runs  Space toggles folders  c copies"),
-                        classes="subtitle",
-                    ),
-                    Tree("Completed evals", id="run-browser-tree"),
+                    RunBrowserTree("Completed evals", id="run-browser-tree"),
                     classes="browser-tree-panel",
                 )
                 yield Panel(

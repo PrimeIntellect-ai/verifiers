@@ -6,12 +6,13 @@ from rich.console import Console
 from rich.text import Text
 from textual.app import App
 from textual.containers import VerticalScroll
-from textual.widgets import OptionList, Static, TextArea, Tree
+from textual.widgets import Label, OptionList, Static, TextArea, Tree
 
 from verifiers.scripts.tui import (
     BrowseRunsScreen,
     CopyScreen,
     RolloutCopyScreen,
+    RunBrowserTree,
     RunInfo,
     VerifiersTUI,
     ViewRunScreen,
@@ -196,6 +197,41 @@ def test_populate_tree_includes_run_reward_in_label(tmp_path) -> None:
 
     assert first_run_node is not None
     assert first_run_node.label.plain == "run-1  0.750"
+
+
+@pytest.mark.asyncio
+async def test_browse_run_screen_moves_browser_shortcuts_to_footer(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+
+    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        bindings = {binding.key: binding for binding in tree.BINDINGS}
+        labels = [
+            label.content.plain
+            for label in pilot.app.screen.query(Label)
+            if isinstance(label.content, Text)
+        ]
+
+        assert bindings["enter"].show is True
+        assert bindings["enter"].description == "Open/toggle"
+        assert bindings["space"].show is True
+        assert bindings["space"].description == "Toggle folder"
+        assert "Enter opens runs  Space toggles folders  c copies" not in labels
 
 
 @pytest.mark.asyncio
