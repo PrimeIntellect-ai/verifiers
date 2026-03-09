@@ -5,10 +5,14 @@ Textual-based TUI for viewing verifiers eval results.
 import json
 import os
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich import box
+from rich.console import Group
+from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -63,16 +67,43 @@ class BrowserNodeData:
     run: Optional[RunInfo] = None
 
 
-def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[Path]:
-    roots: List[Path] = []
-    if env_dir.exists():
-        for child in env_dir.iterdir():
-            if child.is_dir():
-                candidate = child / "outputs" / "evals"
-                if candidate.exists():
-                    roots.append(candidate)
-    if (global_outputs_dir / "evals").exists():
-        roots.append(global_outputs_dir / "evals")
+@dataclass(frozen=True)
+class MetricSummary:
+    name: str
+    count: int
+    avg: float
+    min_value: float
+    max_value: float
+
+
+@dataclass(frozen=True)
+class RunOverviewStats:
+    rewards: List[float]
+    metric_summaries: List[MetricSummary]
+
+
+_METRIC_CATEGORY_ORDER = {
+    "Tokens": 0,
+    "Calls": 1,
+    "Flow": 2,
+    "Errors": 3,
+    "Timing": 4,
+    "Scores": 5,
+    "Other": 6,
+}
+
+
+def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[str]:
+    roots: List[str] = []
+    env_dir_str = os.fspath(env_dir)
+    if os.path.isdir(env_dir_str):
+        for child_name in sorted(os.listdir(env_dir_str)):
+            candidate = os.path.join(env_dir_str, child_name, "outputs", "evals")
+            if os.path.isdir(candidate):
+                roots.append(candidate)
+    global_root = os.path.join(os.fspath(global_outputs_dir), "evals")
+    if os.path.isdir(global_root):
+        roots.append(global_root)
     return roots
 
 
@@ -96,26 +127,26 @@ def discover_results(
 
     discovered: Dict[str, Dict[str, List[RunInfo]]] = {}
     for root in roots:
-        for env_model_dir in sorted(
-            root.iterdir() if root.exists() else [], key=lambda p: p.name
-        ):
-            if not env_model_dir.is_dir():
+        for env_model_name in sorted(os.listdir(root)):
+            env_model_dir = os.path.join(root, env_model_name)
+            if not os.path.isdir(env_model_dir):
                 continue
-            parsed = _parse_env_and_model(env_model_dir.name)
+            parsed = _parse_env_and_model(env_model_name)
             if parsed is None:
                 continue
             env_id, model = parsed
-            for run_dir in sorted(env_model_dir.iterdir(), key=lambda p: p.name):
-                if not run_dir.is_dir():
+            for run_name in sorted(os.listdir(env_model_dir)):
+                run_dir = os.path.join(env_model_dir, run_name)
+                if not os.path.isdir(run_dir):
                     continue
-                meta = run_dir / "metadata.json"
-                results = run_dir / "results.jsonl"
-                if meta.exists() and results.exists():
+                meta = os.path.join(run_dir, "metadata.json")
+                results = os.path.join(run_dir, "results.jsonl")
+                if os.path.isfile(meta) and os.path.isfile(results):
                     run = RunInfo(
                         env_id=env_id,
                         model=model,
-                        run_id=run_dir.name,
-                        path=run_dir,
+                        run_id=run_name,
+                        path=Path(run_dir),
                     )
                     discovered.setdefault(env_id, {}).setdefault(model, []).append(run)
 
@@ -442,6 +473,75 @@ def format_info_for_details(info: Any) -> str:
     return str(info_value)
 
 
+_STANDARD_NUMERIC_FIELDS = {
+    "example_id",
+    "prompt",
+    "completion",
+    "answer",
+    "task",
+    "info",
+    "reward",
+    "error",
+    "timing",
+    "is_completed",
+    "is_truncated",
+    "stop_condition",
+    "metrics",
+    "tool_defs",
+    "token_usage",
+    "error_chain",
+    "long_error_chain",
+}
+
+
+def _extract_numeric_metric_values(record: Dict[str, Any]) -> Dict[str, float]:
+    metric_values: Dict[str, float] = {}
+
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metric_values[key] = float(value)
+
+    info = _coerce_info_value(record.get("info"))
+    if isinstance(info, dict):
+        reward_signals = info.get("reward_signals")
+        if isinstance(reward_signals, dict):
+            for key, value in reward_signals.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    metric_values.setdefault(key, float(value))
+
+    for key, value in record.items():
+        if key in _STANDARD_NUMERIC_FIELDS:
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            metric_values.setdefault(key, float(value))
+
+    return metric_values
+
+
+def _summarize_metric_values(
+    records: LazyRunResults,
+) -> List[MetricSummary]:
+    metric_values: Dict[str, List[float]] = defaultdict(list)
+
+    for idx in range(len(records)):
+        for name, value in _extract_numeric_metric_values(records[idx]).items():
+            metric_values[name].append(value)
+
+    return [
+        MetricSummary(
+            name=name,
+            count=len(values),
+            avg=sum(values) / len(values),
+            min_value=min(values),
+            max_value=max(values),
+        )
+        for name, values in sorted(metric_values.items())
+        if values
+    ]
+
+
 def _run_average_rewards(runs: List[RunInfo]) -> List[float]:
     rewards: List[float] = []
     for run in runs:
@@ -451,24 +551,35 @@ def _run_average_rewards(runs: List[RunInfo]) -> List[float]:
     return rewards
 
 
-def _append_reward_histogram(out: Text, values: List[float], heading: str) -> None:
-    if out.plain:
-        out.append("\n\n")
-    out.append(f"{heading}\n", style="bold dim")
+def _make_text_bar(fraction: float, width: int = 24, style: str = "cyan") -> Text:
+    fraction = max(0.0, min(1.0, fraction))
+    filled_cells = round(fraction * width)
+    filled = "█" * filled_cells
+    empty = "░" * max(0, width - len(filled))
+    bar = Text()
+    if filled:
+        bar.append(filled, style=style)
+    if empty:
+        bar.append(empty, style="dim")
+    return bar
+
+
+def _build_reward_distribution_table(values: List[float], heading: str) -> Group | Text:
     if not values:
-        out.append("No reward data", style="dim")
-        return
+        return Text("No reward data", style="dim")
 
     avg_reward = sum(values) / len(values)
-    out.append("count ", style="bold")
-    out.append(str(len(values)))
-    out.append("   avg ", style="bold")
-    out.append(f"{avg_reward:.3f}", style=_reward_style(avg_reward))
-    out.append("   min ", style="bold")
-    out.append(f"{min(values):.3f}", style=_reward_style(min(values)))
-    out.append("   max ", style="bold")
-    out.append(f"{max(values):.3f}", style=_reward_style(max(values)))
-    out.append("\n")
+    summary = Text()
+    summary.append(heading, style="bold dim")
+    summary.append("\n")
+    summary.append("count ", style="bold")
+    summary.append(f"{len(values):,}")
+    summary.append("   avg ", style="bold")
+    summary.append(f"{avg_reward:.3f}", style=_reward_style(avg_reward))
+    summary.append("   min ", style="bold")
+    summary.append(f"{min(values):.3f}", style=_reward_style(min(values)))
+    summary.append("   max ", style="bold")
+    summary.append(f"{max(values):.3f}", style=_reward_style(max(values)))
 
     buckets = [
         ("<0", lambda reward: reward < 0, "bold red"),
@@ -483,13 +594,149 @@ def _append_reward_histogram(out: Text, values: List[float], heading: str) -> No
         for label, predicate, style in buckets
     ]
     peak_count = max(count for _, count, _ in bucket_counts) or 1
+
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+        row_styles=["none", "dim"],
+    )
+    table.add_column("Range", style="dim", width=10, no_wrap=True)
+    table.add_column("Count", justify="right", width=8)
+    table.add_column("Share", justify="right", width=8)
+    table.add_column("Distribution", ratio=1, min_width=24)
+
     for label, count, style in bucket_counts:
-        bar_width = max(1, round((count / peak_count) * 18)) if count else 1
-        bar = ("#" * bar_width) if count else "."
-        out.append(label.rjust(8), style="dim")
-        out.append("  ")
-        out.append(bar.ljust(18), style=style)
-        out.append(f" {count}\n", style="dim")
+        share = (count / len(values)) if values else 0.0
+        table.add_row(
+            label,
+            f"{count:,}",
+            f"{share:.1%}",
+            _make_text_bar(count / peak_count if peak_count else 0.0, style=style),
+        )
+
+    return Group(summary, table)
+
+
+def _format_metric_stat_value(value: float) -> str:
+    if float(value).is_integer():
+        return f"{int(value):,}"
+
+    magnitude = abs(value)
+    if magnitude >= 1000:
+        precision = 1
+    elif magnitude >= 100:
+        precision = 2
+    elif magnitude >= 1:
+        precision = 3
+    elif magnitude >= 0.01:
+        precision = 3
+    else:
+        precision = 4
+    return f"{value:,.{precision}f}".rstrip("0").rstrip(".")
+
+
+def _metric_category(name: str) -> str:
+    lowered = name.lower()
+    if "token" in lowered:
+        return "Tokens"
+    if "call" in lowered:
+        return "Calls"
+    if "turn" in lowered or "step" in lowered or "batch" in lowered:
+        return "Flow"
+    if "error" in lowered:
+        return "Errors"
+    if "time" in lowered or lowered.endswith("_ms"):
+        return "Timing"
+    if "reward" in lowered or "score" in lowered or "task" in lowered:
+        return "Scores"
+    return "Other"
+
+
+def _metric_display_name(name: str) -> str:
+    label = name.replace("_", " ")
+    replacements = (
+        ("sub llm", "sub-LLM"),
+        ("main rlm", "main RLM"),
+        ("root rlm", "root RLM"),
+        ("llm", "LLM"),
+        ("repl", "REPL"),
+    )
+    for source, target in replacements:
+        label = label.replace(source, target)
+    return label
+
+
+def _metric_sort_key(summary: MetricSummary) -> tuple[int, int, str]:
+    name = summary.name.lower()
+    category = _metric_category(summary.name)
+
+    prefix_rank = 4
+    if name.startswith("sub_llm_"):
+        prefix_rank = 0
+    elif name.startswith("main_rlm_"):
+        prefix_rank = 1
+    elif name.startswith("root_"):
+        prefix_rank = 2
+    elif name.startswith("repl_"):
+        prefix_rank = 3
+
+    return (
+        _METRIC_CATEGORY_ORDER.get(category, 99),
+        prefix_rank,
+        _metric_display_name(summary.name),
+    )
+
+
+def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table | Text:
+    if not metric_summaries:
+        return Text("No rollout metrics", style="dim")
+
+    counts = {summary.count for summary in metric_summaries}
+    show_count_column = len(counts) > 1
+    title_suffix = f" (n={next(iter(counts)):,})" if len(counts) == 1 else ""
+
+    table = Table(
+        title=f"Rollout metrics{title_suffix}",
+        title_style="bold dim",
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+        row_styles=["none", "dim"],
+    )
+    table.add_column(
+        "Metric",
+        style="bold cyan",
+        ratio=1,
+        min_width=34,
+        no_wrap=True,
+        overflow="ellipsis",
+    )
+    table.add_column("Average", justify="right", width=12, no_wrap=True)
+    table.add_column("Range", justify="right", width=22, no_wrap=True)
+    if show_count_column:
+        table.add_column("N", justify="right", style="dim", width=7, no_wrap=True)
+
+    previous_category: str | None = None
+    for summary in sorted(metric_summaries, key=_metric_sort_key):
+        category = _metric_category(summary.name)
+        if previous_category is not None and category != previous_category:
+            table.add_section()
+
+        row = [
+            _metric_display_name(summary.name),
+            _format_metric_stat_value(summary.avg),
+            f"{_format_metric_stat_value(summary.min_value)} -> {_format_metric_stat_value(summary.max_value)}",
+        ]
+        if show_count_column:
+            row.append(f"{summary.count:,}")
+
+        table.add_row(*row)
+        previous_category = category
+
+    return table
 
 
 # ----------------------------
@@ -590,7 +837,7 @@ class BrowseRunsScreen(Screen):
     def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
         super().__init__()
         self.index = index
-        self._run_reward_cache: Dict[Path, List[float]] = {}
+        self._run_overview_cache: Dict[Path, RunOverviewStats] = {}
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -721,7 +968,13 @@ class BrowseRunsScreen(Screen):
         details_widget.update(Text("Select a run to see details", style="dim"))
 
     def _run_rewards(self, run: RunInfo) -> List[float]:
-        cached = self._run_reward_cache.get(run.path)
+        return self._run_overview_stats(run).rewards
+
+    def _run_metric_summaries(self, run: RunInfo) -> List[MetricSummary]:
+        return self._run_overview_stats(run).metric_summaries
+
+    def _run_overview_stats(self, run: RunInfo) -> RunOverviewStats:
+        cached = self._run_overview_cache.get(run.path)
         if cached is not None:
             return cached
 
@@ -729,58 +982,74 @@ class BrowseRunsScreen(Screen):
         records = load_run_results(run)
         try:
             for idx in range(len(records)):
-                reward = _numeric_reward(records[idx].get("reward"))
+                record = records[idx]
+                reward = _numeric_reward(record.get("reward"))
                 if reward is not None:
                     rewards.append(reward)
+            metric_summaries = _summarize_metric_values(records)
         finally:
             records.close()
 
-        self._run_reward_cache[run.path] = rewards
-        return rewards
+        stats = RunOverviewStats(
+            rewards=rewards,
+            metric_summaries=metric_summaries,
+        )
+        self._run_overview_cache[run.path] = stats
+        return stats
 
-    def _build_env_details(self, env_id: str) -> Text:
+    def _build_env_details(self, env_id: str) -> Group:
         models = self.index.get(env_id, {})
         runs = [run for model_runs in models.values() for run in model_runs]
         rewards = _run_average_rewards(runs)
 
-        out = Text()
-        out.append("Environment\n", style="bold dim")
-        out.append(env_id, style="bold")
-        out.append("\n")
-        out.append(f"{len(models)} models   {len(runs)} runs", style="dim")
-        _append_reward_histogram(out, rewards, "Run avg rewards")
+        summary = Text()
+        summary.append("Environment\n", style="bold dim")
+        summary.append(env_id, style="bold")
+        summary.append("\n")
+        summary.append(f"{len(models)} models   {len(runs)} runs", style="dim")
 
         if models:
             ranked_models = sorted(
                 models.items(),
                 key=lambda item: (-len(item[1]), item[0]),
             )[:4]
-            out.append("\n\nModel activity\n", style="bold dim")
+            model_activity = Text()
+            model_activity.append("Model activity\n", style="bold dim")
             for model, model_runs in ranked_models:
                 model_rewards = _run_average_rewards(model_runs)
-                out.append(model, style="bold")
-                out.append(f"  {len(model_runs)} runs", style="dim")
+                model_activity.append(model, style="bold")
+                model_activity.append(f"  {len(model_runs)} runs", style="dim")
                 if model_rewards:
                     avg_reward = sum(model_rewards) / len(model_rewards)
-                    out.append("  avg ", style="dim")
-                    out.append(
+                    model_activity.append("  avg ", style="dim")
+                    model_activity.append(
                         f"{avg_reward:.3f}",
                         style=_reward_style(avg_reward),
                     )
-                out.append("\n")
+                model_activity.append("\n")
+            return Group(
+                summary,
+                Text(""),
+                _build_reward_distribution_table(rewards, "Run avg rewards"),
+                Text(""),
+                model_activity,
+            )
 
-        return out
+        return Group(
+            summary,
+            Text(""),
+            _build_reward_distribution_table(rewards, "Run avg rewards"),
+        )
 
-    def _build_model_details(self, env_id: str, model: str) -> Text:
+    def _build_model_details(self, env_id: str, model: str) -> Group:
         runs = _sorted_runs(self.index.get(env_id, {}).get(model, []))
         rewards = _run_average_rewards(runs)
 
-        out = Text()
-        out.append("Model\n", style="bold dim")
-        out.append(model, style="bold")
-        out.append("\n")
-        out.append(f"{env_id}   {len(runs)} runs", style="dim")
-        _append_reward_histogram(out, rewards, "Run avg rewards")
+        summary = Text()
+        summary.append("Model\n", style="bold dim")
+        summary.append(model, style="bold")
+        summary.append("\n")
+        summary.append(f"{env_id}   {len(runs)} runs", style="dim")
 
         if runs:
             latest = runs[-1]
@@ -793,21 +1062,34 @@ class BrowseRunsScreen(Screen):
                     else float("-inf")
                 ),
             )
-            out.append("\n\nRecent runs\n", style="bold dim")
-            self._append_run_row(out, "latest", latest)
-            self._append_run_row(out, "best", best)
+            recent = Text()
+            recent.append("Recent runs\n", style="bold dim")
+            self._append_run_row(recent, "latest", latest)
+            self._append_run_row(recent, "best", best)
+            return Group(
+                summary,
+                Text(""),
+                _build_reward_distribution_table(rewards, "Run avg rewards"),
+                Text(""),
+                recent,
+            )
 
-        return out
+        return Group(
+            summary,
+            Text(""),
+            _build_reward_distribution_table(rewards, "Run avg rewards"),
+        )
 
-    def _build_run_details(self, run: RunInfo) -> Text:
+    def _build_run_details(self, run: RunInfo) -> Group:
         meta = run.load_metadata()
         rewards = self._run_rewards(run)
+        metric_summaries = self._run_metric_summaries(run)
 
-        out = Text()
-        out.append("Run\n", style="bold dim")
-        out.append(run.run_id, style="bold")
-        out.append("\n")
-        out.append(f"{run.env_id}   {run.model}", style="dim")
+        summary = Text()
+        summary.append("Run\n", style="bold dim")
+        summary.append(run.run_id, style="bold")
+        summary.append("\n")
+        summary.append(f"{run.env_id}   {run.model}", style="dim")
 
         summary_parts: List[Tuple[str, str, Optional[str]]] = []
         created = _format_run_datetime(meta)
@@ -823,14 +1105,14 @@ class BrowseRunsScreen(Screen):
         elif meta.get("num_examples") not in (None, ""):
             summary_parts.append(("examples", str(meta.get("num_examples")), None))
         if summary_parts:
-            out.append("\n\n")
+            summary.append("\n\n")
             for idx, (label, value, style) in enumerate(summary_parts):
                 if idx:
-                    out.append("   ")
-                out.append(f"{label} ", style="bold")
-                out.append(value, style=style or "")
+                    summary.append("   ")
+                summary.append(f"{label} ", style="bold")
+                summary.append(value, style=style or "")
 
-        _append_reward_histogram(out, rewards, "Rollout rewards")
+        reward_summary = _build_reward_distribution_table(rewards, "Rollout rewards")
 
         pass_rates = []
         for key, prefix in (("pass_at_k", "pass@"), ("pass_all_k", "pass-all@")):
@@ -843,17 +1125,23 @@ class BrowseRunsScreen(Screen):
                     if numeric is None:
                         continue
                     pass_rates.append((f"{prefix}{bucket}", numeric))
+        pass_rate_text = Text()
         if pass_rates:
-            out.append("\n\nPass rates\n", style="bold dim")
+            pass_rate_text.append("Pass rates\n", style="bold dim")
             for idx, (label, value) in enumerate(pass_rates[:6]):
                 if idx and idx % 3 == 0:
-                    out.append("\n")
+                    pass_rate_text.append("\n")
                 elif idx:
-                    out.append("   ")
-                out.append(f"{label} ", style="bold")
-                out.append(f"{value:.3f}", style=_reward_style(value))
+                    pass_rate_text.append("   ")
+                pass_rate_text.append(f"{label} ", style="bold")
+                pass_rate_text.append(f"{value:.3f}", style=_reward_style(value))
 
-        return out
+        items: List[Any] = [summary, Text(""), reward_summary, Text("")]
+        items.append(_build_metric_summary_table(metric_summaries))
+        if pass_rate_text.plain:
+            items.extend([Text(""), pass_rate_text])
+
+        return Group(*items)
 
     def _append_run_row(self, out: Text, label: str, run: RunInfo) -> None:
         reward = _numeric_reward(run.load_metadata().get("avg_reward"))
@@ -1843,47 +2131,7 @@ class ViewRunScreen(Screen):
         return out
 
     def _extract_reward_metrics(self, record: Dict[str, Any]) -> List[Tuple[str, Any]]:
-        metric_values: Dict[str, Any] = {}
-        metrics = record.get("metrics")
-        if isinstance(metrics, dict):
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    metric_values[key] = value
-
-        info = _coerce_info_value(record.get("info"))
-        if isinstance(info, dict):
-            reward_signals = info.get("reward_signals")
-            if isinstance(reward_signals, dict):
-                for key, value in reward_signals.items():
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        metric_values.setdefault(key, value)
-
-        standard_fields = {
-            "example_id",
-            "prompt",
-            "completion",
-            "answer",
-            "task",
-            "info",
-            "reward",
-            "error",
-            "timing",
-            "is_completed",
-            "is_truncated",
-            "stop_condition",
-            "metrics",
-            "tool_defs",
-            "token_usage",
-            "error_chain",
-            "long_error_chain",
-        }
-        for key, value in record.items():
-            if key in standard_fields:
-                continue
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metric_values.setdefault(key, value)
-
-        return sorted(metric_values.items())
+        return sorted(_extract_numeric_metric_values(record).items())
 
     def _build_task_text(self, record: Dict[str, Any]) -> Text:
         out = Text()
