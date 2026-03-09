@@ -1,9 +1,6 @@
 import asyncio
 import inspect
 import logging
-import sys
-import threading
-import traceback
 from collections.abc import Coroutine
 from time import perf_counter
 from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
@@ -105,85 +102,6 @@ class EventLoopLagMonitor:
     def run_in_background(self):
         """Run the event loop lag monitor as a background task."""
         return asyncio.create_task(self.run())
-
-
-class EventLoopBlockingDetector:
-    """Detects when the event loop is blocked and captures stack traces.
-
-    Runs a watchdog thread that periodically checks if the event loop is
-    responsive. When the event loop fails to respond within the threshold,
-    captures stack traces of ALL threads to identify the blocker.
-    """
-
-    def __init__(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        threshold: float = 5.0,
-        check_interval: float = 1.0,
-        logger: Any | None = None,
-    ):
-        self.loop = loop
-        self.threshold = threshold
-        self.check_interval = check_interval
-        self.logger = logger or logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self._stop_event = threading.Event()
-        self._last_response_time = perf_counter()
-        self._main_thread_id = threading.get_ident()
-        self._thread: threading.Thread | None = None
-
-    def start(self):
-        """Start the blocking detector watchdog thread."""
-        self._thread = threading.Thread(
-            target=self._watchdog_loop,
-            name="event-loop-blocking-detector",
-            daemon=True,
-        )
-        self._thread.start()
-        # Schedule the first heartbeat
-        self.loop.call_soon_threadsafe(self._heartbeat)
-        self.logger.info(
-            f"EventLoopBlockingDetector started (threshold={self.threshold}s)"
-        )
-
-    def stop(self):
-        """Stop the blocking detector."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-
-    def _heartbeat(self):
-        """Called on the event loop to record responsiveness."""
-        self._last_response_time = perf_counter()
-        # Schedule next heartbeat
-        if not self._stop_event.is_set():
-            self.loop.call_later(self.check_interval / 2, self._heartbeat)
-
-    def _watchdog_loop(self):
-        """Runs in a separate thread, checking event loop responsiveness."""
-        while not self._stop_event.wait(self.check_interval):
-            now = perf_counter()
-            elapsed = now - self._last_response_time
-            if elapsed > self.threshold:
-                self._capture_and_log_stacks(elapsed)
-
-    def _capture_and_log_stacks(self, elapsed: float):
-        """Capture stack traces of all threads when blocking is detected."""
-        frames = sys._current_frames()
-        lines = [
-            f"EVENT LOOP BLOCKED for {elapsed:.1f}s! Stack traces of all threads:"
-        ]
-        for thread_id, frame in sorted(frames.items()):
-            thread_name = "unknown"
-            for t in threading.enumerate():
-                if t.ident == thread_id:
-                    thread_name = t.name
-                    break
-            is_main = thread_id == self._main_thread_id
-            marker = " [MAIN/EVENT-LOOP]" if is_main else ""
-            lines.append(f"\n--- Thread {thread_id} ({thread_name}){marker} ---")
-            lines.append("".join(traceback.format_stack(frame)))
-
-        self.logger.warning("\n".join(lines))
 
 
 def maybe_retry(
