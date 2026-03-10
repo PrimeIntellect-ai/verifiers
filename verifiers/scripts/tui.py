@@ -158,15 +158,16 @@ class LazyRunResults:
         self._cache: Dict[int, Dict[str, Any]] = {}
         self._eof = False
         self._count: Optional[int] = None
+        self._count_hint: Optional[int] = None
 
         meta = run.load_metadata()
         num_examples = meta.get("num_examples")
         rollouts_per_example = meta.get("rollouts_per_example")
         if isinstance(num_examples, int) and num_examples >= 0:
             if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
-                self._count = num_examples * rollouts_per_example
+                self._count_hint = num_examples * rollouts_per_example
             else:
-                self._count = num_examples
+                self._count_hint = num_examples
 
     def close(self) -> None:
         if not self._fh.closed:
@@ -179,6 +180,7 @@ class LazyRunResults:
         line = self._fh.readline()
         if not line:
             self._eof = True
+            self._count = len(self._offsets)
             return None
         self._offsets.append(pos)
         return line
@@ -237,7 +239,9 @@ class LazyRunResults:
         return line is not None
 
     def count_hint(self) -> Optional[int]:
-        return self._count
+        if self._count is not None:
+            return self._count
+        return self._count_hint
 
 
 # ----------------------------

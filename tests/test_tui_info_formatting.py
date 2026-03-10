@@ -11,6 +11,7 @@ from textual.widgets import Label, OptionList, Static, TextArea, Tree
 from verifiers.scripts.tui import (
     BrowseRunsScreen,
     CopyScreen,
+    LazyRunResults,
     RolloutCopyScreen,
     RunBrowserTree,
     RunInfo,
@@ -40,6 +41,44 @@ class ViewRunHarness(App[None]):
 
     def on_mount(self) -> None:
         self.push_screen(self._screen)
+
+
+def test_lazy_run_results_counts_actual_file_length_when_metadata_is_stale(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"num_examples": 3, "rollouts_per_example": 1}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"reward": 0.1}),
+                json.dumps({"reward": 0.2}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = LazyRunResults(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    try:
+        assert records.count_hint() == 3
+        assert len(records) == 2
+        assert records.count_hint() == 2
+        assert records[2] == {}
+    finally:
+        records.close()
 
 
 def test_format_info_for_details_handles_dict() -> None:
