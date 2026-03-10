@@ -34,6 +34,14 @@ class TestIsValidToolContentParts:
         ]
         assert is_valid_tool_content_parts(content) is True
 
+    def test_valid_pydantic_content_parts(self):
+        """Valid list with pydantic text/image content parts."""
+        content = [
+            vf.Text("Here's the screenshot"),
+            vf.Image("data:image/png;base64,abc123"),
+        ]
+        assert is_valid_tool_content_parts(content) is True
+
     def test_empty_list_is_valid(self):
         """Empty list is valid (no invalid parts)."""
         assert is_valid_tool_content_parts([]) is True
@@ -370,6 +378,33 @@ class TestToolEnv:
             {"type": "text", "text": "Here's the screenshot"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
         ]
+
+    @pytest.mark.asyncio
+    async def test_call_tool_returns_pydantic_content_parts(
+        self, mock_client, sample_chat_dataset
+    ):
+        """Test that call_tool preserves pydantic text/image content parts."""
+
+        def pydantic_parts_tool() -> list:
+            return [
+                vf.Text("Here's the screenshot"),
+                vf.Image("data:image/png;base64,abc"),
+            ]
+
+        env = vf.ToolEnv(
+            tools=[pydantic_parts_tool],
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
+
+        result = await env.call_tool("pydantic_parts_tool", {}, "call_0")
+        assert isinstance(result["content"], list)
+        assert result["content"][0] == {"type": "text", "text": "Here's the screenshot"}
+        assert result["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc"},
+        }
 
     @pytest.mark.asyncio
     async def test_call_tool_casts_invalid_list_to_str(

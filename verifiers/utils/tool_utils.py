@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 from agents.function_schema import function_schema
@@ -10,14 +11,19 @@ VALID_TOOL_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
 def is_valid_tool_content_parts(value: Any) -> bool:
     """Check if value is a valid list of tool content parts.
 
-    Valid content parts have a "type" field with value "text" or "image_url".
+    Valid content parts have a "type" field with value "text" or "image_url",
+    and can be either dict-like objects or pydantic models.
     """
     if not isinstance(value, list):
         return False
     for item in value:
-        if not isinstance(item, dict):
+        if isinstance(item, Mapping):
+            content_type = item.get("type")
+        elif hasattr(item, "model_dump"):
+            content_type = getattr(item, "type", None)
+        else:
             return False
-        if item.get("type") not in VALID_TOOL_CONTENT_PART_TYPES:
+        if content_type not in VALID_TOOL_CONTENT_PART_TYPES:
             return False
     return True
 

@@ -21,18 +21,40 @@
 ### Messages
 
 ```python
-Messages = str | list[ChatMessage]
+ContentPart = vf.Text | vf.Image | vf.Audio | dict[str, Any]
+MessageContent = str | list[ContentPart]
+Message = (
+    vf.SystemMessage
+    | vf.UserMessage
+    | vf.AssistantMessage
+    | vf.ToolMessage
+    | vf.TextMessage
+)
+Messages = list[Message]
 ```
 
-The primary message type. Either a plain string (completion mode) or a list of chat messages (chat mode).
+Provider-agnostic message types used across environments and clients.
 
-### ChatMessage
+### Content Parts (`vf.Text`, `vf.Image`, `vf.Audio`)
 
 ```python
-ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
+vf.Text("hello")
+vf.Image("data:image/png;base64,...")
+vf.Audio(data="...", format="wav")
 ```
 
-OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
+`vf.Text`, `vf.Image`, and `vf.Audio` are aliases for content-part models and can be used directly when building multipart message content.
+
+### Ergonomic Message Constructors
+
+```python
+user = vf.UserMessage("Look at this", vf.Image("data:image/png;base64,..."))
+system = vf.SystemMessage("You are a helpful assistant.")
+tool_call = vf.ToolCall(id="call_0", name="search", arguments={"q": "verifiers"})
+tool_result = vf.ToolMessage(tool_call_id=tool_call, content=[vf.Text("done")])
+```
+
+These constructors are optional conveniences for environment authors; raw dict-based messages are still supported.
 
 ### Info
 
@@ -264,7 +286,7 @@ class Environment(ABC):
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: list[Message] | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -433,7 +455,7 @@ class OpenEnvEnv(MultiTurnEnv):
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: Rubric | None = None,
         **kwargs,

@@ -115,6 +115,17 @@ Together, these construct the full prompt:
 ]
 ```
 
+If you prefer typed constructors over raw dicts, you can build the same prompt with:
+
+```python
+[
+    vf.SystemMessage("You are a helpful math tutor."),
+    vf.UserMessage("What is 2+2?"),
+]
+```
+
+`vf.UserMessage` / `vf.SystemMessage` also support multipart content via `vf.Text`, `vf.Image`, and `vf.Audio` parts.
+
 If your dataset already has a `prompt` column, `question` is ignored. However, if a `system_prompt` is provided, it will be prepended to existing prompts that don't already start with a system message.
 
 ### Evaluation Datasets
