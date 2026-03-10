@@ -25,9 +25,9 @@ from typing import Any, List
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.envs.actor import Actor
+from verifiers.envs.agent import Agent
 from verifiers.envs.multiagent_env import MultiAgentEnv
-from verifiers.envs.protocol import Protocol
+from verifiers.envs.registry import Registry
 from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.types import Messages, State
 
@@ -731,7 +731,7 @@ def load_environment(
     )
     rubric = create_codegen_rubric()
 
-    codegen_actor = Actor(
+    codegen_agent = Agent(
         id="codegen",
         system_prompt=(
             "You are an expert Python programmer specializing in ARC-AGI puzzles. "
@@ -746,6 +746,6 @@ def load_environment(
         dataset=dataset,
     )
 
-    Protocol(actors=[codegen_actor], envs=[env])
+    Registry(agents=[codegen_agent], envs=[env])
 
     return env
