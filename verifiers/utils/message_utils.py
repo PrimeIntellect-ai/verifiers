@@ -37,21 +37,16 @@ def _normalize_raw_message_content(message: dict[str, Any]) -> dict[str, Any]:
     if isinstance(content, list):
         normalized_parts = []
         for part in content:
-            if isinstance(part, dict):
-                normalized_parts.append(from_raw_content_part(part))
-            elif isinstance(part, str):
+            if isinstance(part, str):
                 # HuggingFace datasets may serialize content-part dicts to JSON
                 # strings when storing heterogeneous lists in Arrow tables.
                 try:
-                    decoded = json.loads(part)
+                    part = json.loads(part)
                 except (json.JSONDecodeError, TypeError):
-                    decoded = None
-                if isinstance(decoded, dict) and "type" in decoded:
-                    normalized_parts.append(from_raw_content_part(decoded))
-                else:
-                    normalized_parts.append(part)
-            else:
-                normalized_parts.append(part)
+                    pass
+            if isinstance(part, dict) and "type" in part:
+                part = from_raw_content_part(part)
+            normalized_parts.append(part)
         message = dict(message)
         message["content"] = normalized_parts
     return message
