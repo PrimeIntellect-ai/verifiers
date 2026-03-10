@@ -53,8 +53,9 @@ class RolloutGatewayMixin:
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_monitor_task: asyncio.Task | None = None
-        # Seed _interception_server so CliAgentEnv.teardown_resources is safe
+        # Seed attributes so CliAgentEnv.teardown_resources is safe
         # when use_gateway=True and init_interception was skipped.
+        self._tunnel: Tunnel | None = None
         self._interception_server = None
 
     def _resolve_gateway_url(self, state: State) -> str:

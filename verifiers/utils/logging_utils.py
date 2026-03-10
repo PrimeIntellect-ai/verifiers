@@ -209,3 +209,8 @@ def print_time(time_s: float) -> str:
         return f"{ms:.0f}ms"
     else:
         return f"{time_s:.0f}s"
+
+
+def truncate(s: str, limit: int = 200) -> str:
+    """Truncate a string to a given length."""
+    return (s[:limit] + "...") if len(s) > limit else s

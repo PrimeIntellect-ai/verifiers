@@ -5,7 +5,6 @@ from typing import cast
 import msgpack
 import zmq
 import zmq.asyncio
-
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
@@ -242,15 +241,17 @@ class ZMQEnvServer(EnvServer):
                     error=repr(e),
                 )
 
-            # serialize response using Pydantic
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
+            def serialize_response() -> bytes:
+                return cast(
+                    bytes,
+                    msgpack.packb(
+                        response.model_dump(mode="python", warnings=False),
+                        default=msgpack_encoder,
+                        use_bin_type=True,
+                    ),
+                )
+
+            response_bytes = await asyncio.to_thread(serialize_response)
 
             # send response: [client_id, request_id, response]
             try:

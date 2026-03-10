@@ -10,7 +10,7 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.types import AssistantMessage, Messages, ToolCall
-from verifiers.utils.interception_utils import _truncate as truncate
+from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
 
@@ -39,25 +39,19 @@ You are an interactive CLI tool that helps users with tasks. Use the instruction
 # Tone and style
 - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
 - Your output will be displayed on a command line interface. Your responses should be short and concise. You can use Github-flavored markdown for formatting, and will be rendered in a monospace font using the CommonMark specification.
-- Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. Never use tools like Bash or code comments as means to communicate with the user during the session.
+- Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. Never use tools like bash or code comments as means to communicate with the user during the session.
 - NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one. This includes markdown files.
 
 # Professional objectivity
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.
 """
 
-TASK_MANAGEMENT_SYSTEM_PROMPT = """\
-# Task Management
-You have access to the TodoWrite tools to help you manage and plan tasks. Use these tools frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable. It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
-"""
-
-
 DEFAULT_INSTALL_COMMAND = (
     "curl -fsSL https://opencode.ai/install | bash -s -- --version v1.2.15"
 )
 
 DEFAULT_RUN_COMMAND_TEMPLATE = """\
-set -e
+set -eo pipefail
 
 apt-get update && apt-get install -y curl
 
@@ -150,8 +144,11 @@ class OpenCodeEnv(CliAgentEnv):
     DEFAULT_INSTALL_COMMAND = DEFAULT_INSTALL_COMMAND
     DEFAULT_RUN_COMMAND_TEMPLATE = DEFAULT_RUN_COMMAND_TEMPLATE
     DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+    DEFAULT_PROVIDER_TIMEOUT_MS = 1_800_000  # 30min
     DEFAULT_DISABLE_COMPACTION = True
     DEFAULT_ENABLE_INTERLEAVED = True
+    DEFAULT_INCLUDE_TASK_SYSTEM_PROMPT = False
+    DEFAULT_TASK_SYSTEM_PROMPT = ""
 
     def __init__(
         self,
@@ -164,13 +161,18 @@ class OpenCodeEnv(CliAgentEnv):
         run_command_template: str = DEFAULT_RUN_COMMAND_TEMPLATE,
         disable_compaction: bool = DEFAULT_DISABLE_COMPACTION,
         enable_interleaved: bool = DEFAULT_ENABLE_INTERLEAVED,
-        tool_output_max_bytes: int | None = None,
+        provider_timeout_ms: int = DEFAULT_PROVIDER_TIMEOUT_MS,
+        task_system_prompt: str = DEFAULT_TASK_SYSTEM_PROMPT,
+        include_task_system_prompt: bool = DEFAULT_INCLUDE_TASK_SYSTEM_PROMPT,
         **kwargs,
     ):
         self.asset_dir = asset_dir
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
-        self.tool_output_max_bytes = tool_output_max_bytes
+        self.provider_timeout_ms = provider_timeout_ms
+
+        if system_prompt is not None and include_task_system_prompt:
+            system_prompt += "\n" + task_system_prompt
 
         run_command = self.build_run_command(
             run_command_template,
@@ -181,14 +183,6 @@ class OpenCodeEnv(CliAgentEnv):
             disable_compaction=disable_compaction,
             enable_interleaved=enable_interleaved,
         )
-
-        if (
-            disabled_tools is not None
-            and system_prompt is not None
-            and "todowrite" not in disabled_tools
-            and "todoread" not in disabled_tools
-        ):
-            system_prompt += "\n" + TASK_MANAGEMENT_SYSTEM_PROMPT
 
         super().__init__(
             run_command=run_command,
@@ -266,7 +260,47 @@ class OpenCodeEnv(CliAgentEnv):
         return env_vars
 
     def normalize_response(self, response: vf.Response) -> vf.Response:
-        return response
+        """Normalize model response to match OpenCode's message history conventions:
+        - Compact JSON arugments
+        - Strip trailing newlines from assistant content
+
+        Applying the same normalization to the stored step enables TITO prefix hits.
+        """
+        message = response.message
+        normalized_tool_calls = message.tool_calls or []
+        if message.tool_calls:
+            normalized_tool_calls = []
+            for tc in message.tool_calls:
+                if not isinstance(tc, ToolCall):
+                    normalized_tool_calls.append(tc)
+                    continue
+                try:
+                    compact_arguments = json.dumps(
+                        json.loads(tc.arguments),
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    compact_arguments = tc.arguments
+                normalized_tool_calls.append(
+                    tc.model_copy(
+                        update={"name": tc.name.lower(), "arguments": compact_arguments}
+                    )
+                )
+        content = message.content
+        if content is None:
+            content = ""
+        elif isinstance(content, str):
+            content = content.rstrip()
+        reasoning_content = message.reasoning_content or None
+        normalized_message = message.model_copy(
+            update={
+                "content": content,
+                "tool_calls": normalized_tool_calls,
+                "reasoning_content": reasoning_content,
+            }
+        )
+        return response.model_copy(update={"message": normalized_message})
 
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""
@@ -289,7 +323,7 @@ class OpenCodeEnv(CliAgentEnv):
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "intercepted",
-                        "timeout": 600000,
+                        "timeout": self.provider_timeout_ms,
                     },
                     "models": {
                         "${OPENAI_MODEL##*/}": {
@@ -310,9 +344,6 @@ class OpenCodeEnv(CliAgentEnv):
 
         if disable_compaction:
             config["compaction"] = {"auto": False, "prune": False}
-
-        if self.tool_output_max_bytes is not None:
-            config["toolOutputMaxBytes"] = self.tool_output_max_bytes
 
         if system_prompt_path or disabled_tools:
             build_config: dict = {}
