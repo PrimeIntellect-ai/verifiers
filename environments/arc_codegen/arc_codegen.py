@@ -643,16 +643,12 @@ class CodegenSolverEnv(MultiAgentEnv):
         return self._actor_id
 
     async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        actor = self.get_actor(actor_id)
+        # System prompt is already injected by the framework's rollout loop,
+        # so we only add user messages here to avoid duplication.
         messages: Messages = []
-
-        if actor.system_prompt:
-            messages.append({"role": "system", "content": actor.system_prompt})
-
         for msg in state.get("prompt", []):
             if msg.get("role") != "system":
                 messages.append(msg)
-
         return messages
 
     async def on_turn_complete(self, state: State) -> None:
@@ -801,8 +797,11 @@ def load_environment(
     codegen_agent = Agent(
         id="codegen",
         system_prompt=(
-            "You are an expert Python programmer specializing in ARC-AGI puzzles. "
-            "Write a solver(input_grid) function that implements the transformation."
+            "You write Python code to solve ARC-AGI puzzles. "
+            "Given training input/output pairs, write a concise `def solver(input_grid)` function. "
+            "Output ONLY a single python code block. No explanation, no comments, no analysis. "
+            "The function takes a 2D list of integers and must return a 2D list of integers. "
+            "You may use numpy, scipy, and cv2."
         ),
         is_trainable=True,
     )
