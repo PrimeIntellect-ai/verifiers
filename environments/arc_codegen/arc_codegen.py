@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -419,43 +420,79 @@ def _get_last_response_text(state: State) -> str:
 # Shaped Reward Evaluation
 # =============================================================================
 
+# Cap concurrent sandbox subprocesses to avoid overwhelming CPU
+_SANDBOX_SEMAPHORE: asyncio.Semaphore | None = None
+MAX_CONCURRENT_SANDBOXES = 32
+
+
+def _get_sandbox_semaphore() -> asyncio.Semaphore:
+    global _SANDBOX_SEMAPHORE
+    if _SANDBOX_SEMAPHORE is None:
+        _SANDBOX_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_SANDBOXES)
+    return _SANDBOX_SEMAPHORE
+
+
+# Track eval stats across a batch for summary logging
+_eval_stats = {"total": 0, "code_extracted": 0, "compiles": 0, "all_train": 0, "test_correct": 0}
+
+
+def _log_eval_summary():
+    s = _eval_stats
+    print(
+        f"[arc_codegen] Eval batch: {s['total']} responses | "
+        f"code extracted: {s['code_extracted']} | "
+        f"compiles: {s['compiles']} | "
+        f"all train pass: {s['all_train']} | "
+        f"test correct: {s['test_correct']}",
+        flush=True,
+    )
+
+
 async def evaluate_codegen_response(
     response_text: str,
     train_pairs: list[dict],
     test_input: Grid,
     test_output: Grid,
+    task_id: str = "",
 ) -> dict[str, Any]:
     """
     Run the full shaped-reward evaluation pipeline on a codegen response.
 
     Sandbox calls run via asyncio.to_thread so multiple evaluations
-    can proceed concurrently across rollouts.
+    can proceed concurrently, capped by MAX_CONCURRENT_SANDBOXES.
     """
-    import asyncio
-
+    sem = _get_sandbox_semaphore()
     extras: dict[str, Any] = {}
+    _eval_stats["total"] += 1
 
     # Step 1: Extract code
     code = _extract_solver_code(response_text)
     extras["code_extracted"] = code is not None
     if code is None:
+        print(f"[arc_codegen] [{task_id}] No solver code found", flush=True)
         return extras
+
+    _eval_stats["code_extracted"] += 1
 
     # Step 2: Check if code compiles
     try:
         compile(code, "<solver>", "exec")
         extras["code_compiles"] = True
-    except SyntaxError:
+    except SyntaxError as e:
         extras["code_compiles"] = False
+        print(f"[arc_codegen] [{task_id}] SyntaxError: {e}", flush=True)
         return extras
 
-    # Step 3: Run all training pairs in parallel
+    _eval_stats["compiles"] += 1
+
+    # Step 3: Run all training pairs in parallel (with concurrency cap)
     train_total = len(train_pairs)
 
     async def run_pair(i: int, pair: dict) -> tuple[int, list | None]:
-        result = await asyncio.to_thread(
-            run_solver_in_sandbox, code, pair["input"], 10.0
-        )
+        async with sem:
+            result = await asyncio.to_thread(
+                run_solver_in_sandbox, code, pair["input"], 10.0
+            )
         return i, result
 
     pair_tasks = [run_pair(i, p) for i, p in enumerate(train_pairs)]
@@ -480,6 +517,8 @@ async def evaluate_codegen_response(
     extras["train_pairs_total"] = train_total
     extras["first_train_dims_correct"] = first_train_dims_correct
 
+    print(f"[arc_codegen] [{task_id}] Train: {train_passed}/{train_total} passed ({train_ran} ran)", flush=True)
+
     # Step 4: Only run test if ALL training pairs pass
     if train_passed < train_total:
         extras["test_ran"] = False
@@ -487,17 +526,26 @@ async def evaluate_codegen_response(
         extras["test_similarity"] = 0.0
         return extras
 
-    test_result = await asyncio.to_thread(
-        run_solver_in_sandbox, code, test_input, 10.0
-    )
+    _eval_stats["all_train"] += 1
+
+    async with sem:
+        test_result = await asyncio.to_thread(
+            run_solver_in_sandbox, code, test_input, 10.0
+        )
     extras["test_ran"] = test_result is not None
 
     if test_result is not None:
         extras["test_correct"] = grids_equal(test_result, test_output)
         extras["test_similarity"] = grid_similarity(test_result, test_output)
+        if extras["test_correct"]:
+            _eval_stats["test_correct"] += 1
+            print(f"[arc_codegen] [{task_id}] *** SOLVED! ***", flush=True)
+        else:
+            print(f"[arc_codegen] [{task_id}] Test similarity: {extras['test_similarity']:.2f}", flush=True)
     else:
         extras["test_correct"] = False
         extras["test_similarity"] = 0.0
+        print(f"[arc_codegen] [{task_id}] Test execution failed", flush=True)
 
     return extras
 
@@ -620,10 +668,15 @@ class CodegenSolverEnv(MultiAgentEnv):
         train_pairs = json.loads(info["train_pairs"])
         test_input = json.loads(info["test_input"])
         test_output = json.loads(info.get("test_output", "[]"))
+        task_id = info.get("task_id", "unknown")
 
         eval_results = await evaluate_codegen_response(
-            response_text, train_pairs, test_input, test_output
+            response_text, train_pairs, test_input, test_output, task_id=task_id
         )
+
+        reward = codegen_reward({"extras": eval_results})
+        print(f"[arc_codegen] [{task_id}] reward={reward:.2f}", flush=True)
+
         state["extras"].update(eval_results)
         state["extras"]["full_response"] = response_text
 
