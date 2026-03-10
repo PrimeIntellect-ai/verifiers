@@ -157,6 +157,7 @@ class LazyRunResults:
         self._offsets: List[int] = []
         self._cache: Dict[int, Dict[str, Any]] = {}
         self._eof = False
+        self._count_hint: Optional[int] = None
         self._count: Optional[int] = None
         self._count_hint: Optional[int] = None
 

@@ -400,6 +400,56 @@ async def test_view_run_screen_populates_rollout_rewards_for_all_rows(tmp_path) 
         assert "third sample" in third_text
 
 
+@pytest.mark.asyncio
+async def test_view_run_screen_ignores_metadata_rollout_count_when_file_is_short(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.5,
+                "num_examples": 3,
+                "rollouts_per_example": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "reward": 0.5,
+                "prompt": [{"role": "user", "content": "only prompt"}],
+                "completion": [{"role": "assistant", "content": "only sample"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+    screen = ViewRunScreen(run)
+
+    async with ViewRunHarness(screen).run_test() as pilot:
+        await pilot.pause()
+        rollout_list = screen.query_one("#rollout-list", OptionList)
+        first_prompt = rollout_list.get_option_at_index(0).prompt
+        first_text = (
+            first_prompt.plain if isinstance(first_prompt, Text) else str(first_prompt)
+        )
+
+        assert rollout_list.option_count == 1
+        assert screen.records.count_hint() == 1
+        assert "reward 0.500" in first_text
+        assert "only sample" in first_text
+
+
 def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) -> None:
     run_dir = tmp_path / "demo-run"
     run_dir.mkdir()
