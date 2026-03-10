@@ -34,6 +34,65 @@ ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
 
 OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
 
+### Content Part Types
+
+Typed content parts for building multimodal message content. These are Pydantic models exported as `vf.Text`, `vf.Image`, and `vf.Audio`.
+
+```python
+Text = TextContentPart    # type: "text"
+Image = ImageUrlContentPart  # type: "image_url"
+Audio = InputAudioContentPart  # type: "input_audio"
+```
+
+**`vf.Text`** — text content:
+```python
+vf.Text("Hello, world!")
+```
+
+**`vf.Image`** — image content with factory methods:
+```python
+vf.Image("https://example.com/image.png")       # from URL
+vf.Image.from_b64(b64_string)                   # from base64 string
+vf.Image.from_b64(b64_string, "image/jpeg")     # with media type
+vf.Image.from_bytes(png_bytes)                   # from raw bytes
+vf.Image.from_pil(pil_image)                     # from PIL Image
+```
+
+**`vf.Audio`** — audio content:
+```python
+vf.Audio(data=b64_audio, format="wav")
+```
+
+### Message Constructors
+
+Typed message constructors for building prompts and tool results. These are Pydantic models that accept both simple strings and multipart content.
+
+**`vf.SystemMessage`** / **`vf.UserMessage`** — accept a string or content parts as positional args:
+```python
+vf.SystemMessage("You are a helpful assistant.")
+vf.UserMessage("What is this?", vf.Image.from_b64(screenshot_b64))
+```
+
+**`vf.ToolCall`** — represents a tool invocation:
+```python
+vf.ToolCall(id="call_123", name="calculate", arguments='{"expression": "2+2"}')
+vf.ToolCall(id="call_123", name="calculate", arguments={"expression": "2+2"})  # dict auto-serialized
+```
+
+**`vf.ToolMessage`** — tool result, accepts a `ToolCall` for `tool_call_id`:
+```python
+vf.ToolMessage(tool_call_id="call_123", content="4")
+vf.ToolMessage(tool_call_id=tool_call, content=[vf.Text("Result"), vf.Image.from_b64(b64)])
+```
+
+**`vf.AssistantMessage`** — assistant response with optional tool calls:
+```python
+vf.AssistantMessage(content="Here's the answer.")
+vf.AssistantMessage(tool_calls=[vf.ToolCall(...)])
+```
+
+These constructors are interchangeable with raw dicts in all APIs that accept `Messages`.
+
 ### Info
 
 ```python

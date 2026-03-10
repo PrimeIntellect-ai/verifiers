@@ -741,7 +741,7 @@ class CUAMode:
                 self.logger.warning(f"Failed to save screenshot: {e}")
             return None
 
-    def _format_response(self, response: dict, session_id: str = "") -> list[dict]:
+    def _format_response(self, response: dict, session_id: str = "") -> list:
         """Format action response as multipart content with text and image."""
         success = response.get("success", False)
         error = response.get("error")
@@ -1029,7 +1029,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Click at coordinates (x, y) on the page."""
         response = await self._execute_action(
             session_id,
@@ -1046,7 +1046,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Double-click at coordinates (x, y) on the page."""
         response = await self._execute_action(
             session_id,
@@ -1062,7 +1062,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Type text into the currently focused element."""
         response = await self._execute_action(
             session_id,
@@ -1078,7 +1078,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Press keyboard key(s)."""
         response = await self._execute_action(
             session_id,
@@ -1097,7 +1097,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Scroll the page at a specific position."""
         response = await self._execute_action(
             session_id,
@@ -1119,7 +1119,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Navigate to a URL."""
         try:
             response = await self._execute_action(
@@ -1141,7 +1141,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Navigate back in browser history."""
         response = await self._execute_action(
             session_id,
@@ -1156,7 +1156,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Navigate forward in browser history."""
         response = await self._execute_action(
             session_id,
@@ -1172,7 +1172,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Wait for a specified amount of time."""
         try:
             response = await self._execute_action(
@@ -1194,7 +1194,7 @@ class CUAMode:
         session_id: str = "",
         sandbox_id: str = "",
         tool_call_id: str = "",
-    ) -> list[dict]:
+    ) -> list:
         """Capture a screenshot of the current page state."""
         response = await self._execute_action(
             session_id,
