@@ -159,7 +159,6 @@ class LazyRunResults:
         self._eof = False
         self._count_hint: Optional[int] = None
         self._count: Optional[int] = None
-        self._count_hint: Optional[int] = None
 
         meta = run.load_metadata()
         num_examples = meta.get("num_examples")
