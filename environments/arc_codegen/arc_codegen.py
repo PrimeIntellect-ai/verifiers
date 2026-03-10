@@ -419,7 +419,7 @@ def _get_last_response_text(state: State) -> str:
 # Shaped Reward Evaluation
 # =============================================================================
 
-def evaluate_codegen_response(
+async def evaluate_codegen_response(
     response_text: str,
     train_pairs: list[dict],
     test_input: Grid,
@@ -428,8 +428,11 @@ def evaluate_codegen_response(
     """
     Run the full shaped-reward evaluation pipeline on a codegen response.
 
-    Returns a dict of extras to store in state for the reward function.
+    Sandbox calls run via asyncio.to_thread so multiple evaluations
+    can proceed concurrently across rollouts.
     """
+    import asyncio
+
     extras: dict[str, Any] = {}
 
     # Step 1: Extract code
@@ -446,20 +449,29 @@ def evaluate_codegen_response(
         extras["code_compiles"] = False
         return extras
 
-    # Step 3: Run against each training pair
-    train_passed = 0
+    # Step 3: Run all training pairs in parallel
     train_total = len(train_pairs)
+
+    async def run_pair(i: int, pair: dict) -> tuple[int, list | None]:
+        result = await asyncio.to_thread(
+            run_solver_in_sandbox, code, pair["input"], 10.0
+        )
+        return i, result
+
+    pair_tasks = [run_pair(i, p) for i, p in enumerate(train_pairs)]
+    pair_results = await asyncio.gather(*pair_tasks)
+
+    train_passed = 0
     train_ran = 0
     first_train_dims_correct = False
 
-    for i, pair in enumerate(train_pairs):
-        result = run_solver_in_sandbox(code, pair["input"], timeout_s=10.0)
+    for i, result in sorted(pair_results, key=lambda x: x[0]):
         if result is not None:
             train_ran += 1
-            if grids_equal(result, pair["output"]):
+            if grids_equal(result, train_pairs[i]["output"]):
                 train_passed += 1
             elif i == 0:
-                first_train_dims_correct = dims_match(result, pair["output"])
+                first_train_dims_correct = dims_match(result, train_pairs[i]["output"])
         elif i == 0:
             first_train_dims_correct = False
 
@@ -475,7 +487,9 @@ def evaluate_codegen_response(
         extras["test_similarity"] = 0.0
         return extras
 
-    test_result = run_solver_in_sandbox(code, test_input, timeout_s=10.0)
+    test_result = await asyncio.to_thread(
+        run_solver_in_sandbox, code, test_input, 10.0
+    )
     extras["test_ran"] = test_result is not None
 
     if test_result is not None:
@@ -607,7 +621,7 @@ class CodegenSolverEnv(MultiAgentEnv):
         test_input = json.loads(info["test_input"])
         test_output = json.loads(info.get("test_output", "[]"))
 
-        eval_results = evaluate_codegen_response(
+        eval_results = await evaluate_codegen_response(
             response_text, train_pairs, test_input, test_output
         )
         state["extras"].update(eval_results)
