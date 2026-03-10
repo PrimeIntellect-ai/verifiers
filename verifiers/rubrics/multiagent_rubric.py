@@ -24,6 +24,8 @@ class MultiAgentRubric(Rubric):
     not across all actors, preventing unfair comparisons.
     """
 
+    needs_group_scoring = True
+
     def __init__(self, parser: vf.Parser | None = None):
         super().__init__(parser=parser)
 
