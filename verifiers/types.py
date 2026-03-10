@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import (
 
 from anthropic.types import RedactedThinkingBlock
 from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -67,6 +69,18 @@ class TextContentPart(CustomBaseModel):
     type: Literal["text"] = "text"
     text: str
 
+    def __init__(self, text: str | None = None, /, **data):
+        if text is not None and "text" not in data:
+            data["text"] = text
+        super().__init__(**data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any):
+        if isinstance(value, str):
+            return {"text": value}
+        return value
+
 
 class ImageUrlSource(CustomBaseModel):
     url: str
@@ -75,6 +89,54 @@ class ImageUrlSource(CustomBaseModel):
 class ImageUrlContentPart(CustomBaseModel):
     type: Literal["image_url"] = "image_url"
     image_url: ImageUrlSource
+
+    def __init__(self, url: str | None = None, /, **data):
+        if url is not None and "url" not in data and "image_url" not in data:
+            data["url"] = url
+        super().__init__(**data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_image_url(cls, value: Any):
+        if isinstance(value, str):
+            return {"image_url": {"url": value}}
+        if isinstance(value, Mapping) and "url" in value and "image_url" not in value:
+            return {"image_url": {"url": value["url"]}}
+        return value
+
+    @classmethod
+    def from_b64(cls, data: str, media_type: str = "image/png") -> ImageUrlContentPart:
+        """Create from a base64-encoded string.
+
+        >>> vf.Image.from_b64(b64_string, "image/png")
+        """
+        return cls(url=f"data:{media_type};base64,{data}")
+
+    @classmethod
+    def from_bytes(
+        cls, data: bytes, media_type: str = "image/png"
+    ) -> ImageUrlContentPart:
+        """Create from raw bytes (e.g. PNG file contents).
+
+        >>> vf.Image.from_bytes(png_bytes)
+        """
+        b64 = base64.b64encode(data).decode()
+        return cls(url=f"data:{media_type};base64,{b64}")
+
+    @classmethod
+    def from_pil(cls, image: Any, format: str = "PNG") -> ImageUrlContentPart:
+        """Create from a PIL/Pillow Image.
+
+        >>> vf.Image.from_pil(pil_image)
+        >>> vf.Image.from_pil(pil_image, format="JPEG")
+        """
+        from io import BytesIO
+
+        media_type = f"image/{format.lower()}"
+        buf = BytesIO()
+        image.save(buf, format=format)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return cls(url=f"data:{media_type};base64,{b64}")
 
 
 class InputAudioSource(CustomBaseModel):
@@ -85,6 +147,34 @@ class InputAudioSource(CustomBaseModel):
 class InputAudioContentPart(CustomBaseModel):
     type: Literal["input_audio"] = "input_audio"
     input_audio: InputAudioSource
+
+    def __init__(
+        self,
+        data: str | None = None,
+        /,
+        *,
+        format: str | None = None,
+        **kwargs,
+    ):
+        if data is not None and "data" not in kwargs and "input_audio" not in kwargs:
+            kwargs["data"] = data
+        if (
+            format is not None
+            and "format" not in kwargs
+            and "input_audio" not in kwargs
+        ):
+            kwargs["format"] = format
+        super().__init__(**kwargs)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input_audio(cls, value: Any):
+        if isinstance(value, Mapping) and "input_audio" not in value:
+            if "data" in value and "format" in value:
+                return {
+                    "input_audio": {"data": value["data"], "format": value["format"]}
+                }
+        return value
 
 
 class GenericContentPart(CustomBaseModel):
@@ -100,21 +190,69 @@ ContentPart: TypeAlias = (
 )
 MessageContent: TypeAlias = str | list[ContentPart]
 
+Text = TextContentPart
+Image = ImageUrlContentPart
+Audio = InputAudioContentPart
+
+
+def _build_content_list(
+    parts: tuple[str | ContentPart, ...],
+) -> list[ContentPart]:
+    """Convert varargs of strings and content parts into a content list."""
+    result: list[ContentPart] = []
+    for part in parts:
+        if isinstance(part, str):
+            result.append(TextContentPart(text=part))
+        else:
+            result.append(part)
+    return result
+
 
 class SystemMessage(CustomBaseModel):
     role: Literal["system"] = "system"
     content: MessageContent
+
+    def __init__(
+        self, *parts: str | ContentPart, content: MessageContent | None = None, **data
+    ):
+        if content is not None:
+            super().__init__(content=content, **data)
+        elif len(parts) == 1 and isinstance(parts[0], str):
+            super().__init__(content=parts[0], **data)
+        elif parts:
+            super().__init__(content=_build_content_list(parts), **data)
+        else:
+            super().__init__(**data)
 
 
 class UserMessage(CustomBaseModel):
     role: Literal["user"] = "user"
     content: MessageContent
 
+    def __init__(
+        self, *parts: str | ContentPart, content: MessageContent | None = None, **data
+    ):
+        if content is not None:
+            super().__init__(content=content, **data)
+        elif len(parts) == 1 and isinstance(parts[0], str):
+            super().__init__(content=parts[0], **data)
+        elif parts:
+            super().__init__(content=_build_content_list(parts), **data)
+        else:
+            super().__init__(**data)
+
 
 class ToolCall(CustomBaseModel):
     id: str
     name: str
     arguments: str
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def serialize_arguments(cls, v: Any) -> str:
+        if isinstance(v, str):
+            return v
+        return json.dumps(v)
 
 
 ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
@@ -132,6 +270,13 @@ class ToolMessage(CustomBaseModel):
     role: Literal["tool"] = "tool"
     tool_call_id: str
     content: MessageContent
+
+    @field_validator("tool_call_id", mode="before")
+    @classmethod
+    def extract_tool_call_id(cls, v: Any) -> str:
+        if isinstance(v, ToolCall):
+            return v.id
+        return v
 
 
 Message: TypeAlias = (

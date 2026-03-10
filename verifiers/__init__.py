@@ -12,7 +12,7 @@ from .decorators import (  # noqa # isort: skip
     stop,
     teardown,
 )
-from .types import DatasetBuilder  # noqa # isort: skip
+from .types import Audio, DatasetBuilder, Image, Text  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
@@ -85,6 +85,9 @@ __all__ = [
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",
     "OpenAICompletionsClient",
+    "Text",
+    "Image",
+    "Audio",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",

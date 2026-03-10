@@ -143,7 +143,7 @@ class GymEnv(vf.MultiTurnEnv):
         return str(obs)
 
     def wrap_response(self, text: str) -> vf.Messages | str:
-        return cast(vf.Messages, [{"role": "user", "content": text}])
+        return [vf.UserMessage(text)]
 
     async def env_response(
         self, messages: vf.Messages, state: State, **kwargs: Any
