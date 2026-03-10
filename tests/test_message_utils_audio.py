@@ -86,15 +86,11 @@ def test_dataset_map_may_introduce_none_fields_and_stripping_fixes():
     # Older/newer datasets versions differ here: some inject missing keys as None,
     # others leave them absent. Normalize to the problematic shape before testing
     # the stripping logic that production code relies on.
-    if "image_url" in content[0]:
-        assert content[0]["image_url"] is None, "text item should have image_url=None"
-    else:
-        content[0]["image_url"] = None
+    assert content[0].get("image_url") is None, "text item should have image_url=None"
+    content[0]["image_url"] = None
 
-    if "text" in content[1]:
-        assert content[1]["text"] is None, "image_url item should have text=None"
-    else:
-        content[1]["text"] = None
+    assert content[1].get("text") is None, "image_url item should have text=None"
+    content[1]["text"] = None
 
     # Strip None values (same logic as in get_model_response)
     for msg in prompt:
