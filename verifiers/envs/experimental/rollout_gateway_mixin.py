@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any
@@ -52,6 +53,10 @@ class RolloutGatewayMixin:
         self._tunnels: dict[str, Tunnel] = {}
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_monitor_task: asyncio.Task | None = None
+        # Seed attributes so CliAgentEnv.teardown_resources is safe
+        # when use_gateway=True and init_interception was skipped.
+        self._tunnel: Tunnel | None = None
+        self._interception_server = None
 
     def _resolve_gateway_url(self, state: State) -> str:
         client = getattr(state["client"], "client", state["client"])
@@ -334,7 +339,7 @@ class RolloutGatewayMixin:
                 memory_gb=self.memory_gb,  # ty: ignore[unresolved-attribute]
                 disk_size_gb=self.disk_size_gb,  # ty: ignore[unresolved-attribute]
                 gpu_count=self.gpu_count,  # ty: ignore[unresolved-attribute]
-                timeout_minutes=self.timeout_minutes,  # ty: ignore[unresolved-attribute]
+                timeout_minutes=math.ceil(self.timeout_seconds / 60),  # ty: ignore[unresolved-attribute]
                 environment_vars=env_vars,
                 team_id=self.team_id,  # ty: ignore[unresolved-attribute]
                 advanced_configs=self.advanced_configs,  # ty: ignore[unresolved-attribute]

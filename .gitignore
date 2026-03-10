@@ -42,6 +42,8 @@ logs/
 .chroma_db/
 
 # development
+packages/harnesses
+packages/tasksets
 scratch/
 .idea/
 .vscode/

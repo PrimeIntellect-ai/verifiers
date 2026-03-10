@@ -23,7 +23,7 @@ repos:
         pass_filenames: false
       - id: ty
         name: ty (ci parity)
-        entry: uv run ty check verifiers
+        entry: uv run --python 3.13 ty check verifiers
         language: system
         pass_filenames: false
         stages: [pre-push]

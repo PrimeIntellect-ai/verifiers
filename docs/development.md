@@ -34,7 +34,7 @@ uv sync
 uv sync --all-extras
 
 # Install pre-commit hooks (including pre-push Ty gate):
-uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+uv run pre-commit install
 ```
 
 ## Project Structure
@@ -172,15 +172,15 @@ def test_with_mock(mock_client):
 3. **Make changes** following existing patterns
 4. **Add tests** for new functionality
 5. **Run tests**: `uv run pytest tests/`
-6. **Run linting/format checks**: `uv run ruff check --fix . && uv run ruff format --check verifiers tests`
-7. **Run CI-parity type checks**: `uv run ty check verifiers`
+6. **Install hooks once per clone**: `uv run pre-commit install`
+7. **Commit and push** (hooks run automatically on each commit/push)
 8. **Update docs** if adding/changing public APIs
 9. **Submit PR** with clear description
 
 ### Code Style
 
-- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .` and `ruff format --check verifiers tests`
-- `ty` must pass via `uv run ty check verifiers` to mirror CI setup (Python 3.13 target)
+- Strict `ruff` enforcement via pre-commit hooks
+- `ty` runs in the pre-push hook via `uv run --python 3.13 ty check verifiers`
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -189,9 +189,7 @@ def test_with_mock(mock_client):
 ### PR Checklist
 
 - [ ] Tests pass locally (`uv run pytest tests/`)
-- [ ] Linting/format checks pass (`uv run ruff check --fix . && uv run ruff format --check verifiers tests`)
-- [ ] Type checks pass (`uv run ty check verifiers`)
-- [ ] Pre-commit hooks pass (`uv run pre-commit run --all-files`)
+- [ ] Pre-commit and pre-push hooks pass on latest commit/push
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
 
@@ -267,6 +265,7 @@ def load_environment(**kwargs):
 # Development setup
 uv sync                               # CPU-only
 uv sync --all-extras                  # With RL/training extras
+uv run pre-commit install             # One-time per clone (installs pre-commit + pre-push)
 
 # Run tests
 uv run pytest tests/                  # All tests
@@ -280,8 +279,7 @@ uv run pytest tests/test_envs.py -k math_python   # Specific environment
 # Linting
 uv run ruff check --fix .             # Fix lint errors
 uv run ruff format --check verifiers tests  # Verify Python formatting
-uv run ty check verifiers               # Type check (matches CI Ty target)
-uv run pre-commit run --all-files     # Run all pre-commit hooks
+uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
 prime env init new-env                       # Create environment

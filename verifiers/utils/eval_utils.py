@@ -5,10 +5,11 @@ import importlib.util
 import logging
 import math
 import os
+import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, cast
 
@@ -709,12 +710,15 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         )
 
 
-async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> None:
+async def run_evaluations_tui(
+    config: EvalRunConfig, tui_mode: bool = True, compact: bool = False
+) -> None:
     """Run multi-environment evaluation with a Rich display.
 
     Args:
         config: Evaluation run configuration.
         tui_mode: If True, use alternate screen (--tui flag). If False, refresh in-place.
+        compact: If True, show compact summary (settings + stats, skip example prompts).
     """
     from verifiers.utils.eval_display import EvalDisplay, is_tty
 
@@ -730,7 +734,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
         heart = Heartbeat(config.heartbeat_url)
 
-    display = EvalDisplay(config.evals, screen=tui_mode)
+    display = EvalDisplay(config.evals, screen=tui_mode, compact=compact)
 
     async def run_with_progress(
         env_config: EvalConfig, env_idx: int
@@ -811,14 +815,19 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             display.update_env_state(env_idx, status="failed", error=str(e))
             raise
 
-    async def refresh_loop() -> None:
-        while not display.state.all_completed:
+    # Use a daemon thread for the refresh loop so it runs even when the
+    # event loop is blocked by synchronous work (e.g. env installation).
+    refresh_stop = threading.Event()
+
+    def refresh_loop() -> None:
+        while not refresh_stop.is_set() and not display.state.all_completed:
             display.refresh()
-            await asyncio.sleep(1)
+            refresh_stop.wait(1)
 
     try:
         async with display:
-            refresh_task = asyncio.create_task(refresh_loop())
+            refresh_thread = threading.Thread(target=refresh_loop, daemon=True)
+            refresh_thread.start()
             try:
                 await asyncio.gather(
                     *[
@@ -832,9 +841,8 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 if tui_mode:
                     await display.wait_for_exit()
             finally:
-                refresh_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await refresh_task
+                refresh_stop.set()
+                refresh_thread.join(timeout=2)
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
