@@ -45,10 +45,12 @@ def test_messages_to_printable_order_and_joining():
     assert "[audio]" in printable and "describe" in printable
 
 
-def test_dataset_map_introduces_none_fields_and_stripping_fixes():
+def test_dataset_map_may_introduce_none_fields_and_stripping_fixes():
     """
-    Demonstrates that HuggingFace Dataset.map() introduces None values
-    when content items have different schemas, and stripping Nones fixes this.
+    HuggingFace Dataset.map() may materialize missing fields as None when
+    content items have different schemas. Regardless of whether that happens
+    in the installed datasets version, stripping None values should preserve
+    the expected multimodal content shape.
     """
     from datasets import Dataset
 
@@ -76,13 +78,19 @@ def test_dataset_map_introduces_none_fields_and_stripping_fixes():
     prompt = ds[0]["prompt"]
     content = prompt[0]["content"]
 
-    # Dataset.map() unifies schemas, adding None for missing keys
-    assert "image_url" in content[0], (
-        "Dataset.map should add image_url key to text item"
-    )
-    assert content[0]["image_url"] is None, "text item should have image_url=None"
-    assert "text" in content[1], "Dataset.map should add text key to image_url item"
-    assert content[1]["text"] is None, "image_url item should have text=None"
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "What is this?"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"] == {"url": "data:image/png;base64,abc123"}
+
+    # Older/newer datasets versions differ here: some inject missing keys as None,
+    # others leave them absent. Normalize to the problematic shape before testing
+    # the stripping logic that production code relies on.
+    assert content[0].get("image_url") is None, "text item should have image_url=None"
+    content[0]["image_url"] = None
+
+    assert content[1].get("text") is None, "image_url item should have text=None"
+    content[1]["text"] = None
 
     # Strip None values (same logic as in get_model_response)
     for msg in prompt:
