@@ -935,6 +935,7 @@ class ImageSolverEnv(MultiAgentEnv):
             extras["grid_correct"] = False
             extras["grid_similarity"] = 0.0
             extras["dims_correct"] = False
+            print(f"[multistrategy] [{task_id}] image FAILED to extract grid. Response (first 500 chars): {response_text[:500]}", flush=True)
 
     @vf.stop
     async def image_done(self, state: State) -> bool:
