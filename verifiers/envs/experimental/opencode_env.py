@@ -319,7 +319,7 @@ class OpenCodeEnv(CliAgentEnv):
                 num_turns = len(state.get("trajectory", []))
                 agent_error = state.get("agent_exit_code", 0) != 0
                 if (agent_error or num_turns == 0) and agent_logs:
-                    logger.debug(
+                    logger.warning(
                         f"Agent logs (example_id={state.get('example_id')}, "
                         f"exit_code={state.get('agent_exit_code')}, turns={num_turns}):\n{agent_logs}"
                     )
