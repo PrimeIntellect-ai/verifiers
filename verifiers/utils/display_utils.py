@@ -34,6 +34,24 @@ def make_aligned_row(left: Text, right: Text) -> Table:
     return table
 
 
+def make_kv_line(
+    items: dict[str, object], prefix: str = "╰─ ", prefix_style: str = "dim"
+) -> Text:
+    """Create a key-value line like: ╰─ name value   name value
+
+    Keys are dim, values are bold, separated by 3 spaces.
+    """
+    text = Text()
+    text.append(prefix, style=prefix_style)
+    for i, (name, value) in enumerate(items.items()):
+        text.append(name, style="dim")
+        text.append(" ", style="dim")
+        text.append(str(value), style="bold")
+        if i < len(items) - 1:
+            text.append("   ")
+    return text
+
+
 def format_numeric(value: float | int | str) -> str:
     if isinstance(value, float):
         if value == int(value):

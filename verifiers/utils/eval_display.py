@@ -25,7 +25,12 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
-from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
+from verifiers.utils.display_utils import (
+    BaseDisplay,
+    format_numeric,
+    make_aligned_row,
+    make_kv_line,
+)
 from verifiers.utils.message_utils import format_messages
 
 
@@ -330,22 +335,7 @@ class EvalDisplay(BaseDisplay):
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
         metrics = {"reward": reward, **metrics}
 
-        # build the left-aligned metrics text
-        metrics_text = Text()
-        metrics_text.append("╰─ ", style="dim")
-
-        for i, (name, value) in enumerate(metrics.items()):
-            # format value
-            value_str = format_numeric(value)
-
-            # add metric with dotted leader
-            metrics_text.append(name, style="dim")
-            metrics_text.append(" ", style="dim")
-            metrics_text.append(value_str, style="bold")
-
-            # add separator between metrics
-            if i < len(metrics) - 1:
-                metrics_text.append("   ")  # 3 spaces between metrics
+        metrics_text = make_kv_line({k: format_numeric(v) for k, v in metrics.items()})
 
         # build the right-aligned error_rate text
         error_text = Text()
@@ -359,19 +349,12 @@ class EvalDisplay(BaseDisplay):
 
     def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
-        tokens_text = Text()
-        tokens_text.append("╰─ ", style="dim")
-        token_items = [
-            ("input", usage.get("input_tokens", 0.0)),
-            ("output", usage.get("output_tokens", 0.0)),
-        ]
-        for i, (name, value) in enumerate(token_items):
-            value_str = format_numeric(value)
-            tokens_text.append(name, style="dim")
-            tokens_text.append(" ", style="dim")
-            tokens_text.append(value_str, style="bold")
-            if i < len(token_items) - 1:
-                tokens_text.append("   ")
+        tokens_text = make_kv_line(
+            {
+                "input": format_numeric(usage.get("input_tokens", 0.0)),
+                "output": format_numeric(usage.get("output_tokens", 0.0)),
+            }
+        )
         return make_aligned_row(tokens_text, Text())
 
     @staticmethod
@@ -489,7 +472,16 @@ class EvalDisplay(BaseDisplay):
 
         # combine all content
         space = Text("  ")
-        content_items: list[RenderableType] = [config_line, space, progress]
+        content_items: list[RenderableType] = []
+
+        # Show env_args above config line (sampling_args shown on config line instead)
+        if config.env_args:
+            content_items.append(
+                make_kv_line(config.env_args, prefix="args: ", prefix_style="white")
+            )
+            content_items.append(space)
+
+        content_items.extend([config_line, space, progress])
         if metrics_content:
             content_items.append(metrics_content)
         else:
@@ -520,6 +512,10 @@ class EvalDisplay(BaseDisplay):
 
         content_items.append(Text(""))
 
+        # No top padding when args are shown (they sit right under the title)
+        has_args = bool(config.env_args)
+        top_pad = 0 if has_args else 1
+
         # Compute log lines by measuring the actual rendered height of content.
         # We render content_items to a temporary buffer to count lines because
         # items like the metrics row can wrap to multiple terminal lines depending
@@ -535,8 +531,8 @@ class EvalDisplay(BaseDisplay):
             measure_console = Console(file=buf, width=inner_width, highlight=False)
             measure_console.print(Group(*content_items))
             rendered_lines = buf.getvalue().count("\n")
-            # Outer panel: 2 borders + 2 padding; logs panel: 2 borders
-            overhead = rendered_lines + 4 + 2
+            # Outer panel: 2 borders + top_pad + 1 bottom pad; logs panel: 2 borders
+            overhead = rendered_lines + 2 + top_pad + 1 + 2
             log_max_lines = max(3, available_height - overhead)
         else:
             log_max_lines = 20
@@ -549,7 +545,7 @@ class EvalDisplay(BaseDisplay):
             title=title,
             title_align="left",
             border_style=border_style,
-            padding=(1, 1),
+            padding=(top_pad, 1, 1, 1),
             expand=True,
         )
 
