@@ -768,31 +768,42 @@ def _varying_run_setting_keys(
 
 def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     bucket_counts = [
+        ("<0", 0, "bold red"),
         ("=0", 0, "bold red"),
         ("0-<0.25", 0, "red"),
         ("0.25-<0.5", 0, "yellow"),
         ("0.5-<0.75", 0, "yellow"),
         ("0.75-<1", 0, "green"),
         ("=1", 0, "bold green"),
+        (">1", 0, "bold green"),
     ]
 
     for reward in values:
-        if reward <= 0:
+        if reward < 0:
             bucket_idx = 0
-        elif reward < 0.25:
+        elif reward == 0:
             bucket_idx = 1
-        elif reward < 0.5:
+        elif reward < 0.25:
             bucket_idx = 2
-        elif reward < 0.75:
+        elif reward < 0.5:
             bucket_idx = 3
-        elif reward < 1.0:
+        elif reward < 0.75:
             bucket_idx = 4
-        else:
+        elif reward < 1.0:
             bucket_idx = 5
+        elif reward == 1.0:
+            bucket_idx = 6
+        else:
+            bucket_idx = 7
         label, count, style = bucket_counts[bucket_idx]
         bucket_counts[bucket_idx] = (label, count + 1, style)
 
-    return bucket_counts
+    # Only include <0 and >1 buckets if they have values.
+    return [
+        (label, count, style)
+        for label, count, style in bucket_counts
+        if not (label in ("<0", ">1") and count == 0)
+    ]
 
 
 def _build_reward_share_bars(values: List[float], bar_width: int = 16) -> Text:
@@ -3352,7 +3363,7 @@ class ViewRunScreen(Screen):
         body_widgets = list(container.query(".section-body"))
         for i, body_widget in enumerate(body_widgets):
             parent = body_widget.parent
-            if parent is None or i >= len(bodies):
+            if not isinstance(parent, Widget) or i >= len(bodies):
                 continue
             replacement = self._make_body_widget(bodies[i], "completion")
             parent.mount(replacement, after=body_widget)
