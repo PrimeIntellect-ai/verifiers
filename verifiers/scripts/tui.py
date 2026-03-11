@@ -4312,6 +4312,10 @@ class VerifiersTUI(App):
         height: 1fr;
     }
 
+    .details-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
     #details-tabs {
         height: 1fr;
     }
