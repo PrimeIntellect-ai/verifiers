@@ -1992,6 +1992,7 @@ class BrowseRunsScreen(Screen):
         super().__init__()
         self.index = index
         self._run_overview_cache: Dict[Path, RunOverviewStats] = {}
+        self._highlight_just_changed: bool = False
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -2170,6 +2171,7 @@ class BrowseRunsScreen(Screen):
 
     @on(Tree.NodeHighlighted, "#run-browser-tree")
     def on_tree_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        self._highlight_just_changed = True
         self.query_one("#run-browser-details", Static).update(
             self._details_for(getattr(event.node, "data", None))
         )
@@ -2180,6 +2182,10 @@ class BrowseRunsScreen(Screen):
         if not isinstance(payload, BrowserNodeData):
             return
         if payload.kind == "run" and payload.run is not None:
+            # First click selects (highlights) the run; second click enters rollout view.
+            if self._highlight_just_changed:
+                self._highlight_just_changed = False
+                return
             self.app.push_screen(ViewRunScreen(payload.run))
             return
         if event.node.allow_expand:
