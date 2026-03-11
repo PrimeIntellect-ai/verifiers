@@ -143,7 +143,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Initialize interception server and tunnel resources. Call from __init__."""
         self.interception_port = interception_port
         self.interception_url = interception_url
-        self._tunnels: dict[str, Tunnel] = {}
+        self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_monitor_task: asyncio.Task | None = None
         self._interception_server = InterceptionServer(port=interception_port)
@@ -153,45 +153,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             raise RuntimeError("Interception server is not initialized.")
         return self._interception_server
 
-    async def get_tunnel_url(self, local_addr: str = "127.0.0.1") -> str:
+    async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
-            tunnel = self._tunnels.get(local_addr)
-
-            # Restart dead tunnel
-            if tunnel is not None and not tunnel.is_running:
-                frpc_output = "\n".join(tunnel.recent_output)
+            if self._tunnel is not None and not self._tunnel.is_running:
+                frpc_output = "\n".join(self._tunnel.recent_output)
                 logger.warning(
-                    f"Tunnel dead for local_addr={local_addr} "
-                    f"tunnel_id={tunnel.tunnel_id}, recreating. "
-                    f"frpc output:\n{frpc_output}"
+                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
                 )
-                tunnel.sync_stop()
-                del self._tunnels[local_addr]
-                tunnel = None
+                self._tunnel.sync_stop()
+                self._tunnel = None
 
-            if tunnel is None:
+            if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
-                tunnel = Tunnel(
-                    local_port=port,
-                    local_addr=local_addr,
-                    log_level="debug" if logger.isEnabledFor(logging.DEBUG) else "info",
-                )
-                url = await tunnel.start()
-                self._tunnels[local_addr] = tunnel
-                logger.debug(
-                    f"Prime Tunnel started local_addr={local_addr} "
-                    f"tunnel_id={tunnel.tunnel_id} url={url}"
-                )
-
-                # Lazily start health monitor on first tunnel creation
-                if (
-                    self._tunnel_monitor_task is None
-                    or self._tunnel_monitor_task.done()
-                ):
-                    self._tunnel_monitor_task = asyncio.create_task(
-                        self._tunnel_health_monitor()
+                if logger.isEnabledFor(logging.DEBUG):
+                    self._tunnel = Tunnel(
+                        local_port=port,
+                        log_level="debug",
                     )
                 else:
                     self._tunnel = Tunnel(local_port=port)
@@ -208,47 +187,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     )
 
                 return url
-
-            assert tunnel.url is not None, "Tunnel started but URL is None"
-            return tunnel.url
-
-    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that checks tunnel liveness and restarts dead tunnels."""
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                async with self._tunnel_lock:
-                    dead_addrs = [
-                        addr for addr, t in self._tunnels.items() if not t.is_running
-                    ]
-                    for addr in dead_addrs:
-                        tunnel = self._tunnels[addr]
-                        frpc_output = "\n".join(tunnel.recent_output)
-                        logger.warning(
-                            f"Health monitor: tunnel dead for local_addr={addr} "
-                            f"tunnel_id={tunnel.tunnel_id}. "
-                            f"frpc output:\n{frpc_output}"
-                        )
-                        tunnel.sync_stop()
-                        new_tunnel = Tunnel(
-                            local_port=self.interception_port,
-                            local_addr=addr,
-                            log_level="debug"
-                            if logger.isEnabledFor(logging.DEBUG)
-                            else "info",
-                        )
-                        url = await new_tunnel.start()
-                        self._tunnels[addr] = new_tunnel
-                        logger.info(
-                            f"Health monitor: restarted tunnel local_addr={addr} "
-                            f"tunnel_id={new_tunnel.tunnel_id} url={url}"
-                        )
-
-                    alive = sum(1 for t in self._tunnels.values() if t.is_running)
-                    total = len(self._tunnels)
-                    logger.debug(f"Health monitor: {alive}/{total} tunnels alive")
-        except asyncio.CancelledError:
-            return
+            else:
+                assert self._tunnel.url is not None, "Tunnel started but URL is None"
+                return self._tunnel.url
 
     async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
         """Background task that probes tunnel liveness and restarts on failure.
@@ -638,22 +579,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         # Skip adding empty "agent completed" step - keeps trajectory clean
         if not prompt_messages:
             return
-
-        # MITO-DEBUG: log pre/post normalization
-        pre_content = response.message.content
-        pre_len = len(pre_content) if isinstance(pre_content, str) else 0
-        normalized = self.normalize_response(response)
-        post_content = normalized.message.content
-        post_len = len(post_content) if isinstance(post_content, str) else 0
-        logger.info(
-            "[MITO-DEBUG] cli_agent add_model_response turn=%d "
-            "pre_norm_content_len=%d post_norm_content_len=%d content_modified=%s",
-            len(state["trajectory"]),
-            pre_len,
-            post_len,
-            pre_len != post_len or pre_content != post_content,
-        )
-
         # On first turn, update state["prompt"] to match the agent's actual prompt
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
@@ -676,17 +601,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             self._tunnel_monitor_task = None
 
         async with self._tunnel_lock:
-            tunnels = list(self._tunnels.items())
-            self._tunnels = {}
-            for local_addr, tunnel in tunnels:
+            if self._tunnel is not None:
                 try:
-                    tunnel.sync_stop()
-                    logger.debug(f"Prime Tunnel stopped local_addr={local_addr}")
+                    self._tunnel.sync_stop()
+                    logger.debug("Prime Tunnel stopped")
                 except Exception as e:
-                    logger.warning(
-                        f"Error stopping Prime Tunnel local_addr={local_addr}: {e}"
-                    )
-
+                    logger.warning(f"Error stopping Prime Tunnel: {e}")
+                finally:
+                    self._tunnel = None
         if self._interception_server is not None:
             await self._interception_server.stop()
 
