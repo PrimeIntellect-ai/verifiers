@@ -85,7 +85,7 @@ class HybridMathRubric(vf.JudgeRubric):
     """Runs rule-based math verification first, with optional LLM judge fallback."""
 
     DEFAULT_JUDGE_PARSER = None
-    DEFAULT_JUDGE_MODEL = "openai/gpt-5-nano"
+    DEFAULT_JUDGE_MODEL = "gpt-5-nano"
     DEFAULT_JUDGE_CLIENT = None
     DEFAULT_JUDGE_PROMPT = DEFAULT_JUDGE_PROMPT
     DEFAULT_JUDGE_SAMPLING_ARGS = {}
