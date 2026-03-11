@@ -1187,9 +1187,9 @@ def load_environment(
     dataset = load_and_prepare_dataset(hf_dataset, split, num_examples, max_dim, sort_by_size)
     rubric = create_rubric()
 
-    codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True)
-    codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True)
-    image_agent = Agent(id="image", system_prompt=IMAGE_SYSTEM_PROMPT, is_trainable=True)
+    codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
+    codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
+    image_agent = Agent(id="image", system_prompt=IMAGE_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-VL-4B-Instruct")
 
     pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
