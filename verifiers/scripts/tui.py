@@ -3060,10 +3060,46 @@ class ViewRunScreen(Screen):
     def action_history_end(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
 
+    def _make_body_widget(self, body: str, column: str) -> Widget:
+        """Create the appropriate body widget based on render mode."""
+        if self._render_markdown_math and not (
+            self._highlight_regex and self._highlight_column == column
+        ):
+            return MathMarkdown(body, classes="section-body")
+        text = Text(body)
+        if self._highlight_regex and self._highlight_column == column:
+            _stylize_matches(text, self._highlight_regex, "reverse")
+        return Static(text, classes="section-body", markup=False)
+
+    def _collect_section_bodies(self, sections: List[HistorySectionData]) -> List[str]:
+        """Flatten all section bodies (including nested) in DOM order."""
+        bodies: List[str] = []
+        for section in sections:
+            if section.body or not section.nested_sections:
+                bodies.append(section.body)
+            for nested in section.nested_sections:
+                if nested.body or not nested.nested_sections:
+                    bodies.append(nested.body)
+        return bodies
+
     def action_toggle_markdown_math(self) -> None:
         self._render_markdown_math = not self._render_markdown_math
-        if self.records and self.is_mounted:
-            self._rebuild_completion_sections(self.records[self.current_record_idx])
+        if not (self.records and self.is_mounted):
+            return
+        # Swap each .section-body widget in-place, preserving collapsed
+        # state, scroll position, and focus.
+        record = self.records[self.current_record_idx]
+        section_data = self._history_section_data(record)
+        bodies = self._collect_section_bodies(section_data)
+        container = self.query_one("#completion-scroll", VerticalScroll)
+        body_widgets = list(container.query(".section-body"))
+        for i, body_widget in enumerate(body_widgets):
+            parent = body_widget.parent
+            if parent is None or i >= len(bodies):
+                continue
+            replacement = self._make_body_widget(bodies[i], "completion")
+            parent.mount(replacement, after=body_widget)
+            body_widget.remove()
 
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
         if result is not None:
