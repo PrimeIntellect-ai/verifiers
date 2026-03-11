@@ -763,7 +763,9 @@ class CUAMode:
                 f"Viewport: {viewport.get('width', 0)}x{viewport.get('height', 0)}"
             )
 
-        content = [{"type": "text", "text": "\n".join(text_parts)}]
+        content: list[dict[str, str | dict[str, str]]] = [
+            {"type": "text", "text": "\n".join(text_parts)}
+        ]
 
         if screenshot_b64 and session_id:
             self._save_screenshot(session_id, screenshot_b64, url)

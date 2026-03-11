@@ -96,7 +96,7 @@ View local evaluation results in the terminal UI:
 ```bash
 prime eval tui
 ```
-In the TUI, press `c` to open Copy Mode for prompt/completion text; highlight and press `c` again to copy.
+The TUI opens a single run browser (`environment -> model -> run`). Press `Enter` on a run to open rollout details, `b` to go back, `tab` to cycle panes, `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
 ```bash

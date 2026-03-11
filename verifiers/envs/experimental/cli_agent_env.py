@@ -421,7 +421,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         except Exception as e:
             error = AgentError(f"Agent polling failed: {e}")
             state["error"] = error
-            raise error from e
+            logger.error(f"Agent polling failed: {e}")
         finally:
             state["agent_completed"] = True
 

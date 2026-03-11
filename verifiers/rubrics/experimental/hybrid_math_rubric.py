@@ -1,9 +1,9 @@
 from math_verify import parse, verify
 from openai import AsyncOpenAI
-
-import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.utils.data_utils import extract_boxed_answer
+
+import verifiers as vf
 
 # https://github.com/open-compass/CompassVerifier/blob/2d7cba6df0b21f9c6121786ac1e5770c68473598/src/prompts.py#L28
 DEFAULT_JUDGE_PROMPT = """\
@@ -84,16 +84,26 @@ Analysis step by step and Final Judgment:
 class HybridMathRubric(vf.JudgeRubric):
     """Runs rule-based math verification first, with optional LLM judge fallback."""
 
+    DEFAULT_JUDGE_PARSER = None
+    DEFAULT_JUDGE_MODEL = "gpt-5-nano"
+    DEFAULT_JUDGE_CLIENT = None
+    DEFAULT_JUDGE_PROMPT = DEFAULT_JUDGE_PROMPT
+    DEFAULT_JUDGE_SAMPLING_ARGS = {}
+    DEFAULT_USE_JUDGE_FALLBACK = False
+    DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS = 5
+
     def __init__(
         self,
-        judge_parser: Parser | None = None,
-        judge_model: str | None = None,
-        judge_client: AsyncOpenAI | None = None,
-        judge_sampling_args: dict = {},
+        judge_parser: Parser | None = DEFAULT_JUDGE_PARSER,
+        use_judge_fallback: bool = DEFAULT_USE_JUDGE_FALLBACK,
+        judge_client: AsyncOpenAI | None = DEFAULT_JUDGE_CLIENT,
+        judge_model: str = DEFAULT_JUDGE_MODEL,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
-        timeout_seconds: float = 5,
+        judge_sampling_args: dict | None = None,
+        math_verify_timeout_seconds: float = DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS,
         **kwargs,
     ):
+        judge_sampling_args = judge_sampling_args or self.DEFAULT_JUDGE_SAMPLING_ARGS
         super().__init__(
             judge_client=judge_client,
             judge_sampling_args=judge_sampling_args,
@@ -106,9 +116,9 @@ class HybridMathRubric(vf.JudgeRubric):
         self.add_reward_func(self.judge_score, weight=0)
         self.add_reward_func(self.correct_answer, weight=1)
 
-        self.timeout_seconds = timeout_seconds
-        self.judge_model = judge_model
-        self.class_objects["judge_model"] = judge_model
+        self.math_verify_timeout_seconds = math_verify_timeout_seconds
+        self.judge_model = judge_model if use_judge_fallback else None
+        self.class_objects["judge_model"] = self.judge_model
 
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
@@ -124,13 +134,13 @@ class HybridMathRubric(vf.JudgeRubric):
                     verify(
                         parse(
                             f"\\boxed{{{answer}}}",
-                            parsing_timeout=int(self.timeout_seconds),
+                            parsing_timeout=int(self.math_verify_timeout_seconds),
                         ),
                         parse(
                             f"\\boxed{{{response}}}",
-                            parsing_timeout=int(self.timeout_seconds),
+                            parsing_timeout=int(self.math_verify_timeout_seconds),
                         ),
-                        timeout_seconds=int(self.timeout_seconds),
+                        timeout_seconds=int(self.math_verify_timeout_seconds),
                     )
                 )
             except BaseException as e:
