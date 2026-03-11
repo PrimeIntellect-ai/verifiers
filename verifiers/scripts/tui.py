@@ -1981,6 +1981,7 @@ class BrowseRunsScreen(Screen):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("enter", "enter_selected", "Open/toggle", priority=True),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
         Binding("v", "compare_selected", "Compare"),
@@ -1992,7 +1993,7 @@ class BrowseRunsScreen(Screen):
         super().__init__()
         self.index = index
         self._run_overview_cache: Dict[Path, RunOverviewStats] = {}
-        self._highlight_just_changed: bool = False
+        self._click_selected_node: object | None = None
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -2171,22 +2172,36 @@ class BrowseRunsScreen(Screen):
 
     @on(Tree.NodeHighlighted, "#run-browser-tree")
     def on_tree_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        self._highlight_just_changed = True
         self.query_one("#run-browser-details", Static).update(
             self._details_for(getattr(event.node, "data", None))
         )
 
+    def action_enter_selected(self) -> None:
+        """Enter key: immediately open the highlighted run or toggle folder."""
+        tree = self.query_one("#run-browser-tree", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        payload = node.data
+        if not isinstance(payload, BrowserNodeData):
+            return
+        if payload.kind == "run" and payload.run is not None:
+            self.app.push_screen(ViewRunScreen(payload.run))
+            return
+        if node.allow_expand:
+            node.toggle()
+
     @on(Tree.NodeSelected, "#run-browser-tree")
     def on_tree_selected(self, event: Tree.NodeSelected) -> None:
+        """Click: first click selects, second click enters rollout view."""
         payload = event.node.data
         if not isinstance(payload, BrowserNodeData):
             return
         if payload.kind == "run" and payload.run is not None:
-            # First click selects (highlights) the run; second click enters rollout view.
-            if self._highlight_just_changed:
-                self._highlight_just_changed = False
-                return
-            self.app.push_screen(ViewRunScreen(payload.run))
+            if self._click_selected_node is event.node:
+                self.app.push_screen(ViewRunScreen(payload.run))
+            else:
+                self._click_selected_node = event.node
             return
         if event.node.allow_expand:
             event.node.toggle()
