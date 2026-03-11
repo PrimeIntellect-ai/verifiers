@@ -128,16 +128,6 @@ class MultiAgentRubric(Rubric):
                             step["reward"] = state["reward"]
                 continue
 
-            # Can't compute meaningful GRPO advantages from a single state;
-            # leave advantage=None so the caller (e.g. prime-rl) can compute
-            # across the full batch grouped by example_id.
-            if len(actor_states) < 2:
-                for state in actor_states:
-                    for step in state.get("trajectory", []):
-                        if step.get("reward") is None:
-                            step["reward"] = state["reward"]
-                continue
-
             actor_rewards = [s["reward"] for s in actor_states]
             mean_reward = sum(actor_rewards) / len(actor_rewards)
 

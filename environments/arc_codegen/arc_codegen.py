@@ -699,12 +699,16 @@ def load_and_prepare_dataset(
     num_examples: int | None = None,
     prompt_version: str = "v1b",
     max_dim: int = 30,
+    sort_by_size: bool = False,
 ) -> Dataset:
     """
     Load ARC tasks from HuggingFace and prepare for vf-eval.
 
     Filters tasks by max grid dimension and formats into the standard
     dataset columns: prompt, answer, info, task, example_id.
+
+    When sort_by_size=True, tasks are sorted smallest-first so that
+    num_examples=200 gives the 200 smallest tasks.
     """
     from datasets import load_dataset
 
@@ -718,12 +722,12 @@ def load_and_prepare_dataset(
         test_input = json.loads(row["test_input"])
         test_output_str = row.get("test_output", "") or ""
 
-        # Filter by max grid dimension
         all_grids = [p["input"] for p in train_pairs] + [p["output"] for p in train_pairs] + [test_input]
         if test_output_str:
             all_grids.append(json.loads(test_output_str))
 
-        if any(max_grid_dim(g) > max_dim for g in all_grids):
+        task_max_dim = max(max_grid_dim(g) for g in all_grids)
+        if task_max_dim > max_dim:
             continue
 
         prompt_text = build_codegen_prompt(train_pairs, test_input, version=prompt_version)
@@ -739,12 +743,19 @@ def load_and_prepare_dataset(
             }),
             "task": "arc_codegen",
             "example_id": i,
+            "_max_dim": task_max_dim,
         })
+
+    if sort_by_size:
+        records.sort(key=lambda r: (r["_max_dim"], r["example_id"]))
 
     if num_examples and len(records) > num_examples:
         records = records[:num_examples]
 
-    logger.info(f"Prepared {len(records)} tasks (filtered from {len(raw)}, max_dim={max_dim})")
+    for r in records:
+        del r["_max_dim"]
+
+    logger.info(f"Prepared {len(records)} tasks (filtered from {len(raw)}, max_dim={max_dim}, sort_by_size={sort_by_size})")
     return Dataset.from_list(records)
 
 
@@ -778,6 +789,7 @@ def load_environment(
     num_examples: int | None = None,
     prompt_version: str = "v1b",
     max_dim: int = 30,
+    sort_by_size: bool = False,
 ) -> CodegenSolverEnv:
     """
     Entry point called by vf-eval / prime-rl.
@@ -788,9 +800,10 @@ def load_environment(
         num_examples: Max tasks to include (None = all).
         prompt_version: "v1b" (simple) or "v4" (expert).
         max_dim: Filter out tasks with grids larger than this.
+        sort_by_size: Sort tasks smallest-first before slicing.
     """
     dataset = load_and_prepare_dataset(
-        hf_dataset, split, num_examples, prompt_version, max_dim
+        hf_dataset, split, num_examples, prompt_version, max_dim, sort_by_size
     )
     rubric = create_codegen_rubric()
 
