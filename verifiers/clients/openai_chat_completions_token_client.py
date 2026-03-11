@@ -42,7 +42,6 @@ def _count_trailing_env_messages(messages: list) -> int:
         elif role == "user" and count == 0:
             # A user follow-up (not a tool response) is also an env message
             count = 1
-            break
         else:
             break
     return count
