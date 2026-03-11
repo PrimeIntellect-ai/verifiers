@@ -19,6 +19,7 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
+from textual.message import Message
 from textual.dom import DOMNode
 from textual.widget import Widget
 from textual.app import App, ComposeResult
@@ -1226,6 +1227,100 @@ class TabbedScrollPane(VerticalScroll):
             tc.query_one(ContentTabs).action_next_tab()
 
 
+class GroupByBar(Widget):
+    """Interactive bar of toggleable axis chips for group-by selection."""
+
+    can_focus = True
+
+    BINDINGS = [
+        Binding("left", "cursor_left", show=False),
+        Binding("right", "cursor_right", show=False),
+        Binding("space,enter", "toggle_chip", show=False),
+        Binding("escape,g", "blur_bar", show=False),
+    ]
+
+    class Changed(Message):
+        def __init__(self, active_keys: List[str]) -> None:
+            super().__init__()
+            self.active_keys = active_keys
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._all_keys: List[str] = []
+        self._active: set[str] = set()
+        self._cursor: int = 0
+        self._chip_ranges: List[Tuple[int, int]] = []
+        self._short_key_fn: Callable[[str], str] = lambda k: k
+
+    def set_keys(self, keys: List[str], short_key_fn: Callable[[str], str]) -> None:
+        self._all_keys = list(keys)
+        self._active: set[str] = set()
+        self._short_key_fn = short_key_fn
+        self._cursor = min(self._cursor, max(0, len(keys) - 1))
+        self.refresh()
+
+    def render(self) -> Text:
+        text = Text()
+        text.append("Group by  ", style="bold dim")
+        if not self._active:
+            text.append("(all)  ", style="dim italic")
+        self._chip_ranges = []
+        for idx, key in enumerate(self._all_keys):
+            if idx:
+                text.append("  ")
+            start = len(text.plain)
+            label = self._short_key_fn(key)
+            is_active = key in self._active
+            is_cursor = idx == self._cursor and self.has_focus
+            if is_active:
+                style = "bold reverse" if is_cursor else "bold"
+                text.append(f"[{label}]", style=style)
+            else:
+                style = "dim reverse" if is_cursor else "dim"
+                text.append(f" {label} ", style=style)
+            end = len(text.plain)
+            self._chip_ranges.append((start, end))
+        if not self._all_keys:
+            text.append("(no varying axes)", style="dim")
+        return text
+
+    def on_click(self, event: events.Click) -> None:
+        x = event.x
+        for idx, (start, end) in enumerate(self._chip_ranges):
+            if start <= x < end:
+                self._cursor = idx
+                self.focus()
+                self._toggle(idx)
+                return
+
+    def action_cursor_left(self) -> None:
+        if self._all_keys:
+            self._cursor = (self._cursor - 1) % len(self._all_keys)
+            self.refresh()
+
+    def action_cursor_right(self) -> None:
+        if self._all_keys:
+            self._cursor = (self._cursor + 1) % len(self._all_keys)
+            self.refresh()
+
+    def action_toggle_chip(self) -> None:
+        if self._all_keys:
+            self._toggle(self._cursor)
+
+    def action_blur_bar(self) -> None:
+        self.screen.focus_next()
+
+    def _toggle(self, idx: int) -> None:
+        key = self._all_keys[idx]
+        if key in self._active:
+            self._active.discard(key)
+        else:
+            self._active.add(key)
+        self.refresh()
+        active_ordered = [k for k in self._all_keys if k in self._active]
+        self.post_message(self.Changed(active_ordered))
+
+
 # ----------------------------
 # Search helpers
 # ----------------------------
@@ -1573,6 +1668,7 @@ class CompareRunsScreen(Screen):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
+        Binding("g", "focus_group_by", "Group by"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1583,6 +1679,11 @@ class CompareRunsScreen(Screen):
         self.model = model
         self.runs = list(runs)
         self._stats_by_path: Dict[Path, RunOverviewStats] = {}
+        self._setting_keys: List[str] = []
+        self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
+        self._display_maps: Dict[str, Dict[str, str]] = {}
+        self._style_maps: Dict[str, Dict[str, str]] = {}
+        self._legend_rows: List[Tuple[str, str, str]] = []
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -1590,7 +1691,9 @@ class CompareRunsScreen(Screen):
                 Label(Text("Run Comparison", style="bold"), classes="title"),
                 Static("", id="compare-subtitle", classes="subtitle", markup=False),
                 VerticalScroll(
-                    Static("", id="compare-content", markup=False),
+                    Static("", id="compare-header", markup=False),
+                    GroupByBar(id="group-by-bar"),
+                    Static("", id="compare-outcomes", markup=False),
                     id="compare-scroll",
                     classes="surface-scroll",
                 ),
@@ -1604,12 +1707,19 @@ class CompareRunsScreen(Screen):
         subtitle.append("\n")
         subtitle.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
         self.query_one("#compare-subtitle", Static).update(subtitle)
-        self.query_one("#compare-content", Static).update(
+        self.query_one("#compare-header", Static).update(
             Text("Loading comparison…", style="dim")
         )
         self._load_comparison_stats()
 
     def action_back(self) -> None:
+        bar = self.query_one("#group-by-bar", GroupByBar)
+        if bar.has_focus or bar._active:
+            bar._active.clear()
+            bar.refresh()
+            bar.post_message(bar.Changed([]))
+            self.query_one("#compare-scroll", VerticalScroll).focus()
+            return
         self.app.pop_screen()
 
     def action_copy(self) -> None:
@@ -1651,14 +1761,43 @@ class CompareRunsScreen(Screen):
         if not self.is_mounted:
             return
         self._stats_by_path = stats_by_path
-        self.query_one("#compare-content", Static).update(
-            self._build_comparison_content(stats_by_path)
+        self._setting_keys, self._run_settings = _varying_run_setting_keys(self.runs)
+        (
+            self._display_maps,
+            self._style_maps,
+            self._legend_rows,
+        ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
+        bar = self.query_one("#group-by-bar", GroupByBar)
+        bar.set_keys(self._setting_keys, self._short_setting_key)
+        self.query_one("#compare-header", Static).update(
+            self._build_comparison_header()
         )
+        self.query_one("#compare-outcomes", Static).update(
+            self._build_comparison_outcomes(self._setting_keys)
+        )
+
+    def action_focus_group_by(self) -> None:
+        self.query_one("#group-by-bar", GroupByBar).focus()
+
+    def _active_or_all_keys(self, active_keys: List[str]) -> List[str]:
+        return active_keys if active_keys else self._setting_keys
+
+    def on_group_by_bar_changed(self, event: GroupByBar.Changed) -> None:
+        if self._stats_by_path:
+            self.query_one("#compare-outcomes", Static).update(
+                self._build_comparison_outcomes(
+                    self._active_or_all_keys(event.active_keys)
+                )
+            )
 
     def _render_comparison_content(self) -> Any:
         if not self._stats_by_path:
             return Text("Loading comparison…", style="dim")
-        return self._build_comparison_content(self._stats_by_path)
+        bar = self.query_one("#group-by-bar", GroupByBar)
+        active = [k for k in self._setting_keys if k in bar._active]
+        header = self._build_comparison_header()
+        outcomes = self._build_comparison_outcomes(self._active_or_all_keys(active))
+        return Group(header, outcomes)
 
     def _short_setting_key(self, key: str) -> str:
         replacements = {
@@ -1969,38 +2108,37 @@ class CompareRunsScreen(Screen):
             table.add_row(Text(alias, style=style), Text(preview, style="dim"))
         return Group(Text("Value legend", style="bold dim"), table)
 
-    def _build_comparison_content(
-        self, stats_by_path: Dict[Path, RunOverviewStats]
-    ) -> Group:
-        setting_keys, run_settings = _varying_run_setting_keys(self.runs)
-        display_maps, style_maps, legend_rows = self._build_setting_display_maps(
-            setting_keys, run_settings
-        )
+    def _build_comparison_header(self) -> Group:
         summary = Text()
         summary.append("Ablation summary\n", style="bold dim")
         summary.append(self.model, style="bold")
         summary.append("\n")
         summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
-
-        items: List[Any] = [
+        return Group(
             summary,
             Text(""),
             self._build_axes_table(
-                setting_keys, run_settings, display_maps, style_maps
+                self._setting_keys,
+                self._run_settings,
+                self._display_maps,
+                self._style_maps,
             ),
-            Text(""),
+        )
+
+    def _build_comparison_outcomes(self, active_keys: List[str]) -> Group:
+        items: List[Any] = [
             Group(
                 Text("Outcome groups", style="bold dim"),
                 self._build_grouped_outcomes_table(
-                    stats_by_path,
-                    setting_keys,
-                    run_settings,
-                    display_maps,
-                    style_maps,
+                    self._stats_by_path,
+                    active_keys,
+                    self._run_settings,
+                    self._display_maps,
+                    self._style_maps,
                 ),
             ),
         ]
-        legend = self._build_value_legend(legend_rows)
+        legend = self._build_value_legend(self._legend_rows)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             items.extend([Text(""), legend])
         return Group(*items)
@@ -4202,7 +4340,17 @@ class VerifiersTUI(App):
     .compare-panel {
         height: 1fr;
     }
-    
+
+    GroupByBar {
+        height: auto;
+        margin: 1 0;
+        padding: 0 0;
+    }
+
+    GroupByBar:focus {
+        background-tint: $foreground 4%;
+    }
+
     Footer {
         background: $panel;
     }

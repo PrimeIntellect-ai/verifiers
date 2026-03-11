@@ -24,6 +24,7 @@ from verifiers.scripts.tui import (
     _build_reward_distribution_table,
     _compute_run_overview_stats,
     _extract_numeric_metric_values,
+    _varying_run_setting_keys,
     format_info_for_details,
     make_math_parser,
     render_block_math,
@@ -446,7 +447,23 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
         second_run.path: _compute_run_overview_stats(second_run),
     }
 
-    rendered = _render_to_text(screen._build_comparison_content(stats), width=220)
+    # Simulate _finish_loading_comparison_stats setup
+    screen._stats_by_path = stats
+    screen._setting_keys, screen._run_settings = _varying_run_setting_keys(screen.runs)
+    (
+        screen._display_maps,
+        screen._style_maps,
+        screen._legend_rows,
+    ) = screen._build_setting_display_maps(screen._setting_keys, screen._run_settings)
+    from rich.console import Group
+
+    rendered = _render_to_text(
+        Group(
+            screen._build_comparison_header(),
+            screen._build_comparison_outcomes(screen._setting_keys),
+        ),
+        width=220,
+    )
 
     assert "Ablation summary" in rendered
     assert "Ablation axes" in rendered
