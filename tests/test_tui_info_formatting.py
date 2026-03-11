@@ -460,7 +460,7 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     rendered = _render_to_text(
         Group(
             screen._build_comparison_header(),
-            screen._build_comparison_outcomes(screen._setting_keys),
+            screen._build_comparison_outcomes(),
         ),
         width=220,
     )

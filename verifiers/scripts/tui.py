@@ -1668,7 +1668,11 @@ class CompareRunsScreen(Screen):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
-        Binding("g", "focus_group_by", "Group by"),
+        Binding("g", "enter_group_mode", "Group by"),
+        Binding("left", "group_cursor_left", show=False),
+        Binding("right", "group_cursor_right", show=False),
+        Binding("enter", "group_select", show=False),
+        Binding("escape", "exit_group_mode", show=False),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1684,6 +1688,9 @@ class CompareRunsScreen(Screen):
         self._display_maps: Dict[str, Dict[str, str]] = {}
         self._style_maps: Dict[str, Dict[str, str]] = {}
         self._legend_rows: List[Tuple[str, str, str]] = []
+        self._group_mode: bool = False
+        self._group_cursor: int = 0
+        self._grouped_by_key: str | None = None
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -1692,7 +1699,6 @@ class CompareRunsScreen(Screen):
                 Static("", id="compare-subtitle", classes="subtitle", markup=False),
                 VerticalScroll(
                     Static("", id="compare-header", markup=False),
-                    GroupByBar(id="group-by-bar"),
                     Static("", id="compare-outcomes", markup=False),
                     id="compare-scroll",
                     classes="surface-scroll",
@@ -1713,12 +1719,13 @@ class CompareRunsScreen(Screen):
         self._load_comparison_stats()
 
     def action_back(self) -> None:
-        bar = self.query_one("#group-by-bar", GroupByBar)
-        if bar.has_focus or bar._active:
-            bar._active.clear()
-            bar.refresh()
-            bar.post_message(bar.Changed([]))
-            self.query_one("#compare-scroll", VerticalScroll).focus()
+        if self._grouped_by_key is not None:
+            self._grouped_by_key = None
+            self._refresh_outcomes()
+            return
+        if self._group_mode:
+            self._group_mode = False
+            self._refresh_outcomes()
             return
         self.app.pop_screen()
 
@@ -1767,36 +1774,55 @@ class CompareRunsScreen(Screen):
             self._style_maps,
             self._legend_rows,
         ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
-        bar = self.query_one("#group-by-bar", GroupByBar)
-        bar.set_keys(self._setting_keys, self._short_setting_key)
         self.query_one("#compare-header", Static).update(
             self._build_comparison_header()
         )
+        self._refresh_outcomes()
+
+    def _refresh_outcomes(self) -> None:
+        if not self._stats_by_path:
+            return
         self.query_one("#compare-outcomes", Static).update(
-            self._build_comparison_outcomes(self._setting_keys)
+            self._build_comparison_outcomes()
         )
 
-    def action_focus_group_by(self) -> None:
-        self.query_one("#group-by-bar", GroupByBar).focus()
+    def action_enter_group_mode(self) -> None:
+        if not self._setting_keys:
+            return
+        self._group_mode = True
+        self._group_cursor = 0
+        self._grouped_by_key = None
+        self._refresh_outcomes()
 
-    def _active_or_all_keys(self, active_keys: List[str]) -> List[str]:
-        return active_keys if active_keys else self._setting_keys
+    def action_group_cursor_left(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._group_cursor = (self._group_cursor - 1) % len(self._setting_keys)
+        self._refresh_outcomes()
 
-    def on_group_by_bar_changed(self, event: GroupByBar.Changed) -> None:
-        if self._stats_by_path:
-            self.query_one("#compare-outcomes", Static).update(
-                self._build_comparison_outcomes(
-                    self._active_or_all_keys(event.active_keys)
-                )
-            )
+    def action_group_cursor_right(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._group_cursor = (self._group_cursor + 1) % len(self._setting_keys)
+        self._refresh_outcomes()
+
+    def action_group_select(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._grouped_by_key = self._setting_keys[self._group_cursor]
+        self._refresh_outcomes()
+
+    def action_exit_group_mode(self) -> None:
+        if self._group_mode:
+            self._group_mode = False
+            self._grouped_by_key = None
+            self._refresh_outcomes()
 
     def _render_comparison_content(self) -> Any:
         if not self._stats_by_path:
             return Text("Loading comparison…", style="dim")
-        bar = self.query_one("#group-by-bar", GroupByBar)
-        active = [k for k in self._setting_keys if k in bar._active]
         header = self._build_comparison_header()
-        outcomes = self._build_comparison_outcomes(self._active_or_all_keys(active))
+        outcomes = self._build_comparison_outcomes()
         return Group(header, outcomes)
 
     def _short_setting_key(self, key: str) -> str:
@@ -1962,16 +1988,27 @@ class CompareRunsScreen(Screen):
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
         display_maps: Dict[str, Dict[str, str]],
         style_maps: Dict[str, Dict[str, str]],
+        group_by_key: str | None = None,
+        highlight_col: int | None = None,
     ) -> Table:
+        # Determine which keys to actually group by.
+        group_keys = [group_by_key] if group_by_key else setting_keys
+
         grouped: Dict[Tuple[str, ...], Dict[str, Any]] = {}
 
         for run, settings in run_settings:
-            group_key = tuple(settings.get(key, "(unset)") for key in setting_keys)
+            group_key_val = tuple(settings.get(key, "(unset)") for key in group_keys)
             group = grouped.setdefault(
-                group_key,
-                {"runs": [], "rewards": [], "avg_rewards": []},
+                group_key_val,
+                {
+                    "runs": [],
+                    "rewards": [],
+                    "avg_rewards": [],
+                    "run_settings": [],
+                },
             )
             cast(List[RunInfo], group["runs"]).append(run)
+            group["run_settings"].append(settings)
             stats = stats_by_path.get(run.path, RunOverviewStats([], []))
             if stats.rewards:
                 cast(List[float], group["rewards"]).extend(stats.rewards)
@@ -2006,10 +2043,11 @@ class CompareRunsScreen(Screen):
             collapse_padding=True,
             row_styles=["none", "dim"],
         )
-        for key in setting_keys:
+        for idx, key in enumerate(setting_keys):
+            header_style = "bold reverse" if highlight_col == idx else "bold dim"
             table.add_column(
                 self._short_setting_key(key),
-                header_style="bold dim",
+                header_style=header_style,
                 ratio=1,
                 no_wrap=True,
             )
@@ -2020,7 +2058,7 @@ class CompareRunsScreen(Screen):
         table.add_column("mix", width=20, header_style="bold dim")
         table.add_column("ids", ratio=1, header_style="bold dim")
 
-        for raw_values, group in rows:
+        for _group_key_val, group in rows:
             rewards = cast(List[float], group["rewards"])
             avg_rewards = cast(List[float], group["avg_rewards"])
             avg_reward = (
@@ -2052,14 +2090,36 @@ class CompareRunsScreen(Screen):
             if hidden_ids:
                 run_ids += f" +{hidden_ids}"
 
-            table.add_row(
-                *(
-                    Text(
-                        display_maps[key][raw_value],
-                        style=style_maps[key][raw_value] or "",
+            # Build setting cells.
+            setting_cells: List[Text] = []
+            for key in setting_keys:
+                if group_by_key is None or key == group_by_key:
+                    # Show actual value — find it from any run in the group.
+                    value = group["run_settings"][0].get(key, "(unset)")
+                    setting_cells.append(
+                        Text(
+                            display_maps[key][value],
+                            style=style_maps[key][value] or "",
+                        )
                     )
-                    for key, raw_value in zip(setting_keys, raw_values)
-                ),
+                else:
+                    # Non-grouped column: show "N values" or the value if uniform.
+                    distinct = {s.get(key, "(unset)") for s in group["run_settings"]}
+                    if len(distinct) == 1:
+                        value = next(iter(distinct))
+                        setting_cells.append(
+                            Text(
+                                display_maps[key][value],
+                                style=style_maps[key][value] or "dim",
+                            )
+                        )
+                    else:
+                        setting_cells.append(
+                            Text(f"{len(distinct)} values", style="dim italic")
+                        )
+
+            table.add_row(
+                *setting_cells,
                 str(len(cast(List[RunInfo], group["runs"]))),
                 Text(
                     _format_reward_value(avg_reward) if avg_reward is not None else "—",
@@ -2125,16 +2185,19 @@ class CompareRunsScreen(Screen):
             ),
         )
 
-    def _build_comparison_outcomes(self, active_keys: List[str]) -> Group:
+    def _build_comparison_outcomes(self) -> Group:
+        highlight_col = self._group_cursor if self._group_mode else None
         items: List[Any] = [
             Group(
                 Text("Outcome groups", style="bold dim"),
                 self._build_grouped_outcomes_table(
                     self._stats_by_path,
-                    active_keys,
+                    self._setting_keys,
                     self._run_settings,
                     self._display_maps,
                     self._style_maps,
+                    group_by_key=self._grouped_by_key,
+                    highlight_col=highlight_col,
                 ),
             ),
         ]
@@ -4339,16 +4402,6 @@ class VerifiersTUI(App):
 
     .compare-panel {
         height: 1fr;
-    }
-
-    GroupByBar {
-        height: auto;
-        margin: 1 0;
-        padding: 0 0;
-    }
-
-    GroupByBar:focus {
-        background-tint: $foreground 4%;
     }
 
     Footer {
