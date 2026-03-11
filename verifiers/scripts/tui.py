@@ -19,6 +19,8 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
+from textual.dom import DOMNode
+from textual.widget import Widget
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.content import Content, Span
@@ -3013,11 +3015,34 @@ class ViewRunScreen(Screen):
             section.collapsed = True
         self._focus_primary_content(prefer_expanded=False)
 
+    def _should_skip_focus(self, widget: Widget) -> bool:
+        """Return True for widgets that should be skipped during tab cycling."""
+        # Skip the scroll container itself — only its children should get focus.
+        if widget.id == "completion-scroll":
+            return True
+        # Skip widgets inside hidden (compact-layout) panels.
+        node: DOMNode | None = widget
+        while node is not None:
+            if isinstance(node, Panel) and not node.display:
+                return True
+            node = node.parent
+        return False
+
     def action_focus_next_pane(self) -> None:
+        starting = self.focused
         self.focus_next()
+        while self.focused is not None and self.focused is not starting:
+            if not self._should_skip_focus(self.focused):
+                break
+            self.focus_next()
 
     def action_focus_prev_pane(self) -> None:
+        starting = self.focused
         self.focus_previous()
+        while self.focused is not None and self.focused is not starting:
+            if not self._should_skip_focus(self.focused):
+                break
+            self.focus_previous()
 
     def action_history_page_up(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
