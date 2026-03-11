@@ -98,6 +98,8 @@ class BrowserNodeData:
     env_id: str = ""
     model: str = ""
     run: Optional[RunInfo] = None
+    tree_name: str = ""
+    tree_suffix: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,9 +126,113 @@ class RunBrowserTree(Tree[BrowserNodeData]):
             for binding in Tree.BINDINGS
             if _binding_key(binding) not in {"enter", "space"}
         ),
+        Binding("left", "cursor_parent", "Parent folder", show=True),
+        Binding("right", "cursor_right", "Expand/next folder", show=True),
         Binding("enter", "select_cursor", "Open/toggle", show=True),
         Binding("space", "toggle_node", "Toggle folder", show=True),
     ]
+
+    def _visible_depth(self, node: Any) -> int:
+        depth = 0
+        parent = node.parent
+        while parent is not None and (self.show_root or not parent.is_root):
+            depth += 1
+            parent = parent.parent
+        return depth
+
+    def _render_browser_label(
+        self, payload: BrowserNodeData, style: Style, max_width: int
+    ) -> Text:
+        label = Text()
+        label.append(payload.tree_name or "", style="bold")
+        for text, segment_style in payload.tree_suffix:
+            label.append(text, style=segment_style or None)
+
+        if max_width <= 0:
+            label.truncate(1, overflow="ellipsis")
+            label.stylize(style)
+            return label
+
+        suffix = Text()
+        for text, segment_style in payload.tree_suffix:
+            suffix.append(text, style=segment_style or None)
+
+        if suffix.cell_len < max_width:
+            name = Text(payload.tree_name or "", style="bold")
+            name.truncate(max_width - suffix.cell_len, overflow="ellipsis")
+            label = Text.assemble(name, suffix)
+        else:
+            label.truncate(max_width, overflow="ellipsis")
+
+        label.stylize(style)
+        return label
+
+    def render_label(self, node: Any, base_style: Style, style: Style) -> Text:
+        payload = node.data
+        available_width = self.size.width - (
+            self._visible_depth(node) * self.guide_depth
+        )
+        prefix_text = (
+            self.ICON_NODE_EXPANDED
+            if node.allow_expand and node.is_expanded
+            else self.ICON_NODE
+            if node.allow_expand
+            else ""
+        )
+        content_width = max(1, available_width - len(prefix_text))
+
+        if isinstance(payload, BrowserNodeData) and payload.tree_name:
+            label = self._render_browser_label(payload, style, content_width)
+        else:
+            label = node._label.copy()
+            label.stylize(style)
+            label.truncate(content_width, overflow="ellipsis")
+
+        return Text.assemble((prefix_text, base_style), label)
+
+    def action_cursor_parent(self) -> None:
+        """Move the cursor to the nearest visible parent folder."""
+        cursor_node = self.cursor_node
+        if cursor_node is None:
+            return
+        parent = cursor_node.parent
+        if parent is None or (not self.show_root and parent.parent is None):
+            return
+        self.move_cursor(parent, animate=True)
+
+    def action_cursor_right(self) -> None:
+        """Expand the current folder or move to the next visible parent folder."""
+        cursor_node = self.cursor_node
+        if cursor_node is None:
+            return
+        if cursor_node.allow_expand:
+            if cursor_node.is_collapsed:
+                cursor_node.expand()
+                return
+            if cursor_node.children:
+                self.move_cursor(cursor_node.children[0], animate=True)
+                return
+
+        node = cursor_node.parent if not cursor_node.allow_expand else cursor_node
+        while node is not None:
+            next_sibling = node.next_sibling
+            if next_sibling is not None:
+                self.move_cursor(next_sibling, animate=True)
+                return
+            node = node.parent
+            if node is not None and not self.show_root and node.is_root:
+                return
+
+    def action_toggle_node(self) -> None:
+        """Toggle the current folder, or the nearest ancestor folder for a leaf."""
+        node = self.cursor_node
+        while node is not None and not node.allow_expand:
+            node = node.parent
+        if node is None or (not self.show_root and node.parent is None):
+            return
+        if node is not self.cursor_node:
+            self.move_cursor(node, animate=False)
+        self._toggle_node(node)
 
 
 def discover_results(
@@ -1312,7 +1418,17 @@ class BrowseRunsScreen(Screen):
             env_label.append(f"{total_runs} runs", style="dim")
             env_node = root.add(
                 env_label,
-                data=BrowserNodeData(kind="env", env_id=env_id),
+                data=BrowserNodeData(
+                    kind="env",
+                    env_id=env_id,
+                    tree_name=env_id,
+                    tree_suffix=(
+                        ("  ", ""),
+                        (f"{len(models)} models", "dim"),
+                        ("  ", ""),
+                        (f"{total_runs} runs", "dim"),
+                    ),
+                ),
                 expand=env_idx == 0,
             )
             for model_idx, model in enumerate(sorted(models.keys())):
@@ -1323,7 +1439,16 @@ class BrowseRunsScreen(Screen):
                 model_label.append(f"{len(runs)} runs", style="dim")
                 model_node = env_node.add(
                     model_label,
-                    data=BrowserNodeData(kind="model", env_id=env_id, model=model),
+                    data=BrowserNodeData(
+                        kind="model",
+                        env_id=env_id,
+                        model=model,
+                        tree_name=model,
+                        tree_suffix=(
+                            ("  ", ""),
+                            (f"{len(runs)} runs", "dim"),
+                        ),
+                    ),
                     expand=env_idx == 0 and model_idx == 0,
                 )
                 for run in runs:
@@ -1344,6 +1469,15 @@ class BrowseRunsScreen(Screen):
                             env_id=env_id,
                             model=model,
                             run=run,
+                            tree_name=run.run_id,
+                            tree_suffix=(
+                                (
+                                    f"  {_format_reward_value(avg_reward)}",
+                                    _reward_style(avg_reward),
+                                ),
+                            )
+                            if avg_reward is not None
+                            else (),
                         ),
                         allow_expand=False,
                     )
@@ -3205,6 +3339,7 @@ class VerifiersTUI(App):
         height: 1fr;
         background: $surface;
         color: $text;
+        overflow-x: hidden;
     }
 
     #run-browser-tree:focus {

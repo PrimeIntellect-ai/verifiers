@@ -325,6 +325,10 @@ async def test_browse_run_screen_moves_browser_shortcuts_to_footer(tmp_path) -> 
             if isinstance(label.content, Text)
         ]
 
+        assert bindings["left"].show is True
+        assert bindings["left"].description == "Parent folder"
+        assert bindings["right"].show is True
+        assert bindings["right"].description == "Expand/next folder"
         assert bindings["enter"].show is True
         assert bindings["enter"].description == "Open/toggle"
         assert bindings["space"].show is True
@@ -363,6 +367,223 @@ async def test_browse_run_screen_offsets_details_content_from_scrollbar(
         assert scroll.styles.padding.right == 1
         assert scroll.styles.scrollbar_gutter == "stable"
         assert details.styles.margin.right == 8
+
+
+@pytest.mark.asyncio
+async def test_browse_run_tree_left_arrow_moves_to_visible_parent(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+
+    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "run"
+
+        await pilot.press("left")
+        await pilot.pause()
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "model"
+
+        await pilot.press("left")
+        await pilot.pause()
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "env"
+
+        await pilot.press("left")
+        await pilot.pause()
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "env"
+
+
+@pytest.mark.asyncio
+async def test_browse_run_tree_space_collapses_parent_folder_from_run_leaf(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+
+    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        assert tree.cursor_node is not None
+        model_node = tree.cursor_node.parent
+
+        assert model_node is not None
+        assert model_node.allow_expand is True
+        assert model_node.is_expanded is True
+
+        await pilot.press("space")
+        await pilot.pause()
+
+        assert tree.cursor_node is model_node
+        assert tree.cursor_node.data.kind == "model"
+        assert model_node.is_expanded is False
+
+
+@pytest.mark.asyncio
+async def test_browse_run_tree_right_arrow_moves_leaf_to_next_parent_folder(
+    tmp_path,
+) -> None:
+    first_run_dir = tmp_path / "run-a"
+    first_run_dir.mkdir()
+    (first_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.25}),
+        encoding="utf-8",
+    )
+    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    second_run_dir = tmp_path / "run-b"
+    second_run_dir.mkdir()
+    (second_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    first_run = RunInfo(
+        env_id="demo-env",
+        model="a/model",
+        run_id="run-1",
+        path=first_run_dir,
+    )
+    second_run = RunInfo(
+        env_id="demo-env",
+        model="b/model",
+        run_id="run-2",
+        path=second_run_dir,
+    )
+
+    async with VerifiersTUI(
+        {"demo-env": {"a/model": [first_run], "b/model": [second_run]}}
+    ).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "run"
+        assert tree.cursor_node.data.model == "a/model"
+
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "model"
+        assert tree.cursor_node.data.model == "b/model"
+
+
+@pytest.mark.asyncio
+async def test_browse_run_tree_right_arrow_expands_collapsed_folder(tmp_path) -> None:
+    first_run_dir = tmp_path / "run-a"
+    first_run_dir.mkdir()
+    (first_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.25}),
+        encoding="utf-8",
+    )
+    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    second_run_dir = tmp_path / "run-b"
+    second_run_dir.mkdir()
+    (second_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    first_run = RunInfo(
+        env_id="alpha-env",
+        model="model-a",
+        run_id="run-1",
+        path=first_run_dir,
+    )
+    second_run = RunInfo(
+        env_id="beta-env",
+        model="model-b",
+        run_id="run-2",
+        path=second_run_dir,
+    )
+
+    async with VerifiersTUI(
+        {"alpha-env": {"model-a": [first_run]}, "beta-env": {"model-b": [second_run]}}
+    ).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        collapsed_env = tree.root.children[1]
+
+        assert collapsed_env.data.kind == "env"
+        assert collapsed_env.is_expanded is False
+
+        tree.move_cursor(collapsed_env)
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert tree.cursor_node is collapsed_env
+        assert collapsed_env.is_expanded is True
+
+
+@pytest.mark.asyncio
+async def test_browse_run_tree_clips_long_labels_without_horizontal_scrollbar(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    long_model = "openai/" + ("very-long-model-name-" * 8)
+    long_run_id = "run-" + ("1234567890" * 12)
+    run = RunInfo(
+        env_id="demo-env",
+        model=long_model,
+        run_id=long_run_id,
+        path=run_dir,
+    )
+
+    async with VerifiersTUI({"demo-env": {long_model: [run]}}).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        model_line = tree.render_line(1).text
+
+        assert tree.size.width > 0
+        assert tree.virtual_size.width <= tree.size.width
+        assert tree.styles.overflow_x == "hidden"
+        assert tree.show_horizontal_scrollbar is False
+        assert "…" in model_line
+        assert "1 runs" in model_line
 
 
 @pytest.mark.asyncio
