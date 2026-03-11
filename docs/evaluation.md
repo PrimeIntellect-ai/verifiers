@@ -15,6 +15,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
 - [Environment Defaults](#environment-defaults)
 - [Multi-Environment Evaluation](#multi-environment-evaluation)
   - [TOML Configuration](#toml-configuration)
+  - [Ablation Sweeps](#ablation-sweeps)
   - [Configuration Precedence](#configuration-precedence)
 
 Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
@@ -307,6 +308,38 @@ num_examples = 50
 difficulty = "hard"
 split = "test"
 ```
+
+### Ablation Sweeps
+
+Use `[[ablation]]` blocks to automatically generate eval configs from a cartesian product of parameter values. This is useful for hyperparameter sweeps and ablation studies without manually writing each combination.
+
+```toml
+# Global defaults apply to all evals and ablations
+model = "openai/gpt-4.1-mini"
+num_examples = 50
+
+# Sweep temperature × difficulty → 6 eval configs
+# split is fixed across all combinations
+[[ablation]]
+env_id = "my-env"
+env_args = {split = "test"}
+
+[ablation.sweep]
+temperature = [0.0, 0.5, 1.0]
+
+[ablation.sweep.env_args]
+difficulty = ["easy", "hard"]
+```
+
+- **Fixed fields** in the `[[ablation]]` block (like `env_id`) apply to all expanded configs
+- **`[ablation.sweep]`** keys are lists of values crossed as a cartesian product
+- **`[ablation.sweep.env_args]`** keys are swept and merged into the `env_args` dict
+- **Fixed `env_args`** can be set alongside swept ones (e.g. `env_args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept env_args.
+- Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
+- `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
+- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `env_args` — use separate `[[ablation]]` blocks for envs with different argument schemas
+
+Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
 
 ### Configuration Precedence
 
