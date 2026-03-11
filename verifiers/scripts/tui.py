@@ -3343,11 +3343,20 @@ class ViewRunScreen(Screen):
         """Flatten all section bodies (including nested) in DOM order."""
         bodies: List[str] = []
         for section in sections:
-            if section.body or not section.nested_sections:
-                bodies.append(section.body)
-            for nested in section.nested_sections:
-                if nested.body or not nested.nested_sections:
-                    bodies.append(nested.body)
+            parent_body = (
+                [section.body] if section.body or not section.nested_sections else []
+            )
+            nested_bodies = [
+                nested.body
+                for nested in section.nested_sections
+                if nested.body or not nested.nested_sections
+            ]
+            if section.body_first:
+                bodies.extend(parent_body)
+                bodies.extend(nested_bodies)
+            else:
+                bodies.extend(nested_bodies)
+                bodies.extend(parent_body)
         return bodies
 
     def action_toggle_markdown_math(self) -> None:
