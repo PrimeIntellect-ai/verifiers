@@ -302,6 +302,32 @@ class OpenCodeEnv(CliAgentEnv):
         )
         return response.model_copy(update={"message": normalized_message})
 
+    async def post_rollout(self, state: vf.State) -> None:
+        """Collect agent logs from sandbox before teardown."""
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            try:
+                result = await self.sandbox_client.execute_command(
+                    sandbox_id,
+                    f"cat {self.remote_logs_path} 2>/dev/null || echo '<no logs>'",
+                    working_dir=None,
+                )
+                agent_logs = (result.stdout or "").strip()
+                state["agent_logs"] = agent_logs
+
+                # Log agent output on error or empty trajectory for debugging
+                num_turns = len(state.get("trajectory", []))
+                agent_error = state.get("agent_exit_code", 0) != 0
+                if (agent_error or num_turns == 0) and agent_logs:
+                    logger.debug(
+                        f"Agent logs (example_id={state.get('example_id')}, "
+                        f"exit_code={state.get('agent_exit_code')}, turns={num_turns}):\n{agent_logs}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to collect agent logs: {e}")
+
+        await super().post_rollout(state)
+
     def build_prompt(self, state: vf.State) -> str:
         """Build the prompt to be uploaded to OpenCode."""
         return state["prompt"][-1]["content"]
