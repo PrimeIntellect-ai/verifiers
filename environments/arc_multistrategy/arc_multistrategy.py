@@ -953,7 +953,7 @@ class ArcMultistrategyEnv(MultiAgentEnv):
 
     def __init__(self, **kwargs):
         self._actor_id = "codegen_v1b"
-        self.actors = ["codegen_v1b"]
+        self.actors = ["codegen_v1b", "codegen_v4", "image"]
         self.name = "arc_multistrategy"
         super().__init__(max_turns=1, **kwargs)
 
@@ -970,13 +970,24 @@ class ArcMultistrategyEnv(MultiAgentEnv):
                 messages.append(msg)
         return messages
 
+    def create_actor_states(self, state, actor_ids=None):
+        if actor_ids is None:
+            actor_ids = self.actors
+        result = []
+        if "codegen_v1b" in actor_ids:
+            result.extend(super().create_actor_states(state, actor_ids=["codegen_v1b"]))
+        for child_state in state.get("child_states", []):
+            child_actor_id = child_state.get("extras", {}).get("current_actor_id")
+            if child_actor_id and child_actor_id in actor_ids:
+                result.append(child_state)
+        return result
+
     async def on_turn_complete(self, state: State) -> None:
         """
         Pipeline:
         1. Evaluate codegen_v1b (parent's own response)
         2. Spawn codegen_v4 and image children
         3. Collect candidates from all strategies
-        4. Optionally run API judge
         """
         train_pairs = _get_train_pairs(state)
         test_input = _get_test_input(state)
