@@ -1740,48 +1740,26 @@ class CompareRunsScreen(Screen):
     def action_copy(self) -> None:
         if not self._stats_by_path:
             return
-        items: List[RolloutCopyItem] = []
-        items.append(
-            RolloutCopyItem(
-                key="summary",
-                label="Summary",
-                body=self._renderable_to_text(self._build_comparison_header()),
-            )
-        )
-        items.append(
-            RolloutCopyItem(
-                key="outcomes",
-                label="Outcome groups",
-                body=self._renderable_to_text(
-                    self._build_grouped_outcomes_table(
-                        self._stats_by_path,
-                        self._setting_keys,
-                        self._run_settings,
-                        self._display_maps,
-                        self._style_maps,
-                        group_by_key=self._grouped_by_key,
-                    )
-                ),
-            )
-        )
+        parts: List[str] = [
+            self._renderable_to_text(self._build_comparison_header()),
+            self._renderable_to_text(
+                self._build_grouped_outcomes_table(
+                    self._stats_by_path,
+                    self._setting_keys,
+                    self._run_settings,
+                    self._display_maps,
+                    self._style_maps,
+                    group_by_key=self._grouped_by_key,
+                )
+            ),
+        ]
         legend = self._build_value_legend(self._legend_rows)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
-            items.append(
-                RolloutCopyItem(
-                    key="legend",
-                    label="Value legend",
-                    body=self._renderable_to_text(legend),
-                )
-            )
-        # "All" section combining everything.
-        all_body = "\n\n".join(item.body for item in items)
-        items.insert(
-            0,
-            RolloutCopyItem(key="all", label="All", body=all_body),
-        )
+            parts.append(self._renderable_to_text(legend))
+        all_body = "\n\n".join(parts)
         self.app.push_screen(
             CompactCopyScreen(
-                items,
+                [RolloutCopyItem(key="all", label="Comparison", body=all_body)],
                 start_key="all",
                 title="Copy Comparison",
             )
@@ -2311,8 +2289,6 @@ class BrowseRunsScreen(Screen):
         payload = getattr(node, "data", None)
         if not isinstance(payload, BrowserNodeData):
             return
-        label = getattr(node, "label", "")
-        label_text = label.plain if isinstance(label, Text) else str(label)
         buffer = StringIO()
         Console(
             file=buffer,
@@ -2321,12 +2297,13 @@ class BrowseRunsScreen(Screen):
             width=180,
         ).print(self._details_for(payload))
         self.app.push_screen(
-            CopyScreen(
-                label_text,
-                buffer.getvalue().rstrip(),
-                "completion",
-                prompt_label="Selection",
-                completion_label="Details",
+            CompactCopyScreen(
+                [
+                    RolloutCopyItem(
+                        key="details", label="Details", body=buffer.getvalue().rstrip()
+                    )
+                ],
+                start_key="details",
                 title="Copy Details",
             )
         )
@@ -2979,7 +2956,7 @@ class ViewRunScreen(Screen):
         out.append(f"{heading}\n", style="bold dim")
         out.append(_format_reward_value(reward), style=_reward_style(reward))
 
-        breakdown = self._extract_reward_metrics(record)
+        breakdown = sorted(_extract_numeric_metric_values(record).items())
         if breakdown:
             breakdown = breakdown[:limit] if limit is not None else breakdown
             if multiline:
@@ -3227,7 +3204,9 @@ class ViewRunScreen(Screen):
         self.query_one("#score-content", Static).update(score_text)
         self.query_one("#usage-content", Static).update(usage_text)
         self.query_one("#info-content", Static).update(info_text)
-        self._update_rollout_summary(record)
+        self.query_one("#rollout-summary", Label).update(
+            self._build_rollout_summary_text(record)
+        )
         self._rebuild_completion_sections(record, focus_history)
 
     def action_back(self) -> None:
@@ -3264,7 +3243,7 @@ class ViewRunScreen(Screen):
         self.app.push_screen(
             RolloutCopyScreen(
                 self._build_rollout_copy_items(record),
-                start_key=self._rollout_copy_start_key(),
+                start_key="snapshot",
                 title=f"Copy Rollout #{self.current_record_idx}",
             )
         )
@@ -3414,11 +3393,6 @@ class ViewRunScreen(Screen):
                 _format_reward_value(record.get("reward")),
                 _reward_style(record.get("reward")),
             ),
-        )
-
-    def _update_rollout_summary(self, record: Dict[str, Any]) -> None:
-        self.query_one("#rollout-summary", Label).update(
-            self._build_rollout_summary_text(record)
         )
 
     def _update_responsive_layout(self, width: int) -> None:
@@ -3668,24 +3642,6 @@ class ViewRunScreen(Screen):
         if focus_history:
             self.call_after_refresh(self._focus_primary_content)
 
-    def _rollout_copy_start_key(self) -> str:
-        if self.is_mounted and self.query_one("#details-panel", Panel).has_focus_within:
-            return f"details:{self._active_details_tab_id()}"
-        if self.is_mounted and self.query_one("#history-panel", Panel).has_focus_within:
-            return "history"
-        if (
-            self.is_mounted
-            and self.query_one("#rollouts-panel", Panel).has_focus_within
-        ):
-            return "rollout"
-        return "snapshot"
-
-    def _active_details_tab_id(self) -> str:
-        if not self.is_mounted:
-            return "details-task"
-        active = self.query_one("#details-tabs", TabbedContent).active
-        return active or "details-task"
-
     def _detail_copy_sections(
         self, record: Dict[str, Any]
     ) -> List[Tuple[str, str, str]]:
@@ -3772,7 +3728,12 @@ class ViewRunScreen(Screen):
             history_parts.append(history_text)
         blocks.append("\n\n".join(history_parts))
 
-        active_tab_id = self._active_details_tab_id()
+        if self.is_mounted:
+            active_tab_id = (
+                self.query_one("#details-tabs", TabbedContent).active or "details-task"
+            )
+        else:
+            active_tab_id = "details-task"
         active_tab_label = next(
             (
                 label
@@ -4027,9 +3988,6 @@ class ViewRunScreen(Screen):
                 out.append("\n")
 
         return out
-
-    def _extract_reward_metrics(self, record: Dict[str, Any]) -> List[Tuple[str, Any]]:
-        return sorted(_extract_numeric_metric_values(record).items())
 
     def _build_task_text(self, record: Dict[str, Any]) -> Text:
         out = Text()
@@ -4738,13 +4696,14 @@ class RolloutCopyScreen(ModalScreen[None]):
     """Modal screen for copying rollout viewer sections."""
 
     BINDINGS = [
-        Binding("escape,b,backspace", "close", "Close"),
-        Binding("tab", "focus_next_pane", "Next pane"),
-        Binding("shift+tab", "focus_prev_pane", show=False),
-        Binding("enter", "copy", "Copy"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
 
     def __init__(
         self,
@@ -4756,27 +4715,19 @@ class RolloutCopyScreen(ModalScreen[None]):
         super().__init__()
         self._items = items
         self._items_by_key = {item.key: item for item in items}
-        self._start_key = (
-            start_key
-            if start_key in self._items_by_key
-            else (items[0].key if items else None)
-        )
         self._title = title
-        self._current_key = self._start_key
+        self._current_idx = 0
+        if start_key:
+            for i, item in enumerate(items):
+                if item.key == start_key:
+                    self._current_idx = i
+                    break
         self._last_copied_selection = ""
 
     def compose(self) -> ComposeResult:
         with Container():
             with Panel(classes="modal-header"):
                 yield Label(Text(self._title, style="bold"))
-                yield Label(
-                    Text(
-                        "Choose a viewer section on the left. Tab switches panes; enter or c copies the current target.",
-                        style="dim",
-                    ),
-                    id="rollout-copy-hint",
-                    classes="copy-hint",
-                )
                 yield Label("", id="rollout-copy-status", classes="subtitle")
 
             with Horizontal(classes="modal-columns"):
@@ -4796,25 +4747,12 @@ class RolloutCopyScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         option_list = self.query_one("#rollout-copy-targets", OptionList)
+        option_list.can_focus = False
         for item in self._items:
             option_list.add_option(Option(Text(item.label), id=item.key))
-
-        if self._start_key is not None:
-            for idx, item in enumerate(self._items):
-                if item.key == self._start_key:
-                    option_list.highlighted = idx
-                    option_list.scroll_to_highlight()
-                    break
-
+        option_list.highlighted = self._current_idx
         self._sync_preview()
-        option_list.focus()
-
-    @on(OptionList.OptionHighlighted, "#rollout-copy-targets")
-    def _on_target_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id is None:
-            return
-        self._current_key = event.option_id
-        self._sync_preview()
+        self.query_one("#rollout-copy-preview", TextArea).focus()
 
     @on(TextArea.SelectionChanged)
     def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
@@ -4827,31 +4765,33 @@ class RolloutCopyScreen(ModalScreen[None]):
             self.query_one("#rollout-copy-status", Label).update(
                 Text(f"Copied selection ({len(selected):,} chars).", style="dim")
             )
-        self._update_hint()
 
-    def on_key(self, event) -> None:
-        if event.key in ("tab", "shift+tab", "backtab"):
-            if event.key == "tab":
-                self.action_focus_next_pane()
-            else:
-                self.action_focus_prev_pane()
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "left":
+            self._move_section(-1)
             event.prevent_default()
             event.stop()
+        elif event.key == "right":
+            self._move_section(1)
+            event.prevent_default()
+            event.stop()
+
+    def _move_section(self, delta: int) -> None:
+        if not self._items:
+            return
+        self._current_idx = (self._current_idx + delta) % len(self._items)
+        self.query_one(
+            "#rollout-copy-targets", OptionList
+        ).highlighted = self._current_idx
+        self._sync_preview()
 
     def action_close(self) -> None:
         self.dismiss(None)
 
-    def action_focus_next_pane(self) -> None:
-        self.focus_next()
-
-    def action_focus_prev_pane(self) -> None:
-        self.focus_previous()
-
     def action_copy(self) -> None:
-        item = self._current_item()
-        if item is None:
+        if not self._items:
             return
-
+        item = self._items[self._current_idx]
         preview = self.query_one("#rollout-copy-preview", TextArea)
         selected = preview.selected_text or ""
         copied_text = selected or item.body
@@ -4859,63 +4799,38 @@ class RolloutCopyScreen(ModalScreen[None]):
             self.query_one("#rollout-copy-status", Label).update(
                 Text("Nothing to copy.", style="dim")
             )
-            self._update_hint()
             return
-
         self.app.copy_to_clipboard(copied_text)
         self._last_copied_selection = copied_text
-        if selected:
-            message = f"Copied selection ({len(copied_text):,} chars)."
-        else:
-            message = f"Copied {item.label} ({len(copied_text):,} chars)."
-        self.query_one("#rollout-copy-status", Label).update(Text(message, style="dim"))
-        self._update_hint()
-
-    def _current_item(self) -> Optional[RolloutCopyItem]:
-        if self._current_key is None:
-            return self._items[0] if self._items else None
-        return self._items_by_key.get(self._current_key)
+        label = "selection" if selected else item.label.lower()
+        self.query_one("#rollout-copy-status", Label).update(
+            Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
+        )
 
     def _sync_preview(self) -> None:
-        item = self._current_item()
-        preview_label = self.query_one("#rollout-copy-preview-label", Label)
-        preview = self.query_one("#rollout-copy-preview", TextArea)
-        if item is None:
-            preview_label.update(Text("Preview", style="bold"))
-            preview.load_text("")
-            self._update_hint()
+        if not self._items:
             return
-
-        preview_label.update(
+        item = self._items[self._current_idx]
+        self.query_one("#rollout-copy-preview-label", Label).update(
             Text(f"{item.label}  ({len(item.body):,} chars)", style="bold")
         )
-        preview.load_text(item.body)
-        self._update_hint()
-
-    def _update_hint(self) -> None:
-        item = self._current_item()
-        preview = self.query_one("#rollout-copy-preview", TextArea)
-        selected = preview.selected_text or ""
-        if selected:
-            hint = f"Enter/c copies the selection ({len(selected):,} chars)."
-        elif item is not None:
-            hint = f"Enter/c copies {item.label.lower()}. Tab switches panes."
-        else:
-            hint = "Choose a copy target. Tab switches panes."
-        self.query_one("#rollout-copy-hint", Label).update(Text(hint, style="dim"))
+        self.query_one("#rollout-copy-preview", TextArea).load_text(item.body)
 
 
 class CompactCopyScreen(ModalScreen[None]):
     """Compact copy screen with section tabs above a preview area."""
 
     BINDINGS = [
-        Binding("escape,b,backspace", "close", "Close"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
         Binding("tab", "next_section", "Next section"),
-        Binding("shift+tab", "prev_section", "Prev section", show=False),
-        Binding("enter", "copy", "Copy"),
+        Binding("shift+tab", "prev_section", "Prev section"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
 
     def __init__(
         self,
@@ -4940,8 +4855,6 @@ class CompactCopyScreen(ModalScreen[None]):
         with Container():
             with Panel(classes="modal-header"):
                 yield Label(Text(self._title, style="bold"))
-                yield Label("", id="compact-copy-tabs", classes="copy-hint")
-                yield Label("", id="compact-copy-hint", classes="copy-hint")
                 yield Label("", id="compact-copy-status", classes="subtitle")
             with Panel(classes="compact-copy-body"):
                 preview = TextArea(
@@ -4966,7 +4879,6 @@ class CompactCopyScreen(ModalScreen[None]):
             self.query_one("#compact-copy-status", Label).update(
                 Text(f"Copied selection ({len(selected):,} chars).", style="dim")
             )
-        self._update_hint()
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -5008,50 +4920,29 @@ class CompactCopyScreen(ModalScreen[None]):
         self.query_one("#compact-copy-status", Label).update(
             Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
         )
-        self._update_hint()
 
     def _sync(self) -> None:
         if not self._items:
             return
         item = self._items[self._current_idx]
-        # Update tab bar.
-        tabs = Text()
-        for i, it in enumerate(self._items):
-            if i:
-                tabs.append("  ")
-            if i == self._current_idx:
-                tabs.append(f"[{it.label}]", style="bold")
-            else:
-                tabs.append(f" {it.label} ", style="dim")
-        self.query_one("#compact-copy-tabs", Label).update(tabs)
-        # Update preview.
         preview = self.query_one("#compact-copy-preview", TextArea)
         preview.load_text(item.body)
-        self._update_hint()
-
-    def _update_hint(self) -> None:
-        if not self._items:
-            return
-        item = self._items[self._current_idx]
-        preview = self.query_one("#compact-copy-preview", TextArea)
-        selected = preview.selected_text or ""
-        if selected:
-            hint = f"Enter/c copies selection ({len(selected):,} chars). Tab switches section."
-        else:
-            hint = f"Enter/c copies {item.label.lower()}. Tab switches section."
-        self.query_one("#compact-copy-hint", Label).update(Text(hint, style="dim"))
 
 
 class CopyScreen(ModalScreen[None]):
     """Modal screen for selecting and copying prompt/completion text."""
 
     BINDINGS = [
-        Binding("escape,b,backspace", "close", "Close"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
         Binding("tab", "cycle_column", "Next column"),
-        Binding("shift+tab", "cycle_column", show=False),
+        Binding("shift+tab", "cycle_column", "Prev column"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
 
     def __init__(
         self,
@@ -5186,14 +5077,14 @@ class CopyScreen(ModalScreen[None]):
         if selected:
             count = len(selected)
             unit = "char" if count == 1 else "chars"
-            copy_text = f"c / ctrl+c: copy selection ({count} {unit})"
+            copy_text = f"c: copy selection ({count} {unit})"
         else:
             active_label = (
                 self._prompt_label
                 if self._active_column == "prompt"
                 else self._completion_label
             ).lower()
-            copy_text = f"c / ctrl+c: copy {active_label}"
+            copy_text = f"c: copy {active_label}"
         self.query_one("#copy-hint", Label).update(Text(copy_text, style="dim"))
 
 
