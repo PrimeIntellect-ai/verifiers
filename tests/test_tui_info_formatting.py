@@ -587,6 +587,45 @@ async def test_browse_run_screen_offsets_details_content_from_scrollbar(
 
 
 @pytest.mark.asyncio
+async def test_browse_run_screen_highlights_details_pane_when_focused(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+
+    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        scroll = pilot.app.screen.query_one(
+            "#run-browser-details-scroll", VerticalScroll
+        )
+
+        assert pilot.app.focused is tree
+        assert tree.styles.background_tint.a > 0
+        assert scroll.styles.background_tint.a == 0
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert pilot.app.focused is scroll
+        assert tree.styles.background_tint.a == 0
+        assert scroll.styles.background_tint.a > 0
+
+
+@pytest.mark.asyncio
 async def test_browse_run_screen_opens_compare_mode_for_model(tmp_path) -> None:
     first_run_dir = tmp_path / "run-a"
     first_run_dir.mkdir()

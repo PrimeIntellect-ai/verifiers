@@ -4073,6 +4073,10 @@ class VerifiersTUI(App):
         width: 1fr;
     }
 
+    #run-browser-details-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
     .compare-panel {
         height: 1fr;
     }
