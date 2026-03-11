@@ -56,6 +56,7 @@ class TestCliAgentEnv:
         env = vf.CliAgentEnv(
             run_command="python agent.py",
             dataset=sample_dataset,
+            interception_port=8765,
             rubric=vf.Rubric(),
         )
         assert env.run_command == "python agent.py"

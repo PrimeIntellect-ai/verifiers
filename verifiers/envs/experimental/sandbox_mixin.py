@@ -35,6 +35,23 @@ class SandboxNotReadyError(vf.SandboxError): ...
 class SandboxSetupError(vf.SandboxError): ...
 
 
+class SandboxMonitorRubric(vf.Rubric):
+    """Monitor rubric that tracks sandbox execution failures."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_metric(self.sandbox_oom)
+        self.add_metric(self.sandbox_timeout)
+
+    async def sandbox_oom(self, state: vf.State) -> float:
+        """Whether the sandbox was OOM-killed."""
+        return float(bool(state.get("sandbox_oom")))
+
+    async def sandbox_timeout(self, state: vf.State) -> float:
+        """Whether the sandbox timed out."""
+        return float(bool(state.get("sandbox_timeout")))
+
+
 class SandboxMixin:
     """Mixin providing sandbox lifecycle management with retry, tracking, and cleanup."""
 

@@ -24,7 +24,7 @@ This directory contains automated workflows for the verifiers project.
 - Pushes to `main`, `master`, or `develop` branches with the same file changes
 
 **What it does**:
-- Runs tests on multiple Python versions (3.11, 3.12)
+- Runs tests on multiple Python versions (3.12, 3.13)
 - Generates coverage reports (XML, HTML, and terminal output)
 - Uploads coverage to Codecov (requires `CODECOV_TOKEN` secret)
 - Uploads HTML coverage reports as artifacts

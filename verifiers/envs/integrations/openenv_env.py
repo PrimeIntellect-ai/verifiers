@@ -1188,9 +1188,12 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 Tool(
                     name=tool_dict.get("name", ""),
                     description=tool_dict.get("description", ""),
-                    parameters=tool_dict.get("input_schema")
-                    or tool_dict.get("inputSchema")
-                    or {"type": "object", "properties": {}},
+                    parameters=cast(
+                        dict[str, object],
+                        tool_dict.get("input_schema")
+                        or tool_dict.get("inputSchema")
+                        or {"type": "object", "properties": {}},
+                    ),
                 )
             )
         return tool_defs

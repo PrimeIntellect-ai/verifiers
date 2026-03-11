@@ -19,7 +19,7 @@ The `-s` flag prints sample outputs so you can see what's happening.
 ```bash
 prime eval tui
 ```
-In the TUI, press `c` to open Copy Mode for prompt/completion text; highlight and press `c` again to copy.
+The TUI opens a single run browser (`environment -> model -> run`). Press `Enter` on a run to open rollout details, `b` to go back, `tab` to cycle panes, `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
 
 **If using the Python API** (`env.generate()` / `env.evaluate()`):
 
