@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 from markdown_it import MarkdownIt
 from mdit_py_plugins.amsmath import amsmath_plugin
@@ -52,6 +52,7 @@ from textual.widgets._markdown import (
     MarkdownTH,
 )
 from textual.widgets._option_list import Option
+from textual.widgets._tree import TreeNode
 
 from verifiers.utils.display_utils import format_numeric
 
@@ -153,7 +154,7 @@ class RunBrowserTree(Tree[BrowserNodeData]):
 
         if max_width <= 0:
             label.truncate(1, overflow="ellipsis")
-            label.stylize(style)
+            label.stylize(cast(Any, style))
             return label
 
         suffix = Text()
@@ -167,10 +168,15 @@ class RunBrowserTree(Tree[BrowserNodeData]):
         else:
             label.truncate(max_width, overflow="ellipsis")
 
-        label.stylize(style)
+        label.stylize(cast(Any, style))
         return label
 
-    def render_label(self, node: Any, base_style: Style, style: Style) -> Text:
+    def render_label(  # ty: ignore[invalid-method-override]
+        self,
+        node: TreeNode[Any],
+        base_style: Style,
+        style: Style,
+    ) -> Text:
         payload = node.data
         available_width = self.size.width - (
             self._visible_depth(node) * self.guide_depth
@@ -188,10 +194,10 @@ class RunBrowserTree(Tree[BrowserNodeData]):
             label = self._render_browser_label(payload, style, content_width)
         else:
             label = node._label.copy()
-            label.stylize(style)
+            label.stylize(cast(Any, style))
             label.truncate(content_width, overflow="ellipsis")
 
-        return Text.assemble((prefix_text, base_style), label)
+        return Text.assemble((prefix_text, cast(Any, base_style)), label)
 
     def action_cursor_parent(self) -> None:
         """Move the cursor to the nearest visible parent folder."""
@@ -1312,7 +1318,7 @@ _LATEX_COMMAND_REPLACEMENTS = {
 def _replace_latex_groups(
     text: str,
     pattern: re.Pattern[str],
-    replacement: str | re.Pattern[str] | Any,
+    replacement: str | Callable[[re.Match[str]], str],
 ) -> str:
     while True:
         updated = pattern.sub(replacement, text)
