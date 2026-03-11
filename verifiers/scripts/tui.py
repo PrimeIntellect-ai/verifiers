@@ -70,6 +70,14 @@ def _binding_key(binding: TreeBinding) -> str:
     return binding[0]
 
 
+def _int_like_sort_key(value: Any) -> Tuple[int, int, str]:
+    text = str(value)
+    try:
+        return (0, int(text), text)
+    except (TypeError, ValueError):
+        return (1, 0, text)
+
+
 # ----------------------------
 # Discovery and data loading
 # ----------------------------
@@ -583,6 +591,235 @@ def _pretty_json_or_str(value: Any) -> str:
         return str(value)
 
 
+def _compact_json_or_str(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_setting_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _format_compact_metric(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        if all(
+            isinstance(item, (str, int, float, bool)) and not isinstance(item, dict)
+            for item in value
+        ):
+            return ", ".join(_format_setting_value(item) for item in value)
+    return _compact_json_or_str(value)
+
+
+def _tool_name(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return str(getattr(tool, "name", "") or "")
+    function = tool.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str):
+            return name
+    name = tool.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _run_setting_rows(meta: Dict[str, Any]) -> List[Tuple[str, str]]:
+    rows: List[Tuple[str, str]] = []
+
+    ordered_settings: List[Tuple[str, Any]] = []
+    if meta.get("base_url") not in (None, ""):
+        ordered_settings.append(("endpoint", meta["base_url"]))
+    if meta.get("num_examples") not in (None, ""):
+        ordered_settings.append(("examples", meta["num_examples"]))
+    if meta.get("rollouts_per_example") not in (None, ""):
+        ordered_settings.append(("rollouts/example", meta["rollouts_per_example"]))
+    if meta.get("pass_threshold") not in (None, ""):
+        ordered_settings.append(("pass threshold", meta["pass_threshold"]))
+
+    sampling_args = meta.get("sampling_args")
+    if isinstance(sampling_args, dict):
+        for key in sorted(sampling_args):
+            value = sampling_args[key]
+            if value not in (None, ""):
+                ordered_settings.append((f"sampling.{key}", value))
+
+    env_args = meta.get("env_args")
+    if isinstance(env_args, dict):
+        for key in sorted(env_args):
+            value = env_args[key]
+            if value not in (None, ""):
+                ordered_settings.append((f"env.{key}", value))
+
+    state_columns = meta.get("state_columns")
+    if isinstance(state_columns, list) and state_columns:
+        ordered_settings.append(("state columns", state_columns))
+
+    tools = meta.get("tools")
+    if isinstance(tools, list):
+        tool_names = sorted(
+            name for name in (_tool_name(tool) for tool in tools) if name
+        )
+        if tool_names:
+            ordered_settings.append(("tools", tool_names))
+
+    for label, value in ordered_settings:
+        rows.append((label, _format_setting_value(value)))
+
+    return rows
+
+
+def _build_settings_table(
+    rows: List[Tuple[str, str]],
+    heading: str,
+    *,
+    value_header: str = "Value",
+) -> Group | Text:
+    if not rows:
+        return Text()
+
+    title = Text()
+    title.append(heading, style="bold dim")
+
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+        padding=(0, 1),
+        collapse_padding=True,
+        row_styles=["none", "dim"],
+    )
+    table.add_column("Setting", style="dim", width=20, no_wrap=True)
+    table.add_column(value_header, ratio=1)
+
+    for setting, value in rows:
+        table.add_row(setting, value)
+
+    return Group(title, table)
+
+
+def _run_setting_variation_rows(
+    runs: List[RunInfo], *, max_rows: int = 8
+) -> Tuple[List[Tuple[str, str]], int]:
+    if not runs:
+        return [], 0
+
+    setting_maps = [dict(_run_setting_rows(run.load_metadata())) for run in runs]
+
+    ordered_keys: List[str] = []
+    for setting_map in setting_maps:
+        for key in setting_map:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+    rows: List[Tuple[str, str]] = []
+    for key in ordered_keys:
+        counts: Dict[str, int] = defaultdict(int)
+        for setting_map in setting_maps:
+            counts[setting_map.get(key, "(unset)")] += 1
+        if len(counts) <= 1:
+            continue
+        parts = [
+            f"{value} ({count} run{'s' if count != 1 else ''})"
+            for value, count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        rows.append((key, ", ".join(parts)))
+
+    hidden_rows = max(0, len(rows) - max_rows)
+    return rows[:max_rows], hidden_rows
+
+
+def _varying_run_setting_keys(
+    runs: List[RunInfo],
+) -> Tuple[List[str], List[Tuple[RunInfo, Dict[str, str]]]]:
+    if not runs:
+        return [], []
+
+    run_settings = [(run, dict(_run_setting_rows(run.load_metadata()))) for run in runs]
+    ordered_keys: List[str] = []
+    for _, settings in run_settings:
+        for key in settings:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+    if len(run_settings) == 1:
+        return ordered_keys, run_settings
+
+    varying_keys = [
+        key
+        for key in ordered_keys
+        if len({settings.get(key, "(unset)") for _, settings in run_settings}) > 1
+    ]
+    return varying_keys, run_settings
+
+
+def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
+    bucket_counts = [
+        ("=0", 0, "bold red"),
+        ("0-<0.25", 0, "red"),
+        ("0.25-<0.5", 0, "yellow"),
+        ("0.5-<0.75", 0, "yellow"),
+        ("0.75-<1", 0, "green"),
+        ("=1", 0, "bold green"),
+    ]
+
+    for reward in values:
+        if reward <= 0:
+            bucket_idx = 0
+        elif reward < 0.25:
+            bucket_idx = 1
+        elif reward < 0.5:
+            bucket_idx = 2
+        elif reward < 0.75:
+            bucket_idx = 3
+        elif reward < 1.0:
+            bucket_idx = 4
+        else:
+            bucket_idx = 5
+        label, count, style = bucket_counts[bucket_idx]
+        bucket_counts[bucket_idx] = (label, count + 1, style)
+
+    return bucket_counts
+
+
+def _build_reward_share_bars(values: List[float], bar_width: int = 16) -> Text:
+    if not values:
+        return Text("No rollout rewards", style="dim")
+
+    total = len(values)
+    out = Text()
+    for idx, (label, count, style) in enumerate(_reward_bucket_counts(values)):
+        share = count / total if total else 0.0
+        filled = round(max(0.0, min(1.0, share)) * bar_width)
+        if idx:
+            out.append("\n")
+        out.append(f"{label:<9}", style="dim")
+        if filled:
+            out.append("█" * filled, style=style)
+        if filled < bar_width:
+            out.append("░" * (bar_width - filled), style="dim")
+        out.append(f" {share:>4.0%}")
+    return out
+
+
+_COMPARE_ALIAS_PALETTE: Tuple[str, ...] = (
+    "#61afef",
+    "#98c379",
+    "#e5c07b",
+    "#c678dd",
+    "#56b6c2",
+    "#e06c75",
+)
+
+
 def _tool_call_parts(tool_call: Any) -> Tuple[str, str, Optional[str]]:
     if not isinstance(tool_call, dict):
         return str(tool_call), "", None
@@ -756,18 +993,7 @@ def _build_reward_distribution_table(values: List[float], heading: str) -> Group
     summary.append("   max ", style="bold")
     summary.append(f"{max(values):.3f}", style=_reward_style(max(values)))
 
-    buckets = [
-        ("<0", lambda reward: reward < 0, "bold red"),
-        ("0-0.25", lambda reward: 0 <= reward < 0.25, "red"),
-        ("0.25-0.5", lambda reward: 0.25 <= reward < 0.5, "yellow"),
-        ("0.5-0.75", lambda reward: 0.5 <= reward < 0.75, "yellow"),
-        ("0.75-1.0", lambda reward: 0.75 <= reward < 1.0, "green"),
-        (">=1.0", lambda reward: reward >= 1.0, "bold green"),
-    ]
-    bucket_counts = [
-        (label, sum(1 for reward in values if predicate(reward)), style)
-        for label, predicate, style in buckets
-    ]
+    bucket_counts = _reward_bucket_counts(values)
     peak_count = max(count for _, count, _ in bucket_counts) or 1
 
     table = Table(
@@ -1313,6 +1539,445 @@ class MathMarkdown(BaseMarkdown):
 # ----------------------------
 # Screens
 # ----------------------------
+class CompareRunsScreen(Screen):
+    """Dedicated comparison view for runs from a single model."""
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("b,backspace", "back", "Back"),
+        Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
+    ]
+
+    def __init__(self, env_id: str, model: str, runs: List[RunInfo]):
+        super().__init__()
+        self.env_id = env_id
+        self.model = model
+        self.runs = list(runs)
+        self._stats_by_path: Dict[Path, RunOverviewStats] = {}
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Panel(
+                Label(Text("Run Comparison", style="bold"), classes="title"),
+                Static("", id="compare-subtitle", classes="subtitle", markup=False),
+                VerticalScroll(
+                    Static("", id="compare-content", markup=False),
+                    id="compare-scroll",
+                    classes="surface-scroll",
+                ),
+                classes="compare-panel",
+            )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        subtitle = Text()
+        subtitle.append(self.model, style="bold")
+        subtitle.append("\n")
+        subtitle.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
+        self.query_one("#compare-subtitle", Static).update(subtitle)
+        self.query_one("#compare-content", Static).update(
+            Text("Loading comparison…", style="dim")
+        )
+        self._load_comparison_stats()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_copy(self) -> None:
+        if not self.runs:
+            return
+        buffer = StringIO()
+        Console(
+            file=buffer,
+            force_terminal=False,
+            color_system=None,
+            width=220,
+        ).print(self._render_comparison_content())
+        self.app.push_screen(
+            CopyScreen(
+                f"{self.env_id} / {self.model}",
+                buffer.getvalue().rstrip(),
+                "completion",
+                prompt_label="Selection",
+                completion_label="Comparison",
+                title="Copy Comparison",
+            )
+        )
+
+    @work(
+        thread=True,
+        group="run-comparison",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_comparison_stats(self) -> None:
+        stats_by_path = {
+            run.path: _compute_run_overview_stats(run) for run in self.runs
+        }
+        self.app.call_from_thread(self._finish_loading_comparison_stats, stats_by_path)
+
+    def _finish_loading_comparison_stats(
+        self, stats_by_path: Dict[Path, RunOverviewStats]
+    ) -> None:
+        if not self.is_mounted:
+            return
+        self._stats_by_path = stats_by_path
+        self.query_one("#compare-content", Static).update(
+            self._build_comparison_content(stats_by_path)
+        )
+
+    def _render_comparison_content(self) -> Any:
+        if not self._stats_by_path:
+            return Text("Loading comparison…", style="dim")
+        return self._build_comparison_content(self._stats_by_path)
+
+    def _short_setting_key(self, key: str) -> str:
+        replacements = {
+            "rollouts/example": "r/ex",
+            "sampling.": "",
+            "env.": "",
+        }
+        short = key
+        for source, target in replacements.items():
+            short = short.replace(source, target)
+        return short
+
+    def _alias_style(self, label: str) -> str:
+        match = re.fullmatch(r"v(\d+)", label)
+        if match is None:
+            return ""
+        alias_idx = int(match.group(1)) - 1
+        return f"bold {_COMPARE_ALIAS_PALETTE[alias_idx % len(_COMPARE_ALIAS_PALETTE)]}"
+
+    def _share_style(self, share: float, positive: bool) -> str:
+        if share <= 0:
+            return "dim"
+        if positive:
+            return "bold green" if share >= 0.5 else "green"
+        return "bold red" if share >= 0.5 else "red"
+
+    def _build_setting_display_maps(
+        self,
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+    ) -> Tuple[
+        Dict[str, Dict[str, str]],
+        Dict[str, Dict[str, str]],
+        List[Tuple[str, str, str]],
+    ]:
+        display_maps: Dict[str, Dict[str, str]] = {}
+        style_maps: Dict[str, Dict[str, str]] = {}
+        legend_rows: List[Tuple[str, str, str]] = []
+
+        for key in setting_keys:
+            ordered_values: List[str] = []
+            for _, settings in run_settings:
+                value = settings.get(key, "(unset)")
+                if value not in ordered_values:
+                    ordered_values.append(value)
+
+            previews = [
+                _truncate_preview(" ".join(value.split()), 20)
+                for value in ordered_values
+            ]
+            needs_alias = len(set(previews)) != len(previews) or any(
+                len(" ".join(value.split())) > 20 for value in ordered_values
+            )
+
+            if needs_alias:
+                display_maps[key] = {}
+                style_maps[key] = {}
+                for idx, value in enumerate(ordered_values):
+                    alias = f"v{idx + 1}"
+                    display_maps[key][value] = alias
+                    style_maps[key][value] = self._alias_style(alias)
+                    legend_rows.append(
+                        (
+                            f"{self._short_setting_key(key)} {alias}",
+                            _truncate_preview(" ".join(value.split()), 120),
+                            style_maps[key][value],
+                        )
+                    )
+                continue
+
+            display_maps[key] = {
+                value: preview for value, preview in zip(ordered_values, previews)
+            }
+            style_maps[key] = {value: "" for value in ordered_values}
+
+        return display_maps, style_maps, legend_rows
+
+    def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
+        if not values:
+            return Text("—", style="dim")
+
+        counts = _reward_bucket_counts(values)
+        total = len(values)
+        raw_widths = [
+            (count / total) * width if total else 0.0 for _, count, _ in counts
+        ]
+        segment_widths = [int(raw) for raw in raw_widths]
+        used = sum(segment_widths)
+
+        remainders = sorted(
+            [
+                (raw - int(raw), idx)
+                for idx, ((_, count, _), raw) in enumerate(zip(counts, raw_widths))
+                if count > 0
+            ],
+            reverse=True,
+        )
+        for _, idx in remainders:
+            if used >= width:
+                break
+            segment_widths[idx] += 1
+            used += 1
+
+        out = Text()
+        for (_, count, style), segment_width in zip(counts, segment_widths):
+            if count <= 0 or segment_width <= 0:
+                continue
+            out.append("█" * segment_width, style=style)
+        if used < width:
+            out.append("░" * (width - used), style="dim")
+        return out
+
+    def _build_axes_table(
+        self,
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+        display_maps: Dict[str, Dict[str, str]],
+        style_maps: Dict[str, Dict[str, str]],
+    ) -> Group | Text:
+        if not setting_keys:
+            return Text("All saved settings match across these runs", style="dim")
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        table.add_column(
+            "Axis", style="bold", header_style="bold dim", width=18, no_wrap=True
+        )
+        table.add_column("Values", header_style="bold dim", ratio=1)
+
+        for key in setting_keys:
+            counts: Dict[str, int] = defaultdict(int)
+            ordered_values: List[str] = []
+            for _, settings in run_settings:
+                value = settings.get(key, "(unset)")
+                counts[value] += 1
+                if value not in ordered_values:
+                    ordered_values.append(value)
+
+            value_text = Text()
+            for idx, value in enumerate(ordered_values):
+                if idx:
+                    value_text.append("   ")
+                label = display_maps[key][value]
+                value_text.append(label, style=style_maps[key][value] or "")
+                value_text.append(f" ({counts[value]})", style="dim")
+            axis_label = Text(self._short_setting_key(key), style="bold")
+            table.add_row(axis_label, value_text)
+
+        return Group(Text("Ablation axes", style="bold dim"), table)
+
+    def _build_grouped_outcomes_table(
+        self,
+        stats_by_path: Dict[Path, RunOverviewStats],
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+        display_maps: Dict[str, Dict[str, str]],
+        style_maps: Dict[str, Dict[str, str]],
+    ) -> Table:
+        grouped: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+
+        for run, settings in run_settings:
+            group_key = tuple(settings.get(key, "(unset)") for key in setting_keys)
+            group = grouped.setdefault(
+                group_key,
+                {"runs": [], "rewards": [], "avg_rewards": []},
+            )
+            cast(List[RunInfo], group["runs"]).append(run)
+            stats = stats_by_path.get(run.path, RunOverviewStats([], []))
+            if stats.rewards:
+                cast(List[float], group["rewards"]).extend(stats.rewards)
+            avg_reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+            if avg_reward is not None:
+                cast(List[float], group["avg_rewards"]).append(avg_reward)
+
+        rows = list(grouped.items())
+        rows.sort(
+            key=lambda item: (
+                -(
+                    sum(cast(List[float], item[1]["rewards"]))
+                    / len(cast(List[float], item[1]["rewards"]))
+                    if cast(List[float], item[1]["rewards"])
+                    else (
+                        sum(cast(List[float], item[1]["avg_rewards"]))
+                        / len(cast(List[float], item[1]["avg_rewards"]))
+                        if cast(List[float], item[1]["avg_rewards"])
+                        else float("-inf")
+                    )
+                ),
+                -len(cast(List[RunInfo], item[1]["runs"])),
+            )
+        )
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        for key in setting_keys:
+            table.add_column(
+                self._short_setting_key(key),
+                header_style="bold dim",
+                ratio=1,
+                no_wrap=True,
+            )
+        table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
+        table.add_column("=0", justify="right", width=5, header_style="bold red")
+        table.add_column("=1", justify="right", width=5, header_style="bold green")
+        table.add_column("mix", width=20, header_style="bold dim")
+        table.add_column("ids", ratio=1, header_style="bold dim")
+
+        for raw_values, group in rows:
+            rewards = cast(List[float], group["rewards"])
+            avg_rewards = cast(List[float], group["avg_rewards"])
+            avg_reward = (
+                (sum(rewards) / len(rewards))
+                if rewards
+                else ((sum(avg_rewards) / len(avg_rewards)) if avg_rewards else None)
+            )
+            total = len(rewards)
+            zero_count = next(
+                (
+                    count
+                    for label, count, _ in _reward_bucket_counts(rewards)
+                    if label == "=0"
+                ),
+                0,
+            )
+            one_count = next(
+                (
+                    count
+                    for label, count, _ in _reward_bucket_counts(rewards)
+                    if label == "=1"
+                ),
+                0,
+            )
+            run_ids = ", ".join(
+                run.run_id for run in cast(List[RunInfo], group["runs"])[:3]
+            )
+            hidden_ids = max(0, len(cast(List[RunInfo], group["runs"])) - 3)
+            if hidden_ids:
+                run_ids += f" +{hidden_ids}"
+
+            table.add_row(
+                *(
+                    Text(
+                        display_maps[key][raw_value],
+                        style=style_maps[key][raw_value] or "",
+                    )
+                    for key, raw_value in zip(setting_keys, raw_values)
+                ),
+                str(len(cast(List[RunInfo], group["runs"]))),
+                Text(
+                    _format_reward_value(avg_reward) if avg_reward is not None else "—",
+                    style=_reward_style(avg_reward)
+                    if avg_reward is not None
+                    else "dim",
+                ),
+                Text(
+                    f"{(zero_count / total):.0%}" if total else "—",
+                    style=self._share_style(
+                        (zero_count / total) if total else 0.0, False
+                    ),
+                ),
+                Text(
+                    f"{(one_count / total):.0%}" if total else "—",
+                    style=self._share_style(
+                        (one_count / total) if total else 0.0, True
+                    ),
+                ),
+                self._build_reward_mix_bar(rewards),
+                Text(run_ids or "—", style="dim"),
+            )
+
+        return table
+
+    def _build_value_legend(
+        self, legend_rows: List[Tuple[str, str, str]]
+    ) -> Group | Text:
+        if not legend_rows:
+            return Text()
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        table.add_column(
+            "Alias", style="bold", header_style="bold dim", width=18, no_wrap=True
+        )
+        table.add_column("Preview", header_style="bold dim", ratio=1)
+        for alias, preview, style in legend_rows:
+            table.add_row(Text(alias, style=style), Text(preview, style="dim"))
+        return Group(Text("Value legend", style="bold dim"), table)
+
+    def _build_comparison_content(
+        self, stats_by_path: Dict[Path, RunOverviewStats]
+    ) -> Group:
+        setting_keys, run_settings = _varying_run_setting_keys(self.runs)
+        display_maps, style_maps, legend_rows = self._build_setting_display_maps(
+            setting_keys, run_settings
+        )
+        summary = Text()
+        summary.append("Ablation summary\n", style="bold dim")
+        summary.append(self.model, style="bold")
+        summary.append("\n")
+        summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
+
+        items: List[Any] = [
+            summary,
+            Text(""),
+            self._build_axes_table(
+                setting_keys, run_settings, display_maps, style_maps
+            ),
+            Text(""),
+            Group(
+                Text("Outcome groups", style="bold dim"),
+                self._build_grouped_outcomes_table(
+                    stats_by_path,
+                    setting_keys,
+                    run_settings,
+                    display_maps,
+                    style_maps,
+                ),
+            ),
+        ]
+        legend = self._build_value_legend(legend_rows)
+        if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
+            items.extend([Text(""), legend])
+        return Group(*items)
+
+
 class BrowseRunsScreen(Screen):
     """Single-screen browser for environments, models, and runs."""
 
@@ -1320,6 +1985,7 @@ class BrowseRunsScreen(Screen):
         Binding("q", "quit", "Quit"),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
+        Binding("v", "compare_selected", "Compare"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1396,6 +2062,25 @@ class BrowseRunsScreen(Screen):
                 title="Copy Details",
             )
         )
+
+    def action_compare_selected(self) -> None:
+        tree = self.query_one("#run-browser-tree", Tree)
+        payload = getattr(getattr(tree, "cursor_node", None), "data", None)
+        if not isinstance(payload, BrowserNodeData):
+            return
+
+        env_id = payload.env_id
+        model = payload.model
+        if payload.kind == "run" and payload.run is not None:
+            env_id = payload.run.env_id
+            model = payload.run.model
+        elif payload.kind != "model":
+            return
+
+        runs = _sorted_runs(self.index.get(env_id, {}).get(model, []))
+        if not runs:
+            return
+        self.app.push_screen(CompareRunsScreen(env_id, model, runs))
 
     def _populate_tree(self, tree: Tree) -> Any:
         root = tree.root
@@ -1645,6 +2330,36 @@ class BrowseRunsScreen(Screen):
                 recent.append("\n")
             items.extend([Text(""), recent])
 
+            variation_rows, hidden_variations = _run_setting_variation_rows(runs)
+            if variation_rows:
+                items.extend(
+                    [
+                        Text(""),
+                        _build_settings_table(
+                            variation_rows,
+                            "Setting variations",
+                            value_header="Across runs",
+                        ),
+                    ]
+                )
+                if hidden_variations:
+                    items.extend(
+                        [
+                            Text(""),
+                            Text(
+                                f"{hidden_variations} more varied settings not shown",
+                                style="dim",
+                            ),
+                        ]
+                    )
+
+            items.extend(
+                [
+                    Text(""),
+                    Text("Press v to open compare mode for these runs", style="dim"),
+                ]
+            )
+
         return Group(*items)
 
     def _build_run_details(
@@ -1654,6 +2369,7 @@ class BrowseRunsScreen(Screen):
     ) -> Group:
         meta = run.load_metadata()
         rewards = stats.rewards if stats is not None else []
+        setting_rows = _run_setting_rows(meta)
 
         summary = Text()
         summary.append("Run\n", style="bold dim")
@@ -1687,7 +2403,7 @@ class BrowseRunsScreen(Screen):
             values = meta.get(key)
             if isinstance(values, dict):
                 for bucket, value in sorted(
-                    values.items(), key=lambda item: str(item[0])
+                    values.items(), key=lambda item: _int_like_sort_key(item[0])
                 ):
                     numeric = _numeric_reward(value)
                     if numeric is None:
@@ -1705,6 +2421,13 @@ class BrowseRunsScreen(Screen):
                 pass_rate_text.append(f"{value:.3f}", style=_reward_style(value))
 
         items: List[Any] = [summary, Text("")]
+        if setting_rows:
+            items.extend(
+                [
+                    _build_settings_table(setting_rows, "Run settings"),
+                    Text(""),
+                ]
+            )
         if stats is None:
             loading = Text("Loading rollout metrics…", style="dim")
             loading.append(
@@ -1884,7 +2607,7 @@ class ViewRunScreen(Screen):
         return Text("\n").join(lines)
 
     def _build_history_summary_text(
-        self, record: Dict[str, Any], *, include_hints: bool = True
+        self, record: Dict[str, Any], *, include_hints: bool = False
     ) -> Text:
         completion = record.get("completion")
         if not isinstance(completion, list) or not completion:
@@ -1907,15 +2630,6 @@ class ViewRunScreen(Screen):
             ("  ", ""),
             (f"{user_messages} user turns", "dim"),
         ]
-        if include_hints:
-            parts.extend(
-                [
-                    ("  ", ""),
-                    ("Enter toggles", "dim"),
-                    ("  ", ""),
-                    ("PgUp/PgDn scroll", "dim"),
-                ]
-            )
         return Text.assemble(*parts)
 
     def _build_header_metric_text(self) -> Text:
@@ -1924,12 +2638,12 @@ class ViewRunScreen(Screen):
 
         pass_at_k = meta.get("pass_at_k")
         if isinstance(pass_at_k, dict):
-            for key in sorted(pass_at_k.keys(), key=lambda item: str(item)):
+            for key in sorted(pass_at_k.keys(), key=_int_like_sort_key):
                 stats.append((f"pass@{key}", pass_at_k[key]))
 
         pass_all_k = meta.get("pass_all_k")
         if isinstance(pass_all_k, dict):
-            for key in sorted(pass_all_k.keys(), key=lambda item: str(item)):
+            for key in sorted(pass_all_k.keys(), key=_int_like_sort_key):
                 stats.append((f"pass-all@{key}", pass_all_k[key]))
 
         avg_metrics = meta.get("avg_metrics")
@@ -3324,13 +4038,23 @@ class VerifiersTUI(App):
         margin-right: 8;
     }
 
+    #compare-scroll {
+        padding: 0 1 0 2;
+        scrollbar-size-vertical: 2;
+        scrollbar-gutter: stable;
+    }
+
+    #compare-content {
+        margin-right: 8;
+    }
+
     .browser-columns {
         height: 1fr;
         layout: horizontal;
     }
 
     .browser-tree-panel {
-        width: 48;
+        width: 56;
         height: 1fr;
         layout: vertical;
     }
@@ -3349,6 +4073,10 @@ class VerifiersTUI(App):
     .browser-details-panel {
         height: 1fr;
         width: 1fr;
+    }
+
+    .compare-panel {
+        height: 1fr;
     }
     
     Footer {

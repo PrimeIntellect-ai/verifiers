@@ -10,6 +10,7 @@ from textual.widgets import Label, OptionList, Static, TextArea, Tree
 
 from verifiers.scripts.tui import (
     BrowseRunsScreen,
+    CompareRunsScreen,
     CopyScreen,
     LazyRunResults,
     MathDisplayBlock,
@@ -20,6 +21,7 @@ from verifiers.scripts.tui import (
     RunInfo,
     VerifiersTUI,
     ViewRunScreen,
+    _build_reward_distribution_table,
     _compute_run_overview_stats,
     _extract_numeric_metric_values,
     format_info_for_details,
@@ -250,6 +252,217 @@ def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
     assert "Distribution" in rendered
 
 
+def test_reward_distribution_uses_exact_zero_and_one_buckets() -> None:
+    rendered = _render_to_text(
+        _build_reward_distribution_table(
+            [0.0, 0.0, 0.1, 0.4, 0.8, 1.0],
+            "Rollout rewards",
+        )
+    )
+    lines = [line.strip() for line in rendered.splitlines()]
+
+    assert "=0" in rendered
+    assert "=1" in rendered
+    assert "0-<0.25" in rendered
+    assert "<0" not in lines
+    assert ">=1.0" not in lines
+
+
+def test_build_run_details_includes_run_settings(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "base_url": "https://api.example/v1",
+                "num_examples": 12,
+                "rollouts_per_example": 4,
+                "pass_threshold": 0.7,
+                "sampling_args": {
+                    "temperature": 0.2,
+                    "max_tokens": 512,
+                },
+                "env_args": {
+                    "difficulty": "hard",
+                    "split": "validation",
+                },
+                "state_columns": ["judge_response"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps({"reward": 1.0, "metrics": {}}) + "\n",
+        encoding="utf-8",
+    )
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+
+    rendered = _render_to_text(
+        BrowseRunsScreen({})._build_run_details(run, _compute_run_overview_stats(run))
+    )
+
+    assert "Run settings" in rendered
+    assert "endpoint" in rendered
+    assert "https://api.example/v1" in rendered
+    assert "examples" in rendered
+    assert "rollouts/example" in rendered
+    assert "pass threshold" in rendered
+    assert "sampling.temperature" in rendered
+    assert "sampling.max_tokens" in rendered
+    assert "env.difficulty" in rendered
+    assert "env.split" in rendered
+    assert "state columns" in rendered
+
+
+def test_model_details_include_setting_variations(tmp_path) -> None:
+    first_run_dir = tmp_path / "run-a"
+    first_run_dir.mkdir()
+    (first_run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.25,
+                "sampling_args": {"temperature": 0.2},
+                "env_args": {"split": "train"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    second_run_dir = tmp_path / "run-b"
+    second_run_dir.mkdir()
+    (second_run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.75,
+                "sampling_args": {"temperature": 0.8},
+                "env_args": {"split": "validation"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    first_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=first_run_dir,
+    )
+    second_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-2",
+        path=second_run_dir,
+    )
+
+    rendered = _render_to_text(
+        BrowseRunsScreen(
+            {"demo-env": {"openai/gpt-5": [first_run, second_run]}}
+        )._build_model_details("demo-env", "openai/gpt-5")
+    )
+
+    assert "Setting variations" in rendered
+    assert "sampling.temperature" in rendered
+    assert "env.split" in rendered
+    assert "0.2 (1 run)" in rendered
+    assert "0.8 (1 run)" in rendered
+    assert "train (1 run)" in rendered
+    assert "validation (1 run)" in rendered
+
+
+def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> None:
+    first_run_dir = tmp_path / "run-a"
+    first_run_dir.mkdir()
+    (first_run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.25,
+                "sampling_args": {"temperature": 0.2, "max_tokens": 256},
+                "env_args": {"split": "train"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (first_run_dir / "results.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"reward": 0.0, "metrics": {}}),
+                json.dumps({"reward": 0.5, "metrics": {}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    second_run_dir = tmp_path / "run-b"
+    second_run_dir.mkdir()
+    (second_run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.75,
+                "sampling_args": {"temperature": 0.8, "max_tokens": 512},
+                "env_args": {"split": "validation"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (second_run_dir / "results.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"reward": 1.0, "metrics": {}}),
+                json.dumps({"reward": 1.0, "metrics": {}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    first_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=first_run_dir,
+    )
+    second_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-2",
+        path=second_run_dir,
+    )
+    screen = CompareRunsScreen(
+        "demo-env",
+        "openai/gpt-5",
+        [first_run, second_run],
+    )
+    stats = {
+        first_run.path: _compute_run_overview_stats(first_run),
+        second_run.path: _compute_run_overview_stats(second_run),
+    }
+
+    rendered = _render_to_text(screen._build_comparison_content(stats), width=220)
+
+    assert "Ablation summary" in rendered
+    assert "Ablation axes" in rendered
+    assert "Outcome groups" in rendered
+    assert "temperature" in rendered
+    assert "max_tokens" in rendered
+    assert "split" in rendered
+    assert "run-1" in rendered
+    assert "run-2" in rendered
+    assert "=0" in rendered
+    assert "=1" in rendered
+    assert "█" in rendered
+    assert "50%" in rendered
+    assert "100%" in rendered
+
+
 def test_copy_screen_uses_custom_labels() -> None:
     copy_screen = CopyScreen(
         "run-1 reward 0.75",
@@ -333,6 +546,10 @@ async def test_browse_run_screen_moves_browser_shortcuts_to_footer(tmp_path) -> 
         assert bindings["enter"].description == "Open/toggle"
         assert bindings["space"].show is True
         assert bindings["space"].description == "Toggle folder"
+        assert any(
+            binding.key == "v" and binding.description == "Compare"
+            for binding in pilot.app.screen.BINDINGS
+        )
         assert "Enter opens runs  Space toggles folders  c copies" not in labels
 
 
@@ -367,6 +584,57 @@ async def test_browse_run_screen_offsets_details_content_from_scrollbar(
         assert scroll.styles.padding.right == 1
         assert scroll.styles.scrollbar_gutter == "stable"
         assert details.styles.margin.right == 8
+
+
+@pytest.mark.asyncio
+async def test_browse_run_screen_opens_compare_mode_for_model(tmp_path) -> None:
+    first_run_dir = tmp_path / "run-a"
+    first_run_dir.mkdir()
+    (first_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.25, "sampling_args": {"temperature": 0.2}}),
+        encoding="utf-8",
+    )
+    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    second_run_dir = tmp_path / "run-b"
+    second_run_dir.mkdir()
+    (second_run_dir / "metadata.json").write_text(
+        json.dumps({"avg_reward": 0.75, "sampling_args": {"temperature": 0.8}}),
+        encoding="utf-8",
+    )
+    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    first_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=first_run_dir,
+    )
+    second_run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-2",
+        path=second_run_dir,
+    )
+
+    async with VerifiersTUI(
+        {"demo-env": {"openai/gpt-5": [first_run, second_run]}}
+    ).run_test() as pilot:
+        await pilot.pause()
+
+        tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "run"
+
+        await pilot.press("left")
+        await pilot.pause()
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data.kind == "model"
+
+        await pilot.press("v")
+        await pilot.pause()
+
+        assert isinstance(pilot.app.screen, CompareRunsScreen)
 
 
 @pytest.mark.asyncio
@@ -949,6 +1217,73 @@ def test_history_section_data_includes_reasoning_traces(tmp_path) -> None:
         screen._render_history_section_copy_text(sections[1])
         == "1. assistant  final answer\n\n  Reasoning\n\n    step 1\n\n  final answer"
     )
+
+
+def test_view_run_screen_sorts_pass_metrics_numerically(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "pass_at_k": {"1": 0.1, "10": 1.0, "2": 0.2},
+                "pass_all_k": {"1": 0.01, "10": 0.1, "2": 0.02},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    rendered = screen._build_header_metric_text().plain
+    labels = [token for token in rendered.split() if token.startswith("pass")]
+
+    assert labels == [
+        "pass@1",
+        "pass@2",
+        "pass@10",
+        "pass-all@1",
+        "pass-all@2",
+        "pass-all@10",
+    ]
+
+
+def test_view_run_screen_history_summary_omits_inline_hints(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    rendered = screen._build_history_summary_text(
+        {
+            "completion": [
+                {"role": "assistant", "content": "first"},
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "second"},
+            ]
+        }
+    ).plain
+
+    assert "3 events" in rendered
+    assert "1 user turns" in rendered
+    assert "Enter toggles" not in rendered
+    assert "PgUp/PgDn scroll" not in rendered
 
 
 def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
