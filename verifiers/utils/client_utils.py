@@ -78,7 +78,7 @@ def _build_headers_and_api_key(
 def _build_http_client(
     config: ClientConfig, headers: dict[str, str]
 ) -> httpx.AsyncClient:
-    timeout = httpx.Timeout(config.timeout, connect=5.0)
+    timeout = httpx.Timeout(config.timeout, connect=config.connect_timeout)
     limits = httpx.Limits(
         max_connections=config.max_connections,
         max_keepalive_connections=config.max_keepalive_connections,
