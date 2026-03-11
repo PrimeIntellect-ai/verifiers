@@ -54,6 +54,7 @@ from textual.widgets._markdown import (
     MarkdownTH,
 )
 from textual.widgets._option_list import Option
+from textual.widgets._tabbed_content import ContentTabs
 from textual.widgets._tree import TreeNode
 
 from verifiers.utils.display_utils import format_numeric
@@ -1196,6 +1197,33 @@ class Panel(Container):
     """A rounded panel container."""
 
     pass
+
+
+class TabbedScrollPane(VerticalScroll):
+    """A VerticalScroll that switches sibling tabs with left/right arrows."""
+
+    BINDINGS = [
+        Binding("left", "prev_tab", "Prev tab", show=False),
+        Binding("right", "next_tab", "Next tab", show=False),
+    ]
+
+    def _get_tabbed_content(self) -> TabbedContent | None:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, TabbedContent):
+                return node
+            node = node.parent
+        return None
+
+    def action_prev_tab(self) -> None:
+        tc = self._get_tabbed_content()
+        if tc is not None:
+            tc.query_one(ContentTabs).action_previous_tab()
+
+    def action_next_tab(self) -> None:
+        tc = self._get_tabbed_content()
+        if tc is not None:
+            tc.query_one(ContentTabs).action_next_tab()
 
 
 # ----------------------------
@@ -2545,22 +2573,22 @@ class ViewRunScreen(Screen):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
                         with TabPane("Task", id="details-task"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="task-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Score", id="details-score"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="score-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Usage", id="details-usage"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="usage-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Info", id="details-info"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="info-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
@@ -3015,15 +3043,27 @@ class ViewRunScreen(Screen):
             section.collapsed = True
         self._focus_primary_content(prefer_expanded=False)
 
+    @on(TabbedContent.TabActivated, "#details-tabs")
+    def on_details_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Focus the scroll pane in the newly active details tab."""
+        for child in event.pane.children:
+            if isinstance(child, TabbedScrollPane):
+                child.focus()
+                break
+
     def _should_skip_focus(self, widget: Widget) -> bool:
         """Return True for widgets that should be skipped during tab cycling."""
         # Skip the scroll container itself — only its children should get focus.
         if widget.id == "completion-scroll":
             return True
-        # Skip widgets inside hidden (compact-layout) panels.
-        node: DOMNode | None = widget
+        # Skip the details tab bar — the TabbedScrollPane handles tab switching.
+        if isinstance(widget, ContentTabs):
+            return True
+        # Skip widgets inside hidden ancestors (compact-layout panels,
+        # inactive tab panes, etc.).
+        node: DOMNode | None = widget.parent
         while node is not None:
-            if isinstance(node, Panel) and not node.display:
+            if isinstance(node, Widget) and not node.display:
                 return True
             node = node.parent
         return False
