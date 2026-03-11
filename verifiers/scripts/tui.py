@@ -11,6 +11,9 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
+from markdown_it import MarkdownIt
+from mdit_py_plugins.amsmath import amsmath_plugin
+from mdit_py_plugins.dollarmath import dollarmath_plugin
 from rich import box
 from rich.console import Console, Group
 from rich.table import Table
@@ -18,8 +21,10 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.content import Content, Span
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
+from textual.style import Style
 from textual.theme import Theme
 from textual.widgets import (
     Collapsible,
@@ -33,9 +38,27 @@ from textual.widgets import (
     TextArea,
     Tree,
 )
+from textual.widgets._markdown import (
+    Markdown as BaseMarkdown,
+    MarkdownBlock,
+    MarkdownH1,
+    MarkdownH2,
+    MarkdownH3,
+    MarkdownH4,
+    MarkdownH5,
+    MarkdownH6,
+    MarkdownParagraph,
+    MarkdownTD,
+    MarkdownTH,
+)
 from textual.widgets._option_list import Option
 
 from verifiers.utils.display_utils import format_numeric
+
+try:
+    from pylatexenc.latex2text import LatexNodes2Text
+except ModuleNotFoundError:
+    LatexNodes2Text = None
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
@@ -259,8 +282,15 @@ def _stringify_message_content(content: Any) -> str:
         chunks: List[str] = []
         for item in content:
             if isinstance(item, dict):
-                if item.get("type") == "text":
+                item_type = item.get("type")
+                if item_type == "text":
                     chunks.append(str(item.get("text", "")))
+                elif item_type in {"input_audio", "audio"}:
+                    chunks.append("[audio]")
+                elif item_type in {"image", "image_url"}:
+                    chunks.append("[image]")
+                elif item_type in {"thinking", "redacted_thinking"}:
+                    continue
                 else:
                     chunks.append(_pretty_json_or_str(item))
             else:
@@ -269,6 +299,66 @@ def _stringify_message_content(content: Any) -> str:
     if isinstance(content, dict):
         return _pretty_json_or_str(content)
     return str(content)
+
+
+def _thinking_block_to_text(block: Any) -> str:
+    if isinstance(block, dict):
+        block_type = block.get("type")
+        if block_type == "thinking":
+            thinking = block.get("thinking")
+            return str(thinking).strip() if thinking else ""
+        if block_type == "redacted_thinking":
+            return "[reasoning redacted]"
+        return ""
+
+    block_type = getattr(block, "type", None)
+    if block_type == "thinking":
+        thinking = getattr(block, "thinking", None)
+        return str(thinking).strip() if thinking else ""
+    if block_type == "redacted_thinking":
+        return "[reasoning redacted]"
+    return ""
+
+
+def _stringify_message_reasoning(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+
+    parts: List[str] = []
+
+    def add_part(value: str) -> None:
+        text = value.strip()
+        if text and text not in parts:
+            parts.append(text)
+
+    reasoning_content = message.get("reasoning_content")
+    if isinstance(reasoning_content, str):
+        add_part(reasoning_content)
+
+    thinking_blocks = message.get("thinking_blocks")
+    if isinstance(thinking_blocks, list):
+        for block in thinking_blocks:
+            add_part(_thinking_block_to_text(block))
+
+    content = message.get("content")
+    if isinstance(content, list):
+        for item in content:
+            add_part(_thinking_block_to_text(item))
+
+    return "\n\n".join(parts)
+
+
+def _stringify_message(message: Any) -> str:
+    if not isinstance(message, dict):
+        return _stringify_message_content(message)
+
+    content = _stringify_message_content(message.get("content", "")).strip()
+    reasoning = _stringify_message_reasoning(message)
+    if reasoning and content:
+        return f"Reasoning\n{reasoning}\n\n{content}"
+    if reasoning:
+        return f"Reasoning\n{reasoning}"
+    return content
 
 
 def _parse_tool_calls(tool_calls: Any) -> List[Any]:
@@ -332,9 +422,12 @@ def _format_message_preview(message: Any) -> str:
     if not isinstance(message, dict):
         return ""
     content = _stringify_message_content(message.get("content", ""))
+    reasoning = _stringify_message_reasoning(message)
     tool_calls = _parse_tool_calls(message.get("tool_calls"))
     if content:
         return _truncate_preview(content, 56)
+    if reasoning:
+        return f"reasoning: {_truncate_preview(reasoning, 45)}"
     if tool_calls:
         first = tool_calls[0]
         if isinstance(first, dict):
@@ -410,7 +503,7 @@ def _tool_call_parts(tool_call: Any) -> Tuple[str, str, Optional[str]]:
 def _tool_output_preview(message: Any) -> str:
     if not isinstance(message, dict):
         return _truncate_preview(str(message), 44)
-    content = _stringify_message_content(message.get("content", ""))
+    content = _stringify_message(message)
     for line in content.splitlines():
         if line.strip():
             return _truncate_preview(line.strip(), 44)
@@ -442,6 +535,9 @@ def _raw_preview(value: Any, *, limit: int = 56) -> str:
         content = _stringify_message_content(value.get("content", ""))
         if content:
             return _truncate_preview(content, limit)
+        reasoning = _stringify_message_reasoning(value)
+        if reasoning:
+            return _truncate_preview(reasoning, limit)
         for key in ("text", "message", "error", "detail", "details", "type", "name"):
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
@@ -791,6 +887,7 @@ class HistorySectionData:
     collapsed: bool
     classes: str
     nested_sections: Tuple["HistorySectionData", ...] = ()
+    body_first: bool = True
 
 
 @dataclass(frozen=True)
@@ -821,6 +918,290 @@ def _text_to_plain(text: Text) -> str:
 
 def _indent_block(text: str, prefix: str) -> str:
     return "\n".join(f"{prefix}{line}" if line else "" for line in text.splitlines())
+
+
+# ----------------------------
+# Markdown rendering
+# ----------------------------
+_LATEX_TO_TEXT = LatexNodes2Text() if LatexNodes2Text is not None else None
+_LATEX_BEGIN_END_RE = re.compile(r"\\(?:begin|end)\{[^}]+\}")
+_LATEX_BRACED_SCRIPT_RE = re.compile(r"([_^])\{([^{}]+)\}")
+_LATEX_WRAPPER_RE = re.compile(
+    r"\\(?:mathrm|mathbf|mathit|mathsf|mathtt|operatorname|text)\{([^{}]+)\}"
+)
+_LATEX_FRACTION_RE = re.compile(r"\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}")
+_LATEX_SQRT_RE = re.compile(r"\\sqrt\{([^{}]+)\}")
+_LATEX_COMMAND_RE = re.compile(r"\\([A-Za-z]+|.)")
+_LATEX_COMMAND_REPLACEMENTS = {
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "delta": "δ",
+    "epsilon": "ε",
+    "theta": "θ",
+    "lambda": "λ",
+    "mu": "μ",
+    "pi": "π",
+    "sigma": "σ",
+    "phi": "φ",
+    "psi": "ψ",
+    "omega": "ω",
+    "Gamma": "Γ",
+    "Delta": "Δ",
+    "Theta": "Θ",
+    "Lambda": "Λ",
+    "Pi": "Π",
+    "Sigma": "Σ",
+    "Phi": "Φ",
+    "Psi": "Ψ",
+    "Omega": "Ω",
+    "cdot": "·",
+    "times": "×",
+    "pm": "±",
+    "neq": "!=",
+    "leq": "<=",
+    "geq": ">=",
+    "approx": "~",
+    "to": "->",
+    "rightarrow": "->",
+    "leftarrow": "<-",
+    "infty": "∞",
+    "ldots": "...",
+    "cdots": "...",
+    "sum": "sum",
+    "prod": "prod",
+    "log": "log",
+    "ln": "ln",
+    "exp": "exp",
+    "sin": "sin",
+    "cos": "cos",
+    "tan": "tan",
+    "|": "||",
+    ",": " ",
+    ";": " ",
+    "!": "",
+}
+
+
+def _replace_latex_groups(
+    text: str,
+    pattern: re.Pattern[str],
+    replacement: str | re.Pattern[str] | Any,
+) -> str:
+    while True:
+        updated = pattern.sub(replacement, text)
+        if updated == text:
+            return updated
+        text = updated
+
+
+def _replace_latex_fraction(match: re.Match[str]) -> str:
+    numerator, denominator = (part.strip() for part in match.groups())
+    if re.search(r"\s|[+\-*/]", numerator):
+        numerator = f"({numerator})"
+    if re.search(r"\s|[+\-*/]", denominator):
+        denominator = f"({denominator})"
+    return f"{numerator}/{denominator}"
+
+
+def _replace_latex_command(match: re.Match[str]) -> str:
+    command = match.group(1)
+    if command in _LATEX_COMMAND_REPLACEMENTS:
+        return _LATEX_COMMAND_REPLACEMENTS[command]
+    if len(command) == 1 and not command.isalpha():
+        return command
+    return command
+
+
+def _fallback_latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
+    text = _LATEX_BEGIN_END_RE.sub("", latex)
+    text = text.replace("&", " ")
+    text = text.replace("\\\\", "\n" if preserve_newlines else " ")
+    text = _replace_latex_groups(text, _LATEX_WRAPPER_RE, r"\1")
+    text = _replace_latex_groups(text, _LATEX_BRACED_SCRIPT_RE, r"\1\2")
+    text = _replace_latex_groups(text, _LATEX_FRACTION_RE, _replace_latex_fraction)
+    text = _replace_latex_groups(text, _LATEX_SQRT_RE, r"sqrt(\1)")
+    text = _LATEX_COMMAND_RE.sub(_replace_latex_command, text)
+    text = text.replace("{", "").replace("}", "").replace("~", " ")
+    if preserve_newlines:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        return "\n".join(line for line in lines if line)
+    return " ".join(text.split())
+
+
+def _latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
+    if _LATEX_TO_TEXT is not None:
+        return _LATEX_TO_TEXT.latex_to_text(latex)
+    return _fallback_latex_to_text(latex, preserve_newlines=preserve_newlines)
+
+
+def render_inline_math(latex: str) -> str:
+    return " ".join(_latex_to_text(latex, preserve_newlines=False).split())
+
+
+def render_block_math(latex: str) -> str:
+    return _latex_to_text(latex, preserve_newlines=True).strip()
+
+
+def make_math_parser() -> MarkdownIt:
+    parser = MarkdownIt("gfm-like")
+    parser.use(
+        dollarmath_plugin,
+        allow_space=False,
+        allow_digits=False,
+    )
+    parser.use(amsmath_plugin)
+    return parser
+
+
+class MathInlineMixin:
+    """Teach Textual's Markdown blocks how to render inline math tokens."""
+
+    def _token_to_content(self, token: Any) -> Content:
+        if token.children is None:
+            return Content("")
+
+        parts: List[str] = []
+        spans: List[Span] = []
+        style_stack: List[Tuple[Style | str, int]] = []
+        position = 0
+
+        def add_text(text: str) -> None:
+            nonlocal position
+            parts.append(text)
+            position += len(text)
+
+        def push_style(style: Style | str) -> None:
+            style_stack.append((style, position))
+
+        def pop_style() -> None:
+            if not style_stack:
+                return
+            style, start = style_stack.pop()
+            spans.append(Span(start, position, style))
+
+        for child in token.children:
+            child_type = child.type
+            attrs = child.attrs or {}
+
+            if child_type == "text":
+                add_text(re.sub(r"\s+", " ", child.content))
+            elif child_type == "hardbreak":
+                add_text("\n")
+            elif child_type == "softbreak":
+                add_text(" ")
+            elif child_type == "code_inline":
+                push_style(".code_inline")
+                add_text(child.content)
+                pop_style()
+            elif child_type in {"math_inline", "math_inline_double"}:
+                push_style("italic")
+                add_text(render_inline_math(child.content))
+                pop_style()
+            elif child_type == "em_open":
+                push_style(".em")
+            elif child_type == "strong_open":
+                push_style(".strong")
+            elif child_type == "s_open":
+                push_style(".s")
+            elif child_type == "link_open":
+                href = attrs.get("href", "")
+                action = f"link({href!r})"
+                push_style(Style.from_meta({"@click": action}))
+            elif child_type == "image":
+                href = attrs.get("src", "")
+                alt = attrs.get("alt", "")
+                action = f"link({href!r})"
+                push_style(Style.from_meta({"@click": action}))
+                add_text(" ")
+                if alt:
+                    add_text(f"({alt})")
+                if child.children is not None:
+                    for grandchild in child.children:
+                        add_text(grandchild.content)
+                pop_style()
+            elif child_type.endswith("_close"):
+                pop_style()
+
+        return Content("".join(parts), spans=spans)
+
+
+class MathParagraph(MathInlineMixin, MarkdownParagraph):
+    pass
+
+
+class MathH1(MathInlineMixin, MarkdownH1):
+    pass
+
+
+class MathH2(MathInlineMixin, MarkdownH2):
+    pass
+
+
+class MathH3(MathInlineMixin, MarkdownH3):
+    pass
+
+
+class MathH4(MathInlineMixin, MarkdownH4):
+    pass
+
+
+class MathH5(MathInlineMixin, MarkdownH5):
+    pass
+
+
+class MathH6(MathInlineMixin, MarkdownH6):
+    pass
+
+
+class MathTH(MathInlineMixin, MarkdownTH):
+    pass
+
+
+class MathTD(MathInlineMixin, MarkdownTD):
+    pass
+
+
+class MathDisplayBlock(MarkdownBlock):
+    DEFAULT_CSS = """
+    MathDisplayBlock {
+        width: 1fr;
+        height: auto;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        background: $boost;
+        border-left: outer $primary 60%;
+    }
+    """
+
+    def __init__(self, markdown: "MathMarkdown", token: Any):
+        super().__init__(markdown, token)
+        text = render_block_math(token.content)
+        if token.type == "math_block_label" and getattr(token, "info", ""):
+            text = f"[{token.info}]\n{text}"
+        self.set_content(Content(text))
+
+
+class MathMarkdown(BaseMarkdown):
+    BLOCKS = BaseMarkdown.BLOCKS | {
+        "paragraph_open": MathParagraph,
+        "h1": MathH1,
+        "h2": MathH2,
+        "h3": MathH3,
+        "h4": MathH4,
+        "h5": MathH5,
+        "h6": MathH6,
+        "th_open": MathTH,
+        "td_open": MathTD,
+    }
+
+    def __init__(self, markdown: str | None = None, **kwargs: Any) -> None:
+        super().__init__(markdown, parser_factory=make_math_parser, **kwargs)
+
+    def unhandled_token(self, token: Any) -> MarkdownBlock | None:
+        if token.type in {"math_block", "math_block_label", "amsmath"}:
+            return MathDisplayBlock(self, token)
+        return None
 
 
 # ----------------------------
@@ -1233,6 +1614,7 @@ class ViewRunScreen(Screen):
         Binding("e", "expand_all", "Expand all"),
         Binding("x", "collapse_all", "Collapse all"),
         Binding("s", "search", "Search"),
+        Binding("m", "toggle_markdown_math", "Toggle markdown"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1251,6 +1633,7 @@ class ViewRunScreen(Screen):
         self._highlight_column: Optional[str] = None
         self._highlight_timer = None
         self._previous_animation_level: Optional[AnimationLevel] = None
+        self._render_markdown_math = True
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
@@ -1636,12 +2019,20 @@ class ViewRunScreen(Screen):
                 continue
             role = str(message.get("role", ""))
             content = _stringify_message_content(message.get("content", ""))
+            reasoning = _stringify_message_reasoning(message)
             if role == "assistant":
                 out.append("assistant: ", style="bold")
             elif role == "tool":
                 out.append("tool result: ", style="bold dim")
             else:
                 out.append(f"{role}: ", style="bold dim")
+            if reasoning:
+                out.append("\n")
+                out.append("reasoning:\n", style="dim")
+                out.append(reasoning, style="dim")
+                out.append("\n")
+                if content:
+                    out.append("\n")
             out.append(content)
             out.append("\n")
 
@@ -1777,6 +2168,11 @@ class ViewRunScreen(Screen):
     def action_history_end(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
 
+    def action_toggle_markdown_math(self) -> None:
+        self._render_markdown_math = not self._render_markdown_math
+        if self.records and self.is_mounted:
+            self._rebuild_completion_sections(self.records[self.current_record_idx])
+
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
         if result is not None:
             self._set_highlight(result)
@@ -1857,6 +2253,25 @@ class ViewRunScreen(Screen):
             return
         self._set_current_record(int(event.option_id), focus_history=True)
 
+    def _reasoning_section_data(
+        self,
+        message: Dict[str, Any],
+        *,
+        collapsed: bool = True,
+    ) -> Tuple[HistorySectionData, ...]:
+        reasoning = _stringify_message_reasoning(message)
+        if not reasoning:
+            return ()
+        return (
+            HistorySectionData(
+                title="Reasoning",
+                body=reasoning,
+                column="completion",
+                collapsed=collapsed,
+                classes="history-section reasoning-section nested-section",
+            ),
+        )
+
     def _history_section_data(self, record: Dict[str, Any]) -> List[HistorySectionData]:
         sections: List[HistorySectionData] = [
             HistorySectionData(
@@ -1888,6 +2303,7 @@ class ViewRunScreen(Screen):
                 preview = _format_message_preview(message)
                 if preview:
                     title += f"  {preview}"
+                reasoning_sections = self._reasoning_section_data(message)
 
                 sections.append(
                     HistorySectionData(
@@ -1906,6 +2322,8 @@ class ViewRunScreen(Screen):
                                 else "history-section assistant-section"
                             )
                         ),
+                        nested_sections=reasoning_sections,
+                        body_first=not reasoning_sections,
                     )
                 )
                 continue
@@ -1934,7 +2352,7 @@ class ViewRunScreen(Screen):
                 if collapsed:
                     for output in tool_outputs:
                         output_text = (
-                            _stringify_message_content(output.get("content", ""))
+                            _stringify_message(output)
                             if isinstance(output, dict)
                             else str(output)
                         )
@@ -1942,7 +2360,9 @@ class ViewRunScreen(Screen):
                             collapsed = False
                             break
 
-            nested_sections: List[HistorySectionData] = []
+            nested_sections: List[HistorySectionData] = list(
+                self._reasoning_section_data(message)
+            )
             used_output_indexes: set[int] = set()
             for tool_idx, tool_call in enumerate(tool_calls, start=1):
                 name, arguments, call_id = _tool_call_parts(tool_call)
@@ -1964,7 +2384,7 @@ class ViewRunScreen(Screen):
                             break
 
                 output_text = (
-                    _stringify_message_content(matched_output.get("content", ""))
+                    _stringify_message(matched_output)
                     if isinstance(matched_output, dict)
                     else (str(matched_output) if matched_output is not None else "")
                 )
@@ -1993,7 +2413,7 @@ class ViewRunScreen(Screen):
                 if (extra_idx - 1) in used_output_indexes:
                     continue
                 output_text = (
-                    _stringify_message_content(output_message.get("content", ""))
+                    _stringify_message(output_message)
                     if isinstance(output_message, dict)
                     else str(output_message)
                 )
@@ -2018,6 +2438,7 @@ class ViewRunScreen(Screen):
                     collapsed=collapsed,
                     classes="history-section assistant-section",
                     nested_sections=tuple(nested_sections),
+                    body_first=False if nested_sections else True,
                 )
             )
 
@@ -2078,12 +2499,17 @@ class ViewRunScreen(Screen):
     ) -> str:
         indent = "  " * depth
         parts = [f"{indent}{section.title}"]
-        if section.body:
-            parts.append(_indent_block(section.body, f"{indent}  "))
-        parts.extend(
+        body = [_indent_block(section.body, f"{indent}  ")] if section.body else []
+        nested = [
             self._render_history_section_copy_text(child, depth=depth + 1)
             for child in section.nested_sections
-        )
+        ]
+        if section.body_first:
+            parts.extend(body)
+            parts.extend(nested)
+        else:
+            parts.extend(nested)
+            parts.extend(body)
         return "\n\n".join(part for part in parts if part)
 
     def _render_history_copy_text(self, sections: List[HistorySectionData]) -> str:
@@ -2277,28 +2703,54 @@ class ViewRunScreen(Screen):
             idx += 1
         return groups
 
+    def _section_matches_highlight(self, section: HistorySectionData) -> bool:
+        if not (self._highlight_regex and self._highlight_column == section.column):
+            return False
+        if self._highlight_regex.search(section.title) or self._highlight_regex.search(
+            section.body
+        ):
+            return True
+        return any(
+            self._section_matches_highlight(nested_section)
+            for nested_section in section.nested_sections
+        )
+
     def _make_section(self, section: HistorySectionData) -> Collapsible:
         collapsed = section.collapsed
-        if (
-            self._highlight_regex
-            and self._highlight_column == section.column
-            and self._highlight_regex.search(section.body)
-        ):
+        if self._section_matches_highlight(section):
             collapsed = False
-        children: List[Any] = []
-        if section.body or not section.nested_sections:
+        body_children: List[Any] = []
+        if section.body:
+            if not self._render_markdown_math or (
+                self._highlight_regex and self._highlight_column == section.column
+            ):
+                text = Text(section.body)
+                if self._highlight_regex and self._highlight_column == section.column:
+                    _stylize_matches(text, self._highlight_regex, "reverse")
+                content = Static(
+                    text,
+                    classes="section-body",
+                    markup=False,
+                )
+            else:
+                content = MathMarkdown(section.body, classes="section-body")
+            body_children.append(content)
+        elif not section.nested_sections:
             text = Text(section.body)
-            if self._highlight_regex and self._highlight_column == section.column:
-                _stylize_matches(text, self._highlight_regex, "reverse")
             content = Static(
                 text,
                 classes="section-body",
                 markup=False,
             )
-            children.append(content)
-        children.extend(
+            body_children.append(content)
+        nested_children = [
             self._make_section(nested_section)
             for nested_section in section.nested_sections
+        ]
+        children = (
+            [*body_children, *nested_children]
+            if section.body_first
+            else [*nested_children, *body_children]
         )
         return Collapsible(
             *children,

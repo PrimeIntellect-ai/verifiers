@@ -12,6 +12,9 @@ from verifiers.scripts.tui import (
     BrowseRunsScreen,
     CopyScreen,
     LazyRunResults,
+    MathDisplayBlock,
+    MathMarkdown,
+    MathParagraph,
     RolloutCopyScreen,
     RunBrowserTree,
     RunInfo,
@@ -20,6 +23,9 @@ from verifiers.scripts.tui import (
     _compute_run_overview_stats,
     _extract_numeric_metric_values,
     format_info_for_details,
+    make_math_parser,
+    render_block_math,
+    render_inline_math,
 )
 
 
@@ -135,6 +141,50 @@ def test_extract_numeric_metric_values_includes_metrics_and_reward_signals() -> 
         "format_reward": 1.0,
         "sub_llm_completion_tokens": 144.0,
     }
+
+
+def test_make_math_parser_parses_inline_block_and_amsmath_tokens() -> None:
+    parser = make_math_parser()
+    tokens = parser.parse(
+        r"""
+Inline $E = mc^2$
+
+$$
+\sum_x p(x)
+$$
+
+\begin{align}
+f(x) &= x^2 + 1 \\
+g(x) &= \frac{1}{1 + e^{-x}}
+\end{align}
+"""
+    )
+
+    inline_token = next(token for token in tokens if token.type == "inline")
+
+    assert any(child.type == "math_inline" for child in inline_token.children or [])
+    assert any(token.type == "math_block" for token in tokens)
+    assert any(token.type == "amsmath" for token in tokens)
+
+
+def test_latex_renderers_convert_common_math_to_plain_text() -> None:
+    inline = render_inline_math(r"\alpha = \frac{1}{2}")
+    block = render_block_math(
+        r"""
+\begin{align}
+f(x) &= x^2 + 1 \\
+g(x) &= \frac{1}{1 + e^{-x}}
+\end{align}
+""".strip()
+    )
+
+    assert "α" in inline
+    assert "1/2" in inline
+    assert "\\begin" not in block
+    assert "\\end" not in block
+    assert "\\frac" not in block
+    assert "f(x)" in block
+    assert "g(x)" in block
 
 
 def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
@@ -450,6 +500,81 @@ async def test_view_run_screen_ignores_metadata_rollout_count_when_file_is_short
         assert "only sample" in first_text
 
 
+@pytest.mark.asyncio
+async def test_view_run_screen_renders_history_sections_with_math_markdown(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "avg_reward": 0.5,
+                "num_examples": 1,
+                "rollouts_per_example": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "reward": 0.5,
+                "prompt": [
+                    {
+                        "role": "user",
+                        "content": "Solve $E = mc^2$",
+                    }
+                ],
+                "completion": [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Fraction $\\alpha = \\frac{1}{2}$\n\n$$\n\\sum_x p(x)\n$$"
+                        ),
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run = RunInfo(
+        env_id="demo-env",
+        model="openai/gpt-5",
+        run_id="run-1",
+        path=run_dir,
+    )
+    screen = ViewRunScreen(run)
+
+    async with ViewRunHarness(screen).run_test() as pilot:
+        await pilot.pause()
+        markdown_widgets = list(screen.query(MathMarkdown))
+        math_widget = next(
+            widget
+            for widget in markdown_widgets
+            if "\\alpha = \\frac{1}{2}" in widget.source
+        )
+        paragraphs = list(math_widget.query(MathParagraph))
+        display = math_widget.query_one(MathDisplayBlock)
+
+        assert any(
+            "α" in paragraph._content.plain and "1/2" in paragraph._content.plain
+            for paragraph in paragraphs
+        )
+        assert "sum" in display._content.plain
+        assert "\\" not in display._content.plain
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert not list(screen.query(MathMarkdown))
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert list(screen.query(MathMarkdown))
+
+
 def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) -> None:
     run_dir = tmp_path / "demo-run"
     run_dir.mkdir()
@@ -504,6 +629,105 @@ def test_format_prompt_or_completion_handles_non_dict_entries(tmp_path) -> None:
     )
 
     assert rendered.plain == "raw message\n\nassistant: structured message\n\n"
+
+
+def test_format_prompt_or_completion_includes_reasoning_traces(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    rendered = screen._format_prompt_or_completion(
+        [
+            {
+                "role": "assistant",
+                "reasoning_content": "hidden chain",
+                "content": "final answer",
+            },
+            {
+                "role": "assistant",
+                "thinking_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "tool plan",
+                        "signature": "sig_1",
+                    },
+                    {
+                        "type": "redacted_thinking",
+                        "data": "opaque",
+                    },
+                ],
+                "content": [
+                    {"type": "thinking", "thinking": "tool plan"},
+                    {"type": "text", "text": "after thought"},
+                ],
+            },
+        ]
+    )
+
+    assert "reasoning:\nhidden chain" in rendered.plain
+    assert "final answer" in rendered.plain
+    assert rendered.plain.count("tool plan") == 1
+    assert "[reasoning redacted]" in rendered.plain
+    assert "after thought" in rendered.plain
+
+
+def test_history_section_data_includes_reasoning_traces(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    sections = screen._history_section_data(
+        {
+            "prompt": [{"role": "user", "content": "start"}],
+            "completion": [
+                {
+                    "role": "assistant",
+                    "reasoning_content": "step 1",
+                    "content": "final answer",
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "step 2"},
+                        {"type": "text", "text": "another answer"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert sections[1].body == "final answer"
+    assert sections[1].body_first is False
+    assert sections[1].nested_sections[0].title == "Reasoning"
+    assert sections[1].nested_sections[0].body == "step 1"
+    assert sections[2].body == "another answer"
+    assert sections[2].body_first is False
+    assert sections[2].nested_sections[0].title == "Reasoning"
+    assert sections[2].nested_sections[0].body == "step 2"
+    assert (
+        screen._render_history_section_copy_text(sections[1])
+        == "1. assistant  final answer\n\n  Reasoning\n\n    step 1\n\n  final answer"
+    )
 
 
 def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
