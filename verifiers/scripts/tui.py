@@ -55,11 +55,6 @@ from textual.widgets._option_list import Option
 
 from verifiers.utils.display_utils import format_numeric
 
-try:
-    from pylatexenc.latex2text import LatexNodes2Text
-except ModuleNotFoundError:
-    LatexNodes2Text = None
-
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
 
@@ -1255,7 +1250,6 @@ def _indent_block(text: str, prefix: str) -> str:
 # ----------------------------
 # Markdown rendering
 # ----------------------------
-_LATEX_TO_TEXT = LatexNodes2Text() if LatexNodes2Text is not None else None
 _LATEX_BEGIN_END_RE = re.compile(r"\\(?:begin|end)\{[^}]+\}")
 _LATEX_BRACED_SCRIPT_RE = re.compile(r"([_^])\{([^{}]+)\}")
 _LATEX_WRAPPER_RE = re.compile(
@@ -1362,8 +1356,6 @@ def _fallback_latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
 
 
 def _latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
-    if _LATEX_TO_TEXT is not None:
-        return _LATEX_TO_TEXT.latex_to_text(latex)
     return _fallback_latex_to_text(latex, preserve_newlines=preserve_newlines)
 
 
