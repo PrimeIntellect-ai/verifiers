@@ -285,7 +285,7 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 prime env init new-env                       # Create environment
 prime env install new-env                    # Install environment
 prime eval run new-env -m gpt-4.1-mini -n 5  # Test environment
-prime eval tui                               # Browse eval results
+prime eval tui                               # Browse evals in the tree browser
 ```
 
 ### CLI Tools
@@ -296,7 +296,7 @@ prime eval tui                               # Browse eval results
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |
-| `prime eval tui` | Terminal UI for browsing eval results |
+| `prime eval tui` | Terminal UI for browsing evals and rollout details |
 | `prime rl run` | Launch Hosted Training |
 | `uv run prime-rl` | Launch prime-rl training |
 
