@@ -3,7 +3,10 @@ import logging
 import math
 import time
 import uuid
+from collections import Counter
 from typing import Any, cast
+
+import httpx
 
 from prime_sandboxes import (
     AdvancedConfigs,
@@ -17,22 +20,29 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
+    AssistantMessage,
     Messages,
     MessageType,
     Response,
     SamplingArgs,
     State,
     Tool,
+    ToolCall,
 )
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.worker_utils import get_free_port
 
 logger = logging.getLogger(__name__)
+
+
+class AgentError(vf.InfraError):
+    """Raised when the agent process fails or exits unexpectedly."""
 
 
 class CliAgentMonitorRubric(vf.Rubric):
@@ -182,28 +192,53 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 return self._tunnel.url
 
     async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that checks tunnel liveness and restarts a dead tunnel."""
+        """Background task that probes tunnel liveness and restarts on failure.
+
+        Sends an HTTP request through the tunnel every `interval` seconds.
+        Any response (even 404) confirms the tunnel is routing traffic.
+        After 3 consecutive failures the tunnel is torn down and recreated.
+        """
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         try:
             while True:
                 await asyncio.sleep(interval)
                 async with self._tunnel_lock:
-                    if self._tunnel is not None and not self._tunnel.is_running:
-                        frpc_output = "\n".join(self._tunnel.recent_output)
-                        logger.warning(
-                            f"Health monitor: tunnel dead. frpc output:\n{frpc_output}"
-                        )
-                        self._tunnel.sync_stop()
-                        interception_server = self._require_interception_server()
-                        port = interception_server.port
-                        if logger.isEnabledFor(logging.DEBUG):
-                            self._tunnel = Tunnel(
-                                local_port=port,
-                                log_level="debug",
+                    if self._tunnel is None or self._tunnel.url is None:
+                        continue
+
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            await client.get(
+                                f"{self._tunnel.url}/health",
+                                timeout=10.0,
                             )
-                        else:
-                            self._tunnel = Tunnel(local_port=port)
-                        url = await self._tunnel.start()
-                        logger.info(f"Health monitor: restarted tunnel url={url}")
+                        consecutive_failures = 0
+                    except Exception as e:
+                        consecutive_failures += 1
+                        logger.warning(
+                            f"Health monitor: tunnel probe failed "
+                            f"({consecutive_failures}/{max_consecutive_failures}): {e}"
+                        )
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning(
+                                f"Health monitor: tunnel unreachable after "
+                                f"{max_consecutive_failures} consecutive probes, "
+                                f"restarting"
+                            )
+                            self._tunnel.sync_stop()
+                            interception_server = self._require_interception_server()
+                            port = interception_server.port
+                            if logger.isEnabledFor(logging.DEBUG):
+                                self._tunnel = Tunnel(
+                                    local_port=port,
+                                    log_level="debug",
+                                )
+                            else:
+                                self._tunnel = Tunnel(local_port=port)
+                            url = await self._tunnel.start()
+                            consecutive_failures = 0
+                            logger.info(f"Health monitor: restarted tunnel url={url}")
         except asyncio.CancelledError:
             return
 
@@ -255,6 +290,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         await self.start_agent(state)
 
+        parts = [
+            f"Started  rollout_id={state['rollout_id']}",
+            f"example_id={state['example_id']}",
+        ]
+        logger.info(" | ".join(parts))
+
         return state
 
     async def get_docker_image(self, state: State) -> str:
@@ -265,9 +306,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
-        env_vars.setdefault("OPENAI_TIMEOUT", "600")
-        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
-        env_vars.setdefault("HTTPX_TIMEOUT", "600")
+        env_vars.setdefault("OPENAI_TIMEOUT", "1800")
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "1800")
+        env_vars.setdefault("HTTPX_TIMEOUT", "1800")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
@@ -281,10 +322,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
-            sandbox_id,
-            self.run_command,
-        )
+        self.logger.debug(f"Starting agent in sandbox {sandbox_id}")
+        try:
+            background_job: BackgroundJob = (
+                await self.sandbox_client.start_background_job(
+                    sandbox_id,
+                    self.run_command,
+                )
+            )
+        except Exception as e:
+            raise vf.SandboxError(f"Failed to start agent: {e}") from e
         state["background_job"] = background_job
         state["agent_start_time"] = time.time()
 
@@ -313,7 +360,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            logger.debug(f"Completion wait ended: {e}")
+            error = AgentError(f"Agent polling failed: {e}")
+            state["error"] = error
+            logger.error(f"Agent polling failed: {e}")
         finally:
             state["agent_completed"] = True
 
@@ -321,10 +370,25 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         while True:
-            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job
-            )
+            try:
+                status: BackgroundJobStatus = (
+                    await self.sandbox_client.get_background_job(
+                        sandbox_id, background_job
+                    )
+                )
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(
+                    f"Polling error ({consecutive_errors}/{max_consecutive_errors}): {e}"
+                )
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                await asyncio.sleep(2)
+                continue
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
@@ -582,7 +646,41 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
         """
-        pass
+        tool_counts: Counter[str] = Counter()
+        for step in state.get("trajectory", []):
+            for msg in step.get("completion", []):
+                if isinstance(msg, AssistantMessage) and isinstance(
+                    msg.tool_calls, list
+                ):
+                    for tc in msg.tool_calls:
+                        if isinstance(tc, ToolCall):
+                            tool_counts[tc.name] += 1
+
+        example_id = state.get("example_id")
+        num_turns = len(state.get("trajectory", []))
+        stop_condition = state.get("stop_condition", "unknown")
+        error = state.get("error")
+        error_info = (
+            f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
+        )
+        exit_code = state.get("agent_exit_code")
+        timed_out = state.get("agent_timed_out", False)
+        duration_s = state["timing"].get("total_ms", 0) / 1000
+        tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
+        parts = [
+            f"Finished rollout_id={state.get('rollout_id')}",
+            f"example_id={example_id}",
+            f"turns={num_turns}",
+            f"tools=[{tools_str}]",
+            f"stop={stop_condition}",
+            f"exit_code={exit_code}",
+            f"duration={print_time(duration_s)}",
+        ]
+        if timed_out:
+            parts.append("timed_out=True")
+        if error_info:
+            parts.append(f"error={error_info}")
+        logger.info(" | ".join(parts))
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
