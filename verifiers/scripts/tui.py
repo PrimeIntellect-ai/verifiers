@@ -19,7 +19,6 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
-from textual.message import Message
 from textual.dom import DOMNode
 from textual.widget import Widget
 from textual.app import App, ComposeResult
@@ -493,14 +492,6 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     return collapsed[: limit - 1].rstrip() + "…"
 
 
-def _count_result_records(path: Path) -> int:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return sum(1 for _ in handle)
-    except OSError:
-        return 0
-
-
 def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
     rewards: List[float] = []
     metric_values: Dict[str, List[float]] = defaultdict(list)
@@ -804,26 +795,6 @@ def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
         for label, count, style in bucket_counts
         if not (label in ("<0", ">1") and count == 0)
     ]
-
-
-def _build_reward_share_bars(values: List[float], bar_width: int = 16) -> Text:
-    if not values:
-        return Text("No rollout rewards", style="dim")
-
-    total = len(values)
-    out = Text()
-    for idx, (label, count, style) in enumerate(_reward_bucket_counts(values)):
-        share = count / total if total else 0.0
-        filled = round(max(0.0, min(1.0, share)) * bar_width)
-        if idx:
-            out.append("\n")
-        out.append(f"{label:<9}", style="dim")
-        if filled:
-            out.append("█" * filled, style=style)
-        if filled < bar_width:
-            out.append("░" * (bar_width - filled), style="dim")
-        out.append(f" {share:>4.0%}")
-    return out
 
 
 _COMPARE_ALIAS_PALETTE: Tuple[str, ...] = (
@@ -1236,100 +1207,6 @@ class TabbedScrollPane(VerticalScroll):
         tc = self._get_tabbed_content()
         if tc is not None:
             tc.query_one(ContentTabs).action_next_tab()
-
-
-class GroupByBar(Widget):
-    """Interactive bar of toggleable axis chips for group-by selection."""
-
-    can_focus = True
-
-    BINDINGS = [
-        Binding("left", "cursor_left", show=False),
-        Binding("right", "cursor_right", show=False),
-        Binding("space,enter", "toggle_chip", show=False),
-        Binding("escape,g", "blur_bar", show=False),
-    ]
-
-    class Changed(Message):
-        def __init__(self, active_keys: List[str]) -> None:
-            super().__init__()
-            self.active_keys = active_keys
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._all_keys: List[str] = []
-        self._active: set[str] = set()
-        self._cursor: int = 0
-        self._chip_ranges: List[Tuple[int, int]] = []
-        self._short_key_fn: Callable[[str], str] = lambda k: k
-
-    def set_keys(self, keys: List[str], short_key_fn: Callable[[str], str]) -> None:
-        self._all_keys = list(keys)
-        self._active: set[str] = set()
-        self._short_key_fn = short_key_fn
-        self._cursor = min(self._cursor, max(0, len(keys) - 1))
-        self.refresh()
-
-    def render(self) -> Text:
-        text = Text()
-        text.append("Group by  ", style="bold dim")
-        if not self._active:
-            text.append("(all)  ", style="dim italic")
-        self._chip_ranges = []
-        for idx, key in enumerate(self._all_keys):
-            if idx:
-                text.append("  ")
-            start = len(text.plain)
-            label = self._short_key_fn(key)
-            is_active = key in self._active
-            is_cursor = idx == self._cursor and self.has_focus
-            if is_active:
-                style = "bold reverse" if is_cursor else "bold"
-                text.append(f"[{label}]", style=style)
-            else:
-                style = "dim reverse" if is_cursor else "dim"
-                text.append(f" {label} ", style=style)
-            end = len(text.plain)
-            self._chip_ranges.append((start, end))
-        if not self._all_keys:
-            text.append("(no varying axes)", style="dim")
-        return text
-
-    def on_click(self, event: events.Click) -> None:
-        x = event.x
-        for idx, (start, end) in enumerate(self._chip_ranges):
-            if start <= x < end:
-                self._cursor = idx
-                self.focus()
-                self._toggle(idx)
-                return
-
-    def action_cursor_left(self) -> None:
-        if self._all_keys:
-            self._cursor = (self._cursor - 1) % len(self._all_keys)
-            self.refresh()
-
-    def action_cursor_right(self) -> None:
-        if self._all_keys:
-            self._cursor = (self._cursor + 1) % len(self._all_keys)
-            self.refresh()
-
-    def action_toggle_chip(self) -> None:
-        if self._all_keys:
-            self._toggle(self._cursor)
-
-    def action_blur_bar(self) -> None:
-        self.screen.focus_next()
-
-    def _toggle(self, idx: int) -> None:
-        key = self._all_keys[idx]
-        if key in self._active:
-            self._active.discard(key)
-        else:
-            self._active.add(key)
-        self.refresh()
-        active_ordered = [k for k in self._all_keys if k in self._active]
-        self.post_message(self.Changed(active_ordered))
 
 
 # ----------------------------
@@ -1843,13 +1720,6 @@ class CompareRunsScreen(Screen):
             self._group_mode = False
             self._grouped_by_key = None
             self._refresh_outcomes()
-
-    def _render_comparison_content(self) -> Any:
-        if not self._stats_by_path:
-            return Text("Loading comparison…", style="dim")
-        header = self._build_comparison_header()
-        outcomes = self._build_comparison_outcomes()
-        return Group(header, outcomes)
 
     def _short_setting_key(self, key: str) -> str:
         replacements = {
@@ -2881,9 +2751,7 @@ class ViewRunScreen(Screen):
 
         return Text("\n").join(lines)
 
-    def _build_history_summary_text(
-        self, record: Dict[str, Any], *, include_hints: bool = False
-    ) -> Text:
+    def _build_history_summary_text(self, record: Dict[str, Any]) -> Text:
         completion = record.get("completion")
         if not isinstance(completion, list) or not completion:
             return Text()
@@ -3023,14 +2891,6 @@ class ViewRunScreen(Screen):
         total = "?" if self._record_count is None else str(self._record_count)
         return f"{self.current_record_idx + 1}/{total}"
 
-    def _set_rollout_option_count(self, count: int) -> None:
-        rollout_list = self.query_one("#rollout-list", OptionList)
-        while rollout_list.option_count < count:
-            idx = rollout_list.option_count
-            rollout_list.add_option(
-                Option(self._build_rollout_prompt(idx), id=str(idx))
-            )
-
     def _hydrate_rollout_option(self, index: int) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
         if not (0 <= index < rollout_list.option_count):
@@ -3039,26 +2899,6 @@ class ViewRunScreen(Screen):
             index,
             self._build_rollout_prompt(index, self.records[index]),
         )
-
-    @work(
-        thread=True,
-        group="rollout-count",
-        exclusive=True,
-        exit_on_error=False,
-    )
-    def _load_record_count(self) -> None:
-        count = _count_result_records(self.run.path / "results.jsonl")
-        self.app.call_from_thread(self._finish_loading_record_count, count)
-
-    def _finish_loading_record_count(self, count: int) -> None:
-        self._record_count = count
-        if not self.is_mounted:
-            return
-        self._set_rollout_option_count(count)
-        rollout_list = self.query_one("#rollout-list", OptionList)
-        rollout_list.highlighted = self.current_record_idx
-        rollout_list.scroll_to_highlight()
-        self.update_display()
 
     def _populate_rollout_list(self) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
@@ -3299,18 +3139,24 @@ class ViewRunScreen(Screen):
     def action_focus_next_pane(self) -> None:
         starting = self.focused
         self.focus_next()
+        first_candidate = self.focused
         while self.focused is not None and self.focused is not starting:
             if not self._should_skip_focus(self.focused):
                 break
             self.focus_next()
+            if self.focused is first_candidate:
+                break
 
     def action_focus_prev_pane(self) -> None:
         starting = self.focused
         self.focus_previous()
+        first_candidate = self.focused
         while self.focused is not None and self.focused is not starting:
             if not self._should_skip_focus(self.focused):
                 break
             self.focus_previous()
+            if self.focused is first_candidate:
+                break
 
     def action_history_page_up(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
@@ -3773,9 +3619,7 @@ class ViewRunScreen(Screen):
             f"Current Rollout\n{self._build_rollout_prompt(self.current_record_idx, record).plain}",
         ]
 
-        history_summary = _text_to_plain(
-            self._build_history_summary_text(record, include_hints=False)
-        )
+        history_summary = _text_to_plain(self._build_history_summary_text(record))
         history_text = self._render_history_copy_text(history_sections)
         history_parts = ["Completion History"]
         if history_summary:
@@ -4770,7 +4614,6 @@ class RolloutCopyScreen(ModalScreen[None]):
     ):
         super().__init__()
         self._items = items
-        self._items_by_key = {item.key: item for item in items}
         self._title = title
         self._current_idx = 0
         if start_key:
@@ -4897,7 +4740,6 @@ class CompactCopyScreen(ModalScreen[None]):
     ):
         super().__init__()
         self._items = items
-        self._items_by_key = {item.key: item for item in items}
         self._title = title
         self._current_idx = 0
         if start_key:
