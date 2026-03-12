@@ -3818,11 +3818,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Count only main-model trajectory steps, not sub-LLM steps."""
         if self.max_turns <= 0:
             return False
-        main_id = state.get("trajectory_id")
-        count = sum(
-            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
-        )
-        return count >= self.max_turns
+        return self._main_turn_count(state) >= self.max_turns
 
     @vf.stop
     async def no_tools_called(self, state: State) -> bool:
