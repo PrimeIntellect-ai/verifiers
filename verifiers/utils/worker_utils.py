@@ -49,8 +49,12 @@ _reserved_sockets: list[socket.socket] = []
 def _make_reusable_socket(port: int = 0) -> socket.socket:
     """Create a TCP socket with SO_REUSEADDR bound to the given port."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("localhost", port))
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("localhost", port))
+    except OSError:
+        s.close()
+        raise
     return s
 
 
