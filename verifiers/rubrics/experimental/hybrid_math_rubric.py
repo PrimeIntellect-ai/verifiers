@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
 from typing import Any
 
 from math_verify import parse, verify
@@ -126,10 +126,12 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
     DEFAULT_JUDGE_SAMPLING_ARGS = {}
     DEFAULT_USE_JUDGE_FALLBACK = False
     DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS = 5
+    
+    # Remote scoring
     DEFAULT_SCORE_REMOTELY = False
     DEFAULT_ANSWER_PATH = "/app/answer.txt"
     DEFAULT_SOLUTION_PATH = "/app/solution.txt"
-    DEFAULT_SCORER_DEST_DIR = "/app"
+    DEFAULT_SCORER_PATH = "/app/score.py"
     DEFAULT_SCORER_TIMEOUT = 30
 
     def __init__(
@@ -144,7 +146,7 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
         score_remotely: bool = DEFAULT_SCORE_REMOTELY,
         answer_path: str = DEFAULT_ANSWER_PATH,
         solution_path: str = DEFAULT_SOLUTION_PATH,
-        scorer_dest_dir: str = DEFAULT_SCORER_DEST_DIR,
+        scorer_path: str = DEFAULT_SCORER_PATH,
         scorer_timeout: int = DEFAULT_SCORER_TIMEOUT,
         sandbox_client_max_workers: int = 10,
         sandbox_client_max_connections: int = 100,
@@ -166,12 +168,12 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
 
         self.math_verify_timeout_seconds = math_verify_timeout_seconds
         self.score_remotely = score_remotely
-        self.solution_filename = Path(solution_path).name
+        self.solution_path = solution_path
+        self.scorer_path = scorer_path
         self.score_script = MATH_VERIFY_SCORER_SCRIPT_TEMPLATE.format(
             answer_path=answer_path,
             solution_path=solution_path,
         )
-        self.scorer_dest_dir = scorer_dest_dir
         self.scorer_timeout = scorer_timeout
         self.judge_model = judge_model if use_judge_fallback else None
         self.class_objects["judge_model"] = self.judge_model
@@ -201,15 +203,14 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
         if state.get("error") or state.get("sandbox_error"):
             return 0.0
 
-        files = {self.solution_filename: answer, "score.py": self.score_script}
         try:
-            await self.upload_bundle(
-                sandbox_id, file_map=files, dest_dir=self.scorer_dest_dir
+            await asyncio.gather(
+                self.upload_content(sandbox_id, answer, self.solution_path),
+                self.upload_content(sandbox_id, self.score_script, self.scorer_path),
             )
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                f"python3 {self.scorer_dest_dir}/score.py",
-                working_dir=self.scorer_dest_dir,
+                f"python3 {self.scorer_path}",
                 timeout=self.scorer_timeout,
             )
             if result.exit_code == 0 and result.stdout.strip():
