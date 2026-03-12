@@ -162,18 +162,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             self._tunnel = None
 
         if self._tunnel is None:
-                interception_server = self._require_interception_server()
-                port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
-                    self._tunnel = Tunnel(
-                        local_port=port,
-                        log_level="debug",
-                    )
-                else:
-                    self._tunnel = Tunnel(local_port=port)
-                url = await self._tunnel.start()
-                logger.debug(f"Prime Tunnel started: {url}")
-
+            interception_server = self._require_interception_server()
+            port = interception_server.port
+            if logger.isEnabledFor(logging.DEBUG):
+                self._tunnel = Tunnel(
+                    local_port=port,
+                    log_level="debug",
+                )
+            else:
+                self._tunnel = Tunnel(local_port=port)
+            url = await self._tunnel.start()
+            logger.debug(f"Prime Tunnel started: {url}")
             return url
         else:
             assert self._tunnel.url is not None, "Tunnel started but URL is None"
@@ -307,25 +306,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
-        consecutive_errors = 0
-        max_consecutive_errors = 5
         while True:
-            try:
-                status: BackgroundJobStatus = (
-                    await self.sandbox_client.get_background_job(
-                        sandbox_id, background_job
-                    )
-                )
-                consecutive_errors = 0
-            except Exception as e:
-                consecutive_errors += 1
-                logger.warning(
-                    f"Polling error ({consecutive_errors}/{max_consecutive_errors}): {e}"
-                )
-                if consecutive_errors >= max_consecutive_errors:
-                    raise
-                await asyncio.sleep(2)
-                continue
+            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
+                sandbox_id, background_job
+            )
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
