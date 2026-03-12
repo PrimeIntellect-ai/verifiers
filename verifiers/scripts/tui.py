@@ -2647,8 +2647,6 @@ class ViewRunScreen(Screen):
         self.records = LazyRunResults(run)
         self._record_count = self.records.count_hint()
         self.current_record_idx = 0
-        self._prompt_lines: List[str] = []
-        self._completion_lines: List[str] = []
         self._prompt_text: str = ""
         self._completion_text: str = ""
         self._highlight_regex: Optional[re.Pattern] = None
@@ -3045,8 +3043,6 @@ class ViewRunScreen(Screen):
 
         self._prompt_text = prompt_text.plain
         self._completion_text = completion_text.plain
-        self._prompt_lines = prompt_text.plain.split("\n")
-        self._completion_lines = completion_text.plain.split("\n")
 
     def update_display(self, *, focus_history: bool = False) -> None:
         if not self.records:
