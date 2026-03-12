@@ -3547,7 +3547,9 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> str:
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
-            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+            self.active_rollouts[rollout_id]["current_turn"] = self._main_turn_count(
+                state
+            )
 
         rid = rollout_id or "?"
         main_turn = self._main_turn_count(state)
