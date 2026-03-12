@@ -2868,8 +2868,8 @@ class ViewRunScreen(Screen):
         self._previous_animation_level = app.animation_level
         app.animation_level = "none"
         self._populate_rollout_list()
-        self.query_one("#rollout-list", OptionList).focus()
         self.update_display()
+        self.call_after_refresh(self._focus_primary_content)
         self._update_responsive_layout(self.size.width)
 
     def on_resize(self, event: events.Resize) -> None:
