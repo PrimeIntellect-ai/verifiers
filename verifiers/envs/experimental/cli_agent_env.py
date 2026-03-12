@@ -98,6 +98,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
+        keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -112,6 +113,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
         )
+        self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.timeout_seconds = timeout_seconds
@@ -594,11 +596,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
-        """Cleanup sandbox after rollout."""
+        """Cleanup sandbox after rollout.
+
+        When `keep_sandbox_for_scoring` is True, sandbox deletion is deferred
+        (e.g. when the rubric needs sandbox access during scoring).
+        """
         await self.post_rollout(state)
-        sandbox_id = state.get("sandbox_id")
-        if sandbox_id:
-            await self.delete_sandbox(sandbox_id)
+        if not self.keep_sandbox_for_scoring:
+            sandbox_id = state.get("sandbox_id")
+            if sandbox_id:
+                await self.delete_sandbox(sandbox_id)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

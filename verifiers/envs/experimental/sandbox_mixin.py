@@ -4,7 +4,6 @@ import logging
 import os
 import tarfile
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -30,32 +29,6 @@ if _httpx_log_level:
     httpx_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
     httpcore_logger = logging.getLogger("httpcore")
     httpcore_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
-
-
-@dataclass
-class SandboxScorer:
-    """A scorer that runs a script inside the sandbox after rollout.
-
-    The scorer uploads ``script`` and any ``files`` to ``dest_dir`` via bundle,
-    then executes the script.  The last line of stdout is parsed as a float and
-    stored in ``state[state_key]``.
-
-    Attributes:
-        name: Human-readable name for logging.
-        script: Python source code to execute in the sandbox.
-        state_key: Key under which the score is stored in state.
-        dest_dir: Directory inside the sandbox to upload files to.
-        files_fn: Callable that receives ``state`` and returns a dict of
-            ``{filename: content}`` to upload alongside the script.
-        timeout: Timeout in seconds for the scorer script execution.
-    """
-
-    name: str
-    script: str
-    state_key: str
-    dest_dir: str = "/app"
-    files_fn: Callable[[dict], dict[str, str]] = field(default_factory=lambda: lambda state: {})
-    timeout: int = 30
 
 
 class SandboxCreationError(vf.SandboxError): ...
@@ -90,7 +63,6 @@ class SandboxMixin:
     active_sandboxes: set[str]
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
-    sandbox_scorers: list[SandboxScorer]
     with_retry: Callable
 
     def init_sandbox_client(
@@ -108,8 +80,6 @@ class SandboxMixin:
         """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
-        if not hasattr(self, "sandbox_scorers"):
-            self.sandbox_scorers = []
         self.sandbox_wait_for_creation_max_attempts = (
             sandbox_wait_for_creation_max_attempts
         )
@@ -328,48 +298,6 @@ class SandboxMixin:
                 f"Bundle extract failed in {sandbox_id} (exit={result.exit_code}): "
                 f"{(result.stderr or '')[:200]}"
             )
-
-    def add_sandbox_scorer(self, scorer: SandboxScorer) -> None:
-        """Register a sandbox scorer to run during post_rollout."""
-        self.sandbox_scorers.append(scorer)
-
-    async def run_sandbox_scorers(self, state: dict[str, Any]) -> None:
-        """Run all registered sandbox scorers sequentially.
-
-        Each scorer uploads its files + script to the sandbox via bundle, runs
-        the script, and stores the result in ``state[scorer.state_key]``.
-        Skipped when there is no sandbox or an error occurred.
-        """
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return
-        if state.get("error") or state.get("sandbox_error"):
-            return
-
-        for scorer in self.sandbox_scorers:
-            try:
-                files = scorer.files_fn(state)
-                files["score.py"] = scorer.script
-                await self.upload_bundle(sandbox_id, file_map=files, dest_dir=scorer.dest_dir)
-                result = await self.sandbox_client.execute_command(
-                    sandbox_id,
-                    f"python3 {scorer.dest_dir}/score.py",
-                    working_dir=scorer.dest_dir,
-                    timeout=scorer.timeout,
-                )
-                if result.exit_code == 0 and result.stdout.strip():
-                    state[scorer.state_key] = float(result.stdout.strip().splitlines()[-1])
-                else:
-                    stderr = (result.stderr or "")[:200]
-                    self.logger.warning(
-                        f"Sandbox scorer '{scorer.name}' failed (exit={result.exit_code}): {stderr}"
-                    )
-                    state[scorer.state_key] = 0.0
-            except Exception as e:
-                self.logger.warning(
-                    f"Sandbox scorer '{scorer.name}' error: {type(e).__name__}: {e}"
-                )
-                state[scorer.state_key] = 0.0
 
     def teardown_sandboxes(self):
         """Delete all active sandboxes using sync client.

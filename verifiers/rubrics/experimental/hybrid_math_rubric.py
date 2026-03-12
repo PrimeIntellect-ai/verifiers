@@ -1,5 +1,11 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
 from math_verify import parse, verify
 from openai import AsyncOpenAI
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
 from verifiers.utils.data_utils import extract_boxed_answer
 
@@ -80,9 +86,38 @@ Here is your task.
 Analysis step by step and Final Judgment:
 """
 
+MATH_VERIFY_SCORER_SCRIPT_TEMPLATE = """\
+from pathlib import Path
+from math_verify import parse, verify
 
-class HybridMathRubric(vf.JudgeRubric):
-    """Runs rule-based math verification first, with optional LLM judge fallback."""
+solution = Path("{solution_path}").read_text()
+answer = Path("{answer_path}").read_text()
+
+if not answer:
+    print(0.0)
+else:
+    try:
+        score = float(
+            verify(
+                parse(solution, parsing_timeout=5),
+                parse(answer, parsing_timeout=5),
+                timeout_seconds=5,
+            )
+        )
+        print(score)
+    except BaseException:
+        print(0.0)
+"""
+
+
+class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
+    """Runs rule-based math verification first, with optional LLM judge fallback.
+
+    When ``score_remotely=True``, math verification runs inside the sandbox
+    created by the environment.  The env must set ``keep_sandbox_for_scoring=True``
+    so the sandbox stays alive through scoring; this rubric deletes it in its
+    ``@vf.cleanup`` handler.
+    """
 
     DEFAULT_JUDGE_PARSER = None
     DEFAULT_JUDGE_MODEL = "gpt-5-nano"
@@ -92,6 +127,10 @@ class HybridMathRubric(vf.JudgeRubric):
     DEFAULT_USE_JUDGE_FALLBACK = False
     DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS = 5
     DEFAULT_SCORE_REMOTELY = False
+    DEFAULT_ANSWER_PATH = "/app/answer.txt"
+    DEFAULT_SOLUTION_PATH = "/app/solution.txt"
+    DEFAULT_SCORER_DEST_DIR = "/app"
+    DEFAULT_SCORER_TIMEOUT = 30
 
     def __init__(
         self,
@@ -103,6 +142,13 @@ class HybridMathRubric(vf.JudgeRubric):
         judge_sampling_args: dict | None = None,
         math_verify_timeout_seconds: float = DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS,
         score_remotely: bool = DEFAULT_SCORE_REMOTELY,
+        answer_path: str = DEFAULT_ANSWER_PATH,
+        solution_path: str = DEFAULT_SOLUTION_PATH,
+        scorer_dest_dir: str = DEFAULT_SCORER_DEST_DIR,
+        scorer_timeout: int = DEFAULT_SCORER_TIMEOUT,
+        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
         judge_sampling_args = judge_sampling_args or self.DEFAULT_JUDGE_SAMPLING_ARGS
@@ -120,24 +166,75 @@ class HybridMathRubric(vf.JudgeRubric):
 
         self.math_verify_timeout_seconds = math_verify_timeout_seconds
         self.score_remotely = score_remotely
+        self.solution_filename = Path(solution_path).name
+        self.score_script = MATH_VERIFY_SCORER_SCRIPT_TEMPLATE.format(
+            answer_path=answer_path,
+            solution_path=solution_path,
+        )
+        self.scorer_dest_dir = scorer_dest_dir
+        self.scorer_timeout = scorer_timeout
         self.judge_model = judge_model if use_judge_fallback else None
         self.class_objects["judge_model"] = self.judge_model
 
-    async def math_verify_score(
+        if self.score_remotely:
+            self.logger.warning(
+                "score_remotely=True: expects a sandbox to be kept alive for scoring "
+                f"(keep_sandbox_for_scoring=True) and the agent's solution written to {answer_path}"
+            )
+            self.init_sandbox_client(
+                sandbox_client_max_workers=sandbox_client_max_workers,
+                sandbox_client_max_connections=sandbox_client_max_connections,
+                sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
+            )
+
+    async def remote_math_verify_score(
+        self, answer: str, state: dict[str, Any]
+    ) -> float:
+        """Run math_verify inside the sandbox and return the score.
+
+        Uploads ground trust answer and the scorer script, then compares with the
+        agent's answer which is expected to be in
+        """
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            return 0.0
+        if state.get("error") or state.get("sandbox_error"):
+            return 0.0
+
+        files = {self.solution_filename: answer, "score.py": self.score_script}
+        try:
+            await self.upload_bundle(
+                sandbox_id, file_map=files, dest_dir=self.scorer_dest_dir
+            )
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                f"python3 {self.scorer_dest_dir}/score.py",
+                working_dir=self.scorer_dest_dir,
+                timeout=self.scorer_timeout,
+            )
+            if result.exit_code == 0 and result.stdout.strip():
+                score = float(result.stdout.strip().splitlines()[-1])
+                self.logger.debug(f"Remote math_verify scorer scored {score=}")
+                return score
+            else:
+                stderr = (result.stderr or "")[:200]
+                self.logger.warning(
+                    f"Remote math_verify scorer failed (exit={result.exit_code}): {stderr}"
+                )
+                return 0.0
+        except Exception as e:
+            self.logger.warning(
+                f"Remote math_verify scorer error: {type(e).__name__}: {e}"
+            )
+        return 0.0
+
+    async def local_math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
     ) -> float:
-        """Basic rule-based math verification.
-
-        When ``score_remotely=True``, assumes the score was already computed by
-        a sandbox scorer and stored in ``state["math_verify_score"]``.
-        """
-        if self.score_remotely:
-            return float(state.get("math_verify_score", 0.0))
-
         response = self.parser.parse_answer(completion) or ""
         if response == "":
-            math_verify_score = 0.0
             self.logger.debug("Parsed response is empty.")
+            return 0.0
         else:
             try:
                 math_verify_score = float(
@@ -154,10 +251,25 @@ class HybridMathRubric(vf.JudgeRubric):
                     )
                 )
             except BaseException as e:
-                self.logger.warning(
-                    f"Math verification failed with {type(e).__name__}: {e!r}"
-                )
-                math_verify_score = 0.0
+                self.logger.warning(f"Math verification failed: {e!r}")
+                return 0.0
+        state["math_verify_score"] = math_verify_score
+        return math_verify_score
+
+    async def math_verify_score(
+        self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
+    ) -> float:
+        """Basic rule-based math verification.
+
+        When ``score_remotely=True``, runs the scorer script inside the
+        sandbox that the environment created.
+        """
+        if self.score_remotely:
+            math_verify_score = await self.remote_math_verify_score(answer, state)
+        else:
+            math_verify_score = await self.local_math_verify_score(
+                completion, answer, state
+            )
         state["math_verify_score"] = math_verify_score
         return math_verify_score
 
@@ -190,3 +302,12 @@ class HybridMathRubric(vf.JudgeRubric):
         return float(
             state.get("math_verify_score", 0.0) or state.get("judge_score", 0.0)
         )
+
+    @vf.cleanup
+    async def cleanup_sandbox(self, state: vf.State) -> None:
+        """Delete the sandbox after scoring is complete."""
+        if not self.score_remotely:
+            return
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            await self.delete_sandbox(sandbox_id)
