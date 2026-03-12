@@ -88,6 +88,14 @@ from verifiers.workers.client.env_client import EnvClient
 _MESSAGE_TYPE_UNSET = object()
 
 
+def _copy_state_for_scoring(state: "State") -> "State":
+    """Shallow-copy a state, duplicating only the mutable objects that scoring writes to."""
+    copied = State(state)
+    copied["timing"] = dict(state.get("timing", {}))
+    copied["trajectory"] = [dict(t) for t in state.get("trajectory", [])]
+    return copied
+
+
 class Environment(ABC):
     """
     Base class for all environments.
@@ -750,8 +758,10 @@ class Environment(ABC):
             )
 
         state = await maybe_retry(run_rollout_attempt, max_retries=effective_rollout_retries)()
+        rollout_state = _copy_state_for_scoring(state)
 
         async def run_scoring_attempt() -> State:
+            state = _copy_state_for_scoring(rollout_state)
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
@@ -818,8 +828,11 @@ class Environment(ABC):
             return await asyncio.gather(*rollout_tasks)
 
         group_states = await maybe_retry(run_group_rollout_attempt, max_retries=effective_rollout_retries)()
+        rollout_group_states = [_copy_state_for_scoring(s) for s in group_states]
 
         async def run_group_scoring_attempt() -> list[State]:
+            group_states = [_copy_state_for_scoring(s) for s in rollout_group_states]
+
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:

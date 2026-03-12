@@ -619,6 +619,116 @@ class TestMaybeRetry:
         assert "InfraError" == error_info["error"]
 
 
+class RetryScoringRubric(Rubric):
+    """Rubric with a reward function that fails first N times with configurable error type."""
+
+    def __init__(self, fail_count: int, error_type: type = vf.InfraError, **kwargs):
+        self.fail_count = fail_count
+        self.error_type = error_type
+        self.scoring_call_count = 0
+
+        def failing_reward(completion, answer, **kw):
+            self.scoring_call_count += 1
+            if self.scoring_call_count <= self.fail_count:
+                raise self.error_type(
+                    f"Simulated scoring failure {self.scoring_call_count}/{self.fail_count}"
+                )
+            return 1.0
+
+        super().__init__(funcs=[failing_reward], **kwargs)
+
+
+class TestScoringRetry:
+    """Test cases for scoring retry functionality."""
+
+    @pytest.mark.asyncio
+    async def test_scoring_retry_after_retryable_error(self, mock_client, make_input):
+        """Scoring retries on InfraError, succeeds after failures."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        rubric = RetryScoringRubric(fail_count=2)
+        env = SimpleEnvironment(
+            dataset=dataset, parser=Parser(), rubric=rubric, score_rollouts=True
+        )
+
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs, client=mock_client, model="test-model", max_scoring_retries=3
+        )
+
+        assert rubric.scoring_call_count == 3  # 2 failures + 1 success
+        assert outputs["outputs"][0].get("error") is None
+        assert outputs["outputs"][0]["reward"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_scoring_no_retry_after_non_retryable_error(
+        self, mock_client, make_input
+    ):
+        """Non-retryable error type is NOT retried during scoring."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        rubric = RetryScoringRubric(fail_count=10, error_type=vf.ToolError)
+        env = SimpleEnvironment(
+            dataset=dataset, parser=Parser(), rubric=rubric, score_rollouts=True
+        )
+
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs, client=mock_client, model="test-model", max_scoring_retries=3
+        )
+
+        assert rubric.scoring_call_count == 1  # No retries for non-retryable error
+        # ToolError is stored in state but not retried; reward falls back to 0.0
+        assert outputs["outputs"][0]["reward"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_scoring_error_after_retries_exhausted(
+        self, mock_client, make_input
+    ):
+        """Error persists after all scoring retries exhausted."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        rubric = RetryScoringRubric(fail_count=10)
+        env = SimpleEnvironment(
+            dataset=dataset, parser=Parser(), rubric=rubric, score_rollouts=True
+        )
+
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs, client=mock_client, model="test-model", max_scoring_retries=2
+        )
+
+        assert rubric.scoring_call_count == 3  # 1 initial + 2 retries
+        assert outputs["outputs"][0].get("error") is not None
+        assert outputs["outputs"][0]["error"]["error"] == "InfraError"
+
+    @pytest.mark.asyncio
+    async def test_independent_rollout_and_scoring_retries(
+        self, mock_client, make_input
+    ):
+        """Rollout and scoring use independent retry counts."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        rubric = RetryScoringRubric(fail_count=1)
+        env = RetryCounterEnv(
+            fail_count=1,
+            dataset=dataset,
+            parser=Parser(),
+            rubric=rubric,
+            score_rollouts=True,
+        )
+
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs,
+            client=mock_client,
+            model="test-model",
+            max_rollout_retries=2,
+            max_scoring_retries=2,
+        )
+
+        assert env.call_counts[0] == 2  # 1 failure + 1 success for rollout
+        assert rubric.scoring_call_count == 2  # 1 failure + 1 success for scoring
+        assert outputs["outputs"][0].get("error") is None
+        assert outputs["outputs"][0]["reward"] == 1.0
+
+
 class TestEmptyModelResponseErrors:
     """Test cases for empty and invalid model response error handling."""
 
