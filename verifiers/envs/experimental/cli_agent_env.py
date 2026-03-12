@@ -145,7 +145,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
-        self._tunnel_monitor_task: asyncio.Task | None = None
         self._interception_server = InterceptionServer(port=interception_port)
 
     def _require_interception_server(self) -> InterceptionServer:
@@ -177,70 +176,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 url = await self._tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
 
-                # Lazily start health monitor on first tunnel creation
-                if (
-                    self._tunnel_monitor_task is None
-                    or self._tunnel_monitor_task.done()
-                ):
-                    self._tunnel_monitor_task = asyncio.create_task(
-                        self._tunnel_health_monitor()
-                    )
-
                 return url
             else:
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
-
-    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that probes tunnel liveness and restarts on failure.
-
-        Sends an HTTP request through the tunnel every `interval` seconds.
-        Any response (even 404) confirms the tunnel is routing traffic.
-        After 3 consecutive failures the tunnel is torn down and recreated.
-        """
-        consecutive_failures = 0
-        max_consecutive_failures = 3
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                async with self._tunnel_lock:
-                    if self._tunnel is None or self._tunnel.url is None:
-                        continue
-
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            await client.get(
-                                f"{self._tunnel.url}/health",
-                                timeout=10.0,
-                            )
-                        consecutive_failures = 0
-                    except Exception as e:
-                        consecutive_failures += 1
-                        logger.warning(
-                            f"Health monitor: tunnel probe failed "
-                            f"({consecutive_failures}/{max_consecutive_failures}): {e}"
-                        )
-                        if consecutive_failures >= max_consecutive_failures:
-                            logger.warning(
-                                f"Health monitor: tunnel unreachable after "
-                                f"{max_consecutive_failures} consecutive probes, "
-                                f"restarting"
-                            )
-                            self._tunnel.sync_stop()
-                            interception_server = self._require_interception_server()
-                            port = interception_server.port
-                            if logger.isEnabledFor(logging.DEBUG):
-                                self._tunnel = Tunnel(
-                                    local_port=port,
-                                    log_level="debug",
-                                )
-                            else:
-                                self._tunnel = Tunnel(local_port=port)
-                            url = await self._tunnel.start()
-                            consecutive_failures = 0
-                            logger.info(f"Health monitor: restarted tunnel url={url}")
-        except asyncio.CancelledError:
-            return
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -589,17 +528,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
-        if (
-            self._tunnel_monitor_task is not None
-            and not self._tunnel_monitor_task.done()
-        ):
-            self._tunnel_monitor_task.cancel()
-            try:
-                await self._tunnel_monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._tunnel_monitor_task = None
-
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
