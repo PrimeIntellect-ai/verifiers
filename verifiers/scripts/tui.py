@@ -3393,6 +3393,8 @@ class ViewRunScreen(Screen):
         if self._highlight_timer is not None:
             self._highlight_timer.stop()
             self._highlight_timer = None
+
+        had_highlight = self._highlight_regex is not None
         self._highlight_regex = None
         self._highlight_column = None
 
@@ -3405,9 +3407,23 @@ class ViewRunScreen(Screen):
             self._highlight_timer = self.set_timer(
                 3.0, lambda: self._set_highlight(None)
             )
-
-        if repaint and self.is_mounted:
-            self.update_display()
+            # New search: full rebuild to expand matching sections.
+            if repaint and self.is_mounted:
+                self.update_display()
+        elif had_highlight and self.is_mounted:
+            # Clear highlight styling in place — update Static body widgets
+            # with unstyled text, no layout change.
+            record = self.records[self.current_record_idx]
+            section_data = self._history_section_data(record)
+            body_entries = self._collect_section_bodies(section_data)
+            container = self.query_one("#completion-scroll", VerticalScroll)
+            body_widgets = list(container.query(".section-body"))
+            for i, widget in enumerate(body_widgets):
+                if i >= len(body_entries):
+                    break
+                if isinstance(widget, Static) and not isinstance(widget, MathMarkdown):
+                    body, _column = body_entries[i]
+                    widget.update(Text(body))
 
     def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
         return Text.assemble(
@@ -3664,8 +3680,23 @@ class ViewRunScreen(Screen):
         container = self.query_one("#completion-scroll", VerticalScroll)
         container.remove_children()
         container.mount(*self._completion_sections(record))
-        if focus_history:
+        if self._highlight_regex:
+            self.call_after_refresh(self._scroll_to_first_match)
+        elif focus_history:
             self.call_after_refresh(self._focus_primary_content)
+
+    def _scroll_to_first_match(self) -> None:
+        """Scroll to the first expanded section that matches the highlight."""
+        container = self.query_one("#completion-scroll", VerticalScroll)
+        for section in container.query(Collapsible):
+            if not section.collapsed:
+                section.scroll_visible(animate=False)
+                title_widget = next(iter(section.children), None)
+                if title_widget is not None and getattr(
+                    title_widget, "can_focus", False
+                ):
+                    title_widget.focus()
+                return
 
     def _detail_copy_sections(
         self, record: Dict[str, Any]
