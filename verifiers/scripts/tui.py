@@ -3339,25 +3339,29 @@ class ViewRunScreen(Screen):
             _stylize_matches(text, self._highlight_regex, "reverse")
         return Static(text, classes="section-body", markup=False)
 
-    def _collect_section_bodies(self, sections: List[HistorySectionData]) -> List[str]:
-        """Flatten all section bodies (including nested) in DOM order."""
-        bodies: List[str] = []
+    def _collect_section_bodies(
+        self, sections: List[HistorySectionData]
+    ) -> List[Tuple[str, str]]:
+        """Flatten all section (body, column) pairs in DOM order."""
+        result: List[Tuple[str, str]] = []
         for section in sections:
-            parent_body = (
-                [section.body] if section.body or not section.nested_sections else []
+            parent = (
+                [(section.body, section.column)]
+                if section.body or not section.nested_sections
+                else []
             )
-            nested_bodies = [
-                nested.body
-                for nested in section.nested_sections
-                if nested.body or not nested.nested_sections
+            nested = [
+                (n.body, n.column)
+                for n in section.nested_sections
+                if n.body or not n.nested_sections
             ]
             if section.body_first:
-                bodies.extend(parent_body)
-                bodies.extend(nested_bodies)
+                result.extend(parent)
+                result.extend(nested)
             else:
-                bodies.extend(nested_bodies)
-                bodies.extend(parent_body)
-        return bodies
+                result.extend(nested)
+                result.extend(parent)
+        return result
 
     def action_toggle_markdown_math(self) -> None:
         self._render_markdown_math = not self._render_markdown_math
@@ -3367,14 +3371,15 @@ class ViewRunScreen(Screen):
         # state, scroll position, and focus.
         record = self.records[self.current_record_idx]
         section_data = self._history_section_data(record)
-        bodies = self._collect_section_bodies(section_data)
+        body_entries = self._collect_section_bodies(section_data)
         container = self.query_one("#completion-scroll", VerticalScroll)
         body_widgets = list(container.query(".section-body"))
         for i, body_widget in enumerate(body_widgets):
             parent = body_widget.parent
-            if not isinstance(parent, Widget) or i >= len(bodies):
+            if not isinstance(parent, Widget) or i >= len(body_entries):
                 continue
-            replacement = self._make_body_widget(bodies[i], "completion")
+            body, column = body_entries[i]
+            replacement = self._make_body_widget(body, column)
             parent.mount(replacement, after=body_widget)
             body_widget.remove()
 
