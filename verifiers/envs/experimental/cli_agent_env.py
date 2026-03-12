@@ -144,7 +144,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_port = interception_port
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
-        self._tunnel_lock = asyncio.Lock()
         self._interception_server = InterceptionServer(port=interception_port)
 
     def _require_interception_server(self) -> InterceptionServer:
@@ -154,16 +153,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
-        async with self._tunnel_lock:
-            if self._tunnel is not None and not self._tunnel.is_running:
-                frpc_output = "\n".join(self._tunnel.recent_output)
-                logger.warning(
-                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
-                )
-                self._tunnel.sync_stop()
-                self._tunnel = None
+        if self._tunnel is not None and not self._tunnel.is_running:
+            frpc_output = "\n".join(self._tunnel.recent_output)
+            logger.warning(
+                f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
+            )
+            self._tunnel.sync_stop()
+            self._tunnel = None
 
-            if self._tunnel is None:
+        if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
                 if logger.isEnabledFor(logging.DEBUG):
@@ -176,10 +174,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 url = await self._tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
 
-                return url
-            else:
-                assert self._tunnel.url is not None, "Tunnel started but URL is None"
-                return self._tunnel.url
+            return url
+        else:
+            assert self._tunnel.url is not None, "Tunnel started but URL is None"
+            return self._tunnel.url
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -528,15 +526,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
-        async with self._tunnel_lock:
-            if self._tunnel is not None:
-                try:
-                    self._tunnel.sync_stop()
-                    logger.debug("Prime Tunnel stopped")
-                except Exception as e:
-                    logger.warning(f"Error stopping Prime Tunnel: {e}")
-                finally:
-                    self._tunnel = None
+        if self._tunnel is not None:
+            try:
+                self._tunnel.sync_stop()
+                logger.debug("Prime Tunnel stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping Prime Tunnel: {e}")
+            finally:
+                self._tunnel = None
         if self._interception_server is not None:
             await self._interception_server.stop()
 
