@@ -190,7 +190,8 @@ from pathlib import Path
 from math_verify import parse, verify
 
 solution = Path("{solution_path}").read_text()
-answer = Path("{answer_path}").read_text()
+answer_file = Path("{answer_path}")
+answer = answer_file.read_text() if answer_file.exists() else ""
 
 if not answer:
     print(0.0)
