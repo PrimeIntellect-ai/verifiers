@@ -1046,9 +1046,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     def _single_string_field(self, schema: dict[str, Any]) -> str | None:
         if not isinstance(schema, dict):
             return None
-        props = schema.get("properties")
-        if not isinstance(props, dict):
+        _props = schema.get("properties")
+        if not isinstance(_props, dict):
             return None
+        props: dict[str, Any] = _props
         required = schema.get("required")
         if isinstance(required, list):
             required_str = [name for name in required if isinstance(name, str)]
