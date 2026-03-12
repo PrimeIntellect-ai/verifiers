@@ -14,6 +14,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_await
 
 
+
 class Rubric:
     """
     Rubric class for reward functions.
@@ -148,6 +149,9 @@ class Rubric:
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
                 ans = float(await maybe_await(func, **merged))
+            except vf.Error as e:
+                state["error"] = e
+                ans = 0.0
             except Exception as e:
                 self.logger.error(
                     f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
@@ -157,6 +161,9 @@ class Rubric:
             allowed = {k: v for k, v in merged.items() if k in sig.parameters}
             try:
                 ans = float(await maybe_await(func, **allowed))
+            except vf.Error as e:
+                state["error"] = e
+                ans = 0.0
             except Exception as e:
                 self.logger.error(
                     f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
@@ -207,6 +214,10 @@ class Rubric:
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
                 ans = await maybe_await(func, **merged)
+            except vf.Error as e:
+                for state in states:
+                    state["error"] = e
+                ans = [0.0] * len(states)
             except Exception as e:
                 self.logger.error(
                     f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
@@ -216,6 +227,10 @@ class Rubric:
             allowed = {k: v for k, v in merged.items() if k in sig.parameters}
             try:
                 ans = await maybe_await(func, **allowed)
+            except vf.Error as e:
+                for state in states:
+                    state["error"] = e
+                ans = [0.0] * len(states)
             except Exception as e:
                 self.logger.error(
                     f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
