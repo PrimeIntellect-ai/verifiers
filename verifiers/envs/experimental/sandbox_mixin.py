@@ -253,6 +253,28 @@ class SandboxMixin:
         finally:
             Path(local_path).unlink(missing_ok=True)
 
+    async def read_file(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        timeout: int = 10,
+    ) -> str | None:
+        """Read a file from the sandbox, returning its contents or None on failure."""
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                f"cat {remote_path}",
+                timeout=timeout,
+            )
+            if result.exit_code == 0:
+                return result.stdout or ""
+            return None
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read {remote_path} from {sandbox_id}: {type(e).__name__}: {e}"
+            )
+            return None
+
     async def upload_bundle(
         self,
         sandbox_id: str,
