@@ -77,6 +77,11 @@ class RubricGroup(Rubric):
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
 
+    async def cleanup(self, state: State):
+        """Run cleanup for all rubrics in the group."""
+        for rubric in self.rubrics:
+            await rubric.cleanup(state)
+
     async def score_group(self, states: list[State]):
         """
         Evaluate all reward functions in-place for a group of rollouts.
