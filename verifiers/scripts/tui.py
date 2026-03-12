@@ -606,7 +606,7 @@ def _compact_json_or_str(value: Any) -> str:
 def _format_setting_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float)):
         return _format_compact_metric(value)
     if isinstance(value, str):
         return value
