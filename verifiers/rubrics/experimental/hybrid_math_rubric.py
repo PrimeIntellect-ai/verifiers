@@ -99,8 +99,8 @@ else:
     try:
         score = float(
             verify(
-                parse(solution, parsing_timeout=5),
-                parse(answer, parsing_timeout=5),
+                parse("\\\\boxed{{" + solution + "}}", parsing_timeout=5),
+                parse("\\\\boxed{{" + answer + "}}", parsing_timeout=5),
                 timeout_seconds=5,
             )
         )
@@ -125,8 +125,7 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
     DEFAULT_JUDGE_PROMPT = DEFAULT_JUDGE_PROMPT
     DEFAULT_JUDGE_SAMPLING_ARGS = {}
     DEFAULT_USE_JUDGE_FALLBACK = False
-    DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS = 5
-    
+
     # Remote scoring
     DEFAULT_SCORE_REMOTELY = False
     DEFAULT_ANSWER_PATH = "/app/answer.txt"
@@ -142,7 +141,6 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
         judge_model: str = DEFAULT_JUDGE_MODEL,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
         judge_sampling_args: dict | None = None,
-        math_verify_timeout_seconds: float = DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS,
         score_remotely: bool = DEFAULT_SCORE_REMOTELY,
         answer_path: str = DEFAULT_ANSWER_PATH,
         solution_path: str = DEFAULT_SOLUTION_PATH,
@@ -166,7 +164,6 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
         self.add_reward_func(self.judge_score, weight=0)
         self.add_reward_func(self.correct_answer, weight=1)
 
-        self.math_verify_timeout_seconds = math_verify_timeout_seconds
         self.score_remotely = score_remotely
         self.solution_path = solution_path
         self.scorer_path = scorer_path
@@ -227,35 +224,29 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
             self.logger.warning(
                 f"Remote math_verify scorer error: {type(e).__name__}: {e}"
             )
-        return 0.0
+            return 0.0
 
     async def local_math_verify_score(
-        self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
+        self, completion: vf.Messages, answer: str, **kwargs
     ) -> float:
         response = self.parser.parse_answer(completion) or ""
         if response == "":
             self.logger.debug("Parsed response is empty.")
             return 0.0
-        else:
-            try:
-                math_verify_score = float(
-                    verify(
-                        parse(
-                            f"\\boxed{{{answer}}}",
-                            parsing_timeout=int(self.math_verify_timeout_seconds),
-                        ),
-                        parse(
-                            f"\\boxed{{{response}}}",
-                            parsing_timeout=int(self.math_verify_timeout_seconds),
-                        ),
-                        timeout_seconds=int(self.math_verify_timeout_seconds),
-                    )
+
+        try:
+            score = float(
+                verify(
+                    parse(f"\\boxed{{{answer}}}", parsing_timeout=5),
+                    parse(f"\\boxed{{{response}}}", parsing_timeout=5),
+                    timeout_seconds=5,
                 )
-            except BaseException as e:
-                self.logger.warning(f"Math verification failed: {e!r}")
-                return 0.0
-        state["math_verify_score"] = math_verify_score
-        return math_verify_score
+            )
+            self.logger.debug(f"Local math_verify scored {score=}")
+            return score
+        except BaseException as e:
+            self.logger.warning(f"Math verification failed: {e!r}")
+            return 0.0
 
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
@@ -268,9 +259,7 @@ class HybridMathRubric(SandboxMixin, vf.JudgeRubric):
         if self.score_remotely:
             math_verify_score = await self.remote_math_verify_score(answer, state)
         else:
-            math_verify_score = await self.local_math_verify_score(
-                completion, answer, state
-            )
+            math_verify_score = await self.local_math_verify_score(completion, answer)
         state["math_verify_score"] = math_verify_score
         return math_verify_score
 
