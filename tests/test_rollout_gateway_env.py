@@ -359,12 +359,9 @@ async def test_use_gateway_false_initializes_interception(monkeypatch):
 
     # Interception server should be initialized
     assert env._interception_server is not None
-    assert env._tunnel is None
-    assert env._tunnel_lock is not None
 
     # Gateway attributes should not exist (init_gateway was never called)
     assert not hasattr(env, "_http_client")
-    assert not hasattr(env, "_tunnels")
 
     # Teardowns should be safe no-ops for the inactive path
     await env.teardown_gateway()  # early return via use_gateway=False

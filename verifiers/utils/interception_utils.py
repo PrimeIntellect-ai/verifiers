@@ -410,9 +410,10 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
                 }
             )
 
+        serialized_content = _response_content_to_text(message.content)
         message_payload: dict[str, Any] = {
             "role": "assistant",
-            "content": _response_content_to_text(message.content),
+            "content": serialized_content,
         }
         if tool_calls:
             message_payload["tool_calls"] = tool_calls

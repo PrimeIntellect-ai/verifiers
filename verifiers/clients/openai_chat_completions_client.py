@@ -1,5 +1,6 @@
 import base64
 import functools
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
@@ -60,6 +61,8 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+
+logger = logging.getLogger(__name__)
 
 
 def handle_openai_overlong_prompt(func):
@@ -218,6 +221,25 @@ class OpenAIChatCompletionsClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
+        has_reasoning = any(
+            isinstance(m, AssistantMessage) and m.reasoning_content is not None
+            for m in messages
+        )
+        # MITO-DEBUG: log content tails of assistant messages with tool calls
+        # to detect trailing whitespace differences before vLLM tokenization
+        asst_tails = []
+        for m in messages:
+            if isinstance(m, AssistantMessage) and m.tool_calls:
+                c = m.content
+                if isinstance(c, str) and c:
+                    asst_tails.append(repr(c[-40:]))
+        logger.info(
+            "[MITO-DEBUG] to_native_prompt msg_count=%d has_reasoning_content=%s "
+            "assistant_with_tc_content_tails=%s",
+            len(messages),
+            has_reasoning,
+            asst_tails[-3:] if asst_tails else "[]",
+        )
         return [from_chat_message(message) for message in messages], {}
 
     async def to_native_tool(self, tool: Tool) -> OpenAITool:
@@ -287,6 +309,25 @@ class OpenAIChatCompletionsClient(
                 messages=prompt,
                 **normalize_sampling_args(sampling_args),
             )
+
+        # MITO-DEBUG: log vLLM response token info
+        prompt_token_ids = getattr(response, "prompt_token_ids", None)
+        if prompt_token_ids is not None:
+            completion_ids = (
+                getattr(response.choices[0], "token_ids", None)
+                if response.choices
+                else None
+            )
+            comp_len = len(completion_ids) if completion_ids is not None else -1
+            logger.info(
+                "[MITO-DEBUG] get_native_response prompt_token_ids_len=%d completion_ids_len=%d "
+                "first20=%s last20=%s",
+                len(prompt_token_ids),
+                comp_len,
+                prompt_token_ids[:20],
+                prompt_token_ids[-20:],
+            )
+
         return response
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
@@ -470,6 +511,13 @@ class OpenAIChatCompletionsClient(
                 )  # [seq_len, layers, topk]
             else:
                 routed_experts = None
+            logger.info(
+                "[MITO-DEBUG] parse_tokens prompt_ids_len=%d completion_ids_len=%d "
+                "logprobs_len=%d",
+                len(prompt_ids),
+                len(completion_ids),
+                len(completion_logprobs),
+            )
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
@@ -494,17 +542,42 @@ class OpenAIChatCompletionsClient(
         if not isinstance(model, str):
             model = ""
 
+        tokens = parse_tokens(response)
+        reasoning = parse_reasoning_content_from_response(response)
+        content = response.choices[0].message.content
+
+        # MITO-DEBUG: log content tail and completion token tail to detect trimming
+        content_str = content if isinstance(content, str) else ""
+        content_tail = repr(content_str[-40:]) if content_str else "empty"
+        comp_ids_tail = []
+        if tokens is not None:
+            comp_ids = tokens.get("completion_ids", [])
+            comp_ids_tail = list(comp_ids[-10:]) if comp_ids else []
+        has_tool_calls = bool(parse_tool_calls(response))
+        logger.info(
+            "[MITO-DEBUG] from_native_response has_reasoning=%s reasoning_len=%d "
+            "content_len=%d has_tokens=%s has_tool_calls=%s "
+            "content_tail=%s completion_ids_tail=%s",
+            reasoning is not None,
+            len(reasoning) if reasoning else 0,
+            len(content_str),
+            tokens is not None,
+            has_tool_calls,
+            content_tail,
+            comp_ids_tail,
+        )
+
         return Response(
             id=response_id,
             created=created,
             model=model,
             usage=parse_usage(response),
             message=ResponseMessage(
-                content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content_from_response(response),
+                content=content,
+                reasoning_content=reasoning,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
-                tokens=parse_tokens(response),
+                tokens=tokens,
                 tool_calls=parse_tool_calls(response) or None,
             ),
         )

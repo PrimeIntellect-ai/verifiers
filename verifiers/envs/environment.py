@@ -1243,6 +1243,12 @@ class Environment(ABC):
             if setter is not None and callable(setter):
                 setter(value)
             else:
+                self.logger.warning(
+                    "set_kwargs: no setter '%s' found for key '%s', falling back to setattr (current max_seq_len=%s)",
+                    setter_name,
+                    key,
+                    getattr(self, "max_seq_len", "N/A"),
+                )
                 setattr(self, key, value)
 
     def add_rubric(self, rubric: Rubric) -> None:
