@@ -1,11 +1,17 @@
 import asyncio
+import io
 import logging
 import os
+import tarfile
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, cast
 
 import httpx
 import tenacity as tc
 from prime_sandboxes import (
+    APIError,
     CommandTimeoutError,
     CreateSandboxRequest,
     SandboxClient,
@@ -24,6 +30,32 @@ if _httpx_log_level:
     httpx_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
     httpcore_logger = logging.getLogger("httpcore")
     httpcore_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
+
+
+@dataclass
+class SandboxScorer:
+    """A scorer that runs a script inside the sandbox after rollout.
+
+    The scorer uploads ``script`` and any ``files`` to ``dest_dir`` via bundle,
+    then executes the script.  The last line of stdout is parsed as a float and
+    stored in ``state[state_key]``.
+
+    Attributes:
+        name: Human-readable name for logging.
+        script: Python source code to execute in the sandbox.
+        state_key: Key under which the score is stored in state.
+        dest_dir: Directory inside the sandbox to upload files to.
+        files_fn: Callable that receives ``state`` and returns a dict of
+            ``{filename: content}`` to upload alongside the script.
+        timeout: Timeout in seconds for the scorer script execution.
+    """
+
+    name: str
+    script: str
+    state_key: str
+    dest_dir: str = "/app"
+    files_fn: Callable[[dict], dict[str, str]] = field(default_factory=lambda: lambda state: {})
+    timeout: int = 30
 
 
 class SandboxCreationError(vf.SandboxError): ...
@@ -58,6 +90,7 @@ class SandboxMixin:
     active_sandboxes: set[str]
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
+    sandbox_scorers: list[SandboxScorer]
     with_retry: Callable
 
     def init_sandbox_client(
@@ -75,6 +108,8 @@ class SandboxMixin:
         """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
+        if not hasattr(self, "sandbox_scorers"):
+            self.sandbox_scorers = []
         self.sandbox_wait_for_creation_max_attempts = (
             sandbox_wait_for_creation_max_attempts
         )
@@ -210,6 +245,131 @@ class SandboxMixin:
         raise CommandTimeoutError(
             sandbox_id=sandbox_id, command=command, timeout=timeout
         )
+
+    async def upload_file(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        local_path: str,
+    ) -> None:
+        """Upload a local file to the sandbox."""
+        try:
+            await self.sandbox_client.upload_file(sandbox_id, remote_path, local_path)
+        except SandboxOOMError as e:
+            raise vf.SandboxError(
+                f"Sandbox {sandbox_id} OOM during upload to {remote_path}"
+            ) from e
+        except SandboxTimeoutError as e:
+            raise vf.SandboxError(
+                f"Sandbox {sandbox_id} timeout during upload to {remote_path}"
+            ) from e
+        except APIError as e:
+            raise vf.SandboxError(
+                f"API error uploading to {remote_path} in {sandbox_id}: {e}"
+            ) from e
+
+    async def upload_content(
+        self,
+        sandbox_id: str,
+        content: str,
+        remote_path: str,
+    ) -> None:
+        """Upload a string as a file to the sandbox."""
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write(content)
+            local_path = f.name
+        try:
+            await self.upload_file(sandbox_id, remote_path, local_path)
+        finally:
+            Path(local_path).unlink(missing_ok=True)
+
+    async def upload_bundle(
+        self,
+        sandbox_id: str,
+        file_map: dict[str, str],
+        dest_dir: str,
+    ) -> None:
+        """Upload a bundle of files to the sandbox.
+
+        Builds a tar.gz archive from ``file_map`` (relative path → UTF-8
+        content), uploads it, and extracts into ``dest_dir``.
+        """
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for rel_path, content in file_map.items():
+                data = content.encode("utf-8")
+                info = tarfile.TarInfo(name=rel_path)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        bundle_bytes = buf.getvalue()
+
+        archive_remote = f"{dest_dir}/_bundle.tar.gz"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as f:
+            f.write(bundle_bytes)
+            tmp_path = f.name
+        try:
+            await self.upload_file(sandbox_id, archive_remote, tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+        extract_cmd = (
+            f"mkdir -p {dest_dir} && "
+            f'python3 -c "import tarfile; '
+            f"tarfile.open('{archive_remote}', 'r:gz').extractall('{dest_dir}')\" && "
+            f"rm -f {archive_remote}"
+        )
+        result = await self.sandbox_client.execute_command(
+            sandbox_id,
+            extract_cmd,
+            timeout=60,
+        )
+        if result.exit_code != 0:
+            raise vf.SandboxError(
+                f"Bundle extract failed in {sandbox_id} (exit={result.exit_code}): "
+                f"{(result.stderr or '')[:200]}"
+            )
+
+    def add_sandbox_scorer(self, scorer: SandboxScorer) -> None:
+        """Register a sandbox scorer to run during post_rollout."""
+        self.sandbox_scorers.append(scorer)
+
+    async def run_sandbox_scorers(self, state: dict[str, Any]) -> None:
+        """Run all registered sandbox scorers sequentially.
+
+        Each scorer uploads its files + script to the sandbox via bundle, runs
+        the script, and stores the result in ``state[scorer.state_key]``.
+        Skipped when there is no sandbox or an error occurred.
+        """
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            return
+        if state.get("error") or state.get("sandbox_error"):
+            return
+
+        for scorer in self.sandbox_scorers:
+            try:
+                files = scorer.files_fn(state)
+                files["score.py"] = scorer.script
+                await self.upload_bundle(sandbox_id, file_map=files, dest_dir=scorer.dest_dir)
+                result = await self.sandbox_client.execute_command(
+                    sandbox_id,
+                    f"python3 {scorer.dest_dir}/score.py",
+                    working_dir=scorer.dest_dir,
+                    timeout=scorer.timeout,
+                )
+                if result.exit_code == 0 and result.stdout.strip():
+                    state[scorer.state_key] = float(result.stdout.strip().splitlines()[-1])
+                else:
+                    stderr = (result.stderr or "")[:200]
+                    self.logger.warning(
+                        f"Sandbox scorer '{scorer.name}' failed (exit={result.exit_code}): {stderr}"
+                    )
+                    state[scorer.state_key] = 0.0
+            except Exception as e:
+                self.logger.warning(
+                    f"Sandbox scorer '{scorer.name}' error: {type(e).__name__}: {e}"
+                )
+                state[scorer.state_key] = 0.0
 
     def teardown_sandboxes(self):
         """Delete all active sandboxes using sync client.

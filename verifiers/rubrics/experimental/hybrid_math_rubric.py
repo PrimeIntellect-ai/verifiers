@@ -91,6 +91,7 @@ class HybridMathRubric(vf.JudgeRubric):
     DEFAULT_JUDGE_SAMPLING_ARGS = {}
     DEFAULT_USE_JUDGE_FALLBACK = False
     DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS = 5
+    DEFAULT_SCORE_REMOTELY = False
 
     def __init__(
         self,
@@ -101,6 +102,7 @@ class HybridMathRubric(vf.JudgeRubric):
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
         judge_sampling_args: dict | None = None,
         math_verify_timeout_seconds: float = DEFAULT_MATH_VERIFY_TIMEOUT_SECONDS,
+        score_remotely: bool = DEFAULT_SCORE_REMOTELY,
         **kwargs,
     ):
         judge_sampling_args = judge_sampling_args or self.DEFAULT_JUDGE_SAMPLING_ARGS
@@ -117,13 +119,21 @@ class HybridMathRubric(vf.JudgeRubric):
         self.add_reward_func(self.correct_answer, weight=1)
 
         self.math_verify_timeout_seconds = math_verify_timeout_seconds
+        self.score_remotely = score_remotely
         self.judge_model = judge_model if use_judge_fallback else None
         self.class_objects["judge_model"] = self.judge_model
 
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
     ) -> float:
-        """Basic rule-based math verification."""
+        """Basic rule-based math verification.
+
+        When ``score_remotely=True``, assumes the score was already computed by
+        a sandbox scorer and stored in ``state["math_verify_score"]``.
+        """
+        if self.score_remotely:
+            return float(state.get("math_verify_score", 0.0))
+
         response = self.parser.parse_answer(completion) or ""
         if response == "":
             math_verify_score = 0.0
