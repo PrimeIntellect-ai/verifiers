@@ -2652,8 +2652,17 @@ class RLMEnv(vf.StatefulToolEnv):
                 ]
                 return contents, summary_lines
 
+        rid = state_ref.get("rollout_id", "?")
+
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
+        logger.debug(
+            "[%s] main turn %d: llm_batch called with %d prompts (batch=%s)",
+            rid,
+            parent_turn,
+            len(prompts),
+            batch_id,
+        )
         results: list[dict[str, Any] | None] = [
             cast(dict[str, Any] | None, None)
         ] * len(prompts)
@@ -2705,6 +2714,18 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         batch_elapsed = perf_counter() - batch_start
+        succeeded = sum(
+            1 for r in results if r and not r.get("_rlm_metadata", {}).get("error")
+        )
+        logger.debug(
+            "[%s] main turn %d: llm_batch done in %.2fs, %d/%d succeeded (batch=%s)",
+            rid,
+            parent_turn,
+            batch_elapsed,
+            succeeded,
+            len(prompts),
+            batch_id,
+        )
         summary_lines = [f"llm_batch: {len(prompts)} call(s) in {batch_elapsed:.2f}s"]
         contents: list[str] = []
         for index, result in enumerate(results):
@@ -2832,6 +2853,16 @@ class RLMEnv(vf.StatefulToolEnv):
                     },
                 }
 
+        rid = state_ref.get("rollout_id", "?")
+        logger.debug(
+            "[%s/%s:%s] sub-llm start (%d messages, model=%s)",
+            rid,
+            batch_id,
+            request_id,
+            len(messages),
+            sub_model,
+        )
+
         messages_with_system: Messages = [
             SystemMessage(
                 content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
@@ -2851,6 +2882,18 @@ class RLMEnv(vf.StatefulToolEnv):
         num_turns = result["num_turns"]
         max_turns_reached = result["max_turns_reached"]
         turns = result["turns"]
+
+        logger.debug(
+            "[%s/%s:%s] sub-llm done: %d turns, %d+%d tokens, %d tool calls, max_turns=%s",
+            rid,
+            batch_id,
+            request_id,
+            num_turns,
+            prompt_tokens,
+            completion_tokens,
+            tool_call_count,
+            max_turns_reached,
+        )
 
         boxed_content = extract_boxed_answer(final_content)
 
@@ -3504,7 +3547,19 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> str:
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
-            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+            self.active_rollouts[rollout_id]["current_turn"] = self._main_turn_count(
+                state
+            )
+
+        rid = rollout_id or "?"
+        main_turn = self._main_turn_count(state)
+        logger.debug(
+            "[%s] main turn %d: repl called (%s, %d chars)",
+            rid,
+            main_turn,
+            self.repl_language,
+            len(code),
+        )
 
         if self.expose_message_history:
             await self._upload_message_history(state)
@@ -3529,9 +3584,16 @@ class RLMEnv(vf.StatefulToolEnv):
             output += f"\n[Execution time: {execution_time:.2f}s]"
 
         answer = result.get("answer", {})
-        if answer.get("ready", False):
+        answer_ready = answer.get("ready", False)
+        logger.debug(
+            "[%s] main turn %d: repl done in %.2fs, answer_ready=%s",
+            rid,
+            main_turn,
+            execution_time,
+            answer_ready,
+        )
+        if answer_ready:
             state["final_answer"] = answer.get("content", "")
-            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
         output = self._maybe_add_context_warning(
             output, state, ready_instruction=ready_instruction
@@ -3624,8 +3686,19 @@ class RLMEnv(vf.StatefulToolEnv):
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
 
+    def _main_turn_count(self, state: State) -> int:
+        """Count the number of main-model trajectory steps."""
+        main_id = state.get("trajectory_id")
+        return sum(
+            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
+        )
+
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
+        rid = state.get("rollout_id", "?")
+        main_turn = self._main_turn_count(state)
+        logger.debug("[%s] main turn %d: requesting model response", rid, main_turn)
+
         if len(state["trajectory"]) == 0:
             # First turn: inject RLM scaffolding into the first user message
             prompt = state.get("prompt", [])
@@ -3745,11 +3818,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Count only main-model trajectory steps, not sub-LLM steps."""
         if self.max_turns <= 0:
             return False
-        main_id = state.get("trajectory_id")
-        count = sum(
-            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
-        )
-        return count >= self.max_turns
+        return self._main_turn_count(state) >= self.max_turns
 
     @vf.stop
     async def no_tools_called(self, state: State) -> bool:
@@ -3790,6 +3859,16 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
+        rid = state.get("rollout_id", "?")
+        _ensure_rlm_metric_state(state)
+        logger.debug(
+            "[%s] rollout stopped: answer_ready=%s, turns=%d, sub_llm_calls=%d, repl_calls=%d",
+            rid,
+            "final_answer" in state,
+            self._main_turn_count(state),
+            state.get("sub_llm_call_count", 0),
+            state.get("repl_call_count", 0),
+        )
 
         if len(state["trajectory"]) == 0:
             state["completion"] = []
