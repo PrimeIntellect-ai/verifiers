@@ -171,6 +171,7 @@ class BaseDisplay:
         self._stderr_thread: _FDToLogger | None = None
         self._key_listener_thread: threading.Thread | None = None
         self._key_listener_stop: threading.Event | None = None
+        self._mouse_enabled: bool = False
 
     def _render(self) -> Any:
         """
@@ -295,8 +296,25 @@ class BaseDisplay:
         )
         self._live.start()
 
+        # Enable SGR mouse tracking for click-to-select in overview panel
+        if (
+            HAS_TERMINAL_CONTROL
+            and sys.stdin.isatty()
+            and self._old_stdout_fd is not None
+        ):
+            os.write(self._old_stdout_fd, b"\x1b[?1000h\x1b[?1006h")
+            self._mouse_enabled = True
+
     def stop(self) -> None:
         """Stop the live display and restore terminal settings."""
+        # Disable mouse tracking before tearing down
+        if self._mouse_enabled and self._old_stdout_fd is not None:
+            try:
+                os.write(self._old_stdout_fd, b"\x1b[?1006l\x1b[?1000l")
+            except OSError:
+                pass
+            self._mouse_enabled = False
+
         if self._live:
             self._live.stop()
             self._live = None
@@ -377,28 +395,60 @@ class BaseDisplay:
             if not char:  # EOF (e.g. SSH disconnect)
                 break
             if char == b"\x1b":
-                # Parse escape sequences for arrow keys
+                handled = False
                 if select_module.select([fd], [], [], 0.05)[0]:
                     next_char = os.read(fd, 1)
                     if (
                         next_char == b"["
                         and select_module.select([fd], [], [], 0.05)[0]
                     ):
-                        direction = os.read(fd, 1)
-                        key_map = {
-                            b"C": "right",
-                            b"D": "left",
-                            b"A": "up",
-                            b"B": "down",
-                        }
-                        if direction in key_map:
-                            self._on_key(key_map[direction])
-                # Drain any remaining escape sequence chars
-                while select_module.select([fd], [], [], 0.01)[0]:
-                    os.read(fd, 1)
+                        third = os.read(fd, 1)
+                        if third == b"<":
+                            # SGR mouse event: \x1b[<Cb;Cx;CyM (press) or m (release)
+                            buf = b""
+                            while select_module.select([fd], [], [], 0.05)[0]:
+                                c = os.read(fd, 1)
+                                buf += c
+                                if c in (b"M", b"m"):
+                                    break
+                            if buf.endswith(b"M"):  # button press only
+                                try:
+                                    parts = buf[:-1].decode().split(";")
+                                    if len(parts) == 3:
+                                        button = int(parts[0])
+                                        x = int(parts[1])
+                                        y = int(parts[2])
+                                        if button == 0:  # left click
+                                            self._on_mouse_click(x, y)
+                                        elif button == 64:  # wheel up
+                                            self._on_key("up")
+                                        elif button == 65:  # wheel down
+                                            self._on_key("down")
+                                except (ValueError, IndexError):
+                                    pass
+                            handled = True
+                        else:
+                            # Arrow keys or other CSI sequences
+                            key_map = {
+                                b"C": "right",
+                                b"D": "left",
+                                b"A": "up",
+                                b"B": "down",
+                            }
+                            if third in key_map:
+                                self._on_key(key_map[third])
+                                handled = True
+                if not handled:
+                    # Drain any remaining escape sequence chars
+                    while select_module.select([fd], [], [], 0.01)[0]:
+                        os.read(fd, 1)
 
     def _on_key(self, key: str) -> None:
         """Handle a parsed keypress. Override in subclasses."""
+        pass
+
+    def _on_mouse_click(self, x: int, y: int) -> None:
+        """Handle a mouse click at terminal position (x, y), 1-indexed. Override in subclasses."""
         pass
 
     async def wait_for_exit(self) -> None:

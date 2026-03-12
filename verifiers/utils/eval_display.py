@@ -180,6 +180,9 @@ class EvalDisplay(BaseDisplay):
         self._env_log_titles: dict[int, Text] = {}
         self._tail_task: asyncio.Task | None = None
 
+        # Maps overview content row offset (0-based) to env index for click handling
+        self._overview_content_row_to_env: dict[int, int] = {}
+
         # initialize env states by index
         for idx, config in enumerate(configs):
             total = config.num_examples * config.rollouts_per_example
@@ -208,6 +211,20 @@ class EvalDisplay(BaseDisplay):
             self.refresh()
         elif key == "down":
             self._log_scroll_offset = max(0, self._log_scroll_offset - 3)
+            self.refresh()
+
+    def _on_mouse_click(self, x: int, y: int) -> None:
+        if not self.configs or len(self.configs) <= 1:
+            return
+        # Overview panel top border is at terminal row 1 (the frame always starts
+        # at the top of the visible area). Content rows start right after the border.
+        content_start_y = 2  # row 1 = border, row 2 = first content
+
+        content_row = y - content_start_y
+        env_idx = self._overview_content_row_to_env.get(content_row)
+        if env_idx is not None and env_idx != self._selected_env_idx:
+            self._selected_env_idx = env_idx
+            self._log_scroll_offset = 0
             self.refresh()
 
     @staticmethod
@@ -770,14 +787,19 @@ class EvalDisplay(BaseDisplay):
         below_count = n - end
 
         overview_rows: list[Text] = []
+        self._overview_content_row_to_env = {}
+        content_row = 0
         if above_count > 0:
             overview_rows.append(Text(f"  ... {above_count} above", style="dim"))
+            content_row += 1
         for idx in range(start, end):
             is_selected = idx == self._selected_env_idx
             row = self._make_compact_env_row(idx, selected=is_selected)
             if is_selected:
                 row.stylize("bold")
             overview_rows.append(row)
+            self._overview_content_row_to_env[content_row] = idx
+            content_row += 1
         if below_count > 0:
             overview_rows.append(Text(f"  ... and {below_count} more", style="dim"))
 
@@ -813,7 +835,7 @@ class EvalDisplay(BaseDisplay):
         """Create the footer panel with instructions."""
         nav_hint = ""
         if len(self.configs) > 1:
-            nav_hint = "\u25c4 \u25ba switch envs  \u25b2 \u25bc scroll logs"
+            nav_hint = "click or \u25c4 \u25ba switch envs  \u25b2 \u25bc scroll logs"
 
         if self.state.all_completed:
             if self.screen:
