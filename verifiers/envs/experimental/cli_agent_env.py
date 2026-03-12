@@ -6,8 +6,6 @@ import uuid
 from collections import Counter
 from typing import Any, cast
 
-import httpx
-
 from prime_sandboxes import (
     AdvancedConfigs,
     BackgroundJob,
@@ -155,7 +153,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         if self._tunnel is not None and not self._tunnel.is_running:
             frpc_output = "\n".join(self._tunnel.recent_output)
-            logger.warning(
+            self.logger.warning(
                 f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
             )
             self._tunnel.sync_stop()
@@ -172,7 +170,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             else:
                 self._tunnel = Tunnel(local_port=port)
             url = await self._tunnel.start()
-            logger.debug(f"Prime Tunnel started: {url}")
+            self.logger.debug(f"Prime Tunnel started: {url}")
             return url
         else:
             assert self._tunnel.url is not None, "Tunnel started but URL is None"
@@ -213,7 +211,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             advanced_configs=self.advanced_configs,
             labels=self.labels if self.labels else [],
         )
-        logger.debug(
+        self.logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
         )
@@ -230,7 +228,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"Started  rollout_id={state['rollout_id']}",
             f"example_id={state['example_id']}",
         ]
-        logger.info(" | ".join(parts))
+        self.logger.info(" | ".join(parts))
 
         return state
 
@@ -290,15 +288,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
             state["agent_timed_out"] = True
         except asyncio.CancelledError:
-            logger.debug("Completion wait task cancelled")
+            self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
             error = AgentError(f"Agent polling failed: {e}")
             state["error"] = error
-            logger.error(f"Agent polling failed: {e}")
+            self.logger.error(f"Agent polling failed: {e}")
         finally:
             state["agent_completed"] = True
 
@@ -315,11 +313,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 state["agent_stdout"] = status.stdout
                 state["agent_stderr"] = status.stderr
                 if status.exit_code == 0:
-                    logger.debug(
+                    self.logger.debug(
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    logger.warning(
+                    self.logger.warning(
                         f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
                     )
                 return
@@ -513,9 +511,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if self._tunnel is not None:
             try:
                 self._tunnel.sync_stop()
-                logger.debug("Prime Tunnel stopped")
+                self.logger.debug("Prime Tunnel stopped")
             except Exception as e:
-                logger.warning(f"Error stopping Prime Tunnel: {e}")
+                self.logger.warning(f"Error stopping Prime Tunnel: {e}")
             finally:
                 self._tunnel = None
         if self._interception_server is not None:
@@ -589,7 +587,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             parts.append("timed_out=True")
         if error_info:
             parts.append(f"error={error_info}")
-        logger.info(" | ".join(parts))
+        self.logger.info(" | ".join(parts))
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
