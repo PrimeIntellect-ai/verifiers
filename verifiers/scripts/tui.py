@@ -1217,12 +1217,16 @@ class SearchHit:
     column: str
     line_index: int
     line_text: str
+    section_index: int = 0
+    nested_index: int = -1  # -1 = parent body, 0+ = nested section index
 
 
 @dataclass(frozen=True)
 class SearchResult:
     column: str
     pattern: str
+    section_index: int = 0
+    nested_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -2084,6 +2088,7 @@ class CompareRunsScreen(Screen):
     def _build_comparison_outcomes(self) -> Group:
         highlight_col = self._group_cursor if self._group_mode else None
         items: List[Any] = [
+            Text(""),
             Group(
                 Text("Outcome groups", style="bold dim"),
                 self._build_grouped_outcomes_table(
@@ -3079,11 +3084,32 @@ class ViewRunScreen(Screen):
         rollout_list.scroll_to_highlight()
         self._set_current_record(new_index)
 
+    def _build_search_lines(
+        self, record: Dict[str, Any]
+    ) -> Tuple[List[Tuple[int, int, str]], List[Tuple[int, int, str]]]:
+        """Build tagged (section_index, nested_index, line) lists for search."""
+        sections = self._history_section_data(record)
+        prompt_lines: List[Tuple[int, int, str]] = []
+        completion_lines: List[Tuple[int, int, str]] = []
+        for idx, section in enumerate(sections):
+            target = prompt_lines if section.column == "prompt" else completion_lines
+            for line in section.body.splitlines():
+                target.append((idx, -1, line))
+            for nested_idx, nested in enumerate(section.nested_sections):
+                nested_target = (
+                    prompt_lines if nested.column == "prompt" else completion_lines
+                )
+                for line in nested.body.splitlines():
+                    nested_target.append((idx, nested_idx, line))
+        return prompt_lines, completion_lines
+
     def action_search(self) -> None:
         if not self.records:
             return
+        record = self.records[self.current_record_idx]
+        prompt_lines, completion_lines = self._build_search_lines(record)
         self.app.push_screen(
-            SearchScreen(self._prompt_lines, self._completion_lines),
+            SearchScreen(prompt_lines, completion_lines),
             self._handle_search_result,
         )
 
@@ -3243,6 +3269,8 @@ class ViewRunScreen(Screen):
         had_highlight = self._highlight_regex is not None
         self._highlight_regex = None
         self._highlight_column = None
+        self._highlight_section_index: int = 0
+        self._highlight_nested_index: int = -1
 
         if result is not None:
             try:
@@ -3250,26 +3278,32 @@ class ViewRunScreen(Screen):
             except re.error:
                 return
             self._highlight_column = result.column
+            self._highlight_section_index = result.section_index
+            self._highlight_nested_index = result.nested_index
             self._highlight_timer = self.set_timer(
                 3.0, lambda: self._set_highlight(None)
             )
-            # New search: full rebuild to expand matching sections.
-            if repaint and self.is_mounted:
-                self.update_display()
-        elif had_highlight and self.is_mounted:
-            # Clear highlight styling in place — update Static body widgets
-            # with unstyled text, no layout change.
+
+        if repaint and self.is_mounted and (had_highlight or result is not None):
+            # Swap body widgets in place to apply or remove highlight
+            # styling without rebuilding (preserves collapsed state).
             record = self.records[self.current_record_idx]
             section_data = self._history_section_data(record)
             body_entries = self._collect_section_bodies(section_data)
             container = self.query_one("#completion-scroll", VerticalScroll)
             body_widgets = list(container.query(".section-body"))
             for i, widget in enumerate(body_widgets):
-                if i >= len(body_entries):
-                    break
-                if isinstance(widget, Static) and not isinstance(widget, MathMarkdown):
-                    body, _column = body_entries[i]
-                    widget.update(Text(body))
+                parent = widget.parent
+                if not isinstance(parent, Widget) or i >= len(body_entries):
+                    continue
+                body, column = body_entries[i]
+                replacement = self._make_body_widget(body, column)
+                parent.mount(replacement, after=widget)
+                widget.remove()
+
+            # For new searches, expand the target section and scroll to it.
+            if result is not None:
+                self._expand_and_scroll_to_match(container)
 
     def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
         return Text.assemble(
@@ -3526,23 +3560,42 @@ class ViewRunScreen(Screen):
         container = self.query_one("#completion-scroll", VerticalScroll)
         container.remove_children()
         container.mount(*self._completion_sections(record))
-        if self._highlight_regex:
-            self.call_after_refresh(self._scroll_to_first_match)
-        elif focus_history:
+        if focus_history:
             self.call_after_refresh(self._focus_primary_content)
 
-    def _scroll_to_first_match(self) -> None:
-        """Scroll to the first expanded section that matches the highlight."""
-        container = self.query_one("#completion-scroll", VerticalScroll)
-        for section in container.query(Collapsible):
-            if not section.collapsed:
-                section.scroll_visible(animate=False)
-                title_widget = next(iter(section.children), None)
-                if title_widget is not None and getattr(
-                    title_widget, "can_focus", False
-                ):
-                    title_widget.focus()
-                return
+    def _expand_and_scroll_to_match(self, container: VerticalScroll) -> None:
+        """Expand the target section (and nested subsection) and scroll to it."""
+        # Get top-level sections only (direct children of the scroll container).
+        sections = [
+            child for child in container.children if isinstance(child, Collapsible)
+        ]
+        idx = self._highlight_section_index
+        if not (0 <= idx < len(sections)):
+            return
+        parent = sections[idx]
+        if parent.collapsed:
+            parent.collapsed = False
+
+        # If the hit is in a nested section, expand that too.
+        scroll_target = parent
+        nested_idx = self._highlight_nested_index
+        if nested_idx >= 0:
+            nested_collapsibles = [
+                child for child in parent.query(Collapsible) if child is not parent
+            ]
+            if 0 <= nested_idx < len(nested_collapsibles):
+                nested = nested_collapsibles[nested_idx]
+                if nested.collapsed:
+                    nested.collapsed = False
+                scroll_target = nested
+
+        self.call_after_refresh(lambda t=scroll_target: self._scroll_to_section(t))
+
+    def _scroll_to_section(self, section: Collapsible) -> None:
+        section.scroll_visible(animate=False)
+        title_widget = next(iter(section.children), None)
+        if title_widget is not None and getattr(title_widget, "can_focus", False):
+            title_widget.focus()
 
     def _detail_copy_sections(
         self, record: Dict[str, Any]
@@ -4379,9 +4432,13 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         Binding("enter", "select", "Select"),
     ]
 
-    def __init__(self, prompt_lines: List[str], completion_lines: List[str]):
+    def __init__(
+        self,
+        prompt_lines: List[Tuple[int, int, str]],
+        completion_lines: List[Tuple[int, int, str]],
+    ):
         super().__init__()
-        self._lines: Dict[str, List[str]] = {
+        self._tagged_lines: Dict[str, List[Tuple[int, int, str]]] = {
             "prompt": prompt_lines,
             "completion": completion_lines,
         }
@@ -4463,7 +4520,14 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         if selection is None:
             return
         pattern = self.query_one("#search-input", Input).value
-        self.dismiss(SearchResult(column=selection.column, pattern=pattern))
+        self.dismiss(
+            SearchResult(
+                column=selection.column,
+                pattern=pattern,
+                section_index=selection.section_index,
+                nested_index=selection.nested_index,
+            )
+        )
 
     def _set_active_hit(
         self, column: str, option_id: Optional[str], *, select: bool = False
@@ -4509,13 +4573,21 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
             return
 
         error_label.update("")
-        for column, lines in self._lines.items():
+        for column, tagged_lines in self._tagged_lines.items():
             hits: List[SearchHit] = []
-            for line_index, line in enumerate(lines):
+            for line_index, (section_index, nested_index, line) in enumerate(
+                tagged_lines
+            ):
                 if not compiled.search(line):
                     continue
                 hits.append(
-                    SearchHit(column=column, line_index=line_index, line_text=line)
+                    SearchHit(
+                        column=column,
+                        line_index=line_index,
+                        line_text=line,
+                        section_index=section_index,
+                        nested_index=nested_index,
+                    )
                 )
                 content = Text(line)
                 _stylize_matches(content, compiled, "reverse")
@@ -4646,11 +4718,24 @@ class RolloutCopyScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         option_list = self.query_one("#rollout-copy-targets", OptionList)
-        option_list.can_focus = False
         for item in self._items:
             option_list.add_option(Option(Text(item.label), id=item.key))
         option_list.highlighted = self._current_idx
         self._sync_preview()
+        self.query_one("#rollout-copy-preview", TextArea).focus()
+
+    @on(OptionList.OptionHighlighted, "#rollout-copy-targets")
+    def _on_target_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_index is not None and event.option_index != self._current_idx:
+            self._current_idx = event.option_index
+            self._sync_preview()
+
+    @on(OptionList.OptionSelected, "#rollout-copy-targets")
+    def _on_target_selected(self, event: OptionList.OptionSelected) -> None:
+        """Click on a target: update preview and return focus to TextArea."""
+        if event.option_index is not None:
+            self._current_idx = event.option_index
+            self._sync_preview()
         self.query_one("#rollout-copy-preview", TextArea).focus()
 
     @on(TextArea.SelectionChanged)
@@ -4666,11 +4751,16 @@ class RolloutCopyScreen(ModalScreen[None]):
             )
 
     def on_key(self, event: events.Key) -> None:
-        if event.key == "left":
+        # Only intercept arrow keys when the OptionList has focus;
+        # let all keys pass through to the TextArea normally.
+        option_list = self.query_one("#rollout-copy-targets", OptionList)
+        if self.focused is not option_list:
+            return
+        if event.key in ("left", "up"):
             self._move_section(-1)
             event.prevent_default()
             event.stop()
-        elif event.key == "right":
+        elif event.key in ("right", "down"):
             self._move_section(1)
             event.prevent_default()
             event.stop()
