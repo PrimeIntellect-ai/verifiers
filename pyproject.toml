@@ -104,6 +104,9 @@ rl = [
 [tool.uv]
 preview = true
 
+[tool.uv.sources]
+prime-tunnel = { git = "https://github.com/PrimeIntellect-ai/prime.git", rev = "9e29e113ed6fe3c7144e7a166b73a88c187dd544", subdirectory = "packages/prime-tunnel" }
+
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 
