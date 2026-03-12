@@ -3257,12 +3257,10 @@ class ViewRunScreen(Screen):
                 result.extend(parent)
         return result
 
-    def action_toggle_markdown_math(self) -> None:
-        self._render_markdown_math = not self._render_markdown_math
+    def _swap_section_bodies(self) -> None:
+        """Re-render all .section-body widgets in-place (preserves collapsed state)."""
         if not (self.records and self.is_mounted):
             return
-        # Swap each .section-body widget in-place, preserving collapsed
-        # state, scroll position, and focus.
         record = self.records[self.current_record_idx]
         section_data = self._history_section_data(record)
         body_entries = self._collect_section_bodies(section_data)
@@ -3276,6 +3274,10 @@ class ViewRunScreen(Screen):
             replacement = self._make_body_widget(body, column)
             parent.mount(replacement, after=body_widget)
             body_widget.remove()
+
+    def action_toggle_markdown_math(self) -> None:
+        self._render_markdown_math = not self._render_markdown_math
+        self._swap_section_bodies()
 
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
         if result is not None:
@@ -3307,24 +3309,11 @@ class ViewRunScreen(Screen):
             )
 
         if repaint and self.is_mounted and (had_highlight or result is not None):
-            # Swap body widgets in place to apply or remove highlight
-            # styling without rebuilding (preserves collapsed state).
-            record = self.records[self.current_record_idx]
-            section_data = self._history_section_data(record)
-            body_entries = self._collect_section_bodies(section_data)
-            container = self.query_one("#completion-scroll", VerticalScroll)
-            body_widgets = list(container.query(".section-body"))
-            for i, widget in enumerate(body_widgets):
-                parent = widget.parent
-                if not isinstance(parent, Widget) or i >= len(body_entries):
-                    continue
-                body, column = body_entries[i]
-                replacement = self._make_body_widget(body, column)
-                parent.mount(replacement, after=widget)
-                widget.remove()
+            self._swap_section_bodies()
 
             # For new searches, expand the target section and scroll to it.
             if result is not None:
+                container = self.query_one("#completion-scroll", VerticalScroll)
                 self._expand_and_scroll_to_match(container)
 
     def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
