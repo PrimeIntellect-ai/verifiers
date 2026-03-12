@@ -153,6 +153,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             raise RuntimeError("Interception server is not initialized.")
         return self._interception_server
 
+    async def _start_tunnel(self) -> Tunnel:
+        """Create and start a new tunnel. Retryable via self.with_retry."""
+        port = self._require_interception_server().port
+        log_level = "debug" if logger.isEnabledFor(logging.DEBUG) else "info"
+        tunnel = Tunnel(local_port=port, log_level=log_level)
+        await tunnel.start()
+        return tunnel
+
     async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
@@ -165,17 +173,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self._tunnel = None
 
             if self._tunnel is None:
-                interception_server = self._require_interception_server()
-                port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
-                    self._tunnel = Tunnel(
-                        local_port=port,
-                        log_level="debug",
-                    )
-                else:
-                    self._tunnel = Tunnel(local_port=port)
-                url = await self._tunnel.start()
-                logger.debug(f"Prime Tunnel started: {url}")
+                self._tunnel = await self.with_retry(self._start_tunnel)()
+                logger.info(f"Tunnel started: {self._tunnel.url}")
 
                 # Lazily start health monitor on first tunnel creation
                 if (
@@ -186,7 +185,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         self._tunnel_health_monitor()
                     )
 
-                return url
+                return self._tunnel.url
             else:
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
@@ -227,18 +226,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                                 f"restarting"
                             )
                             self._tunnel.sync_stop()
-                            interception_server = self._require_interception_server()
-                            port = interception_server.port
-                            if logger.isEnabledFor(logging.DEBUG):
-                                self._tunnel = Tunnel(
-                                    local_port=port,
-                                    log_level="debug",
+                            try:
+                                self._tunnel = await self.with_retry(
+                                    self._start_tunnel
+                                )()
+                                consecutive_failures = 0
+                                logger.info(
+                                    f"Health monitor: restarted tunnel url={self._tunnel.url}"
                                 )
-                            else:
-                                self._tunnel = Tunnel(local_port=port)
-                            url = await self._tunnel.start()
-                            consecutive_failures = 0
-                            logger.info(f"Health monitor: restarted tunnel url={url}")
+                            except Exception as e:
+                                logger.error(
+                                    f"Health monitor: failed to restart tunnel: {e}"
+                                )
+                                self._tunnel = None
         except asyncio.CancelledError:
             return
 
