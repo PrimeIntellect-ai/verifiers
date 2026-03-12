@@ -1,0 +1,17 @@
+[project]
+name = "oracle-rubric-example"
+version = "0.1.0"
+tags = ["oracle", "rubric", "single-turn", "scoring", "api"]
+license = "Apache-2.0"
+description = "Example environment that scores model outputs with OracleRubric using an API-style oracle."
+dependencies = [
+    "verifiers>=0.1.5.post0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["oracle_rubric_example.py"]
