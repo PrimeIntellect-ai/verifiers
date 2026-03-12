@@ -753,7 +753,7 @@ class CUAMode:
         viewport = state.get("viewport", {})
 
         status = "Success" if success else "Failed"
-        text_parts: list[str] = [f"Status: {status}"]
+        text_parts = [f"Status: {status}"]
         if error:
             text_parts.append(f"Error: {error}")
         if url:
