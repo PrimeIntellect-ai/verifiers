@@ -3093,14 +3093,25 @@ class ViewRunScreen(Screen):
         completion_lines: List[Tuple[int, int, str]] = []
         for idx, section in enumerate(sections):
             target = prompt_lines if section.column == "prompt" else completion_lines
-            for line in section.body.splitlines():
-                target.append((idx, -1, line))
-            for nested_idx, nested in enumerate(section.nested_sections):
-                nested_target = (
-                    prompt_lines if nested.column == "prompt" else completion_lines
-                )
-                for line in nested.body.splitlines():
-                    nested_target.append((idx, nested_idx, line))
+
+            def _append_body(tgt: List[Tuple[int, int, str]], body: str) -> None:
+                for line in body.splitlines():
+                    tgt.append((idx, -1, line))
+
+            def _append_nested() -> None:
+                for nested_idx, nested in enumerate(section.nested_sections):
+                    nested_target = (
+                        prompt_lines if nested.column == "prompt" else completion_lines
+                    )
+                    for line in nested.body.splitlines():
+                        nested_target.append((idx, nested_idx, line))
+
+            if section.body_first:
+                _append_body(target, section.body)
+                _append_nested()
+            else:
+                _append_nested()
+                _append_body(target, section.body)
         return prompt_lines, completion_lines
 
     def action_search(self) -> None:
