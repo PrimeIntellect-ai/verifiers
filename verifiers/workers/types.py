@@ -49,6 +49,8 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    max_rollout_retries: int | None = None
+    max_scoring_retries: int | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -66,6 +68,8 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    max_rollout_retries: int | None = None
+    max_scoring_retries: int | None = None
 
 
 class RunGroupResponse(BaseResponse):

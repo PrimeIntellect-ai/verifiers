@@ -329,6 +329,8 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        "max_rollout_retries",
+        "max_scoring_retries",
         "disable_env_server",
         # logging
         "verbose",
@@ -656,6 +658,8 @@ async def run_evaluation(
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
+            max_rollout_retries=config.max_rollout_retries,
+            max_scoring_retries=config.max_scoring_retries,
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,

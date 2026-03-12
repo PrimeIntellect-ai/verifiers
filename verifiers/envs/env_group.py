@@ -278,11 +278,15 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        max_rollout_retries: int | None = None,
+        max_scoring_retries: int | None = None,
     ) -> vf.RolloutOutput:
         env = self.get_env_for_task(input["task"])
         env_client = env_client or env.env_client or self.env_client
         return await env.run_rollout(
-            input, client, model, sampling_args, max_retries, state_columns, env_client
+            input, client, model, sampling_args, max_retries, state_columns, env_client,
+            max_rollout_retries=max_rollout_retries,
+            max_scoring_retries=max_scoring_retries,
         )
 
     @final
@@ -295,6 +299,8 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        max_rollout_retries: int | None = None,
+        max_scoring_retries: int | None = None,
     ) -> list[vf.RolloutOutput]:
         env = self.get_env_for_task(group_inputs[0]["task"])
         env_client = env_client or env.env_client or self.env_client
@@ -306,6 +312,8 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env_client,
+            max_rollout_retries=max_rollout_retries,
+            max_scoring_retries=max_scoring_retries,
         )
 
     @final

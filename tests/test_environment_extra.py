@@ -329,6 +329,7 @@ async def test_generate_grouped_scoring_distributes_per_group(
             sampling_args,
             max_retries,
             state_columns,
+            **kwargs,
         ):
             assert isinstance(client_config, ClientConfig)
             self.client_urls_per_group.append(str(client_config.api_base_url))
@@ -424,6 +425,7 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             sampling_args,
             max_retries,
             state_columns,
+            **kwargs,
         ):
             assert isinstance(client_config, ClientConfig)
             self.client_url = str(client_config.api_base_url)
@@ -483,6 +485,7 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
             sampling_args,
             max_retries,
             state_columns,
+            **kwargs,
         ):
             assert isinstance(client_config, ClientConfig)
             self.client_url = str(client_config.api_base_url)

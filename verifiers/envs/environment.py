@@ -710,8 +710,13 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        max_rollout_retries: int | None = None,
+        max_scoring_retries: int | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
+
+        effective_rollout_retries = max_rollout_retries if max_rollout_retries is not None else max_retries
+        effective_scoring_retries = max_scoring_retries if max_scoring_retries is not None else max_retries
 
         resolved_client_config: ClientConfig | None = None
         if isinstance(client, ClientConfig):
@@ -730,28 +735,31 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                max_rollout_retries=effective_rollout_retries,
+                max_scoring_retries=effective_scoring_retries,
             )
 
         resolved_client = resolve_client(client)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(
+            return await self.rollout(
                 input,
                 resolved_client,
                 model,
                 sampling_args,
             )
 
+        state = await maybe_retry(run_rollout_attempt, max_retries=effective_rollout_retries)()
+
+        async def run_scoring_attempt() -> State:
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
-
             await self.rubric.cleanup(state)
-
             return state
 
-        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        state = await maybe_retry(run_scoring_attempt, max_retries=effective_scoring_retries)()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -765,9 +773,14 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        max_rollout_retries: int | None = None,
+        max_scoring_retries: int | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
+
+        effective_rollout_retries = max_rollout_retries if max_rollout_retries is not None else max_retries
+        effective_scoring_retries = max_scoring_retries if max_scoring_retries is not None else max_retries
 
         resolved_client_config: ClientConfig | None = None
         if isinstance(client, ClientConfig):
@@ -786,11 +799,13 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                max_rollout_retries=effective_rollout_retries,
+                max_scoring_retries=effective_scoring_retries,
             )
 
         resolved_client = resolve_client(client)
 
-        async def run_group_attempt() -> list[State]:
+        async def run_group_rollout_attempt() -> list[State]:
             rollout_tasks = [
                 self.rollout(
                     input,
@@ -800,8 +815,11 @@ class Environment(ABC):
                 )
                 for input in group_inputs
             ]
-            group_states = await asyncio.gather(*rollout_tasks)
+            return await asyncio.gather(*rollout_tasks)
 
+        group_states = await maybe_retry(run_group_rollout_attempt, max_retries=effective_rollout_retries)()
+
+        async def run_group_scoring_attempt() -> list[State]:
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:
@@ -812,7 +830,7 @@ class Environment(ABC):
 
             return group_states
 
-        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        group_states = await maybe_retry(run_group_scoring_attempt, max_retries=effective_scoring_retries)()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -832,6 +850,8 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        max_rollout_retries: int | None = None,
+        max_scoring_retries: int | None = None,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -1027,6 +1047,8 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    max_rollout_retries=max_rollout_retries,
+                                    max_scoring_retries=max_scoring_retries,
                                 ),
                             ),
                         )
@@ -1053,6 +1075,8 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    max_rollout_retries=max_rollout_retries,
+                                    max_scoring_retries=max_scoring_retries,
                                 ),
                             ),
                         )

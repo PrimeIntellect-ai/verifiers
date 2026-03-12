@@ -145,6 +145,8 @@ class EnvServer(ABC):
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            max_rollout_retries=request.max_rollout_retries,
+            max_scoring_retries=request.max_scoring_retries,
         )
         return RunRolloutResponse(output=output)
 
@@ -157,6 +159,8 @@ class EnvServer(ABC):
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            max_rollout_retries=request.max_rollout_retries,
+            max_scoring_retries=request.max_scoring_retries,
         )
         return RunGroupResponse(outputs=outputs)
 
