@@ -1555,7 +1555,7 @@ class MathMarkdown(BaseMarkdown):
 # Screens
 # ----------------------------
 class CompareRunsScreen(Screen):
-    """Dedicated comparison view for runs from a single model."""
+    """Dedicated comparison view for runs, optionally across models."""
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -1569,7 +1569,7 @@ class CompareRunsScreen(Screen):
         Binding("ctrl+c", "copy", show=False),
     ]
 
-    def __init__(self, env_id: str, model: str, runs: List[RunInfo]):
+    def __init__(self, env_id: str, model: Optional[str], runs: List[RunInfo]):
         super().__init__()
         self.env_id = env_id
         self.model = model
@@ -1601,7 +1601,7 @@ class CompareRunsScreen(Screen):
 
     def on_mount(self) -> None:
         subtitle = Text()
-        subtitle.append(self.model, style="bold")
+        subtitle.append(self.model or "all models", style="bold")
         subtitle.append("\n")
         subtitle.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
         self.query_one("#compare-subtitle", Static).update(subtitle)
@@ -1676,6 +1676,12 @@ class CompareRunsScreen(Screen):
             return
         self._stats_by_path = stats_by_path
         self._setting_keys, self._run_settings = _varying_run_setting_keys(self.runs)
+        if self.model is None:
+            # Cross-model comparison: inject "model" as a setting axis
+            for run, settings in self._run_settings:
+                settings["model"] = run.model
+            if "model" not in self._setting_keys:
+                self._setting_keys.insert(0, "model")
         (
             self._display_maps,
             self._style_maps,
@@ -2071,7 +2077,7 @@ class CompareRunsScreen(Screen):
     def _build_comparison_header(self) -> Group:
         summary = Text()
         summary.append("Ablation summary\n", style="bold dim")
-        summary.append(self.model, style="bold")
+        summary.append(self.model or "all models", style="bold")
         summary.append("\n")
         summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
         return Group(
@@ -2205,6 +2211,15 @@ class BrowseRunsScreen(Screen):
         if payload.kind == "run" and payload.run is not None:
             env_id = payload.run.env_id
             model = payload.run.model
+        elif payload.kind == "env":
+            all_runs: List[RunInfo] = []
+            for model_runs in self.index.get(env_id, {}).values():
+                all_runs.extend(model_runs)
+            runs = _sorted_runs(all_runs)
+            if not runs:
+                return
+            self.app.push_screen(CompareRunsScreen(env_id, None, runs))
+            return
         elif payload.kind != "model":
             return
 
