@@ -65,6 +65,14 @@ class SandboxMixin:
     sandbox_wait_for_creation_max_attempts: int
     with_retry: Callable
 
+    def register_sandbox(self, sandbox_id: str) -> None:
+        """Register a sandbox for active tracking and crash teardown."""
+        self.active_sandboxes.add(sandbox_id)
+
+    def deregister_sandbox(self, sandbox_id: str) -> None:
+        """Deregister a sandbox from active tracking."""
+        self.active_sandboxes.discard(sandbox_id)
+
     def init_sandbox_client(
         self,
         max_retries: int = 5,
@@ -116,7 +124,7 @@ class SandboxMixin:
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
 
-        self.active_sandboxes.add(sandbox.id)
+        self.register_sandbox(sandbox.id)
         state["sandbox_id"] = sandbox.id
         self.logger.debug(f"Created sandbox {sandbox.id}")
 
@@ -148,7 +156,7 @@ class SandboxMixin:
 
         async def _delete(sandbox_id: str):
             await self.sandbox_client.delete(sandbox_id)
-            self.active_sandboxes.discard(sandbox_id)
+            self.deregister_sandbox(sandbox_id)
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         try:
@@ -161,7 +169,8 @@ class SandboxMixin:
         try:
             await self.with_retry(self.sandbox_client.bulk_delete)(sandbox_ids)
             self.logger.debug(f"Bulk deleted sandboxes: {sandbox_ids}")
-            self.active_sandboxes.difference_update(sandbox_ids)
+            for sandbox_id in sandbox_ids:
+                self.deregister_sandbox(sandbox_id)
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {sandbox_ids}: {e}")
 
@@ -338,7 +347,7 @@ class SandboxMixin:
             try:
                 sync_client.bulk_delete(sandbox_ids=batch)
                 for sandbox_id in batch:
-                    self.active_sandboxes.discard(sandbox_id)
+                    self.deregister_sandbox(sandbox_id)
                 self.logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
             except Exception as e:
                 self.logger.warning(f"Bulk delete failed for batch: {e}")

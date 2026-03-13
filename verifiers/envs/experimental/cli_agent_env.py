@@ -600,11 +600,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         When `keep_sandbox_for_scoring` is True, sandbox deletion is deferred
         (e.g. when the rubric needs sandbox access during scoring).
+        The sandbox is still deregistered from active tracking so the
+        environment teardown does not attempt a redundant bulk-delete.
         """
         await self.post_rollout(state)
-        if not self.keep_sandbox_for_scoring:
-            sandbox_id = state.get("sandbox_id")
-            if sandbox_id:
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            if self.keep_sandbox_for_scoring:
+                self.deregister_sandbox(sandbox_id)
+            else:
                 await self.delete_sandbox(sandbox_id)
 
     async def env_response(

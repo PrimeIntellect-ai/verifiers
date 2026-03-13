@@ -264,6 +264,8 @@ class RemoteHybridMathRubric(SandboxMixin, HybridMathRubric):
         if not sandbox_id:
             state["math_verify_score"] = 0.0
             return 0.0
+        # Track the sandbox so it is torn down on crash
+        self.register_sandbox(sandbox_id)
         if state.get("error") or state.get("sandbox_error"):
             state["math_verify_score"] = 0.0
             return 0.0
