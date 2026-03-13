@@ -2,50 +2,37 @@
 
 ## OracleRubric
 
-OracleRubric is intended for reward pipelines where model output must be evaluated via an external oracle (API, model server, simulator, tool backend).
+OracleRubric scores generations using an external oracle (API server, ML model, simulator, or any callable). It is a direct parallel of JudgeRubric: same ergonomics, same injection pattern, just pointing at your backend instead of an LLM judge.
 
-### Intended Argument Roles
+### Arguments
 
-| Argument | Required | Intended Role |
+| Argument | Required | Role |
 | --- | --- | --- |
-| oracle | optional | Backend object or callable used for inference. |
-| parser | optional | Parses completion into response text used by oracle_input_fn. |
-| oracle_fn (or backend_caller) | optional | Connects to inference endpoint/backend and returns oracle output. |
-| oracle_input_fn | optional | Builds oracle input payload from response, prompt, completion, answer, and state. |
-| property_extractor | optional | Dictionary-output adapter. Use this only when oracle_fn returns a dictionary and you want to extract a single property first. |
-| score_function (or comparator) | optional | Final reward computation. Receives property_value plus context (prompt/completion/answer/state/task/info kwargs). |
-| target_extractor | optional | Optional helper to precompute target from answer and pass it as target into score_function. |
-| threshold_extractor | optional | Optional helper to precompute threshold from answer and pass it as threshold into score_function. |
-| expose_oracle_property_metric | optional | If true, logs oracle_property as a metric. Default is false (internal-only). |
-| cache_measurements | optional | Enables cache for oracle outputs within rollout state. |
+| oracle | optional | Backend client or callable (analogous to `judge_client` in JudgeRubric). Passed as `oracle` kwarg to `oracle_fn`. |
+| parser | optional | Parses completion into response text. |
+| funcs / add_reward_func | optional | Reward function registration — same as JudgeRubric. |
+| oracle_fn | optional | Calls the backend. Receives `oracle` (backend), `prompt`, `completion`, `answer`, `state`, `response`. If omitted, calls the backend directly with the parsed response. |
+| cache_measurements | optional | Cache oracle outputs within a rollout. Default True. |
 
-### Pipeline Contract
+### Pattern
 
-1. oracle_input_fn prepares backend input.
-2. oracle_fn (or backend predict/callable path) executes inference.
-3. If oracle output is a dictionary and property_extractor is set, extractor is applied.
-4. Otherwise, oracle output is passed through directly as property_value.
-5. score_function computes the final reward for the rollout.
-6. target_extractor and threshold_extractor are optional convenience hooks.
+Instantiate with just the oracle backend, optionally supply `oracle_fn` to handle how the backend is called, then register reward functions with `add_reward_func`. Reward functions receive `oracle` injected automatically — they call it directly, exactly like `judge` in JudgeRubric:
 
-### Notes
+```python
+async def my_score(oracle, prompt, completion, answer, state, **kwargs):
+    result = await oracle(prompt, completion, answer, state)
+    threshold = answer.get("threshold", 0) if isinstance(answer, dict) else 0
+    return 1.0 if float(result) >= threshold else 0.0
 
-- score_function is the canonical reward entry.
-- Metric naming for the reward follows the score_function callable name when provided.
-- oracle_property is available as an optional diagnostic metric, disabled by default.
-- Oracle outputs and derived values are still stored in state for debugging and reuse.
+rubric = OracleRubric(
+    oracle=my_backend,
+    oracle_fn=call_backend,  # optional: defaults to calling oracle directly
+)
+rubric.add_reward_func(my_score)
+```
 
-### Recommended Simplified Mode
+### oracle vs oracle_fn
 
-For most tasks, use only:
-
-- oracle
-- oracle_fn
-- oracle_input_fn
-- score_function
-
-In this mode, score_function can read answer/state/task/info directly, so property_extractor/target_extractor/threshold_extractor are often unnecessary.
-
-### Current TODO
-
-- Harden cache-key construction for multi-prediction servers by including normalized oracle_input (and optionally caller/extractor discriminator) to avoid cache collisions.
+- `oracle` — the raw backend object (SolubilityPredictClient, sklearn model, HTTP client, …)
+- `oracle_fn(oracle, prompt, completion, answer, state, response, **kwargs)` — handles calling the backend and returning its output. Receives `oracle` as the raw backend. If omitted, the backend is called with just the parsed response text.
+- In reward functions, `oracle` is `self.oracle` (the bound method on OracleRubric) — calling `await oracle(prompt, completion, answer, state)` triggers the full inference + caching pipeline.
