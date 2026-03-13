@@ -67,7 +67,6 @@ __all__ = [
     "ReasoningGymEnv",
     "GymEnv",
     "CliAgentEnv",
-    "RolloutGatewayMixin",
     "HarborEnv",
     "MCPEnv",
     "BrowserEnv",
@@ -122,7 +121,6 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
     "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
-    "RolloutGatewayMixin": "verifiers.envs.experimental.rollout_gateway_mixin:RolloutGatewayMixin",
     "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
     "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
     "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
@@ -165,9 +163,6 @@ if TYPE_CHECKING:
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
     from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
-    from .envs.experimental.rollout_gateway_mixin import (
-        RolloutGatewayMixin,  # noqa: F401
-    )
     from .envs.integrations.browser_env import BrowserEnv  # noqa: F401
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
