@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import inspect
+from verifiers.decorators import discover_decorated
 import json
 import logging
 import multiprocessing as mp
@@ -241,32 +241,9 @@ class Environment(ABC):
         return normalized
 
     def __post_init__(self):
-        self._stop_conditions = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "stop") and callable(method)
-        ]
-        self._stop_conditions.sort(
-            key=lambda m: (-getattr(m, "stop_priority", 0), m.__name__)
-        )
-
-        self._cleanup_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "cleanup") and callable(method)
-        ]
-        self._cleanup_handlers.sort(
-            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
-        )
-
-        self._teardown_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "teardown") and callable(method)
-        ]
-        self._teardown_handlers.sort(
-            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
-        )
+        self._stop_conditions = discover_decorated(self, "stop")
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
 
         def _sync_teardown():
             try:
