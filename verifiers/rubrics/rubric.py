@@ -5,6 +5,7 @@ import time
 from typing import Any, Awaitable, Callable, cast
 
 import verifiers as vf
+from verifiers.decorators import discover_decorated
 from verifiers.types import (
     GroupRewardFunc,
     RewardFunc,
@@ -53,25 +54,8 @@ class Rubric:
         if self.parser:
             self.class_objects["parser"] = self.parser
 
-        # Discover @vf.cleanup-decorated methods
-        self._cleanup_handlers: list[Callable[[State], Awaitable[None]]] = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "cleanup") and callable(method)
-        ]
-        self._cleanup_handlers.sort(
-            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
-        )
-
-        # Discover @vf.teardown-decorated methods
-        self._teardown_handlers: list[Callable[[], Awaitable[None]]] = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "teardown") and callable(method)
-        ]
-        self._teardown_handlers.sort(
-            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
-        )
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
 
     # public helpers
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
