@@ -12,8 +12,9 @@ class TestOracleRubric:
         """Test OracleRubric initialization with a simple callable oracle."""
         rubric = vf.OracleRubric(oracle=len)
 
-        assert rubric.funcs == [rubric.oracle_property, rubric.correct_answer]
-        assert rubric.weights == [0.0, 1.0]
+        assert len(rubric.funcs) == 1
+        assert rubric.funcs[0].__name__ == "score_function"
+        assert rubric.weights == [1.0]
         assert isinstance(rubric.parser, vf.Parser)
 
     @pytest.mark.asyncio
@@ -39,8 +40,7 @@ class TestOracleRubric:
 
         await rubric.score_rollout(state)
 
-        assert state["metrics"]["oracle_property"] == 6.0
-        assert state["metrics"]["correct_answer"] == 1.0
+        assert state["metrics"]["score_function"] == 1.0
         assert state["oracle_property_value"] == 6
         assert state["oracle_threshold"] == 5.0
 
@@ -78,10 +78,71 @@ class TestOracleRubric:
 
         await rubric.score_rollout(state)
 
-        assert state["metrics"]["oracle_property"] == pytest.approx(0.5)
-        assert state["metrics"]["correct_answer"] == 1.0
+        assert state["metrics"]["score_function"] == 1.0
         assert state["oracle_response"] == {"score": 0.5}
         assert state["oracle_match"] is True
+
+    @pytest.mark.asyncio
+    async def test_oracle_property_metric_can_be_enabled(self, make_input):
+        """Test oracle_property metric is available when explicitly enabled."""
+        rubric = vf.OracleRubric(
+            oracle=len,
+            expose_oracle_property_metric=True,
+        )
+
+        state = vf.State(
+            input=make_input(
+                prompt="test prompt",
+                answer={"threshold": 3},
+                task="test_task",
+            )
+        )
+        state["completion"] = "abcd"
+        state["trajectory"] = []
+        state["timing"] = {
+            "generation_ms": 0.0,
+            "scoring_ms": 0.0,
+            "total_ms": 0.0,
+            "start_time": 0.0,
+        }
+
+        await rubric.score_rollout(state)
+
+        assert state["metrics"]["oracle_property"] == 4.0
+        assert state["metrics"]["score_function"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_score_function_can_use_answer_directly(self, make_input):
+        """Test simplified mode where score_function reads answer directly, without extractors."""
+
+        def score_fn(property_value, answer, **kwargs):
+            threshold = float(answer.get("threshold", 0.0))
+            return 1.0 if float(property_value) >= threshold else 0.0
+
+        rubric = vf.OracleRubric(
+            oracle=len,
+            score_function=score_fn,
+        )
+
+        state = vf.State(
+            input=make_input(
+                prompt="test prompt",
+                answer={"threshold": 4},
+                task="test_task",
+            )
+        )
+        state["completion"] = "hello"
+        state["trajectory"] = []
+        state["timing"] = {
+            "generation_ms": 0.0,
+            "scoring_ms": 0.0,
+            "total_ms": 0.0,
+            "start_time": 0.0,
+        }
+
+        await rubric.score_rollout(state)
+
+        assert state["metrics"]["score_fn"] == 1.0
 
     @pytest.mark.asyncio
     async def test_oracle_measurement_is_cached_within_rollout(self, make_input):

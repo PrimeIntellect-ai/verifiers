@@ -24,10 +24,13 @@ class OracleRubric(Rubric):
         oracle_fn: Callable[..., Any] | None = None,
         backend_caller: Callable[..., Any] | None = None,
         oracle_input_fn: Callable[..., Any] | None = None,
+        process_output: Callable[..., Any] | None = None,
         property_extractor: Callable[..., Any] | None = None,
+        score_function: Callable[..., bool | float] | None = None,
         comparator: Callable[..., bool | float] | None = None,
         target_extractor: Callable[[Any], Any] | None = None,
         threshold_extractor: Callable[[Any], float | None] | None = None,
+        expose_oracle_property_metric: bool = False,
         cache_measurements: bool = True,
     ):
         super().__init__(parser=parser)
@@ -35,21 +38,40 @@ class OracleRubric(Rubric):
             raise ValueError(
                 "Provide either `oracle_fn` or `backend_caller`, not both."
             )
+        if score_function is not None and comparator is not None:
+            raise ValueError(
+                "Provide either `score_function` or `comparator`, not both."
+            )
 
         self.oracle_backend = oracle
         self.oracle_fn = oracle_fn or backend_caller
         self.oracle_input_fn = oracle_input_fn or self._default_oracle_input
-        self.property_extractor = property_extractor or self._default_property_extractor
-        self.comparator = comparator or self._default_comparator
-        self.target_extractor = target_extractor or self._default_target_extractor
-        self.threshold_extractor = (
-            threshold_extractor or self._default_threshold_extractor
+        self.process_output = process_output
+        self.property_extractor = property_extractor
+        self._score_function = score_function or comparator or self._default_comparator
+        self._score_metric_name = self._resolve_score_metric_name(
+            score_function=score_function,
+            comparator=comparator,
         )
+        self.comparator = self._score_function
+        if score_function is not None and comparator is None:
+            # In direct score_function mode, extractor hooks are optional.
+            self.target_extractor = target_extractor
+            self.threshold_extractor = threshold_extractor
+        else:
+            # Backward-compatible comparator mode keeps old defaults.
+            self.target_extractor = target_extractor or self._default_target_extractor
+            self.threshold_extractor = (
+                threshold_extractor or self._default_threshold_extractor
+            )
+        self.expose_oracle_property_metric = expose_oracle_property_metric
         self.cache_measurements = cache_measurements
         self.logger = logging.getLogger(__name__)
 
-        self.add_metric(self.oracle_property)
-        self.add_reward_func(self.correct_answer)
+        if self.expose_oracle_property_metric:
+            self.add_metric(self.oracle_property)
+        self._score_reward_entry = self._make_score_reward_entry()
+        self.add_reward_func(self._score_reward_entry)
 
         self.class_objects = {
             "parser": self.parser,
@@ -57,11 +79,47 @@ class OracleRubric(Rubric):
             "oracle_backend": self.oracle_backend,
             "oracle_fn": self.oracle_fn,
             "oracle_input_fn": self.oracle_input_fn,
+            "process_output": self.process_output,
             "property_extractor": self.property_extractor,
-            "comparator": self.comparator,
+            "score_function": self._score_function,
+            "score_metric_name": self._score_metric_name,
+            "comparator": self._score_function,
             "target_extractor": self.target_extractor,
             "threshold_extractor": self.threshold_extractor,
+            "expose_oracle_property_metric": self.expose_oracle_property_metric,
         }
+
+    def _resolve_score_metric_name(
+        self,
+        score_function: Callable[..., Any] | None,
+        comparator: Callable[..., Any] | None,
+    ) -> str:
+        if score_function is not None:
+            name = getattr(score_function, "__name__", "")
+            if name and not name.startswith("<"):
+                return name
+        if comparator is not None:
+            return "score_function"
+        return "score_function"
+
+    def _make_score_reward_entry(self) -> Callable[..., Any]:
+        async def _score_reward_entry(
+            prompt: Messages,
+            completion: Messages,
+            answer: Any,
+            state: State | None = None,
+            **kwargs,
+        ) -> float:
+            return await self.score_function(
+                prompt=prompt,
+                completion=completion,
+                answer=answer,
+                state=state,
+                **kwargs,
+            )
+
+        _score_reward_entry.__name__ = self._score_metric_name
+        return _score_reward_entry
 
     def _default_oracle_input(
         self,
@@ -143,6 +201,9 @@ class OracleRubric(Rubric):
         )
 
         # Check cache
+        # TODO: Harden cache key for multi-prediction servers by including normalized
+        # oracle_input (and optionally a caller/extractor discriminator) so different
+        # prediction types do not collide when prompt/response/answer are similar.
         cache_key = self._cache_key(prompt, response, answer)
         cached = state.get("oracle_cache") if state else None
         if (
@@ -150,15 +211,7 @@ class OracleRubric(Rubric):
             and isinstance(cached, dict)
             and cache_key in cached
         ):
-            cached_output = cached[cache_key]
-            valid_predict_call = True
-            if isinstance(cached_output, dict):
-                valid_predict_call = bool(
-                    cached_output.get("valid_predict_call", True)
-                )
-
-            if valid_predict_call:
-                return cached_output
+            return cached[cache_key]
 
         # Invoke oracle with error handling
         try:
@@ -170,6 +223,19 @@ class OracleRubric(Rubric):
                 answer=answer,
                 state=state,
             )
+            if self.process_output is not None:
+                oracle_output = await self._call_with_supported_kwargs(
+                    self.process_output,
+                    oracle_output=oracle_output,
+                    oracle=self.oracle_backend,
+                    oracle_backend=self.oracle_backend,
+                    oracle_input=oracle_input,
+                    response=response,
+                    prompt=prompt,
+                    completion=completion,
+                    answer=answer,
+                    state=state,
+                )
         except Exception as e:
             self.logger.warning(
                 f"Oracle invocation failed. Oracle: {self.oracle_backend}, Error: {str(e)}"
@@ -282,7 +348,7 @@ class OracleRubric(Rubric):
         completion: Messages,
         answer: Any,
         state: State | None = None,
-    ) -> Any:
+    ) -> tuple[Any, Any]:
         """Measure oracle property by invoking oracle and extracting result.
         
         Uses the oracle() method as the inference point, then extracts the
@@ -299,24 +365,28 @@ class OracleRubric(Rubric):
             state=state,
         )
 
-        # Extract property from oracle output
-        property_value = await self._call_with_supported_kwargs(
-            self.property_extractor,
-            oracle_output=oracle_output,
-            oracle=self.oracle_backend,
-            oracle_backend=self.oracle_backend,
-            response=response,
-            prompt=prompt,
-            completion=completion,
-            answer=answer,
-            state=state,
-        )
+        # If oracle_fn returns a direct value (float/bool/etc.), pass it through.
+        # property_extractor is only applied for dict-shaped server responses.
+        if isinstance(oracle_output, dict) and self.property_extractor is not None:
+            property_value = await self._call_with_supported_kwargs(
+                self.property_extractor,
+                oracle_output=oracle_output,
+                oracle=self.oracle_backend,
+                oracle_backend=self.oracle_backend,
+                response=response,
+                prompt=prompt,
+                completion=completion,
+                answer=answer,
+                state=state,
+            )
+        else:
+            property_value = oracle_output
 
         if state is not None:
             state["oracle_response"] = oracle_output
             state["oracle_property_value"] = property_value
 
-        return property_value
+        return property_value, oracle_output
 
     async def oracle_property(
         self,
@@ -326,12 +396,52 @@ class OracleRubric(Rubric):
         state: State | None = None,
         **kwargs,
     ) -> float:
-        property_value = await self.measure_property(prompt, completion, answer, state)
+        property_value, _ = await self.measure_property(prompt, completion, answer, state)
         if isinstance(property_value, bool):
             return float(property_value)
         if isinstance(property_value, (int, float)):
             return float(property_value)
         return 0.0
+
+    async def score_function(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: Any,
+        state: State | None = None,
+        **kwargs,
+    ) -> float:
+        property_value, oracle_output = await self.measure_property(
+            prompt,
+            completion,
+            answer,
+            state,
+        )
+        target = self.target_extractor(answer) if callable(self.target_extractor) else None
+        threshold = (
+            self.threshold_extractor(answer)
+            if callable(self.threshold_extractor)
+            else None
+        )
+        result = await self._call_with_supported_kwargs(
+            self._score_function,
+            property_value=property_value,
+            oracle_output=oracle_output,
+            target=target,
+            threshold=threshold,
+            prompt=prompt,
+            completion=completion,
+            answer=answer,
+            state=state,
+            **kwargs,
+        )
+        score = float(result)
+        if state is not None:
+            state["oracle_target"] = target
+            state["oracle_threshold"] = threshold
+            state["oracle_match"] = bool(result)
+            state["oracle_score"] = score
+        return score
 
     async def correct_answer(
         self,
@@ -341,23 +451,11 @@ class OracleRubric(Rubric):
         state: State | None = None,
         **kwargs,
     ) -> float:
-        property_value = await self.measure_property(prompt, completion, answer, state)
-        target = self.target_extractor(answer)
-        threshold = self.threshold_extractor(answer)
-        result = await self._call_with_supported_kwargs(
-            self.comparator,
-            property_value=property_value,
-            target=target,
-            threshold=threshold,
+        """Backward-compatible alias for score_function."""
+        return await self.score_function(
             prompt=prompt,
             completion=completion,
             answer=answer,
             state=state,
+            **kwargs,
         )
-        score = float(result)
-        if state is not None:
-            state["oracle_target"] = target
-            state["oracle_threshold"] = threshold
-            state["oracle_match"] = bool(result)
-            state["oracle_score"] = score
-        return score
