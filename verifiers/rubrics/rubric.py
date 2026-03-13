@@ -63,6 +63,16 @@ class Rubric:
             key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
         )
 
+        # Discover @vf.teardown-decorated methods
+        self._teardown_handlers: list[Callable[[], Awaitable[None]]] = [
+            method
+            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
+            if hasattr(method, "teardown") and callable(method)
+        ]
+        self._teardown_handlers.sort(
+            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
+        )
+
     # public helpers
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
         self.funcs.append(func)
@@ -227,6 +237,11 @@ class Rubric:
         """Run all @vf.cleanup-decorated methods on this rubric."""
         for handler in self._cleanup_handlers:
             await handler(state)
+
+    async def teardown(self):
+        """Run all @vf.teardown-decorated methods on this rubric."""
+        for handler in self._teardown_handlers:
+            await handler()
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""

@@ -82,6 +82,11 @@ class RubricGroup(Rubric):
         for rubric in self.rubrics:
             await rubric.cleanup(state)
 
+    async def teardown(self):
+        """Run teardown for all rubrics in the group."""
+        for rubric in self.rubrics:
+            await rubric.teardown()
+
     async def score_group(self, states: list[State]):
         """
         Evaluate all reward functions in-place for a group of rollouts.
