@@ -98,7 +98,7 @@ async def call_solubility_oracle(
         if edited_smiles is None:
             return {"valid_predict_call": False}
 
-        return await backend.predict(edited_smiles=edited_smiles)
+        return await backend.predict(edited_smiles=edited_smiles) #Output: {"edited_solubility": <float>, "valid_predict_call": True}
     except Exception:
         return {"valid_predict_call": False}
 
