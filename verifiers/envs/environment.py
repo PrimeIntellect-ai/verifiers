@@ -667,6 +667,7 @@ class Environment(ABC):
         """
         Tear down environment resources.
         """
+        await self.rubric.teardown()
         for handler in self._teardown_handlers:
             await handler()
 
