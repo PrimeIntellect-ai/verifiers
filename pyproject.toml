@@ -50,6 +50,7 @@ dependencies = [
     "gepa",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
+    "agent-client-protocol>=0.8.1",
 ]
 
 [dependency-groups]
