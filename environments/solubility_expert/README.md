@@ -6,7 +6,7 @@
 
 ### Overview
 - **Environment ID**: `solubility_expert`
-- **Short description**: Solubility Expert environment using `OracleRubric` on a SMILES editing task with a mock oracle or a real Rowan solubility workflow backend.
+- **Short description**: Solubility Expert environment to test experimental `OracleRubric` on a SMILES editing task with a mock oracle or a real Rowan solubility workflow backend.
 - **Tags**: oracle, rubric, single-turn, chemistry, smiles, api
 
 ### Task
