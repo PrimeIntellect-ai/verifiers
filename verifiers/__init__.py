@@ -1,9 +1,13 @@
 __version__ = "0.1.11"
 
 import importlib
+import os
 from typing import TYPE_CHECKING
 
 from .errors import *  # noqa: F401,F403
+from .utils.logging_utils import setup_logging
+
+setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
     "DatasetBuilder",
