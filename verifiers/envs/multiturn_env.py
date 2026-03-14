@@ -71,13 +71,9 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
         if len(state["trajectory"]) == 0:
-            return normalize_messages(state["prompt"], field_name="state.prompt")
-        prev_turn_prompt = normalize_messages(
-            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
-        )
-        prev_turn_completion = normalize_messages(
-            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
-        )
+            return state["prompt"]
+        prev_turn_prompt = state["trajectory"][-1]["prompt"]
+        prev_turn_completion = state["trajectory"][-1]["completion"]
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(messages, state)
         env_response_messages = normalize_messages(
@@ -90,23 +86,21 @@ class MultiTurnEnv(vf.Environment):
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
-        last_prompt = normalize_messages(
-            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
-        )
-        last_completion = normalize_messages(
-            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
-        )
+        last_prompt = state["trajectory"][-1]["prompt"]
+        last_completion = state["trajectory"][-1]["completion"]
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
-            full_conversation = concat_messages(
-                [
-                    full_conversation,
-                    normalize_messages(
-                        state["final_env_response"], field_name="final_env_response"
-                    ),
-                ]
-            )
-        prompt_messages = normalize_messages(state["prompt"], field_name="state.prompt")
+            final_resp = state["final_env_response"]
+            if isinstance(final_resp, str) or (
+                isinstance(final_resp, list)
+                and final_resp
+                and isinstance(final_resp[0], dict)
+            ):
+                final_resp = normalize_messages(
+                    final_resp, field_name="final_env_response"
+                )
+            full_conversation = concat_messages([full_conversation, final_resp])
+        prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
