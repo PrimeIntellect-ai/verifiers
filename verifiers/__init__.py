@@ -35,6 +35,7 @@ from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
 from .rubrics.judge_rubric import JudgeRubric
+from .rubrics.experimental.oracle_rubric import OracleRubric
 from .rubrics.rubric_group import RubricGroup
 from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.data_utils import (
@@ -61,6 +62,7 @@ __all__ = [
     "XMLParser",
     "Rubric",
     "JudgeRubric",
+    "OracleRubric",
     "RubricGroup",
     "MathRubric",
     "TextArenaEnv",
@@ -170,6 +172,7 @@ if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .rubrics.experimental.oracle_rubric import OracleRubric  # noqa: F401
 
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any

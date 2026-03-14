@@ -1,0 +1,18 @@
+[project]
+name = "solubility_expert"
+version = "0.1.0"
+tags = ["oracle", "rubric", "single-turn", "scoring", "api"]
+license = "Apache-2.0"
+description = "Example environment that scores model outputs with OracleRubric using an API-style oracle."
+dependencies = [
+    "verifiers>=0.1.5.post0",
+    "datasets",
+    "rowan-python",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["solubility_expert.py"]
