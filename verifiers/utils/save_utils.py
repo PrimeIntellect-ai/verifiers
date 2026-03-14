@@ -23,7 +23,10 @@ from verifiers.types import (
     Tool,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import (
+    sanitize_tool_calls,
+    serialize_messages_for_output,
+)
 from verifiers.utils.metric_utils import compute_pass_at_k
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.usage_utils import (
@@ -196,11 +199,13 @@ def state_to_output(
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
-        output_prompt = sanitize_tool_calls(messages_to_printable(prompt))
+        output_prompt = sanitize_tool_calls(serialize_messages_for_output(prompt))
         output["prompt"] = output_prompt
     completion = state.get("completion")
     if completion is not None:
-        output_completion = sanitize_tool_calls(messages_to_printable(completion))
+        output_completion = sanitize_tool_calls(
+            serialize_messages_for_output(completion)
+        )
         output["completion"] = output_completion
     # use repr for error
     if state.get("error") is not None:

@@ -1440,7 +1440,9 @@ class RLMExecutor(SandboxMixin):
         if session.sandbox_id:
             await self.delete_sandbox(session.sandbox_id)
 
-        await asyncio.to_thread(shutil.rmtree, session.local_rollout_dir, True)
+        await asyncio.to_thread(
+            lambda: shutil.rmtree(session.local_rollout_dir, ignore_errors=True)
+        )
 
     async def teardown(self) -> None:
         if self._sessions:
