@@ -36,19 +36,20 @@ prime env install math-python --from-repo
 
 ### 1. Build From Scratch
 1. Define task contract first: prompt shape, allowed tools, stop conditions, rubric outputs, metrics.
-2. Select the smallest correct base class:
+2. Build prompts with typed message constructors (`vf.UserMessage`, `vf.SystemMessage`, etc.) instead of raw dicts. For multimodal prompts, compose content parts: `vf.UserMessage("Describe:", vf.Image(url))`. See `docs/reference.md#message-constructors` and `docs/reference.md#content-part-types`.
+3. Select the smallest correct base class:
 - `SingleTurnEnv` for one-response tasks.
 - `MultiTurnEnv` for custom interaction loops.
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
-3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
-4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
+4. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
+5. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 
 ### 2. Port From Another Library, Project, or Paper
 1. Create a strict source-to-target mapping before coding:
 - dataset rows and splits
 - prompt rendering and role ordering
-- tool I/O schema and stop logic
+- tool I/O schema and stop logic (tools can return multimodal content as `list` of parts, e.g. `[vf.Text(...), vf.Image.from_b64(...)]`)
 - scoring math and aggregation
 - pass/fail thresholds and special cases
 2. Preserve one-to-one logical equivalence for what the model sees and what gets scored.

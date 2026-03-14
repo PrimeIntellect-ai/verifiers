@@ -11,13 +11,18 @@ def is_valid_tool_content_parts(value: Any) -> bool:
     """Check if value is a valid list of tool content parts.
 
     Valid content parts have a "type" field with value "text" or "image_url".
+    Accepts both plain dicts and Pydantic model instances (e.g. vf.Text, vf.Image).
     """
     if not isinstance(value, list):
         return False
     for item in value:
-        if not isinstance(item, dict):
+        if isinstance(item, dict):
+            item_type = item.get("type")
+        elif hasattr(item, "type"):
+            item_type = getattr(item, "type")
+        else:
             return False
-        if item.get("type") not in VALID_TOOL_CONTENT_PART_TYPES:
+        if item_type not in VALID_TOOL_CONTENT_PART_TYPES:
             return False
     return True
 

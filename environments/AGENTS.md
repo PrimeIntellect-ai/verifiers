@@ -123,6 +123,29 @@ Together, these construct the full prompt:
 
 If your dataset already has a `prompt` column, `question` is ignored. However, if a `system_prompt` is provided, it will be prepended to existing prompts that don't already start with a system message.
 
+You can also build prompts using typed message constructors instead of raw dicts:
+
+```python
+dataset = Dataset.from_list([
+    {"prompt": [vf.UserMessage("What is 2+2?")], "answer": "4"},
+])
+```
+
+For multimodal prompts (e.g. images), use content part types:
+
+```python
+dataset = Dataset.from_list([
+    {
+        "prompt": [
+            vf.UserMessage("Describe this image:", vf.Image("https://example.com/photo.png")),
+        ],
+        "answer": "A sunset over the ocean.",
+    },
+])
+```
+
+See the [Content Part Types](reference.md#content-part-types) and [Message Constructors](reference.md#message-constructors) reference for all available types.
+
 ### Evaluation Datasets
 
 Environments can be initialized with a separate `eval_dataset` for evaluation, distinct from the training dataset:
@@ -440,6 +463,17 @@ vf_env = vf.ToolEnv(
 ```
 
 During rollouts, the model can call tools, receive results, and continue reasoning until it produces a response without tool calls (or hits `max_turns`). Each turn consists of a model response followed by the environment's tool execution. Tool call counts are tracked automatically via monitor rubrics (see above).
+
+Tools can return multimodal content by returning a list of content parts instead of a plain string:
+
+```python
+async def screenshot_tool(url: str) -> list:
+    """Take a screenshot of a webpage."""
+    screenshot_b64 = await capture_screenshot(url)
+    return [vf.Text(f"Screenshot of {url}"), vf.Image.from_b64(screenshot_b64)]
+```
+
+When a tool returns a `list` of content parts (with `type` equal to `"text"` or `"image_url"`), `ToolEnv` preserves the structured content in the tool message. Otherwise, the return value is converted to a string.
 
 ### MCP Tool Environments
 
