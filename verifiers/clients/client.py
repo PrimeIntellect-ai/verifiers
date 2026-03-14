@@ -1,15 +1,8 @@
+import importlib
 import logging
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from typing import TYPE_CHECKING, Generic, TypeVar
-
-from anthropic import (
-    AuthenticationError as AnthropicAuthenticationError,
-)
-from anthropic import (
-    PermissionDeniedError as AnthropicPermissionDeniedError,
-)
-from openai import AuthenticationError as OpenAIAuthenticationError
-from openai import PermissionDeniedError as OpenAIPermissionDeniedError
 
 from verifiers.errors import Error, ModelError
 from verifiers.types import (
@@ -28,12 +21,29 @@ MessagesT = TypeVar("MessagesT")
 ResponseT = TypeVar("ResponseT")
 ToolT = TypeVar("ToolT")
 
-AUTH_ERRORS: tuple[type[Exception], ...] = (
-    OpenAIAuthenticationError,
-    OpenAIPermissionDeniedError,
-    AnthropicAuthenticationError,
-    AnthropicPermissionDeniedError,
-)
+
+@lru_cache(maxsize=1)
+def _auth_error_types() -> tuple[type[Exception], ...]:
+    error_types: list[type[Exception]] = []
+    candidates = {
+        "openai": ("AuthenticationError", "PermissionDeniedError"),
+        "anthropic": ("AuthenticationError", "PermissionDeniedError"),
+    }
+    for module_name, class_names in candidates.items():
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for class_name in class_names:
+            error_cls = getattr(module, class_name, None)
+            if isinstance(error_cls, type) and issubclass(error_cls, Exception):
+                error_types.append(error_cls)
+    return tuple(error_types)
+
+
+def _is_auth_error(error: Exception) -> bool:
+    auth_error_types = _auth_error_types()
+    return bool(auth_error_types) and isinstance(error, auth_error_types)
 
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
@@ -122,7 +132,7 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
             return response
         except Error:
             raise
-        except AUTH_ERRORS:
-            raise
         except Exception as e:
+            if _is_auth_error(e):
+                raise
             raise ModelError from e

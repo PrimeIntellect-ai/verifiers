@@ -12,11 +12,11 @@ from typing import (
     TypeAlias,
 )
 
-from anthropic.types import RedactedThinkingBlock
-from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
+    from anthropic.types import RedactedThinkingBlock
+    from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
 
     from verifiers.clients import Client
@@ -117,7 +117,10 @@ class ToolCall(CustomBaseModel):
     arguments: str
 
 
-ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
+if TYPE_CHECKING:
+    ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
+else:
+    ThinkingBlock: TypeAlias = Any
 
 
 class AssistantMessage(CustomBaseModel):

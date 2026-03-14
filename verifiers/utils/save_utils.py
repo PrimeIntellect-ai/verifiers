@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import time
@@ -5,10 +7,8 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from datasets import Dataset
-from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
@@ -33,6 +33,10 @@ from verifiers.utils.usage_utils import (
     extract_usage_tokens as extract_usage_tokens_from_response,
 )
 from verifiers.utils.version_utils import get_version_info
+
+if TYPE_CHECKING:
+    from datasets import Dataset
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -593,6 +597,8 @@ def save_metadata(metadata: GenerateMetadata, result_path: Path):
 
 def make_dataset(results: GenerateOutputs) -> Dataset:
     """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
+    from datasets import Dataset
+
     return Dataset.from_list(list(results["outputs"]))
 
 

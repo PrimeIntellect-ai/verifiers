@@ -1,7 +1,5 @@
 from typing import Any
 
-from agents.function_schema import function_schema
-
 from verifiers.types import Tool
 
 VALID_TOOL_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
@@ -24,6 +22,8 @@ def is_valid_tool_content_parts(value: Any) -> bool:
 
 def convert_func_to_tool_def(func: Any) -> Tool:
     """Convert *func* to a provider-agnostic vf.Tool definition."""
+    from agents.function_schema import function_schema
+
     function_schema_obj = function_schema(func)
     return Tool(
         name=func.__name__,

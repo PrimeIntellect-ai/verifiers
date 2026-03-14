@@ -19,13 +19,6 @@ from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
 from .clients.client import Client  # noqa # isort: skip
-from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa # isort: skip
-from .clients.openai_chat_completions_client import OpenAIChatCompletionsClient  # noqa # isort: skip
-from .clients.openai_chat_completions_token_client import (
-    OpenAIChatCompletionsTokenClient,
-)  # noqa # isort: skip
-
-from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup
@@ -108,6 +101,18 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
+    "AnthropicMessagesClient": (
+        "verifiers.clients.anthropic_messages_client:AnthropicMessagesClient"
+    ),
+    "OpenAIChatCompletionsClient": (
+        "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
+    ),
+    "OpenAIChatCompletionsTokenClient": (
+        "verifiers.clients.openai_chat_completions_token_client:OpenAIChatCompletionsTokenClient"
+    ),
+    "OpenAICompletionsClient": (
+        "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
     "get_model": "verifiers_rl.rl.trainer.utils:get_model",
     "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
@@ -159,6 +164,14 @@ def __getattr__(name: str):
 if TYPE_CHECKING:
     from typing import Any
 
+    from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa: F401
+    from .clients.openai_chat_completions_client import (  # noqa: F401
+        OpenAIChatCompletionsClient,
+    )
+    from .clients.openai_chat_completions_token_client import (  # noqa: F401
+        OpenAIChatCompletionsTokenClient,
+    )
+    from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
