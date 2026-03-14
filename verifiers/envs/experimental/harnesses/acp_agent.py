@@ -72,10 +72,14 @@ class ACPCollector:
         self.parts: list[str] = []
 
     def on_connect(self, conn: Any) -> None:
-        del conn
+        pass
 
-    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        del session_id, kwargs
+    async def session_update(
+        self,
+        session_id: str,
+        update: Any,
+        **kwargs: Any,
+    ) -> None:
         if not isinstance(update, AgentMessageChunk):
             return
         if not isinstance(update.content, TextContentBlock):
@@ -123,11 +127,9 @@ class ACPHarness(Harness):
         state.setdefault("agent_stderr", "")
 
     async def start(self, env: Any, state: State) -> None:
-        del env
         state["agent_start_time"] = time.time()
 
     async def build_env_vars(self, env: Any, state: State) -> dict[str, str]:
-        del env
         env_vars: dict[str, str] = {}
         resolved_model = self.resolve_session_model_id(state, None)
         if resolved_model:
@@ -135,7 +137,6 @@ class ACPHarness(Harness):
         return env_vars
 
     def normalize_response(self, env: Any, response: Response) -> Response:
-        del env
         message = response.message
         content = message.content
         if isinstance(content, str):
@@ -205,8 +206,6 @@ class ACPHarness(Harness):
         tool_defs: list[Tool] | None = None,
         sampling_args: vf.SamplingArgs | None = None,
     ) -> Response:
-        del env, client, tool_defs, sampling_args
-
         resolved_model = self.resolve_session_model_id(state, model) or "acp-agent"
         if not prompt:
             state["agent_completed"] = True
@@ -295,11 +294,10 @@ class ACPHarness(Harness):
         state["agent_completed"] = True
 
     async def cleanup(self, env: Any, state: State) -> None:
-        del env
         state.pop("acp_mcp_servers", None)
 
     async def teardown(self, env: Any) -> None:
-        del env
+        pass
 
     async def run_acp_prompt(
         self,

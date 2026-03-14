@@ -56,25 +56,23 @@ class SWEBenchVerifiedEnv(TaskAgentEnv):
         team_id: str | None = None,
         advanced_configs: Any | None = None,
         labels: list[str] | None = None,
-        include_hints: bool = True,
         **kwargs,
     ):
-        if harness is None:
-            harness = OpenCodeHarness(
-                asset_dir=asset_dir,
-                agent_workdir=agent_workdir,
-                disabled_tools=disabled_tools,
-                system_prompt=system_prompt,
-                install_command=install_command,
-                run_command_template=run_command_template,
-                disable_compaction=disable_compaction,
-                enable_interleaved=enable_interleaved,
-                provider_timeout_ms=provider_timeout_ms,
-                interception_port=interception_port,
-                interception_url=interception_url,
-                poll_interval=poll_interval,
-                timeout_seconds=timeout_seconds,
-            )
+        harness = OpenCodeHarness(
+            asset_dir=asset_dir,
+            agent_workdir=agent_workdir,
+            disabled_tools=disabled_tools,
+            system_prompt=system_prompt,
+            install_command=install_command,
+            run_command_template=run_command_template,
+            disable_compaction=disable_compaction,
+            enable_interleaved=enable_interleaved,
+            provider_timeout_ms=provider_timeout_ms,
+            interception_port=interception_port,
+            interception_url=interception_url,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
         taskset = SWEBenchVerifiedTaskSet(
             dataset_name=dataset_name,
             dataset_split=dataset_split,
@@ -94,7 +92,6 @@ class SWEBenchVerifiedEnv(TaskAgentEnv):
             team_id=team_id,
             advanced_configs=advanced_configs,
             labels=labels,
-            include_hints=include_hints,
         )
 
         kwargs.setdefault("env_id", "swebench_verified")

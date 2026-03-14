@@ -159,8 +159,7 @@ async def test_acp_harness_maps_length_stop_reason(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_acp_harness_tracks_timeout_as_agent_failure(monkeypatch):
-    async def fake_run_prompt(**kwargs):
-        del kwargs
+    async def fake_run_prompt(**_kwargs):
         raise vf.InfraError("Timed out waiting for ACP agent after 5.0 seconds.")
 
     harness = ACPHarness(timeout_seconds=5.0)
