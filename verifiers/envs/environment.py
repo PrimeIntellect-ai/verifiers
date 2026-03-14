@@ -710,6 +710,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -730,9 +731,13 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         resolved_client = resolve_client(client)
+
+        if actor_models is not None:
+            self._actor_models = actor_models
 
         async def run_rollout_attempt() -> State:
             state = await self.rollout(
@@ -784,6 +789,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=kwargs.get("actor_models"),
             )
 
         resolved_client = resolve_client(client)

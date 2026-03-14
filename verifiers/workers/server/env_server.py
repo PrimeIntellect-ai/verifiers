@@ -138,15 +138,18 @@ class EnvServer(ABC):
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
         client = await self.resolve_client(request.client_config)
-        output = await self.env.run_rollout(
+        result = await self.env.run_rollout(
             input=request.input,
             client=client,
             model=request.model,
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            actor_models=request.actor_models,
         )
-        return RunRolloutResponse(output=output)
+        if isinstance(result, list):
+            return RunRolloutResponse(outputs=result)
+        return RunRolloutResponse(output=result)
 
     async def handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
         client = await self.resolve_client(request.client_config)
@@ -157,6 +160,7 @@ class EnvServer(ABC):
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            actor_models=request.actor_models,
         )
         return RunGroupResponse(outputs=outputs)
 
