@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from datasets import Dataset
 from prime_sandboxes import AdvancedConfigs
 
 import verifiers as vf
 from verifiers.types import Messages, State
+
+if TYPE_CHECKING:
+    from verifiers.envs.experimental.harnesses.base import Harness
 
 
 @dataclass(slots=True)
@@ -61,6 +64,22 @@ class TaskSet:
     def get_task(self, state: State) -> Task:
         raise NotImplementedError
 
+    def get_task_config(self) -> dict[str, Any] | None:
+        return None
+
+    def get_agent_workdir(self) -> str | None:
+        return None
+
+    def build_harness(self) -> "Harness | None":
+        from verifiers.envs.experimental.harnesses.config import (
+            build_harness_from_config,
+        )
+
+        return build_harness_from_config(
+            self.get_task_config(),
+            agent_workdir=self.get_agent_workdir(),
+        )
+
     def build_rubric(self) -> vf.Rubric | None:
         return None
 
@@ -75,11 +94,15 @@ class StaticTaskSet(TaskSet):
         self,
         dataset: Dataset,
         task_factory: Callable[[State], Task],
+        task_config: dict[str, Any] | None = None,
+        agent_workdir: str | None = None,
         rubric: vf.Rubric | None = None,
         monitor_rubric: vf.Rubric | None = None,
     ):
         self.dataset = dataset
         self.task_factory = task_factory
+        self.task_config = dict(task_config) if task_config is not None else None
+        self.agent_workdir = agent_workdir
         self.rubric = rubric
         self.monitor_rubric = monitor_rubric
 
@@ -88,6 +111,12 @@ class StaticTaskSet(TaskSet):
 
     def get_task(self, state: State) -> Task:
         return self.task_factory(state)
+
+    def get_task_config(self) -> dict[str, Any] | None:
+        return self.task_config
+
+    def get_agent_workdir(self) -> str | None:
+        return self.agent_workdir
 
     def build_rubric(self) -> vf.Rubric | None:
         return self.rubric

@@ -60,6 +60,8 @@ def test_taskset_loads_hf_rows_into_rollout_dataset():
     assert row["info"]["FAIL_TO_PASS"] == ["tests/test_parser.py::test_rewrite"]
     assert row["info"]["PASS_TO_PASS"] == ["tests/test_main.py::test_help"]
     assert row["info"]["task_name"] == "pytest-dev__pytest-12345"
+    assert row["info"]["config"]["agent"]["harness"]["transport"] == "interceptor"
+    assert row["info"]["config"]["agent"]["harness"]["agent"] == "opencode"
     assert row["info"]["config"]["environment"]["docker_image"] == (
         "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-12345:latest"
     )
@@ -114,7 +116,14 @@ def test_swebench_verified_env_composes_new_abstractions():
         "verifiers.envs.experimental.tasksets.swebench_verified.load_dataset",
         return_value=_sample_swebench_dataset(),
     ):
-        env = SWEBenchVerifiedEnv(max_examples=1, disabled_tools=["question", "task"])
+        env = SWEBenchVerifiedEnv(
+            max_examples=1,
+            harness_config={
+                "transport": "interceptor",
+                "agent": "opencode",
+                "disabled_tools": ["question", "task"],
+            },
+        )
 
     assert isinstance(env.harness, OpenCodeHarness)
     assert isinstance(env.taskset, SWEBenchVerifiedTaskSet)
@@ -148,6 +157,28 @@ def test_swebench_verified_env_composes_new_abstractions():
     assert normalized.message.tool_calls[0].arguments == '{"path":"foo.py"}'
 
 
+def test_taskset_writes_custom_harness_config_to_task_toml():
+    with patch(
+        "verifiers.envs.experimental.tasksets.swebench_verified.load_dataset",
+        return_value=_sample_swebench_dataset(),
+    ):
+        taskset = SWEBenchVerifiedTaskSet(
+            max_examples=1,
+            harness_config={
+                "transport": "acp",
+                "agent": "opencode",
+                "cwd": "/testbed",
+            },
+        )
+
+    row = taskset.get_dataset()[0]
+    assert row["info"]["config"]["agent"]["harness"] == {
+        "transport": "acp",
+        "agent": "opencode",
+        "cwd": "/testbed",
+    }
+
+
 def test_swebench_verified_env_accepts_acp_harness():
     with patch(
         "verifiers.envs.experimental.tasksets.swebench_verified.load_dataset",
@@ -158,3 +189,22 @@ def test_swebench_verified_env_accepts_acp_harness():
 
     assert env.harness is harness
     assert isinstance(env.taskset, SWEBenchVerifiedTaskSet)
+
+
+def test_swebench_verified_env_builds_harness_from_task_toml():
+    with patch(
+        "verifiers.envs.experimental.tasksets.swebench_verified.load_dataset",
+        return_value=_sample_swebench_dataset(),
+    ):
+        env = SWEBenchVerifiedEnv(
+            max_examples=1,
+            harness_config={
+                "transport": "acp",
+                "agent": "claude-code",
+                "cwd": "/testbed",
+            },
+        )
+
+    assert isinstance(env.harness, ACPHarness)
+    assert env.harness.command == ("claude", "acp")
+    assert env.harness.cwd == "/testbed"

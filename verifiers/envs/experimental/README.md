@@ -12,6 +12,50 @@ Composable agent environments can be split into three pieces:
 
 `CliAgentEnv` now uses this split internally via the interceptor-based `CliHarness`, while keeping the existing public environment surface.
 
+## Taskset Harness Config
+
+Tasksets can declare the harness in a shared config shape under `agent.harness`. `TaskAgentEnv` can then build the harness from the taskset instead of hardcoding it in the env.
+
+For Harbor tasksets, that means `task.toml` can include:
+
+OpenCode + ACP:
+
+```toml
+[agent]
+timeout_sec = 10800
+
+[agent.harness]
+transport = "acp"
+agent = "opencode"
+cwd = "/testbed"
+```
+
+Claude Code + ACP:
+
+```toml
+[agent]
+timeout_sec = 10800
+
+[agent.harness]
+transport = "acp"
+agent = "claude-code"
+cwd = "/testbed"
+```
+
+OpenCode + interceptor:
+
+```toml
+[agent]
+timeout_sec = 10800
+
+[agent.harness]
+transport = "interceptor"
+agent = "opencode"
+disabled_tools = ["question", "task"]
+```
+
+Non-Harbor tasksets can use the same shape by returning an equivalent dict from `TaskSet.get_task_config()`.
+
 ## GymEnv
 
 Universal runner for Gym-compatible environments. Wraps any environment that implements `reset(seed)` and `step(action)` methods (following the OpenAI Gym / Gymnasium API). Supports both old-style 4-tuple and new-style 5-tuple step returns.

@@ -285,6 +285,15 @@ class HarborTaskSet(TaskSet):
     def build_rubric(self) -> vf.Rubric | None:
         return HarborRewardRubric()
 
+    def get_task_config(self) -> dict[str, Any] | None:
+        if len(self.dataset) == 0:
+            return None
+        info = dict(self.dataset[0]["info"])
+        return dict(info.get("config") or {})
+
+    def get_agent_workdir(self) -> str | None:
+        return self.agent_workdir
+
     def _load_dataset(self) -> Dataset:
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.dataset_path}")

@@ -21,7 +21,7 @@ class TaskAgentEnv(SandboxMixin, MultiTurnEnv):
 
     def __init__(
         self,
-        harness: Harness,
+        harness: Harness | None,
         taskset: TaskSet,
         max_turns: int = -1,
         environment_vars: dict[str, str] | None = None,
@@ -59,8 +59,13 @@ class TaskAgentEnv(SandboxMixin, MultiTurnEnv):
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
         )
-        self.harness = harness
         self.taskset = taskset
+        resolved_harness = harness or taskset.build_harness()
+        if resolved_harness is None:
+            raise ValueError(
+                "TaskAgentEnv requires a harness or taskset.build_harness()."
+            )
+        self.harness = resolved_harness
         self.base_environment_vars = dict(environment_vars or {})
 
         self.add_rubric(SandboxMonitorRubric())

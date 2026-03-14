@@ -44,6 +44,7 @@ timeout_sec = {timeout_seconds}
 
 [agent]
 timeout_sec = {timeout_seconds}
+{harness_toml}
 
 [environment]
 docker_image = {docker_image}
@@ -218,6 +219,7 @@ class SWEBenchVerifiedTaskSet(HarborTaskSet):
         team_id: str | None = None,
         advanced_configs: Any | None = None,
         labels: list[str] | None = None,
+        harness_config: dict[str, Any] | None = None,
     ):
         self.dataset_name = dataset_name
         self.dataset_split = dataset_split
@@ -237,6 +239,9 @@ class SWEBenchVerifiedTaskSet(HarborTaskSet):
         self.team_id = team_id
         self.advanced_configs = advanced_configs
         self.labels = list(labels or ["swebench-verified"])
+        self.harness_config = dict(
+            harness_config or {"transport": "interceptor", "agent": "opencode"}
+        )
         self._generated_tasks_dir = tempfile.TemporaryDirectory(
             prefix="swebench_harbor_"
         )
@@ -317,6 +322,7 @@ class SWEBenchVerifiedTaskSet(HarborTaskSet):
         return _HARBOR_TASK_TOML_TEMPLATE.format(
             difficulty=json.dumps(str(example.get("difficulty") or "hard")),
             timeout_seconds=float(self.timeout_minutes * 60),
+            harness_toml=self.render_harness_toml(),
             docker_image=json.dumps(sandbox.docker_image),
             start_command=json.dumps(sandbox.start_command),
             cpu_cores=sandbox.cpu_cores,
@@ -324,6 +330,25 @@ class SWEBenchVerifiedTaskSet(HarborTaskSet):
             storage=json.dumps(f"{sandbox.disk_size_gb}G"),
             gpu_count=sandbox.gpu_count,
         )
+
+    def render_harness_toml(self) -> str:
+        lines = ["[agent.harness]"]
+        for key, value in self.harness_config.items():
+            if value is None:
+                continue
+            lines.append(f"{key} = {self._toml_value(value)}")
+        return "\n".join(lines)
+
+    def _toml_value(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return json.dumps(value)
+        if isinstance(value, list):
+            return "[" + ", ".join(self._toml_value(item) for item in value) + "]"
+        raise TypeError(f"Unsupported TOML value for harness config: {value!r}")
 
     def render_instruction(self, example: dict[str, Any]) -> str:
         return _HARBOR_INSTRUCTION_TEMPLATE.format(
