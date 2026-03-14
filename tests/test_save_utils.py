@@ -293,9 +293,8 @@ class TestSavingResults:
                 "content": [
                     {"type": "text", "text": "describe this image"},
                     {
-                        "type": "input_image",
-                        "data": "abc123",
-                        "mime_type": "image/png",
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
                     },
                 ],
             }
@@ -383,9 +382,8 @@ class TestSavingResults:
                 "tool_call_id": "call_0",
                 "content": [
                     {
-                        "type": "input_image",
-                        "data": "abc123",
-                        "mime_type": "image/png",
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
                     },
                     {
                         "type": "input_audio",

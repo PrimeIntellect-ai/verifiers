@@ -241,7 +241,7 @@ def _parse_data_url(url: str) -> tuple[str, str] | None:
         return None
 
     compact_data = re.sub(r"\s+", "", data)
-    if not _BASE64_DATA_RE.fullmatch(data):
+    if not _BASE64_DATA_RE.fullmatch(compact_data):
         return None
 
     return media_type.lower(), compact_data
@@ -259,15 +259,6 @@ def _extract_image_part_for_output(part: Mapping[str, Any]) -> dict[str, Any] | 
 
     if not isinstance(url, str):
         return None
-
-    parsed = _parse_data_url(url)
-    if parsed is not None:
-        media_type, data = parsed
-        return {
-            "type": "input_image",
-            "data": data,
-            "mime_type": media_type,
-        }
 
     return {
         "type": "image_url",
@@ -303,12 +294,7 @@ def _extract_audio_part_for_output(part: Mapping[str, Any]) -> dict[str, Any] | 
 
 
 def serialize_message_for_output(message: Any) -> Any:
-    """Serialize a message for saved rollout outputs.
-
-    Preserves multimodal structure while compacting inline data URLs into
-    explicit base64 image records that the platform viewer can render.
-    Audio inputs are preserved as structured base64 payloads when possible.
-    """
+    """Serialize a message for saved rollout outputs in an OpenAI-style multimodal format."""
     if isinstance(message, dict):
         role = message.get("role")
         content = message.get("content")

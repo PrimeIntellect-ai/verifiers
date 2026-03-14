@@ -61,13 +61,20 @@ def test_parse_data_url_accepts_image_base64_with_whitespace():
     )
 
 
+def test_parse_data_url_accepts_extended_whitespace_after_compaction():
+    assert _parse_data_url("data:image/png;base64,ab\fcd\v12==") == (
+        "image/png",
+        "abcd12==",
+    )
+
+
 def test_parse_data_url_rejects_non_image_or_non_base64_data_url():
     assert _parse_data_url("data:text/plain;base64,abc123") is None
     assert _parse_data_url("data:image/png,abc123") is None
     assert _parse_data_url("https://example.com/image.png") is None
 
 
-def test_serialize_message_for_output_converts_data_urls_to_input_image():
+def test_serialize_message_for_output_preserves_data_urls_as_image_url():
     message = {
         "role": "user",
         "content": [
@@ -85,7 +92,10 @@ def test_serialize_message_for_output_converts_data_urls_to_input_image():
         "role": "user",
         "content": [
             {"type": "text", "text": "what is shown?"},
-            {"type": "input_image", "data": "abc123=", "mime_type": "image/png"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:IMAGE/PNG;charset=utf-8;base64,ab c123="},
+            },
         ],
     }
 
@@ -201,7 +211,10 @@ def test_serialize_message_for_output_supports_typed_messages():
     assert serialized == {
         "role": "user",
         "content": [
-            {"type": "input_image", "data": "abc123", "mime_type": "image/png"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc123"},
+            },
             {
                 "type": "input_audio",
                 "input_audio": {"data": "ZHVtbXk=", "format": "wav"},
