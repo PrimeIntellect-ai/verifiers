@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
 
 from verifiers.types import (
     ClientConfig,
     EndpointClientConfig,
 )
+
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +103,8 @@ def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
 
 
 def _setup_openai_client_from_resolved(config: ClientConfig) -> AsyncOpenAI:
+    from openai import AsyncOpenAI
+
     headers, api_key = _build_headers_and_api_key(config)
     return AsyncOpenAI(
         api_key=api_key or "EMPTY",
@@ -114,6 +121,8 @@ def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
 
 
 def _setup_anthropic_client_from_resolved(config: ClientConfig) -> AsyncAnthropic:
+    from anthropic import AsyncAnthropic
+
     headers, api_key = _build_headers_and_api_key(config)
     return AsyncAnthropic(
         api_key=api_key or "EMPTY",
