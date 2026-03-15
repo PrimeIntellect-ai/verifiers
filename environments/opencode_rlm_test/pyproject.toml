@@ -1,0 +1,21 @@
+[project]
+name = "opencode-rlm-test"
+version = "0.1.0"
+description = "Smoke test for OpenCodeRLMEnv with the OC plugin"
+tags = ["eval", "cli_agent", "rlm", "test"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.10",
+    "prime-sandboxes>=0.2.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["opencode_rlm_test.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1
