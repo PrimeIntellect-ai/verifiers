@@ -953,7 +953,7 @@ class ArcMultistrategyEnv(MultiAgentEnv):
 
     def __init__(self, **kwargs):
         self._actor_id = "codegen_v1b"
-        self.actors = ["codegen_v1b", "codegen_v4", "image"]
+        self.actors = ["codegen_v1b", "codegen_v4"]
         self.name = "arc_multistrategy"
         super().__init__(max_turns=1, **kwargs)
 
@@ -1032,13 +1032,6 @@ class ArcMultistrategyEnv(MultiAgentEnv):
         child_inputs.append({
             "task": "codegen_v4",
             "prompt": [{"role": "user", "content": v4_prompt}],
-            "answer": answer_str, "example_id": idx, "info": info_dict,
-        })
-
-        # Image solver
-        child_inputs.append({
-            "task": "image",
-            "prompt": [{"role": "user", "content": ""}],  # prompt built by ImageSolverEnv
             "answer": answer_str, "example_id": idx, "info": info_dict,
         })
 
@@ -1201,15 +1194,13 @@ def load_environment(
 
     codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
     codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
-    image_agent = Agent(id="image", system_prompt=IMAGE_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-VL-4B-Instruct")
 
     pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
-    image_env = ImageSolverEnv(actor_id="image", env_name="image")
 
     Registry(
-        agents=[codegen_v1b_agent, codegen_v4_agent, image_agent],
-        envs=[pipeline_env, codegen_v4_env, image_env],
+        agents=[codegen_v1b_agent, codegen_v4_agent],
+        envs=[pipeline_env, codegen_v4_env],
     )
 
     return pipeline_env
