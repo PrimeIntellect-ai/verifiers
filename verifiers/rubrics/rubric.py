@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, cast
 
 import verifiers as vf
 from verifiers.types import (
@@ -52,6 +52,16 @@ class Rubric:
         self.class_objects = {}
         if self.parser:
             self.class_objects["parser"] = self.parser
+
+        # Discover @vf.cleanup-decorated methods
+        self._cleanup_handlers: list[Callable[[State], Awaitable[None]]] = [
+            method
+            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
+            if hasattr(method, "cleanup") and callable(method)
+        ]
+        self._cleanup_handlers.sort(
+            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
+        )
 
     # public helpers
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
@@ -212,6 +222,11 @@ class Rubric:
                 )
                 ans = [0.0] * len(states)
         return ans
+
+    async def cleanup(self, state: State):
+        """Run all @vf.cleanup-decorated methods on this rubric."""
+        for handler in self._cleanup_handlers:
+            await handler(state)
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""

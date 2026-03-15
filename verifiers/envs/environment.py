@@ -747,6 +747,8 @@ class Environment(ABC):
             else:
                 await self.rubric.dummy_score_rollout(state)
 
+            await self.rubric.cleanup(state)
+
             return state
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
@@ -804,6 +806,10 @@ class Environment(ABC):
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
+
+            for state in group_states:
+                await self.rubric.cleanup(state)
+
             return group_states
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
