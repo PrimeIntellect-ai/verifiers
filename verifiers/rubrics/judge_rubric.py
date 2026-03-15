@@ -1,14 +1,11 @@
-from __future__ import annotations
+from typing import Any
 
-from typing import TYPE_CHECKING, Any
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, State
 from verifiers.utils.async_utils import maybe_await
-
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \
 and a response, determine if the response is correct.
@@ -42,11 +39,7 @@ class JudgeRubric(Rubric):
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
     ):
         super().__init__(parser=parser)
-        if judge_client is None:
-            from openai import AsyncOpenAI
-
-            judge_client = AsyncOpenAI()
-        self.judge_client = judge_client
+        self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
         self.judge_sampling_args = judge_sampling_args or {}
@@ -103,34 +96,34 @@ class JudgeRubric(Rubric):
                 **judge_args,
             )
             judge_response = str(judge_response.choices[0].message.content)
+        except RateLimitError as e:
+            self.logger.warning(
+                f"Rate limit exceeded when calling judge model '{self.judge_model}'. "
+                f"Try reducing concurrency or waiting before retrying. Error: {str(e)}"
+            )
+            raise RuntimeError(
+                f"Judge model rate limit exceeded. Try reducing concurrency or waiting before retrying. "
+                f"Model: {self.judge_model}, Error: {str(e)}"
+            ) from e
+        except APITimeoutError as e:
+            self.logger.warning(
+                f"Timeout when calling judge model '{self.judge_model}'. "
+                f"Increase timeout in judge_sampling_args or check model responsiveness. Error: {str(e)}"
+            )
+            raise RuntimeError(
+                f"Judge model timeout. Increase timeout in judge_sampling_args or check model responsiveness. "
+                f"Model: {self.judge_model}, Error: {str(e)}"
+            ) from e
+        except APIError as e:
+            self.logger.warning(
+                f"API error when calling judge model '{self.judge_model}'. "
+                f"Check model availability and API key. Error: {str(e)}"
+            )
+            raise RuntimeError(
+                f"Judge model API error. Check model availability and API key. "
+                f"Model: {self.judge_model}, Error: {str(e)}"
+            ) from e
         except Exception as e:
-            if _is_openai_error(e, "RateLimitError"):
-                self.logger.warning(
-                    f"Rate limit exceeded when calling judge model '{self.judge_model}'. "
-                    f"Try reducing concurrency or waiting before retrying. Error: {str(e)}"
-                )
-                raise RuntimeError(
-                    f"Judge model rate limit exceeded. Try reducing concurrency or waiting before retrying. "
-                    f"Model: {self.judge_model}, Error: {str(e)}"
-                ) from e
-            if _is_openai_error(e, "APITimeoutError"):
-                self.logger.warning(
-                    f"Timeout when calling judge model '{self.judge_model}'. "
-                    f"Increase timeout in judge_sampling_args or check model responsiveness. Error: {str(e)}"
-                )
-                raise RuntimeError(
-                    f"Judge model timeout. Increase timeout in judge_sampling_args or check model responsiveness. "
-                    f"Model: {self.judge_model}, Error: {str(e)}"
-                ) from e
-            if _is_openai_error(e, "APIError"):
-                self.logger.warning(
-                    f"API error when calling judge model '{self.judge_model}'. "
-                    f"Check model availability and API key. Error: {str(e)}"
-                )
-                raise RuntimeError(
-                    f"Judge model API error. Check model availability and API key. "
-                    f"Model: {self.judge_model}, Error: {str(e)}"
-                ) from e
             self.logger.warning(
                 f"Unexpected error when calling judge model '{self.judge_model}'. "
                 f"Error: {str(e)}"
@@ -146,10 +139,3 @@ class JudgeRubric(Rubric):
             cached[judge_prompt] = judge_response
             state["judge_response"] = cached
         return judge_response
-
-
-def _is_openai_error(error: Exception, class_name: str) -> bool:
-    error_type = type(error)
-    return (
-        error_type.__module__.startswith("openai") and error_type.__name__ == class_name
-    )

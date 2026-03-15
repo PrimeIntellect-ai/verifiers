@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
     from verifiers.clients import Client
     from verifiers.errors import Error
+else:
+    RedactedThinkingBlock = Any
+    AnthropicThinkingBlock = Any
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
@@ -117,10 +120,7 @@ class ToolCall(CustomBaseModel):
     arguments: str
 
 
-if TYPE_CHECKING:
-    ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
-else:
-    ThinkingBlock: TypeAlias = Any
+ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
 
 
 class AssistantMessage(CustomBaseModel):
