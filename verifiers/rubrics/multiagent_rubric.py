@@ -128,6 +128,17 @@ class MultiAgentRubric(Rubric):
                             step["reward"] = state["reward"]
                 continue
 
+            if len(actor_states) < 2:
+                # Single rollout per actor (run_rollout path) — leave
+                # advantage=None so the trainer computes GRPO across the
+                # full batch with proper per-actor grouping.
+                print(f"[RUBRIC] Skipping advantage for actor '{actor_id}' (group_size={len(actor_states)}, reward={actor_states[0]['reward']:.4f})")
+                for state in actor_states:
+                    for step in state.get("trajectory", []):
+                        if step.get("reward") is None:
+                            step["reward"] = state["reward"]
+                continue
+
             actor_rewards = [s["reward"] for s in actor_states]
             mean_reward = sum(actor_rewards) / len(actor_rewards)
 
