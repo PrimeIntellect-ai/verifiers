@@ -2,16 +2,12 @@
 OpenCode RLM Environment.
 
 Extends OpenCodeEnv with the RLM plugin (https://github.com/snimu/oc),
-adding concurrent sub-LLM handling via ``llm-subcall`` / ``llm_batch``.
+adding concurrent sub-LLM handling via ``subagent`` / ``llm-subcall``.
 
-Sub-agent calls (identified by model name) are handled concurrently with
-semaphore-based parallelism control.  Main-agent calls go through the normal
-sequential rollout loop.
-
-The RLM plugin sends ``RLM_SUB_MODEL_ID`` (default ``"sub"``) as the model
-field for ``llm-subcall`` requests.  Subagent sessions are disabled
-(``RLM_DISABLE_SUBAGENT_SESSIONS=true``) so that all sub-LLM traffic goes
-through the identifiable ``llm-subcall`` path.
+Sub-agent calls are identified by the ``X-RLM-Role: sub`` HTTP header
+(set by the OC plugin) and handled concurrently with semaphore-based
+parallelism control.  Main-agent calls go through the normal sequential
+rollout loop.
 """
 
 import asyncio
@@ -123,15 +119,14 @@ class OpenCodeRLMEnv(OpenCodeEnv):
     OpenCodeEnv with the RLM plugin for recursive sub-LLM calls.
 
     Intercepts all API calls from the main agent and its sub-agents.
-    Requests whose intercepted ``model`` field contains
-    *sub_model_identifier* are handled concurrently (with a semaphore);
-    all other requests go through the normal sequential rollout loop.
+    Sub-LLM requests are identified by the ``X-RLM-Role: sub`` HTTP
+    header (set by the OC plugin) and handled concurrently with a
+    semaphore.  All other requests go through the normal sequential
+    rollout loop.
 
     Args:
         plugin_repo: GitHub ``<org>/<repo>`` for the RLM plugin.
         plugin_install_path: Where the plugin is cloned inside the sandbox.
-        sub_model_identifier: Substring used to detect sub-LLM requests in
-            the intercepted ``model`` field.
         sub_model: Optional separate model name for sub-LLM inference.
             Defaults to the same model as the main agent.
         max_sub_llm_parallelism: Semaphore limit for concurrent sub-LLM
@@ -143,14 +138,12 @@ class OpenCodeRLMEnv(OpenCodeEnv):
     DEFAULT_PLUGIN_REPO = "snimu/oc"
     DEFAULT_PLUGIN_BRANCH = "main"
     DEFAULT_PLUGIN_INSTALL_PATH = "/tmp/opencode-rlm"
-    DEFAULT_SUB_MODEL_IDENTIFIER = "sub"
 
     def __init__(
         self,
         plugin_repo: str = DEFAULT_PLUGIN_REPO,
         plugin_branch: str = DEFAULT_PLUGIN_BRANCH,
         plugin_install_path: str = DEFAULT_PLUGIN_INSTALL_PATH,
-        sub_model_identifier: str = DEFAULT_SUB_MODEL_IDENTIFIER,
         sub_model: str | None = None,
         max_sub_llm_parallelism: int = 10,
         sub_llm_max_turns: int = 10,
@@ -161,7 +154,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         self.plugin_repo = plugin_repo
         self.plugin_branch = plugin_branch
         self.plugin_install_path = plugin_install_path
-        self.sub_model_identifier = sub_model_identifier
         self.sub_model = sub_model
         self.sub_llm_max_turns = sub_llm_max_turns
         self.sub_timeout_ms = sub_timeout_ms
@@ -229,18 +221,12 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env = await super().build_env_vars(state)
-        # Tell the RLM plugin's llm-subcall to send this model identifier,
-        # so verifiers can route sub-LLM requests to the concurrent handler.
-        env["RLM_SUB_MODEL_ID"] = self.sub_model_identifier
-        # Route llm-subcall through the interception proxy instead of
-        # calling the real API directly.
-        env["RLM_LLM_SUBCALL_VIA_PROXY"] = "true"
         # Use the OC proxy's custom tool-calling loop for subagent calls
         # instead of OpenCode child sessions (which can't be distinguished
         # from the main agent and would serialize in the rollout loop).
         env["RLM_SUBAGENT_VIA_TOOL_LOOP"] = "true"
-        env["RLM_SUB_MAX_TURNS"] = str(getattr(self, "sub_llm_max_turns", 10))
-        env["RLM_SUB_TIMEOUT"] = str(getattr(self, "sub_timeout_ms", 120000))
+        env["RLM_SUB_MAX_TURNS"] = str(self.sub_llm_max_turns)
+        env["RLM_SUB_TIMEOUT"] = str(self.sub_timeout_ms)
         return env
 
     # ------------------------------------------------------------------
@@ -262,9 +248,9 @@ class OpenCodeRLMEnv(OpenCodeEnv):
     # Sub-LLM detection
     # ------------------------------------------------------------------
 
-    def _is_sub_llm_request(self, intercept: dict[str, Any]) -> bool:
-        model = intercept.get("model") or ""
-        return self.sub_model_identifier in model
+    @staticmethod
+    def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:
+        return intercept.get("headers", {}).get("X-RLM-Role") == "sub"
 
     # ------------------------------------------------------------------
     # Request routing

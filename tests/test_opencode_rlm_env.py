@@ -51,10 +51,6 @@ class TestConstructorDefaults:
         env = build_env()
         assert env.plugin_install_path == "/tmp/opencode-rlm"
 
-    def test_default_sub_model_identifier(self):
-        env = build_env()
-        assert env.sub_model_identifier == "sub"
-
     def test_default_sub_model(self):
         env = build_env()
         assert env.sub_model is None
@@ -72,7 +68,6 @@ class TestConstructorDefaults:
             plugin_repo="org/repo",
             plugin_branch="dev",
             plugin_install_path="/opt/plugin",
-            sub_model_identifier="child",
             sub_model="gpt-4o-mini",
             sub_llm_max_turns=5,
             sub_timeout_ms=60_000,
@@ -81,7 +76,6 @@ class TestConstructorDefaults:
         assert env.plugin_repo == "org/repo"
         assert env.plugin_branch == "dev"
         assert env.plugin_install_path == "/opt/plugin"
-        assert env.sub_model_identifier == "child"
         assert env.sub_model == "gpt-4o-mini"
         assert env.sub_llm_max_turns == 5
         assert env.sub_timeout_ms == 60_000
@@ -186,26 +180,6 @@ class TestRunCommand:
 
 class TestBuildEnvVars:
     @pytest.mark.asyncio
-    async def test_sets_sub_model_id(self):
-        env = build_env()
-        state = {
-            "interception_base_url": "http://localhost:8080",
-            "model": "openai/gpt-5-mini",
-        }
-        env_vars = await env.build_env_vars(state)
-        assert env_vars["RLM_SUB_MODEL_ID"] == "sub"
-
-    @pytest.mark.asyncio
-    async def test_sets_proxy_mode(self):
-        env = build_env()
-        state = {
-            "interception_base_url": "http://localhost:8080",
-            "model": "openai/gpt-5-mini",
-        }
-        env_vars = await env.build_env_vars(state)
-        assert env_vars["RLM_LLM_SUBCALL_VIA_PROXY"] == "true"
-
-    @pytest.mark.asyncio
     async def test_sets_tool_loop_mode(self):
         env = build_env()
         state = {
@@ -247,46 +221,54 @@ class TestBuildEnvVars:
         assert env_vars["OPENAI_BASE_URL"] == "http://localhost:8080"
 
     @pytest.mark.asyncio
-    async def test_custom_sub_model_identifier(self):
-        env = build_env(sub_model_identifier="child-model")
+    async def test_no_sub_model_id_env_var(self):
+        """RLM_SUB_MODEL_ID should not be set (header-based detection now)."""
+        env = build_env()
         state = {
             "interception_base_url": "http://localhost:8080",
             "model": "openai/gpt-5-mini",
         }
         env_vars = await env.build_env_vars(state)
-        assert env_vars["RLM_SUB_MODEL_ID"] == "child-model"
+        assert "RLM_SUB_MODEL_ID" not in env_vars
 
 
 # =============================================================================
-# Sub-LLM detection
+# Sub-LLM detection (header-based)
 # =============================================================================
 
 
 class TestIsSubLLMRequest:
-    def test_detects_sub_model(self):
-        env = build_env()
-        assert env._is_sub_llm_request({"model": "sub"}) is True
+    def test_detects_sub_header(self):
+        assert (
+            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"X-RLM-Role": "sub"}})
+            is True
+        )
 
-    def test_detects_sub_in_compound_model(self):
-        env = build_env()
-        assert env._is_sub_llm_request({"model": "sub/gpt-4o"}) is True
+    def test_rejects_no_headers(self):
+        assert OpenCodeRLMEnv._is_sub_llm_request({}) is False
 
-    def test_rejects_main_model(self):
-        env = build_env()
-        assert env._is_sub_llm_request({"model": "openai/gpt-5-mini"}) is False
+    def test_rejects_empty_headers(self):
+        assert OpenCodeRLMEnv._is_sub_llm_request({"headers": {}}) is False
 
-    def test_rejects_empty_model(self):
-        env = build_env()
-        assert env._is_sub_llm_request({"model": ""}) is False
+    def test_rejects_wrong_value(self):
+        assert (
+            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"X-RLM-Role": "main"}})
+            is False
+        )
 
-    def test_rejects_missing_model(self):
-        env = build_env()
-        assert env._is_sub_llm_request({}) is False
+    def test_ignores_model_field(self):
+        """Model name should NOT be used for detection."""
+        assert (
+            OpenCodeRLMEnv._is_sub_llm_request({"model": "sub", "headers": {}}) is False
+        )
 
-    def test_custom_identifier(self):
-        env = build_env(sub_model_identifier="child")
-        assert env._is_sub_llm_request({"model": "child"}) is True
-        assert env._is_sub_llm_request({"model": "sub"}) is False
+    def test_header_takes_precedence(self):
+        assert (
+            OpenCodeRLMEnv._is_sub_llm_request(
+                {"model": "openai/gpt-5-mini", "headers": {"X-RLM-Role": "sub"}}
+            )
+            is True
+        )
 
 
 # =============================================================================
@@ -299,7 +281,6 @@ class TestSetupState:
     async def test_initializes_metrics(self):
         env = build_env()
         state: dict = {}
-        # Mock super().setup_state to just return state
         with patch.object(
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
