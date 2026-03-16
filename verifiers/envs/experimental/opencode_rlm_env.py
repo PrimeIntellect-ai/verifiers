@@ -73,7 +73,7 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
 
 # Extends the default OpenCodeEnv template with bun + plugin installation.
 RLM_RUN_COMMAND_TEMPLATE = """\
-set -eo pipefail
+set -e
 
 apt-get update && apt-get install -y curl git unzip jq
 
