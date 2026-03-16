@@ -255,6 +255,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         state.setdefault("sub_llm_turns", 0)
         state.setdefault("sub_llm_prompt_tokens", 0)
         state.setdefault("sub_llm_completion_tokens", 0)
+        state.setdefault("_sub_llm_tasks", set())
         return state
 
     # ------------------------------------------------------------------
@@ -303,10 +304,13 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             intercept = interception_server.intercepts[request_id]
 
             if self._is_sub_llm_request(intercept):
-                # Fire-and-forget: handled concurrently outside the loop
-                asyncio.create_task(
+                # Handled concurrently outside the loop; store reference
+                # to prevent garbage collection of the task.
+                task = asyncio.create_task(
                     self._handle_sub_llm_request(state, request_id, intercept)
                 )
+                state["_sub_llm_tasks"].add(task)
+                task.add_done_callback(state["_sub_llm_tasks"].discard)
                 continue
 
             # Main-agent request → return to rollout loop
