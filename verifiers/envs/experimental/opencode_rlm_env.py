@@ -383,10 +383,24 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             if response is not None:
                 self._update_sub_metrics(state, response)
                 if self.include_sub_llm_in_trajectory:
+                    completion = [response.message] if response.message else []
+                    prompt_tokens, completion_tokens = self._extract_token_counts(
+                        response
+                    )
                     state["trajectory"].append(
                         {
-                            "prompt_messages": prompt,
+                            "prompt": prompt,
+                            "completion": completion,
                             "response": response,
+                            "tokens": {
+                                "prompt": prompt_tokens,
+                                "completion": completion_tokens,
+                                "reasoning": 0,
+                            },
+                            "reward": None,
+                            "advantage": None,
+                            "is_truncated": False,
+                            "trajectory_id": state.get("trajectory_id", ""),
                             "extras": {
                                 "is_sub_llm_call": True,
                                 "agent_role": intercept.get("model", ""),
