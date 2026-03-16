@@ -31,11 +31,6 @@ from verifiers.utils.interception_utils import deliver_response, synthesize_stre
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Monitor rubric
-# ---------------------------------------------------------------------------
-
-
 class OpenCodeRLMMonitorRubric(vf.Rubric):
     """Tracks main-agent and sub-LLM metrics separately."""
 
@@ -62,10 +57,6 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
         metric.__name__ = key
         return metric
 
-
-# ---------------------------------------------------------------------------
-# Run command template
-# ---------------------------------------------------------------------------
 
 # Extends the default OpenCodeEnv template with bun + plugin installation.
 RLM_RUN_COMMAND_TEMPLATE = """\
@@ -107,11 +98,6 @@ EOFCONFIG
 cd {agent_workdir}
 cat {prompt_path} | opencode run 2>&1 | tee {logs_path}
 """
-
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
 
 
 class OpenCodeRLMEnv(OpenCodeEnv):
@@ -165,10 +151,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         super().__init__(**kwargs)
         self.add_rubric(OpenCodeRLMMonitorRubric())
 
-    # ------------------------------------------------------------------
-    # Config & run command
-    # ------------------------------------------------------------------
-
     def build_opencode_config(
         self,
         disabled_tools: list[str] | None = None,
@@ -215,10 +197,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             plugin_install_path=self.plugin_install_path,
         )
 
-    # ------------------------------------------------------------------
-    # Sandbox env vars
-    # ------------------------------------------------------------------
-
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env = await super().build_env_vars(state)
         # Use the OC proxy's custom tool-calling loop for subagent calls
@@ -228,10 +206,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         env["RLM_SUB_MAX_TURNS"] = str(self.sub_llm_max_turns)
         env["RLM_SUB_TIMEOUT"] = str(self.sub_timeout_ms)
         return env
-
-    # ------------------------------------------------------------------
-    # State setup
-    # ------------------------------------------------------------------
 
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
@@ -244,17 +218,9 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         state.setdefault("_sub_llm_tasks", set())
         return state
 
-    # ------------------------------------------------------------------
-    # Sub-LLM detection
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:
         return intercept.get("headers", {}).get("x-rlm-role") == "sub"
-
-    # ------------------------------------------------------------------
-    # Request routing
-    # ------------------------------------------------------------------
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Drain the request queue.
@@ -311,10 +277,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         tasks: set = state.get("_sub_llm_tasks", set())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
-    # ------------------------------------------------------------------
-    # Concurrent sub-LLM handler
-    # ------------------------------------------------------------------
 
     async def _handle_sub_llm_request(
         self,
@@ -394,10 +356,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                         }
                     )
 
-    # ------------------------------------------------------------------
-    # Main-agent model response (metrics only)
-    # ------------------------------------------------------------------
-
     async def get_model_response(
         self,
         state: State,
@@ -422,10 +380,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         if prompt:
             self._update_main_metrics(state, response)
         return response
-
-    # ------------------------------------------------------------------
-    # Metrics helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_token_counts(response: Response) -> tuple[int, int]:
