@@ -252,6 +252,15 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             state["current_request_id"] = request_id
             return self.normalize_intercepted_messages(intercept["messages"])
 
+    @vf.cleanup(priority=1)
+    async def cancel_sub_llm_tasks(self, state: State) -> None:
+        """Cancel any in-flight sub-LLM tasks during rollout cleanup."""
+        tasks: set = state.get("_sub_llm_tasks", set())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _handle_sub_llm_request(
         self,
         state: State,
