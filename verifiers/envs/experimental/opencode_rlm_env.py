@@ -296,8 +296,10 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                 # Check agent completion / timeout
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
+                    await self._drain_sub_llm_tasks(state)
                     return []
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                    await self._drain_sub_llm_tasks(state)
                     return []
                 continue
 
@@ -316,6 +318,13 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             # Main-agent request → return to rollout loop
             state["current_request_id"] = request_id
             return self.normalize_intercepted_messages(intercept["messages"])
+
+    @staticmethod
+    async def _drain_sub_llm_tasks(state: State) -> None:
+        """Await all in-flight sub-LLM tasks so metrics are complete before scoring."""
+        tasks: set = state.get("_sub_llm_tasks", set())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Concurrent sub-LLM handler
