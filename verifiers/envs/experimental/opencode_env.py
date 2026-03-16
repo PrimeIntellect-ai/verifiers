@@ -164,12 +164,14 @@ class OpenCodeEnv(CliAgentEnv):
         provider_timeout_ms: int = DEFAULT_PROVIDER_TIMEOUT_MS,
         task_system_prompt: str = DEFAULT_TASK_SYSTEM_PROMPT,
         include_task_system_prompt: bool = DEFAULT_INCLUDE_TASK_SYSTEM_PROMPT,
+        tool_output_max_bytes: int | None = None,
         **kwargs,
     ):
         self.asset_dir = asset_dir
         self.agent_workdir = agent_workdir
         self.disabled_tools = disabled_tools
         self.provider_timeout_ms = provider_timeout_ms
+        self.tool_output_max_bytes = tool_output_max_bytes
 
         if system_prompt is not None and include_task_system_prompt:
             system_prompt += "\n" + task_system_prompt
@@ -182,6 +184,7 @@ class OpenCodeEnv(CliAgentEnv):
             install_command=install_command,
             disable_compaction=disable_compaction,
             enable_interleaved=enable_interleaved,
+            tool_output_max_bytes=tool_output_max_bytes,
         )
 
         super().__init__(
@@ -338,6 +341,7 @@ class OpenCodeEnv(CliAgentEnv):
         system_prompt_path: str | None = None,
         disable_compaction: bool = True,
         enable_interleaved: bool = True,
+        tool_output_max_bytes: int | None = None,
     ) -> str:
         """Build OpenCode config."""
         config: dict = {
@@ -371,6 +375,9 @@ class OpenCodeEnv(CliAgentEnv):
         if disable_compaction:
             config["compaction"] = {"auto": False, "prune": False}
 
+        if tool_output_max_bytes is not None:
+            config["toolOutputMaxBytes"] = tool_output_max_bytes
+
         if system_prompt_path or disabled_tools:
             build_config: dict = {}
             if system_prompt_path:
@@ -390,6 +397,7 @@ class OpenCodeEnv(CliAgentEnv):
         install_command: str = DEFAULT_INSTALL_COMMAND,
         disable_compaction: bool = True,
         enable_interleaved: bool = True,
+        tool_output_max_bytes: int | None = None,
     ) -> str:
         """Build bash script to install and run OpenCode."""
 
@@ -398,6 +406,7 @@ class OpenCodeEnv(CliAgentEnv):
             self.remote_system_prompt_path if system_prompt else None,
             disable_compaction=disable_compaction,
             enable_interleaved=enable_interleaved,
+            tool_output_max_bytes=tool_output_max_bytes,
         )
 
         return run_command_template.format(
