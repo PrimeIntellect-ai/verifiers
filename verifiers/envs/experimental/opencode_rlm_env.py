@@ -342,7 +342,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             try:
                 # Call the model directly via Environment.get_model_response,
                 # bypassing CliAgentEnv's intercept-delivery logic (we handle
-                # delivery ourselves in the finally block).
+                # delivery ourselves below).
                 response = await vf.Environment.get_model_response(
                     self,
                     state=state,
@@ -350,9 +350,14 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                     model=model,
                     tool_defs=tool_defs,
                 )
-            except Exception as e:
+            except BaseException as e:
                 error = e
-                logger.warning("Sub-LLM request %s failed: %s", request_id, e)
+                if isinstance(e, Exception):
+                    logger.warning("Sub-LLM request %s failed: %s", request_id, e)
+                else:
+                    # CancelledError / KeyboardInterrupt — deliver error to
+                    # unblock the HTTP future, then re-raise.
+                    logger.debug("Sub-LLM request %s cancelled", request_id)
             finally:
                 if intercept.get("stream"):
                     await synthesize_stream(intercept, response, error)
@@ -360,6 +365,11 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                     deliver_response(intercept, response, error)
                 # Clean up intercept entry
                 self._require_interception_server().intercepts.pop(request_id, None)
+
+            # Re-raise non-Exception BaseExceptions (CancelledError, etc.)
+            # after delivering the response so the future doesn't hang.
+            if error is not None and not isinstance(error, Exception):
+                raise error
 
             if response is not None:
                 self._update_sub_metrics(state, response)
