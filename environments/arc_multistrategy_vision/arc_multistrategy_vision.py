@@ -1194,6 +1194,7 @@ def load_environment(
     num_examples: int | None = None,
     max_dim: int = 30,
     sort_by_size: bool = False,
+    **kwargs,
 ) -> ArcMultistrategyEnv:
     """Entry point for vf-eval / prime-rl."""
     dataset = load_and_prepare_dataset(hf_dataset, split, num_examples, max_dim, sort_by_size)
