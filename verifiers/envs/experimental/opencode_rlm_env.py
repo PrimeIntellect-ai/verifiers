@@ -350,7 +350,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                     model=model,
                     tool_defs=tool_defs,
                 )
-            except BaseException as e:
+            except Exception as e:
                 error = e
                 logger.warning("Sub-LLM request %s failed: %s", request_id, e)
             finally:
