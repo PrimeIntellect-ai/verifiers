@@ -45,6 +45,9 @@ This folder contains installable example environments that showcase common usage
 - **RLMEnv (Recursive Language Model)**
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
 
+- **OpenCodeRLMEnv (OpenCode with RLM plugin)**
+  - **opencode_rlm_test**: Smoke-test environment for `OpenCodeRLMEnv` demonstrating concurrent sub-LLM handling with the RLM plugin.
+
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
@@ -75,6 +78,7 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
 - **MCP integration**: `mcp_search_env`
 - **RLM (recursive LLM)**: `rlm_secrets`
+- **OpenCode RLM integration**: `opencode_rlm_test`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

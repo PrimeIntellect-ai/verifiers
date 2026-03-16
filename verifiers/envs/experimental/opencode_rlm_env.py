@@ -167,6 +167,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         self.sub_timeout_ms = sub_timeout_ms
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self._sub_llm_semaphore = asyncio.Semaphore(max_sub_llm_parallelism)
+        self._sub_llm_tasks: set[asyncio.Task[None]] = set()
 
         kwargs.setdefault("run_command_template", RLM_RUN_COMMAND_TEMPLATE)
 
@@ -304,9 +305,11 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
             if self._is_sub_llm_request(intercept):
                 # Fire-and-forget: handled concurrently outside the loop
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._handle_sub_llm_request(state, request_id, intercept)
                 )
+                self._sub_llm_tasks.add(task)
+                task.add_done_callback(self._sub_llm_tasks.discard)
                 continue
 
             # Main-agent request → return to rollout loop
@@ -349,6 +352,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             except BaseException as e:
                 error = e
                 logger.warning("Sub-LLM request %s failed: %s", request_id, e)
+                raise
             finally:
                 if intercept.get("stream"):
                     await synthesize_stream(intercept, response, error)
