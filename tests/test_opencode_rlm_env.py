@@ -240,7 +240,7 @@ class TestBuildEnvVars:
 class TestIsSubLLMRequest:
     def test_detects_sub_header(self):
         assert (
-            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"X-RLM-Role": "sub"}})
+            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"x-rlm-role": "sub"}})
             is True
         )
 
@@ -252,7 +252,7 @@ class TestIsSubLLMRequest:
 
     def test_rejects_wrong_value(self):
         assert (
-            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"X-RLM-Role": "main"}})
+            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"x-rlm-role": "main"}})
             is False
         )
 
@@ -265,7 +265,7 @@ class TestIsSubLLMRequest:
     def test_header_takes_precedence(self):
         assert (
             OpenCodeRLMEnv._is_sub_llm_request(
-                {"model": "openai/gpt-5-mini", "headers": {"X-RLM-Role": "sub"}}
+                {"model": "openai/gpt-5-mini", "headers": {"x-rlm-role": "sub"}}
             )
             is True
         )

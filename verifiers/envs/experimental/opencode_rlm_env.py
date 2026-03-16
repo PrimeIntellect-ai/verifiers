@@ -250,7 +250,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
     @staticmethod
     def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:
-        return intercept.get("headers", {}).get("X-RLM-Role") == "sub"
+        return intercept.get("headers", {}).get("x-rlm-role") == "sub"
 
     # ------------------------------------------------------------------
     # Request routing
