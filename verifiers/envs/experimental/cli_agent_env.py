@@ -401,37 +401,42 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """
         return response
 
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """Wait for agent to make an API request OR agent completion, whichever comes first."""
-        request_id_queue = state["request_id_queue"]
-        interception_server = self._require_interception_server()
+    async def _poll_next_request(self, state: State) -> str | None:
+        """Poll for the next intercepted request, checking liveness in between.
 
+        Returns a request_id when a request arrives, or None when the agent
+        has completed or the rollout has timed out.
+        """
+        request_id_queue = state["request_id_queue"]
         while True:
             try:
-                # Short timeout so we can check completion frequently
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
+                return await asyncio.wait_for(
+                    request_id_queue.get(), timeout=self.poll_interval
                 )
-                # Got a request, proceed normally
-                state["current_request_id"] = request_id
-                intercept = interception_server.intercepts[request_id]
-                return self.normalize_intercepted_messages(intercept["messages"])
-
             except asyncio.TimeoutError:
-                # No request yet — check tunnel liveness first
                 if self._tunnel is not None and not self._tunnel.is_running:
                     frpc_output = "\n".join(self._tunnel.recent_output)
                     raise vf.TunnelError(
                         f"Tunnel process died during rollout. "
                         f"frpc output:\n{frpc_output}"
                     )
-                # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    return []
+                    return None
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    return []
+                    return None
+
+    async def get_prompt_messages(self, state: State) -> Messages:
+        """Wait for agent to make an API request OR agent completion, whichever comes first."""
+        interception_server = self._require_interception_server()
+
+        request_id = await self._poll_next_request(state)
+        if request_id is None:
+            return []
+
+        state["current_request_id"] = request_id
+        intercept = interception_server.intercepts[request_id]
+        return self.normalize_intercepted_messages(intercept["messages"])
 
     async def get_model_response(
         self,

@@ -13,7 +13,6 @@ rollout loop.
 import asyncio
 import json
 import logging
-import time
 from typing import Any
 
 import verifiers as vf
@@ -223,43 +222,26 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return intercept.get("headers", {}).get("x-rlm-role") == "sub"
 
     async def get_prompt_messages(self, state: State) -> Messages:
-        """Drain the request queue.
+        """Extends parent to route sub-LLM requests concurrently.
 
-        Sub-LLM requests are dispatched to concurrent handlers immediately.
-        Main-agent requests are returned to the rollout loop as usual.
+        Uses _poll_next_request from CliAgentEnv for the polling loop.
+        Sub-LLM requests (identified by X-RLM-Role header) are dispatched
+        to concurrent handlers. Main-agent requests are returned normally.
         """
-        request_id_queue: asyncio.Queue[str] = state["request_id_queue"]
         interception_server = self._require_interception_server()
 
         while True:
-            try:
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
-                )
-            except asyncio.TimeoutError:
-                # Check tunnel liveness
-                if self._tunnel is not None and not self._tunnel.is_running:
-                    frpc_output = "\n".join(self._tunnel.recent_output)
-                    raise vf.TunnelError(
-                        f"Tunnel process died during rollout. "
-                        f"frpc output:\n{frpc_output}"
-                    )
-                # Check agent completion / timeout
-                if await self.check_agent_completed(state):
-                    state["agent_completed"] = True
-                    await self._drain_sub_llm_tasks(state)
-                    return []
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    await self._drain_sub_llm_tasks(state)
-                    return []
-                continue
+            request_id = await self._poll_next_request(state)
+            if request_id is None:
+                # Agent completed or timed out — drain pending sub-LLM tasks
+                tasks: set = state.get("_sub_llm_tasks", set())
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                return []
 
             intercept = interception_server.intercepts[request_id]
 
             if self._is_sub_llm_request(intercept):
-                # Handled concurrently outside the loop; store reference
-                # to prevent garbage collection of the task.
                 task = asyncio.create_task(
                     self._handle_sub_llm_request(state, request_id, intercept)
                 )
@@ -267,16 +249,8 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                 task.add_done_callback(state["_sub_llm_tasks"].discard)
                 continue
 
-            # Main-agent request → return to rollout loop
             state["current_request_id"] = request_id
             return self.normalize_intercepted_messages(intercept["messages"])
-
-    @staticmethod
-    async def _drain_sub_llm_tasks(state: State) -> None:
-        """Await all in-flight sub-LLM tasks so metrics are complete before scoring."""
-        tasks: set = state.get("_sub_llm_tasks", set())
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _handle_sub_llm_request(
         self,
