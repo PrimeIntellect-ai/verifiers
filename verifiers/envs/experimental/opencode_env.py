@@ -76,6 +76,12 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 
+echo "=== opencode config ===" >&2
+cat ~/.config/opencode/opencode.json >&2
+echo "=== opencode debug agent build ===" >&2
+opencode debug agent build 2>&1 | tee /tmp/opencode-debug.json >&2
+echo "=== starting opencode run ===" >&2
+
 cd {agent_workdir}
 cat {prompt_path} | opencode run 2>&1 | tee {logs_path}
 """
