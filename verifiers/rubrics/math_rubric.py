@@ -27,7 +27,11 @@ class MathRubric(Rubric):
         timeout_seconds: float = 5,
         max_verify_chars: int = MAX_VERIFY_CHARS,
     ):
-        parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
+        from functools import partial
+
+        parser = parser or MaybeThinkParser(
+            extract_fn=partial(extract_boxed_answer, strict=True)
+        )
         self.max_verify_chars = max_verify_chars
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer)
