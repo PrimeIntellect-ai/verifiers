@@ -7,7 +7,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.message_utils import (
-    _parse_data_url,
     message_to_printable,
     messages_to_printable,
     serialize_message_for_output,
@@ -52,26 +51,6 @@ def test_messages_to_printable_order_and_joining():
 
     printable = out[0]["content"]
     assert "[audio]" in printable and "describe" in printable
-
-
-def test_parse_data_url_accepts_image_base64_with_whitespace():
-    assert _parse_data_url("  data:image/png;base64,ab c\n12\t3=  ") == (
-        "image/png",
-        "abc123=",
-    )
-
-
-def test_parse_data_url_accepts_extended_whitespace_after_compaction():
-    assert _parse_data_url("data:image/png;base64,ab\fcd\v12==") == (
-        "image/png",
-        "abcd12==",
-    )
-
-
-def test_parse_data_url_rejects_non_image_or_non_base64_data_url():
-    assert _parse_data_url("data:text/plain;base64,abc123") is None
-    assert _parse_data_url("data:image/png,abc123") is None
-    assert _parse_data_url("https://example.com/image.png") is None
 
 
 def test_serialize_message_for_output_preserves_data_urls_as_image_url():

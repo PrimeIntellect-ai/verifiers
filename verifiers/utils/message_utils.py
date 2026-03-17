@@ -20,14 +20,6 @@ from verifiers.types import (
 )
 
 
-_DATA_URL_RE = re.compile(
-    r"^data:(?P<media_type>[-\w.+/]+(?:;[-\w.+/=]+)*)?,(?P<data>.*)$",
-    re.IGNORECASE | re.DOTALL,
-)
-_IMAGE_MEDIA_TYPE_RE = re.compile(r"^image/[-\w.+]+$", re.IGNORECASE)
-_BASE64_DATA_RE = re.compile(r"^[A-Za-z0-9+/\n\r\t =_-]+$")
-
-
 def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
     """Convert a raw content-part dict to a typed content part when possible."""
     part_type = part.get("type")
@@ -211,40 +203,6 @@ def messages_to_printable(messages: Any) -> Any:
     if isinstance(messages, str):
         return messages
     return [message_to_printable(m) for m in messages or []]
-
-
-def _parse_data_url(url: str) -> tuple[str, str] | None:
-    """Parse an image data URL into ``(media_type, base64_data)``.
-
-    Returns None for non-data URLs, non-image media types, non-base64 payloads,
-    or malformed payloads.
-    """
-    if not isinstance(url, str):
-        return None
-
-    stripped_url = url.strip()
-    match = _DATA_URL_RE.match(stripped_url)
-    if match is None:
-        return None
-
-    header = stripped_url[: stripped_url.index(",")]
-    if ";base64" not in header.lower():
-        return None
-
-    media_type_section = match.group("media_type") or ""
-    media_type = media_type_section.split(";", 1)[0].strip() or "image/png"
-    if not _IMAGE_MEDIA_TYPE_RE.fullmatch(media_type):
-        return None
-
-    data = match.group("data").strip()
-    if not data:
-        return None
-
-    compact_data = re.sub(r"\s+", "", data)
-    if not _BASE64_DATA_RE.fullmatch(compact_data):
-        return None
-
-    return media_type.lower(), compact_data
 
 
 def _extract_image_part_for_output(part: Mapping[str, Any]) -> dict[str, Any] | None:
