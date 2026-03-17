@@ -539,10 +539,12 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args
         )
 
+        normalized_prompt = normalize_messages(prompt, field_name="prompt")
+
         self._get_usage_tracker(state, create_if_missing=True)
 
         response = await client.get_response(
-            prompt=prompt,
+            prompt=normalized_prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
