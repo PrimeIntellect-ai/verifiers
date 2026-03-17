@@ -233,31 +233,19 @@ class MCPEnv(vf.ToolEnv):
             tool_wrapper = self.tool_map[tool_name]
             try:
                 result = await tool_wrapper(**tool_args)
-                return cast(
-                    ToolMessage,
-                    {
-                        "role": "tool",
-                        "content": str(result),
-                        "tool_call_id": tool_call_id,
-                    },
+                return ToolMessage(
+                    tool_call_id=tool_call_id,
+                    content=str(result),
                 )
             except Exception as e:
-                return cast(
-                    ToolMessage,
-                    {
-                        "role": "tool",
-                        "content": self.error_formatter(e),
-                        "tool_call_id": tool_call_id,
-                    },
+                return ToolMessage(
+                    tool_call_id=tool_call_id,
+                    content=self.error_formatter(e),
                 )
         else:
-            return cast(
-                ToolMessage,
-                {
-                    "role": "tool",
-                    "content": f"Error: Tool '{tool_name}' not found",
-                    "tool_call_id": tool_call_id,
-                },
+            return ToolMessage(
+                tool_call_id=tool_call_id,
+                content=f"Error: Tool '{tool_name}' not found",
             )
 
     async def cleanup(self):
