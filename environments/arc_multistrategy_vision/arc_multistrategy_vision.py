@@ -27,6 +27,7 @@ import tempfile
 from typing import Any, List
 
 from datasets import Dataset
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.envs.agent import Agent
@@ -1194,15 +1195,33 @@ def load_environment(
     num_examples: int | None = None,
     max_dim: int = 30,
     sort_by_size: bool = False,
+    actor_endpoints: dict[str, str] | None = None,
     **kwargs,
 ) -> ArcMultistrategyEnv:
     """Entry point for vf-eval / prime-rl."""
     dataset = load_and_prepare_dataset(hf_dataset, split, num_examples, max_dim, sort_by_size)
     rubric = create_rubric()
+    actor_endpoints = actor_endpoints or {}
 
-    codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
-    codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
-    image_agent = Agent(id="image", system_prompt=IMAGE_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-VL-4B-Instruct")
+    codegen_v1b_url = actor_endpoints.get("codegen_v1b")
+    codegen_v4_url = actor_endpoints.get("codegen_v4")
+    image_url = actor_endpoints.get("image")
+
+    codegen_v1b_agent = Agent(
+        id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True,
+        model="Qwen/Qwen3-4B-Instruct-2507",
+        client=AsyncOpenAI(base_url=codegen_v1b_url, api_key="EMPTY") if codegen_v1b_url else None,
+    )
+    codegen_v4_agent = Agent(
+        id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True,
+        model="Qwen/Qwen3-4B-Instruct-2507",
+        client=AsyncOpenAI(base_url=codegen_v4_url, api_key="EMPTY") if codegen_v4_url else None,
+    )
+    image_agent = Agent(
+        id="image", system_prompt=IMAGE_SYSTEM_PROMPT, is_trainable=True,
+        model="Qwen/Qwen3-VL-4B-Instruct",
+        client=AsyncOpenAI(base_url=image_url, api_key="EMPTY") if image_url else None,
+    )
 
     pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
