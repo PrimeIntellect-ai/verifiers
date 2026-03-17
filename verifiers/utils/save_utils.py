@@ -109,6 +109,16 @@ def _coerce_token_usage(value: object) -> TokenUsage | None:
     }
 
 
+def _extract_last_usage_signature(state: "State") -> str | None:
+    """Extract the usage_signature from the last trajectory response, if present."""
+    trajectory = state.get("trajectory", [])
+    for step in reversed(trajectory):
+        response = step.get("response")
+        if response is not None and getattr(response, "usage_signature", None):
+            return response.usage_signature
+    return None
+
+
 def _extract_state_token_usage(state: State) -> TokenUsage | None:
     tracker = state.get("usage_tracker")
     if isinstance(tracker, StateUsageTracker):
@@ -200,6 +210,9 @@ def state_to_output(
                 "output_tokens": float(output_tokens),
             }
     if usage is not None:
+        sig = _extract_last_usage_signature(state)
+        if sig is not None:
+            usage["usage_signature"] = sig
         output["token_usage"] = usage
 
     # sanitize messages (handle None for error cases)
