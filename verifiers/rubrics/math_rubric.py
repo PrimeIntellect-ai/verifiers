@@ -24,7 +24,11 @@ class MathRubric(Rubric):
         max_workers: int = 50,
         timeout_seconds: float = 5,
     ):
-        parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
+        from functools import partial
+
+        parser = parser or MaybeThinkParser(
+            extract_fn=partial(extract_boxed_answer, strict=True)
+        )
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
