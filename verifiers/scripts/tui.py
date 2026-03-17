@@ -9,17 +9,24 @@ from collections import defaultdict
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
+from markdown_it import MarkdownIt
+from mdit_py_plugins.amsmath import amsmath_plugin
+from mdit_py_plugins.dollarmath import dollarmath_plugin
 from rich import box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
+from textual.dom import DOMNode
+from textual.widget import Widget
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.content import Content, Span
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
+from textual.style import Style
 from textual.theme import Theme
 from textual.widgets import (
     Collapsible,
@@ -33,7 +40,22 @@ from textual.widgets import (
     TextArea,
     Tree,
 )
+from textual.widgets._markdown import (
+    Markdown as BaseMarkdown,
+    MarkdownBlock,
+    MarkdownH1,
+    MarkdownH2,
+    MarkdownH3,
+    MarkdownH4,
+    MarkdownH5,
+    MarkdownH6,
+    MarkdownParagraph,
+    MarkdownTD,
+    MarkdownTH,
+)
 from textual.widgets._option_list import Option
+from textual.widgets._tabbed_content import ContentTabs
+from textual.widgets._tree import TreeNode
 
 from verifiers.utils.display_utils import format_numeric
 
@@ -45,6 +67,14 @@ def _binding_key(binding: TreeBinding) -> str:
     if isinstance(binding, Binding):
         return binding.key
     return binding[0]
+
+
+def _int_like_sort_key(value: Any) -> Tuple[int, int, str]:
+    text = str(value)
+    try:
+        return (0, int(text), text)
+    except (TypeError, ValueError):
+        return (1, 0, text)
 
 
 # ----------------------------
@@ -75,6 +105,8 @@ class BrowserNodeData:
     env_id: str = ""
     model: str = ""
     run: Optional[RunInfo] = None
+    tree_name: str = ""
+    tree_suffix: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,9 +133,118 @@ class RunBrowserTree(Tree[BrowserNodeData]):
             for binding in Tree.BINDINGS
             if _binding_key(binding) not in {"enter", "space"}
         ),
+        Binding("left", "cursor_parent", "Parent folder", show=True),
+        Binding("right", "cursor_right", "Expand/next folder", show=True),
         Binding("enter", "select_cursor", "Open/toggle", show=True),
         Binding("space", "toggle_node", "Toggle folder", show=True),
     ]
+
+    def _visible_depth(self, node: Any) -> int:
+        depth = 0
+        parent = node.parent
+        while parent is not None and (self.show_root or not parent.is_root):
+            depth += 1
+            parent = parent.parent
+        return depth
+
+    def _render_browser_label(
+        self, payload: BrowserNodeData, style: Style, max_width: int
+    ) -> Text:
+        label = Text()
+        label.append(payload.tree_name or "", style="bold")
+        for text, segment_style in payload.tree_suffix:
+            label.append(text, style=segment_style or None)
+
+        if max_width <= 0:
+            label.truncate(1, overflow="ellipsis")
+            label.stylize(cast(Any, style))
+            return label
+
+        suffix = Text()
+        for text, segment_style in payload.tree_suffix:
+            suffix.append(text, style=segment_style or None)
+
+        if suffix.cell_len < max_width:
+            name = Text(payload.tree_name or "", style="bold")
+            name.truncate(max_width - suffix.cell_len, overflow="ellipsis")
+            label = Text.assemble(name, suffix)
+        else:
+            label.truncate(max_width, overflow="ellipsis")
+
+        label.stylize(cast(Any, style))
+        return label
+
+    def render_label(  # ty: ignore[invalid-method-override]
+        self,
+        node: TreeNode[Any],
+        base_style: Style,
+        style: Style,
+    ) -> Text:
+        payload = node.data
+        available_width = self.size.width - (
+            self._visible_depth(node) * self.guide_depth
+        )
+        prefix_text = (
+            self.ICON_NODE_EXPANDED
+            if node.allow_expand and node.is_expanded
+            else self.ICON_NODE
+            if node.allow_expand
+            else ""
+        )
+        content_width = max(1, available_width - len(prefix_text))
+
+        if isinstance(payload, BrowserNodeData) and payload.tree_name:
+            label = self._render_browser_label(payload, style, content_width)
+        else:
+            label = node._label.copy()
+            label.stylize(cast(Any, style))
+            label.truncate(content_width, overflow="ellipsis")
+
+        return Text.assemble((prefix_text, cast(Any, base_style)), label)
+
+    def action_cursor_parent(self) -> None:
+        """Move the cursor to the nearest visible parent folder."""
+        cursor_node = self.cursor_node
+        if cursor_node is None:
+            return
+        parent = cursor_node.parent
+        if parent is None or (not self.show_root and parent.parent is None):
+            return
+        self.move_cursor(parent, animate=True)
+
+    def action_cursor_right(self) -> None:
+        """Expand the current folder or move to the next visible parent folder."""
+        cursor_node = self.cursor_node
+        if cursor_node is None:
+            return
+        if cursor_node.allow_expand:
+            if cursor_node.is_collapsed:
+                cursor_node.expand()
+                return
+            if cursor_node.children:
+                self.move_cursor(cursor_node.children[0], animate=True)
+                return
+
+        node = cursor_node.parent if not cursor_node.allow_expand else cursor_node
+        while node is not None:
+            next_sibling = node.next_sibling
+            if next_sibling is not None:
+                self.move_cursor(next_sibling, animate=True)
+                return
+            node = node.parent
+            if node is not None and not self.show_root and node.is_root:
+                return
+
+    def action_toggle_node(self) -> None:
+        """Toggle the current folder, or the nearest ancestor folder for a leaf."""
+        node = self.cursor_node
+        while node is not None and not node.allow_expand:
+            node = node.parent
+        if node is None or (not self.show_root and node.parent is None):
+            return
+        if node is not self.cursor_node:
+            self.move_cursor(node, animate=False)
+        self._toggle_node(node)
 
 
 def discover_results(
@@ -259,8 +400,15 @@ def _stringify_message_content(content: Any) -> str:
         chunks: List[str] = []
         for item in content:
             if isinstance(item, dict):
-                if item.get("type") == "text":
+                item_type = item.get("type")
+                if item_type == "text":
                     chunks.append(str(item.get("text", "")))
+                elif item_type in {"input_audio", "audio"}:
+                    chunks.append("[audio]")
+                elif item_type in {"image", "image_url"}:
+                    chunks.append("[image]")
+                elif item_type in {"thinking", "redacted_thinking"}:
+                    continue
                 else:
                     chunks.append(_pretty_json_or_str(item))
             else:
@@ -269,6 +417,66 @@ def _stringify_message_content(content: Any) -> str:
     if isinstance(content, dict):
         return _pretty_json_or_str(content)
     return str(content)
+
+
+def _thinking_block_to_text(block: Any) -> str:
+    if isinstance(block, dict):
+        block_type = block.get("type")
+        if block_type == "thinking":
+            thinking = block.get("thinking")
+            return str(thinking).strip() if thinking else ""
+        if block_type == "redacted_thinking":
+            return "[reasoning redacted]"
+        return ""
+
+    block_type = getattr(block, "type", None)
+    if block_type == "thinking":
+        thinking = getattr(block, "thinking", None)
+        return str(thinking).strip() if thinking else ""
+    if block_type == "redacted_thinking":
+        return "[reasoning redacted]"
+    return ""
+
+
+def _stringify_message_reasoning(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+
+    parts: List[str] = []
+
+    def add_part(value: str) -> None:
+        text = value.strip()
+        if text and text not in parts:
+            parts.append(text)
+
+    reasoning_content = message.get("reasoning_content")
+    if isinstance(reasoning_content, str):
+        add_part(reasoning_content)
+
+    thinking_blocks = message.get("thinking_blocks")
+    if isinstance(thinking_blocks, list):
+        for block in thinking_blocks:
+            add_part(_thinking_block_to_text(block))
+
+    content = message.get("content")
+    if isinstance(content, list):
+        for item in content:
+            add_part(_thinking_block_to_text(item))
+
+    return "\n\n".join(parts)
+
+
+def _stringify_message(message: Any) -> str:
+    if not isinstance(message, dict):
+        return _stringify_message_content(message)
+
+    content = _stringify_message_content(message.get("content", "")).strip()
+    reasoning = _stringify_message_reasoning(message)
+    if reasoning and content:
+        return f"Reasoning\n{reasoning}\n\n{content}"
+    if reasoning:
+        return f"Reasoning\n{reasoning}"
+    return content
 
 
 def _parse_tool_calls(tool_calls: Any) -> List[Any]:
@@ -282,14 +490,6 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
-
-
-def _count_result_records(path: Path) -> int:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return sum(1 for _ in handle)
-    except OSError:
-        return 0
 
 
 def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
@@ -332,9 +532,12 @@ def _format_message_preview(message: Any) -> str:
     if not isinstance(message, dict):
         return ""
     content = _stringify_message_content(message.get("content", ""))
+    reasoning = _stringify_message_reasoning(message)
     tool_calls = _parse_tool_calls(message.get("tool_calls"))
     if content:
         return _truncate_preview(content, 56)
+    if reasoning:
+        return f"reasoning: {_truncate_preview(reasoning, 45)}"
     if tool_calls:
         first = tool_calls[0]
         if isinstance(first, dict):
@@ -384,6 +587,226 @@ def _pretty_json_or_str(value: Any) -> str:
         return str(value)
 
 
+def _compact_json_or_str(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_setting_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return _format_compact_metric(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        if all(
+            isinstance(item, (str, int, float, bool)) and not isinstance(item, dict)
+            for item in value
+        ):
+            return ", ".join(_format_setting_value(item) for item in value)
+    return _compact_json_or_str(value)
+
+
+def _tool_name(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return str(getattr(tool, "name", "") or "")
+    function = tool.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str):
+            return name
+    name = tool.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _run_setting_rows(meta: Dict[str, Any]) -> List[Tuple[str, str]]:
+    rows: List[Tuple[str, str]] = []
+
+    ordered_settings: List[Tuple[str, Any]] = []
+    if meta.get("base_url") not in (None, ""):
+        ordered_settings.append(("endpoint", meta["base_url"]))
+    if meta.get("num_examples") not in (None, ""):
+        ordered_settings.append(("examples", meta["num_examples"]))
+    if meta.get("rollouts_per_example") not in (None, ""):
+        ordered_settings.append(("rollouts/example", meta["rollouts_per_example"]))
+    if meta.get("pass_threshold") not in (None, ""):
+        ordered_settings.append(("pass threshold", meta["pass_threshold"]))
+
+    sampling_args = meta.get("sampling_args")
+    if isinstance(sampling_args, dict):
+        for key in sorted(sampling_args):
+            value = sampling_args[key]
+            if value not in (None, ""):
+                ordered_settings.append((f"sampling.{key}", value))
+
+    env_args = meta.get("env_args")
+    if isinstance(env_args, dict):
+        for key in sorted(env_args):
+            value = env_args[key]
+            if value not in (None, ""):
+                ordered_settings.append((f"env.{key}", value))
+
+    state_columns = meta.get("state_columns")
+    if isinstance(state_columns, list) and state_columns:
+        ordered_settings.append(("state columns", state_columns))
+
+    tools = meta.get("tools")
+    if isinstance(tools, list):
+        tool_names = sorted(
+            name for name in (_tool_name(tool) for tool in tools) if name
+        )
+        if tool_names:
+            ordered_settings.append(("tools", tool_names))
+
+    for label, value in ordered_settings:
+        rows.append((label, _format_setting_value(value)))
+
+    return rows
+
+
+def _build_settings_table(
+    rows: List[Tuple[str, str]],
+    heading: str,
+    *,
+    value_header: str = "Value",
+) -> Group | Text:
+    if not rows:
+        return Text()
+
+    title = Text()
+    title.append(heading, style="bold dim")
+
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        show_edge=False,
+        pad_edge=False,
+        padding=(0, 1),
+        collapse_padding=True,
+        row_styles=["none", "dim"],
+    )
+    table.add_column("Setting", style="dim", width=20, no_wrap=True)
+    table.add_column(value_header, ratio=1)
+
+    for setting, value in rows:
+        table.add_row(setting, value)
+
+    return Group(title, table)
+
+
+def _run_setting_variation_rows(
+    runs: List[RunInfo], *, max_rows: int = 8
+) -> Tuple[List[Tuple[str, str]], int]:
+    if not runs:
+        return [], 0
+
+    setting_maps = [dict(_run_setting_rows(run.load_metadata())) for run in runs]
+
+    ordered_keys: List[str] = []
+    for setting_map in setting_maps:
+        for key in setting_map:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+    rows: List[Tuple[str, str]] = []
+    for key in ordered_keys:
+        counts: Dict[str, int] = defaultdict(int)
+        for setting_map in setting_maps:
+            counts[setting_map.get(key, "(unset)")] += 1
+        if len(counts) <= 1:
+            continue
+        parts = [
+            f"{value} ({count} run{'s' if count != 1 else ''})"
+            for value, count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        rows.append((key, ", ".join(parts)))
+
+    hidden_rows = max(0, len(rows) - max_rows)
+    return rows[:max_rows], hidden_rows
+
+
+def _varying_run_setting_keys(
+    runs: List[RunInfo],
+) -> Tuple[List[str], List[Tuple[RunInfo, Dict[str, str]]]]:
+    if not runs:
+        return [], []
+
+    run_settings = [(run, dict(_run_setting_rows(run.load_metadata()))) for run in runs]
+    ordered_keys: List[str] = []
+    for _, settings in run_settings:
+        for key in settings:
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+    if len(run_settings) == 1:
+        return ordered_keys, run_settings
+
+    varying_keys = [
+        key
+        for key in ordered_keys
+        if len({settings.get(key, "(unset)") for _, settings in run_settings}) > 1
+    ]
+    return varying_keys, run_settings
+
+
+def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
+    bucket_counts = [
+        ("<0", 0, "bold red"),
+        ("=0", 0, "bold red"),
+        ("0-<0.25", 0, "red"),
+        ("0.25-<0.5", 0, "yellow"),
+        ("0.5-<0.75", 0, "yellow"),
+        ("0.75-<1", 0, "green"),
+        ("=1", 0, "bold green"),
+        (">1", 0, "bold green"),
+    ]
+
+    for reward in values:
+        if reward < 0:
+            bucket_idx = 0
+        elif reward == 0:
+            bucket_idx = 1
+        elif reward < 0.25:
+            bucket_idx = 2
+        elif reward < 0.5:
+            bucket_idx = 3
+        elif reward < 0.75:
+            bucket_idx = 4
+        elif reward < 1.0:
+            bucket_idx = 5
+        elif reward == 1.0:
+            bucket_idx = 6
+        else:
+            bucket_idx = 7
+        label, count, style = bucket_counts[bucket_idx]
+        bucket_counts[bucket_idx] = (label, count + 1, style)
+
+    # Only include <0 and >1 buckets if they have values.
+    return [
+        (label, count, style)
+        for label, count, style in bucket_counts
+        if not (label in ("<0", ">1") and count == 0)
+    ]
+
+
+_COMPARE_ALIAS_PALETTE: Tuple[str, ...] = (
+    "#61afef",
+    "#98c379",
+    "#e5c07b",
+    "#c678dd",
+    "#56b6c2",
+    "#e06c75",
+)
+
+
 def _tool_call_parts(tool_call: Any) -> Tuple[str, str, Optional[str]]:
     if not isinstance(tool_call, dict):
         return str(tool_call), "", None
@@ -410,7 +833,7 @@ def _tool_call_parts(tool_call: Any) -> Tuple[str, str, Optional[str]]:
 def _tool_output_preview(message: Any) -> str:
     if not isinstance(message, dict):
         return _truncate_preview(str(message), 44)
-    content = _stringify_message_content(message.get("content", ""))
+    content = _stringify_message(message)
     for line in content.splitlines():
         if line.strip():
             return _truncate_preview(line.strip(), 44)
@@ -442,6 +865,9 @@ def _raw_preview(value: Any, *, limit: int = 56) -> str:
         content = _stringify_message_content(value.get("content", ""))
         if content:
             return _truncate_preview(content, limit)
+        reasoning = _stringify_message_reasoning(value)
+        if reasoning:
+            return _truncate_preview(reasoning, limit)
         for key in ("text", "message", "error", "detail", "details", "type", "name"):
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
@@ -554,18 +980,7 @@ def _build_reward_distribution_table(values: List[float], heading: str) -> Group
     summary.append("   max ", style="bold")
     summary.append(f"{max(values):.3f}", style=_reward_style(max(values)))
 
-    buckets = [
-        ("<0", lambda reward: reward < 0, "bold red"),
-        ("0-0.25", lambda reward: 0 <= reward < 0.25, "red"),
-        ("0.25-0.5", lambda reward: 0.25 <= reward < 0.5, "yellow"),
-        ("0.5-0.75", lambda reward: 0.5 <= reward < 0.75, "yellow"),
-        ("0.75-1.0", lambda reward: 0.75 <= reward < 1.0, "green"),
-        (">=1.0", lambda reward: reward >= 1.0, "bold green"),
-    ]
-    bucket_counts = [
-        (label, sum(1 for reward in values if predicate(reward)), style)
-        for label, predicate, style in buckets
-    ]
+    bucket_counts = _reward_bucket_counts(values)
     peak_count = max(count for _, count, _ in bucket_counts) or 1
 
     table = Table(
@@ -767,6 +1182,33 @@ class Panel(Container):
     pass
 
 
+class TabbedScrollPane(VerticalScroll):
+    """A VerticalScroll that switches sibling tabs with left/right arrows."""
+
+    BINDINGS = [
+        Binding("left", "prev_tab", "Prev tab", show=False),
+        Binding("right", "next_tab", "Next tab", show=False),
+    ]
+
+    def _get_tabbed_content(self) -> TabbedContent | None:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, TabbedContent):
+                return node
+            node = node.parent
+        return None
+
+    def action_prev_tab(self) -> None:
+        tc = self._get_tabbed_content()
+        if tc is not None:
+            tc.query_one(ContentTabs).action_previous_tab()
+
+    def action_next_tab(self) -> None:
+        tc = self._get_tabbed_content()
+        if tc is not None:
+            tc.query_one(ContentTabs).action_next_tab()
+
+
 # ----------------------------
 # Search helpers
 # ----------------------------
@@ -775,12 +1217,16 @@ class SearchHit:
     column: str
     line_index: int
     line_text: str
+    section_index: int = 0
+    nested_index: int = -1  # -1 = parent body, 0+ = nested section index
 
 
 @dataclass(frozen=True)
 class SearchResult:
     column: str
     pattern: str
+    section_index: int = 0
+    nested_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -791,6 +1237,7 @@ class HistorySectionData:
     collapsed: bool
     classes: str
     nested_sections: Tuple["HistorySectionData", ...] = ()
+    body_first: bool = True
 
 
 @dataclass(frozen=True)
@@ -824,15 +1271,858 @@ def _indent_block(text: str, prefix: str) -> str:
 
 
 # ----------------------------
+# Markdown rendering
+# ----------------------------
+_LATEX_BEGIN_END_RE = re.compile(r"\\(?:begin|end)\{[^}]+\}")
+_LATEX_BRACED_SCRIPT_RE = re.compile(r"([_^])\{([^{}]+)\}")
+_LATEX_WRAPPER_RE = re.compile(
+    r"\\(?:mathrm|mathbf|mathit|mathsf|mathtt|operatorname|text)\{([^{}]+)\}"
+)
+_LATEX_FRACTION_RE = re.compile(r"\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}")
+_LATEX_SQRT_RE = re.compile(r"\\sqrt\{([^{}]+)\}")
+_LATEX_COMMAND_RE = re.compile(r"\\([A-Za-z]+|.)")
+_LATEX_COMMAND_REPLACEMENTS = {
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "delta": "δ",
+    "epsilon": "ε",
+    "theta": "θ",
+    "lambda": "λ",
+    "mu": "μ",
+    "pi": "π",
+    "sigma": "σ",
+    "phi": "φ",
+    "psi": "ψ",
+    "omega": "ω",
+    "Gamma": "Γ",
+    "Delta": "Δ",
+    "Theta": "Θ",
+    "Lambda": "Λ",
+    "Pi": "Π",
+    "Sigma": "Σ",
+    "Phi": "Φ",
+    "Psi": "Ψ",
+    "Omega": "Ω",
+    "cdot": "·",
+    "times": "×",
+    "pm": "±",
+    "neq": "!=",
+    "leq": "<=",
+    "geq": ">=",
+    "approx": "~",
+    "to": "->",
+    "rightarrow": "->",
+    "leftarrow": "<-",
+    "infty": "∞",
+    "ldots": "...",
+    "cdots": "...",
+    "sum": "sum",
+    "prod": "prod",
+    "log": "log",
+    "ln": "ln",
+    "exp": "exp",
+    "sin": "sin",
+    "cos": "cos",
+    "tan": "tan",
+    "|": "||",
+    ",": " ",
+    ";": " ",
+    "!": "",
+}
+
+
+def _replace_latex_groups(
+    text: str,
+    pattern: re.Pattern[str],
+    replacement: str | Callable[[re.Match[str]], str],
+) -> str:
+    while True:
+        updated = pattern.sub(replacement, text)
+        if updated == text:
+            return updated
+        text = updated
+
+
+def _replace_latex_fraction(match: re.Match[str]) -> str:
+    numerator, denominator = (part.strip() for part in match.groups())
+    if re.search(r"\s|[+\-*/]", numerator):
+        numerator = f"({numerator})"
+    if re.search(r"\s|[+\-*/]", denominator):
+        denominator = f"({denominator})"
+    return f"{numerator}/{denominator}"
+
+
+def _replace_latex_command(match: re.Match[str]) -> str:
+    command = match.group(1)
+    if command in _LATEX_COMMAND_REPLACEMENTS:
+        return _LATEX_COMMAND_REPLACEMENTS[command]
+    if len(command) == 1 and not command.isalpha():
+        return command
+    return command
+
+
+def _fallback_latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
+    text = _LATEX_BEGIN_END_RE.sub("", latex)
+    text = text.replace("&", " ")
+    text = text.replace("\\\\", "\n" if preserve_newlines else " ")
+    text = _replace_latex_groups(text, _LATEX_WRAPPER_RE, r"\1")
+    text = _replace_latex_groups(text, _LATEX_BRACED_SCRIPT_RE, r"\1\2")
+    text = _replace_latex_groups(text, _LATEX_FRACTION_RE, _replace_latex_fraction)
+    text = _replace_latex_groups(text, _LATEX_SQRT_RE, r"sqrt(\1)")
+    text = _LATEX_COMMAND_RE.sub(_replace_latex_command, text)
+    text = text.replace("{", "").replace("}", "").replace("~", " ")
+    if preserve_newlines:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        return "\n".join(line for line in lines if line)
+    return " ".join(text.split())
+
+
+def _latex_to_text(latex: str, *, preserve_newlines: bool) -> str:
+    return _fallback_latex_to_text(latex, preserve_newlines=preserve_newlines)
+
+
+def render_inline_math(latex: str) -> str:
+    return " ".join(_latex_to_text(latex, preserve_newlines=False).split())
+
+
+def render_block_math(latex: str) -> str:
+    return _latex_to_text(latex, preserve_newlines=True).strip()
+
+
+def make_math_parser() -> MarkdownIt:
+    parser = MarkdownIt("gfm-like")
+    parser.use(
+        dollarmath_plugin,
+        allow_space=False,
+        allow_digits=False,
+    )
+    parser.use(amsmath_plugin)
+    return parser
+
+
+class MathInlineMixin:
+    """Teach Textual's Markdown blocks how to render inline math tokens."""
+
+    def _token_to_content(self, token: Any) -> Content:
+        if token.children is None:
+            return Content("")
+
+        parts: List[str] = []
+        spans: List[Span] = []
+        style_stack: List[Tuple[Style | str, int]] = []
+        position = 0
+
+        def add_text(text: str) -> None:
+            nonlocal position
+            parts.append(text)
+            position += len(text)
+
+        def push_style(style: Style | str) -> None:
+            style_stack.append((style, position))
+
+        def pop_style() -> None:
+            if not style_stack:
+                return
+            style, start = style_stack.pop()
+            spans.append(Span(start, position, style))
+
+        for child in token.children:
+            child_type = child.type
+            attrs = child.attrs or {}
+
+            if child_type == "text":
+                add_text(re.sub(r"\s+", " ", child.content))
+            elif child_type == "hardbreak":
+                add_text("\n")
+            elif child_type == "softbreak":
+                add_text(" ")
+            elif child_type == "code_inline":
+                push_style(".code_inline")
+                add_text(child.content)
+                pop_style()
+            elif child_type in {"math_inline", "math_inline_double"}:
+                push_style("italic")
+                add_text(render_inline_math(child.content))
+                pop_style()
+            elif child_type == "em_open":
+                push_style(".em")
+            elif child_type == "strong_open":
+                push_style(".strong")
+            elif child_type == "s_open":
+                push_style(".s")
+            elif child_type == "link_open":
+                href = attrs.get("href", "")
+                action = f"link({href!r})"
+                push_style(Style.from_meta({"@click": action}))
+            elif child_type == "image":
+                href = attrs.get("src", "")
+                alt = attrs.get("alt", "")
+                action = f"link({href!r})"
+                push_style(Style.from_meta({"@click": action}))
+                add_text(" ")
+                if alt:
+                    add_text(f"({alt})")
+                if child.children is not None:
+                    for grandchild in child.children:
+                        add_text(grandchild.content)
+                pop_style()
+            elif child_type.endswith("_close"):
+                pop_style()
+
+        return Content("".join(parts), spans=spans)
+
+
+class MathParagraph(MathInlineMixin, MarkdownParagraph):
+    pass
+
+
+class MathH1(MathInlineMixin, MarkdownH1):
+    pass
+
+
+class MathH2(MathInlineMixin, MarkdownH2):
+    pass
+
+
+class MathH3(MathInlineMixin, MarkdownH3):
+    pass
+
+
+class MathH4(MathInlineMixin, MarkdownH4):
+    pass
+
+
+class MathH5(MathInlineMixin, MarkdownH5):
+    pass
+
+
+class MathH6(MathInlineMixin, MarkdownH6):
+    pass
+
+
+class MathTH(MathInlineMixin, MarkdownTH):
+    pass
+
+
+class MathTD(MathInlineMixin, MarkdownTD):
+    pass
+
+
+class MathDisplayBlock(MarkdownBlock):
+    DEFAULT_CSS = """
+    MathDisplayBlock {
+        width: 1fr;
+        height: auto;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        background: $boost;
+        border-left: outer $primary 60%;
+    }
+    """
+
+    def __init__(self, markdown: "MathMarkdown", token: Any):
+        super().__init__(markdown, token)
+        text = render_block_math(token.content)
+        if token.type == "math_block_label" and getattr(token, "info", ""):
+            text = f"[{token.info}]\n{text}"
+        self.set_content(Content(text))
+
+
+class MathMarkdown(BaseMarkdown):
+    BLOCKS = BaseMarkdown.BLOCKS | {
+        "paragraph_open": MathParagraph,
+        "h1": MathH1,
+        "h2": MathH2,
+        "h3": MathH3,
+        "h4": MathH4,
+        "h5": MathH5,
+        "h6": MathH6,
+        "th_open": MathTH,
+        "td_open": MathTD,
+    }
+
+    def __init__(self, markdown: str | None = None, **kwargs: Any) -> None:
+        super().__init__(markdown, parser_factory=make_math_parser, **kwargs)
+
+    def unhandled_token(self, token: Any) -> MarkdownBlock | None:
+        if token.type in {"math_block", "math_block_label", "amsmath"}:
+            return MathDisplayBlock(self, token)
+        return None
+
+
+# ----------------------------
 # Screens
 # ----------------------------
+class CompareRunsScreen(Screen):
+    """Dedicated comparison view for runs, optionally across models."""
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("b,backspace", "back", "Back"),
+        Binding("g", "enter_group_mode", "Group by"),
+        Binding("left", "group_cursor_left", show=False),
+        Binding("right", "group_cursor_right", show=False),
+        Binding("enter", "group_select", show=False),
+        Binding("escape", "exit_group_mode", show=False),
+        Binding("c", "copy", "Copy"),
+        Binding("ctrl+c", "copy", show=False),
+    ]
+
+    def __init__(self, env_id: str, model: Optional[str], runs: List[RunInfo]):
+        super().__init__()
+        self.env_id = env_id
+        self.model = model
+        self.runs = list(runs)
+        self._stats_by_path: Dict[Path, RunOverviewStats] = {}
+        self._setting_keys: List[str] = []
+        self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
+        self._display_maps: Dict[str, Dict[str, str]] = {}
+        self._style_maps: Dict[str, Dict[str, str]] = {}
+        self._legend_rows: List[Tuple[str, str, str]] = []
+        self._group_mode: bool = False
+        self._group_cursor: int = 0
+        self._grouped_by_key: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Panel(
+                Label(Text("Run Comparison", style="bold"), classes="title"),
+                Static("", id="compare-subtitle", classes="subtitle", markup=False),
+                VerticalScroll(
+                    Static("", id="compare-header", markup=False),
+                    Static("", id="compare-outcomes", markup=False),
+                    id="compare-scroll",
+                    classes="surface-scroll",
+                ),
+                classes="compare-panel",
+            )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        subtitle = Text()
+        subtitle.append(self.model or "all models", style="bold")
+        subtitle.append("\n")
+        subtitle.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
+        self.query_one("#compare-subtitle", Static).update(subtitle)
+        self.query_one("#compare-header", Static).update(
+            Text("Loading comparison…", style="dim")
+        )
+        self._load_comparison_stats()
+
+    def action_back(self) -> None:
+        if self._grouped_by_key is not None:
+            self._grouped_by_key = None
+            self._refresh_outcomes()
+            return
+        if self._group_mode:
+            self._group_mode = False
+            self._refresh_outcomes()
+            return
+        self.app.pop_screen()
+
+    @staticmethod
+    def _renderable_to_text(renderable: Any, width: int = 220) -> str:
+        buf = StringIO()
+        Console(file=buf, force_terminal=False, color_system=None, width=width).print(
+            renderable
+        )
+        return buf.getvalue().rstrip()
+
+    def action_copy(self) -> None:
+        if not self._stats_by_path:
+            return
+        parts: List[str] = [
+            self._renderable_to_text(self._build_comparison_header()),
+            self._renderable_to_text(
+                self._build_grouped_outcomes_table(
+                    self._stats_by_path,
+                    self._setting_keys,
+                    self._run_settings,
+                    self._display_maps,
+                    self._style_maps,
+                    group_by_key=self._grouped_by_key,
+                )
+            ),
+        ]
+        legend = self._build_value_legend(self._legend_rows)
+        if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
+            parts.append(self._renderable_to_text(legend))
+        all_body = "\n\n".join(parts)
+        self.app.push_screen(
+            CompactCopyScreen(
+                [RolloutCopyItem(key="all", label="Comparison", body=all_body)],
+                start_key="all",
+                title="Copy Comparison",
+            )
+        )
+
+    @work(
+        thread=True,
+        group="run-comparison",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_comparison_stats(self) -> None:
+        stats_by_path = {
+            run.path: _compute_run_overview_stats(run) for run in self.runs
+        }
+        self.app.call_from_thread(self._finish_loading_comparison_stats, stats_by_path)
+
+    def _finish_loading_comparison_stats(
+        self, stats_by_path: Dict[Path, RunOverviewStats]
+    ) -> None:
+        if not self.is_mounted:
+            return
+        self._stats_by_path = stats_by_path
+        self._setting_keys, self._run_settings = _varying_run_setting_keys(self.runs)
+        if self.model is None:
+            # Cross-model comparison: inject "model" as a setting axis
+            for run, settings in self._run_settings:
+                settings["model"] = run.model
+            if "model" not in self._setting_keys:
+                self._setting_keys.insert(0, "model")
+        (
+            self._display_maps,
+            self._style_maps,
+            self._legend_rows,
+        ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
+        self.query_one("#compare-header", Static).update(
+            self._build_comparison_header()
+        )
+        self._refresh_outcomes()
+
+    def _refresh_outcomes(self) -> None:
+        if not self._stats_by_path:
+            return
+        self.query_one("#compare-outcomes", Static).update(
+            self._build_comparison_outcomes()
+        )
+
+    def action_enter_group_mode(self) -> None:
+        if not self._setting_keys:
+            return
+        self._group_mode = True
+        self._group_cursor = 0
+        self._grouped_by_key = None
+        self._refresh_outcomes()
+
+    def action_group_cursor_left(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._group_cursor = (self._group_cursor - 1) % len(self._setting_keys)
+        self._refresh_outcomes()
+
+    def action_group_cursor_right(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._group_cursor = (self._group_cursor + 1) % len(self._setting_keys)
+        self._refresh_outcomes()
+
+    def action_group_select(self) -> None:
+        if not self._group_mode or not self._setting_keys:
+            return
+        self._grouped_by_key = self._setting_keys[self._group_cursor]
+        self._refresh_outcomes()
+
+    def action_exit_group_mode(self) -> None:
+        if self._group_mode:
+            self._group_mode = False
+            self._grouped_by_key = None
+            self._refresh_outcomes()
+
+    def _short_setting_key(self, key: str) -> str:
+        replacements = {
+            "rollouts/example": "r/ex",
+            "sampling.": "",
+            "env.": "",
+        }
+        short = key
+        for source, target in replacements.items():
+            short = short.replace(source, target)
+        return short
+
+    def _alias_style(self, label: str) -> str:
+        match = re.fullmatch(r"v(\d+)", label)
+        if match is None:
+            return ""
+        alias_idx = int(match.group(1)) - 1
+        return f"bold {_COMPARE_ALIAS_PALETTE[alias_idx % len(_COMPARE_ALIAS_PALETTE)]}"
+
+    def _share_style(self, share: float, positive: bool) -> str:
+        if share <= 0:
+            return "dim"
+        if positive:
+            return "bold green" if share >= 0.5 else "green"
+        return "bold red" if share >= 0.5 else "red"
+
+    def _build_setting_display_maps(
+        self,
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+    ) -> Tuple[
+        Dict[str, Dict[str, str]],
+        Dict[str, Dict[str, str]],
+        List[Tuple[str, str, str]],
+    ]:
+        display_maps: Dict[str, Dict[str, str]] = {}
+        style_maps: Dict[str, Dict[str, str]] = {}
+        legend_rows: List[Tuple[str, str, str]] = []
+
+        for key in setting_keys:
+            ordered_values: List[str] = []
+            for _, settings in run_settings:
+                value = settings.get(key, "(unset)")
+                if value not in ordered_values:
+                    ordered_values.append(value)
+
+            previews = [
+                _truncate_preview(" ".join(value.split()), 20)
+                for value in ordered_values
+            ]
+            needs_alias = len(set(previews)) != len(previews) or any(
+                len(" ".join(value.split())) > 20 for value in ordered_values
+            )
+
+            if needs_alias:
+                display_maps[key] = {}
+                style_maps[key] = {}
+                for idx, value in enumerate(ordered_values):
+                    alias = f"v{idx + 1}"
+                    display_maps[key][value] = alias
+                    style_maps[key][value] = self._alias_style(alias)
+                    legend_rows.append(
+                        (
+                            f"{self._short_setting_key(key)} {alias}",
+                            _truncate_preview(" ".join(value.split()), 120),
+                            style_maps[key][value],
+                        )
+                    )
+                continue
+
+            display_maps[key] = {
+                value: preview for value, preview in zip(ordered_values, previews)
+            }
+            style_maps[key] = {value: "" for value in ordered_values}
+
+        return display_maps, style_maps, legend_rows
+
+    def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
+        if not values:
+            return Text("—", style="dim")
+
+        counts = _reward_bucket_counts(values)
+        total = len(values)
+        raw_widths = [
+            (count / total) * width if total else 0.0 for _, count, _ in counts
+        ]
+        segment_widths = [int(raw) for raw in raw_widths]
+        used = sum(segment_widths)
+
+        remainders = sorted(
+            [
+                (raw - int(raw), idx)
+                for idx, ((_, count, _), raw) in enumerate(zip(counts, raw_widths))
+                if count > 0
+            ],
+            reverse=True,
+        )
+        for _, idx in remainders:
+            if used >= width:
+                break
+            segment_widths[idx] += 1
+            used += 1
+
+        out = Text()
+        for (_, count, style), segment_width in zip(counts, segment_widths):
+            if count <= 0 or segment_width <= 0:
+                continue
+            out.append("█" * segment_width, style=style)
+        if used < width:
+            out.append("░" * (width - used), style="dim")
+        return out
+
+    def _build_axes_table(
+        self,
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+        display_maps: Dict[str, Dict[str, str]],
+        style_maps: Dict[str, Dict[str, str]],
+    ) -> Group | Text:
+        if not setting_keys:
+            return Text("All saved settings match across these runs", style="dim")
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        table.add_column(
+            "Axis", style="bold", header_style="bold dim", width=18, no_wrap=True
+        )
+        table.add_column("Values", header_style="bold dim", ratio=1)
+
+        for key in setting_keys:
+            counts: Dict[str, int] = defaultdict(int)
+            ordered_values: List[str] = []
+            for _, settings in run_settings:
+                value = settings.get(key, "(unset)")
+                counts[value] += 1
+                if value not in ordered_values:
+                    ordered_values.append(value)
+
+            value_text = Text()
+            for idx, value in enumerate(ordered_values):
+                if idx:
+                    value_text.append("   ")
+                label = display_maps[key][value]
+                value_text.append(label, style=style_maps[key][value] or "")
+                value_text.append(f" ({counts[value]})", style="dim")
+            axis_label = Text(self._short_setting_key(key), style="bold")
+            table.add_row(axis_label, value_text)
+
+        return Group(Text("Ablation axes", style="bold dim"), table)
+
+    def _build_grouped_outcomes_table(
+        self,
+        stats_by_path: Dict[Path, RunOverviewStats],
+        setting_keys: List[str],
+        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
+        display_maps: Dict[str, Dict[str, str]],
+        style_maps: Dict[str, Dict[str, str]],
+        group_by_key: str | None = None,
+        highlight_col: int | None = None,
+    ) -> Table:
+        # Determine which keys to actually group by.
+        group_keys = [group_by_key] if group_by_key else setting_keys
+
+        grouped: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+
+        for run, settings in run_settings:
+            group_key_val = tuple(settings.get(key, "(unset)") for key in group_keys)
+            group = grouped.setdefault(
+                group_key_val,
+                {
+                    "runs": [],
+                    "rewards": [],
+                    "avg_rewards": [],
+                    "run_settings": [],
+                },
+            )
+            cast(List[RunInfo], group["runs"]).append(run)
+            group["run_settings"].append(settings)
+            stats = stats_by_path.get(run.path, RunOverviewStats([], []))
+            if stats.rewards:
+                cast(List[float], group["rewards"]).extend(stats.rewards)
+            avg_reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+            if avg_reward is not None:
+                cast(List[float], group["avg_rewards"]).append(avg_reward)
+
+        rows = list(grouped.items())
+        rows.sort(
+            key=lambda item: (
+                -(
+                    sum(cast(List[float], item[1]["rewards"]))
+                    / len(cast(List[float], item[1]["rewards"]))
+                    if cast(List[float], item[1]["rewards"])
+                    else (
+                        sum(cast(List[float], item[1]["avg_rewards"]))
+                        / len(cast(List[float], item[1]["avg_rewards"]))
+                        if cast(List[float], item[1]["avg_rewards"])
+                        else float("-inf")
+                    )
+                ),
+                -len(cast(List[RunInfo], item[1]["runs"])),
+            )
+        )
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        for idx, key in enumerate(setting_keys):
+            header_style = "bold reverse" if highlight_col == idx else "bold dim"
+            table.add_column(
+                self._short_setting_key(key),
+                header_style=header_style,
+                ratio=1,
+                no_wrap=True,
+            )
+        table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
+        table.add_column("=0", justify="right", width=5, header_style="bold red")
+        table.add_column("=1", justify="right", width=5, header_style="bold green")
+        table.add_column("mix", width=20, header_style="bold dim")
+        table.add_column("ids", ratio=1, header_style="bold dim")
+
+        for _group_key_val, group in rows:
+            rewards = cast(List[float], group["rewards"])
+            avg_rewards = cast(List[float], group["avg_rewards"])
+            avg_reward = (
+                (sum(rewards) / len(rewards))
+                if rewards
+                else ((sum(avg_rewards) / len(avg_rewards)) if avg_rewards else None)
+            )
+            total = len(rewards)
+            zero_count = next(
+                (
+                    count
+                    for label, count, _ in _reward_bucket_counts(rewards)
+                    if label == "=0"
+                ),
+                0,
+            )
+            one_count = next(
+                (
+                    count
+                    for label, count, _ in _reward_bucket_counts(rewards)
+                    if label == "=1"
+                ),
+                0,
+            )
+            run_ids = ", ".join(
+                run.run_id for run in cast(List[RunInfo], group["runs"])[:3]
+            )
+            hidden_ids = max(0, len(cast(List[RunInfo], group["runs"])) - 3)
+            if hidden_ids:
+                run_ids += f" +{hidden_ids}"
+
+            # Build setting cells.
+            setting_cells: List[Text] = []
+            for key in setting_keys:
+                if group_by_key is None or key == group_by_key:
+                    # Show actual value — find it from any run in the group.
+                    value = group["run_settings"][0].get(key, "(unset)")
+                    setting_cells.append(
+                        Text(
+                            display_maps[key][value],
+                            style=style_maps[key][value] or "",
+                        )
+                    )
+                else:
+                    # Non-grouped column: show "N values" or the value if uniform.
+                    distinct = {s.get(key, "(unset)") for s in group["run_settings"]}
+                    if len(distinct) == 1:
+                        value = next(iter(distinct))
+                        setting_cells.append(
+                            Text(
+                                display_maps[key][value],
+                                style=style_maps[key][value] or "dim",
+                            )
+                        )
+                    else:
+                        setting_cells.append(
+                            Text(f"{len(distinct)} values", style="dim italic")
+                        )
+
+            table.add_row(
+                *setting_cells,
+                str(len(cast(List[RunInfo], group["runs"]))),
+                Text(
+                    _format_reward_value(avg_reward) if avg_reward is not None else "—",
+                    style=_reward_style(avg_reward)
+                    if avg_reward is not None
+                    else "dim",
+                ),
+                Text(
+                    f"{(zero_count / total):.0%}" if total else "—",
+                    style=self._share_style(
+                        (zero_count / total) if total else 0.0, False
+                    ),
+                ),
+                Text(
+                    f"{(one_count / total):.0%}" if total else "—",
+                    style=self._share_style(
+                        (one_count / total) if total else 0.0, True
+                    ),
+                ),
+                self._build_reward_mix_bar(rewards),
+                Text(run_ids or "—", style="dim"),
+            )
+
+        return table
+
+    def _build_value_legend(
+        self, legend_rows: List[Tuple[str, str, str]]
+    ) -> Group | Text:
+        if not legend_rows:
+            return Text()
+
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            expand=True,
+            show_edge=False,
+            pad_edge=False,
+            padding=(0, 1),
+            collapse_padding=True,
+            row_styles=["none", "dim"],
+        )
+        table.add_column(
+            "Alias", style="bold", header_style="bold dim", width=18, no_wrap=True
+        )
+        table.add_column("Preview", header_style="bold dim", ratio=1)
+        for alias, preview, style in legend_rows:
+            table.add_row(Text(alias, style=style), Text(preview, style="dim"))
+        return Group(Text("Value legend", style="bold dim"), table)
+
+    def _build_comparison_header(self) -> Group:
+        summary = Text()
+        summary.append("Ablation summary\n", style="bold dim")
+        summary.append(self.model or "all models", style="bold")
+        summary.append("\n")
+        summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
+        return Group(
+            summary,
+            Text(""),
+            self._build_axes_table(
+                self._setting_keys,
+                self._run_settings,
+                self._display_maps,
+                self._style_maps,
+            ),
+        )
+
+    def _build_comparison_outcomes(self) -> Group:
+        highlight_col = self._group_cursor if self._group_mode else None
+        items: List[Any] = [
+            Text(""),
+            Group(
+                Text("Outcome groups", style="bold dim"),
+                self._build_grouped_outcomes_table(
+                    self._stats_by_path,
+                    self._setting_keys,
+                    self._run_settings,
+                    self._display_maps,
+                    self._style_maps,
+                    group_by_key=self._grouped_by_key,
+                    highlight_col=highlight_col,
+                ),
+            ),
+        ]
+        legend = self._build_value_legend(self._legend_rows)
+        if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
+            items.extend([Text(""), legend])
+        return Group(*items)
+
+
 class BrowseRunsScreen(Screen):
     """Single-screen browser for environments, models, and runs."""
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("enter", "enter_selected", "Open/toggle", priority=True),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
+        Binding("v", "compare_selected", "Compare"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -841,6 +2131,7 @@ class BrowseRunsScreen(Screen):
         super().__init__()
         self.index = index
         self._run_overview_cache: Dict[Path, RunOverviewStats] = {}
+        self._click_selected_node: object | None = None
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -890,8 +2181,6 @@ class BrowseRunsScreen(Screen):
         payload = getattr(node, "data", None)
         if not isinstance(payload, BrowserNodeData):
             return
-        label = getattr(node, "label", "")
-        label_text = label.plain if isinstance(label, Text) else str(label)
         buffer = StringIO()
         Console(
             file=buffer,
@@ -900,15 +2189,44 @@ class BrowseRunsScreen(Screen):
             width=180,
         ).print(self._details_for(payload))
         self.app.push_screen(
-            CopyScreen(
-                label_text,
-                buffer.getvalue().rstrip(),
-                "completion",
-                prompt_label="Selection",
-                completion_label="Details",
+            CompactCopyScreen(
+                [
+                    RolloutCopyItem(
+                        key="details", label="Details", body=buffer.getvalue().rstrip()
+                    )
+                ],
+                start_key="details",
                 title="Copy Details",
             )
         )
+
+    def action_compare_selected(self) -> None:
+        tree = self.query_one("#run-browser-tree", Tree)
+        payload = getattr(getattr(tree, "cursor_node", None), "data", None)
+        if not isinstance(payload, BrowserNodeData):
+            return
+
+        env_id = payload.env_id
+        model = payload.model
+        if payload.kind == "run" and payload.run is not None:
+            env_id = payload.run.env_id
+            model = payload.run.model
+        elif payload.kind == "env":
+            all_runs: List[RunInfo] = []
+            for model_runs in self.index.get(env_id, {}).values():
+                all_runs.extend(model_runs)
+            runs = _sorted_runs(all_runs)
+            if not runs:
+                return
+            self.app.push_screen(CompareRunsScreen(env_id, None, runs))
+            return
+        elif payload.kind != "model":
+            return
+
+        runs = _sorted_runs(self.index.get(env_id, {}).get(model, []))
+        if not runs:
+            return
+        self.app.push_screen(CompareRunsScreen(env_id, model, runs))
 
     def _populate_tree(self, tree: Tree) -> Any:
         root = tree.root
@@ -931,7 +2249,17 @@ class BrowseRunsScreen(Screen):
             env_label.append(f"{total_runs} runs", style="dim")
             env_node = root.add(
                 env_label,
-                data=BrowserNodeData(kind="env", env_id=env_id),
+                data=BrowserNodeData(
+                    kind="env",
+                    env_id=env_id,
+                    tree_name=env_id,
+                    tree_suffix=(
+                        ("  ", ""),
+                        (f"{len(models)} models", "dim"),
+                        ("  ", ""),
+                        (f"{total_runs} runs", "dim"),
+                    ),
+                ),
                 expand=env_idx == 0,
             )
             for model_idx, model in enumerate(sorted(models.keys())):
@@ -942,7 +2270,16 @@ class BrowseRunsScreen(Screen):
                 model_label.append(f"{len(runs)} runs", style="dim")
                 model_node = env_node.add(
                     model_label,
-                    data=BrowserNodeData(kind="model", env_id=env_id, model=model),
+                    data=BrowserNodeData(
+                        kind="model",
+                        env_id=env_id,
+                        model=model,
+                        tree_name=model,
+                        tree_suffix=(
+                            ("  ", ""),
+                            (f"{len(runs)} runs", "dim"),
+                        ),
+                    ),
                     expand=env_idx == 0 and model_idx == 0,
                 )
                 for run in runs:
@@ -963,6 +2300,15 @@ class BrowseRunsScreen(Screen):
                             env_id=env_id,
                             model=model,
                             run=run,
+                            tree_name=run.run_id,
+                            tree_suffix=(
+                                (
+                                    f"  {_format_reward_value(avg_reward)}",
+                                    _reward_style(avg_reward),
+                                ),
+                            )
+                            if avg_reward is not None
+                            else (),
                         ),
                         allow_expand=False,
                     )
@@ -976,13 +2322,32 @@ class BrowseRunsScreen(Screen):
             self._details_for(getattr(event.node, "data", None))
         )
 
-    @on(Tree.NodeSelected, "#run-browser-tree")
-    def on_tree_selected(self, event: Tree.NodeSelected) -> None:
-        payload = event.node.data
+    def action_enter_selected(self) -> None:
+        """Enter key: immediately open the highlighted run or toggle folder."""
+        tree = self.query_one("#run-browser-tree", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        payload = node.data
         if not isinstance(payload, BrowserNodeData):
             return
         if payload.kind == "run" and payload.run is not None:
             self.app.push_screen(ViewRunScreen(payload.run))
+            return
+        if node.allow_expand:
+            node.toggle()
+
+    @on(Tree.NodeSelected, "#run-browser-tree")
+    def on_tree_selected(self, event: Tree.NodeSelected) -> None:
+        """Click: first click selects, second click enters rollout view."""
+        payload = event.node.data
+        if not isinstance(payload, BrowserNodeData):
+            return
+        if payload.kind == "run" and payload.run is not None:
+            if self._click_selected_node is event.node:
+                self.app.push_screen(ViewRunScreen(payload.run))
+            else:
+                self._click_selected_node = event.node
             return
         if event.node.allow_expand:
             event.node.toggle()
@@ -1130,6 +2495,36 @@ class BrowseRunsScreen(Screen):
                 recent.append("\n")
             items.extend([Text(""), recent])
 
+            variation_rows, hidden_variations = _run_setting_variation_rows(runs)
+            if variation_rows:
+                items.extend(
+                    [
+                        Text(""),
+                        _build_settings_table(
+                            variation_rows,
+                            "Setting variations",
+                            value_header="Across runs",
+                        ),
+                    ]
+                )
+                if hidden_variations:
+                    items.extend(
+                        [
+                            Text(""),
+                            Text(
+                                f"{hidden_variations} more varied settings not shown",
+                                style="dim",
+                            ),
+                        ]
+                    )
+
+            items.extend(
+                [
+                    Text(""),
+                    Text("Press v to open compare mode for these runs", style="dim"),
+                ]
+            )
+
         return Group(*items)
 
     def _build_run_details(
@@ -1139,6 +2534,7 @@ class BrowseRunsScreen(Screen):
     ) -> Group:
         meta = run.load_metadata()
         rewards = stats.rewards if stats is not None else []
+        setting_rows = _run_setting_rows(meta)
 
         summary = Text()
         summary.append("Run\n", style="bold dim")
@@ -1172,7 +2568,7 @@ class BrowseRunsScreen(Screen):
             values = meta.get(key)
             if isinstance(values, dict):
                 for bucket, value in sorted(
-                    values.items(), key=lambda item: str(item[0])
+                    values.items(), key=lambda item: _int_like_sort_key(item[0])
                 ):
                     numeric = _numeric_reward(value)
                     if numeric is None:
@@ -1190,6 +2586,13 @@ class BrowseRunsScreen(Screen):
                 pass_rate_text.append(f"{value:.3f}", style=_reward_style(value))
 
         items: List[Any] = [summary, Text("")]
+        if setting_rows:
+            items.extend(
+                [
+                    _build_settings_table(setting_rows, "Run settings"),
+                    Text(""),
+                ]
+            )
         if stats is None:
             loading = Text("Loading rollout metrics…", style="dim")
             loading.append(
@@ -1233,6 +2636,7 @@ class ViewRunScreen(Screen):
         Binding("e", "expand_all", "Expand all"),
         Binding("x", "collapse_all", "Collapse all"),
         Binding("s", "search", "Search"),
+        Binding("m", "toggle_markdown_math", "Toggle markdown"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1243,14 +2647,13 @@ class ViewRunScreen(Screen):
         self.records = LazyRunResults(run)
         self._record_count = self.records.count_hint()
         self.current_record_idx = 0
-        self._prompt_lines: List[str] = []
-        self._completion_lines: List[str] = []
         self._prompt_text: str = ""
         self._completion_text: str = ""
         self._highlight_regex: Optional[re.Pattern] = None
         self._highlight_column: Optional[str] = None
         self._highlight_timer = None
         self._previous_animation_level: Optional[AnimationLevel] = None
+        self._render_markdown_math = True
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
@@ -1284,22 +2687,22 @@ class ViewRunScreen(Screen):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
                         with TabPane("Task", id="details-task"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="task-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Score", id="details-score"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="score-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Usage", id="details-usage"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="usage-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
                         with TabPane("Info", id="details-info"):
-                            yield VerticalScroll(
+                            yield TabbedScrollPane(
                                 Static("", id="info-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
@@ -1366,9 +2769,7 @@ class ViewRunScreen(Screen):
 
         return Text("\n").join(lines)
 
-    def _build_history_summary_text(
-        self, record: Dict[str, Any], *, include_hints: bool = True
-    ) -> Text:
+    def _build_history_summary_text(self, record: Dict[str, Any]) -> Text:
         completion = record.get("completion")
         if not isinstance(completion, list) or not completion:
             return Text()
@@ -1390,15 +2791,6 @@ class ViewRunScreen(Screen):
             ("  ", ""),
             (f"{user_messages} user turns", "dim"),
         ]
-        if include_hints:
-            parts.extend(
-                [
-                    ("  ", ""),
-                    ("Enter toggles", "dim"),
-                    ("  ", ""),
-                    ("PgUp/PgDn scroll", "dim"),
-                ]
-            )
         return Text.assemble(*parts)
 
     def _build_header_metric_text(self) -> Text:
@@ -1407,12 +2799,12 @@ class ViewRunScreen(Screen):
 
         pass_at_k = meta.get("pass_at_k")
         if isinstance(pass_at_k, dict):
-            for key in sorted(pass_at_k.keys(), key=lambda item: str(item)):
+            for key in sorted(pass_at_k.keys(), key=_int_like_sort_key):
                 stats.append((f"pass@{key}", pass_at_k[key]))
 
         pass_all_k = meta.get("pass_all_k")
         if isinstance(pass_all_k, dict):
-            for key in sorted(pass_all_k.keys(), key=lambda item: str(item)):
+            for key in sorted(pass_all_k.keys(), key=_int_like_sort_key):
                 stats.append((f"pass-all@{key}", pass_all_k[key]))
 
         avg_metrics = meta.get("avg_metrics")
@@ -1461,7 +2853,7 @@ class ViewRunScreen(Screen):
         out.append(f"{heading}\n", style="bold dim")
         out.append(_format_reward_value(reward), style=_reward_style(reward))
 
-        breakdown = self._extract_reward_metrics(record)
+        breakdown = sorted(_extract_numeric_metric_values(record).items())
         if breakdown:
             breakdown = breakdown[:limit] if limit is not None else breakdown
             if multiline:
@@ -1494,8 +2886,8 @@ class ViewRunScreen(Screen):
         self._previous_animation_level = app.animation_level
         app.animation_level = "none"
         self._populate_rollout_list()
-        self.query_one("#rollout-list", OptionList).focus()
         self.update_display()
+        self.call_after_refresh(self._focus_primary_content)
         self._update_responsive_layout(self.size.width)
 
     def on_resize(self, event: events.Resize) -> None:
@@ -1517,14 +2909,6 @@ class ViewRunScreen(Screen):
         total = "?" if self._record_count is None else str(self._record_count)
         return f"{self.current_record_idx + 1}/{total}"
 
-    def _set_rollout_option_count(self, count: int) -> None:
-        rollout_list = self.query_one("#rollout-list", OptionList)
-        while rollout_list.option_count < count:
-            idx = rollout_list.option_count
-            rollout_list.add_option(
-                Option(self._build_rollout_prompt(idx), id=str(idx))
-            )
-
     def _hydrate_rollout_option(self, index: int) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
         if not (0 <= index < rollout_list.option_count):
@@ -1533,26 +2917,6 @@ class ViewRunScreen(Screen):
             index,
             self._build_rollout_prompt(index, self.records[index]),
         )
-
-    @work(
-        thread=True,
-        group="rollout-count",
-        exclusive=True,
-        exit_on_error=False,
-    )
-    def _load_record_count(self) -> None:
-        count = _count_result_records(self.run.path / "results.jsonl")
-        self.app.call_from_thread(self._finish_loading_record_count, count)
-
-    def _finish_loading_record_count(self, count: int) -> None:
-        self._record_count = count
-        if not self.is_mounted:
-            return
-        self._set_rollout_option_count(count)
-        rollout_list = self.query_one("#rollout-list", OptionList)
-        rollout_list.highlighted = self.current_record_idx
-        rollout_list.scroll_to_highlight()
-        self.update_display()
 
     def _populate_rollout_list(self) -> None:
         rollout_list = self.query_one("#rollout-list", OptionList)
@@ -1636,12 +3000,20 @@ class ViewRunScreen(Screen):
                 continue
             role = str(message.get("role", ""))
             content = _stringify_message_content(message.get("content", ""))
+            reasoning = _stringify_message_reasoning(message)
             if role == "assistant":
                 out.append("assistant: ", style="bold")
             elif role == "tool":
                 out.append("tool result: ", style="bold dim")
             else:
                 out.append(f"{role}: ", style="bold dim")
+            if reasoning:
+                out.append("\n")
+                out.append("reasoning:\n", style="dim")
+                out.append(reasoning, style="dim")
+                out.append("\n")
+                if content:
+                    out.append("\n")
             out.append(content)
             out.append("\n")
 
@@ -1671,8 +3043,6 @@ class ViewRunScreen(Screen):
 
         self._prompt_text = prompt_text.plain
         self._completion_text = completion_text.plain
-        self._prompt_lines = prompt_text.plain.split("\n")
-        self._completion_lines = completion_text.plain.split("\n")
 
     def update_display(self, *, focus_history: bool = False) -> None:
         if not self.records:
@@ -1701,7 +3071,9 @@ class ViewRunScreen(Screen):
         self.query_one("#score-content", Static).update(score_text)
         self.query_one("#usage-content", Static).update(usage_text)
         self.query_one("#info-content", Static).update(info_text)
-        self._update_rollout_summary(record)
+        self.query_one("#rollout-summary", Label).update(
+            self._build_rollout_summary_text(record)
+        )
         self._rebuild_completion_sections(record, focus_history)
 
     def action_back(self) -> None:
@@ -1723,11 +3095,43 @@ class ViewRunScreen(Screen):
         rollout_list.scroll_to_highlight()
         self._set_current_record(new_index)
 
+    def _build_search_lines(
+        self, record: Dict[str, Any]
+    ) -> Tuple[List[Tuple[int, int, str]], List[Tuple[int, int, str]]]:
+        """Build tagged (section_index, nested_index, line) lists for search."""
+        sections = self._history_section_data(record)
+        prompt_lines: List[Tuple[int, int, str]] = []
+        completion_lines: List[Tuple[int, int, str]] = []
+        for idx, section in enumerate(sections):
+            target = prompt_lines if section.column == "prompt" else completion_lines
+
+            def _append_body(tgt: List[Tuple[int, int, str]], body: str) -> None:
+                for line in body.splitlines():
+                    tgt.append((idx, -1, line))
+
+            def _append_nested() -> None:
+                for nested_idx, nested in enumerate(section.nested_sections):
+                    nested_target = (
+                        prompt_lines if nested.column == "prompt" else completion_lines
+                    )
+                    for line in nested.body.splitlines():
+                        nested_target.append((idx, nested_idx, line))
+
+            if section.body_first:
+                _append_body(target, section.body)
+                _append_nested()
+            else:
+                _append_nested()
+                _append_body(target, section.body)
+        return prompt_lines, completion_lines
+
     def action_search(self) -> None:
         if not self.records:
             return
+        record = self.records[self.current_record_idx]
+        prompt_lines, completion_lines = self._build_search_lines(record)
         self.app.push_screen(
-            SearchScreen(self._prompt_lines, self._completion_lines),
+            SearchScreen(prompt_lines, completion_lines),
             self._handle_search_result,
         )
 
@@ -1738,7 +3142,7 @@ class ViewRunScreen(Screen):
         self.app.push_screen(
             RolloutCopyScreen(
                 self._build_rollout_copy_items(record),
-                start_key=self._rollout_copy_start_key(),
+                start_key="snapshot",
                 title=f"Copy Rollout #{self.current_record_idx}",
             )
         )
@@ -1755,11 +3159,52 @@ class ViewRunScreen(Screen):
             section.collapsed = True
         self._focus_primary_content(prefer_expanded=False)
 
+    @on(TabbedContent.TabActivated, "#details-tabs")
+    def on_details_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Focus the scroll pane in the newly active details tab."""
+        for child in event.pane.children:
+            if isinstance(child, TabbedScrollPane):
+                child.focus()
+                break
+
+    def _should_skip_focus(self, widget: Widget) -> bool:
+        """Return True for widgets that should be skipped during tab cycling."""
+        # Skip the scroll container itself — only its children should get focus.
+        if widget.id == "completion-scroll":
+            return True
+        # Skip the details tab bar — the TabbedScrollPane handles tab switching.
+        if isinstance(widget, ContentTabs):
+            return True
+        # Skip widgets inside hidden ancestors (compact-layout panels,
+        # inactive tab panes, etc.).
+        node: DOMNode | None = widget.parent
+        while node is not None:
+            if isinstance(node, Widget) and not node.display:
+                return True
+            node = node.parent
+        return False
+
     def action_focus_next_pane(self) -> None:
+        starting = self.focused
         self.focus_next()
+        first_candidate = self.focused
+        while self.focused is not None and self.focused is not starting:
+            if not self._should_skip_focus(self.focused):
+                break
+            self.focus_next()
+            if self.focused is first_candidate:
+                break
 
     def action_focus_prev_pane(self) -> None:
+        starting = self.focused
         self.focus_previous()
+        first_candidate = self.focused
+        while self.focused is not None and self.focused is not starting:
+            if not self._should_skip_focus(self.focused):
+                break
+            self.focus_previous()
+            if self.focused is first_candidate:
+                break
 
     def action_history_page_up(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
@@ -1777,6 +3222,63 @@ class ViewRunScreen(Screen):
     def action_history_end(self) -> None:
         self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
 
+    def _make_body_widget(self, body: str, column: str) -> Widget:
+        """Create the appropriate body widget based on render mode."""
+        if self._render_markdown_math and not (
+            self._highlight_regex and self._highlight_column == column
+        ):
+            return MathMarkdown(body, classes="section-body")
+        text = Text(body)
+        if self._highlight_regex and self._highlight_column == column:
+            _stylize_matches(text, self._highlight_regex, "reverse")
+        return Static(text, classes="section-body", markup=False)
+
+    def _collect_section_bodies(
+        self, sections: List[HistorySectionData]
+    ) -> List[Tuple[str, str]]:
+        """Flatten all section (body, column) pairs in DOM order."""
+        result: List[Tuple[str, str]] = []
+        for section in sections:
+            parent = (
+                [(section.body, section.column)]
+                if section.body or not section.nested_sections
+                else []
+            )
+            nested = [
+                (n.body, n.column)
+                for n in section.nested_sections
+                if n.body or not n.nested_sections
+            ]
+            if section.body_first:
+                result.extend(parent)
+                result.extend(nested)
+            else:
+                result.extend(nested)
+                result.extend(parent)
+        return result
+
+    def _swap_section_bodies(self) -> None:
+        """Re-render all .section-body widgets in-place (preserves collapsed state)."""
+        if not (self.records and self.is_mounted):
+            return
+        record = self.records[self.current_record_idx]
+        section_data = self._history_section_data(record)
+        body_entries = self._collect_section_bodies(section_data)
+        container = self.query_one("#completion-scroll", VerticalScroll)
+        body_widgets = list(container.query(".section-body"))
+        for i, body_widget in enumerate(body_widgets):
+            parent = body_widget.parent
+            if not isinstance(parent, Widget) or i >= len(body_entries):
+                continue
+            body, column = body_entries[i]
+            replacement = self._make_body_widget(body, column)
+            parent.mount(replacement, after=body_widget)
+            body_widget.remove()
+
+    def action_toggle_markdown_math(self) -> None:
+        self._render_markdown_math = not self._render_markdown_math
+        self._swap_section_bodies()
+
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
         if result is not None:
             self._set_highlight(result)
@@ -1787,8 +3289,12 @@ class ViewRunScreen(Screen):
         if self._highlight_timer is not None:
             self._highlight_timer.stop()
             self._highlight_timer = None
+
+        had_highlight = self._highlight_regex is not None
         self._highlight_regex = None
         self._highlight_column = None
+        self._highlight_section_index: int = 0
+        self._highlight_nested_index: int = -1
 
         if result is not None:
             try:
@@ -1796,12 +3302,19 @@ class ViewRunScreen(Screen):
             except re.error:
                 return
             self._highlight_column = result.column
+            self._highlight_section_index = result.section_index
+            self._highlight_nested_index = result.nested_index
             self._highlight_timer = self.set_timer(
                 3.0, lambda: self._set_highlight(None)
             )
 
-        if repaint and self.is_mounted:
-            self.update_display()
+        if repaint and self.is_mounted and (had_highlight or result is not None):
+            self._swap_section_bodies()
+
+            # For new searches, expand the target section and scroll to it.
+            if result is not None:
+                container = self.query_one("#completion-scroll", VerticalScroll)
+                self._expand_and_scroll_to_match(container)
 
     def _build_rollout_summary_text(self, record: Dict[str, Any]) -> Text:
         return Text.assemble(
@@ -1812,11 +3325,6 @@ class ViewRunScreen(Screen):
                 _format_reward_value(record.get("reward")),
                 _reward_style(record.get("reward")),
             ),
-        )
-
-    def _update_rollout_summary(self, record: Dict[str, Any]) -> None:
-        self.query_one("#rollout-summary", Label).update(
-            self._build_rollout_summary_text(record)
         )
 
     def _update_responsive_layout(self, width: int) -> None:
@@ -1857,6 +3365,25 @@ class ViewRunScreen(Screen):
             return
         self._set_current_record(int(event.option_id), focus_history=True)
 
+    def _reasoning_section_data(
+        self,
+        message: Dict[str, Any],
+        *,
+        collapsed: bool = True,
+    ) -> Tuple[HistorySectionData, ...]:
+        reasoning = _stringify_message_reasoning(message)
+        if not reasoning:
+            return ()
+        return (
+            HistorySectionData(
+                title="Reasoning",
+                body=reasoning,
+                column="completion",
+                collapsed=collapsed,
+                classes="history-section reasoning-section nested-section",
+            ),
+        )
+
     def _history_section_data(self, record: Dict[str, Any]) -> List[HistorySectionData]:
         sections: List[HistorySectionData] = [
             HistorySectionData(
@@ -1888,6 +3415,7 @@ class ViewRunScreen(Screen):
                 preview = _format_message_preview(message)
                 if preview:
                     title += f"  {preview}"
+                reasoning_sections = self._reasoning_section_data(message)
 
                 sections.append(
                     HistorySectionData(
@@ -1906,6 +3434,8 @@ class ViewRunScreen(Screen):
                                 else "history-section assistant-section"
                             )
                         ),
+                        nested_sections=reasoning_sections,
+                        body_first=not reasoning_sections,
                     )
                 )
                 continue
@@ -1934,7 +3464,7 @@ class ViewRunScreen(Screen):
                 if collapsed:
                     for output in tool_outputs:
                         output_text = (
-                            _stringify_message_content(output.get("content", ""))
+                            _stringify_message(output)
                             if isinstance(output, dict)
                             else str(output)
                         )
@@ -1942,7 +3472,9 @@ class ViewRunScreen(Screen):
                             collapsed = False
                             break
 
-            nested_sections: List[HistorySectionData] = []
+            nested_sections: List[HistorySectionData] = list(
+                self._reasoning_section_data(message)
+            )
             used_output_indexes: set[int] = set()
             for tool_idx, tool_call in enumerate(tool_calls, start=1):
                 name, arguments, call_id = _tool_call_parts(tool_call)
@@ -1964,7 +3496,7 @@ class ViewRunScreen(Screen):
                             break
 
                 output_text = (
-                    _stringify_message_content(matched_output.get("content", ""))
+                    _stringify_message(matched_output)
                     if isinstance(matched_output, dict)
                     else (str(matched_output) if matched_output is not None else "")
                 )
@@ -1993,7 +3525,7 @@ class ViewRunScreen(Screen):
                 if (extra_idx - 1) in used_output_indexes:
                     continue
                 output_text = (
-                    _stringify_message_content(output_message.get("content", ""))
+                    _stringify_message(output_message)
                     if isinstance(output_message, dict)
                     else str(output_message)
                 )
@@ -2018,6 +3550,7 @@ class ViewRunScreen(Screen):
                     collapsed=collapsed,
                     classes="history-section assistant-section",
                     nested_sections=tuple(nested_sections),
+                    body_first=False if nested_sections else True,
                 )
             )
 
@@ -2041,23 +3574,39 @@ class ViewRunScreen(Screen):
         if focus_history:
             self.call_after_refresh(self._focus_primary_content)
 
-    def _rollout_copy_start_key(self) -> str:
-        if self.is_mounted and self.query_one("#details-panel", Panel).has_focus_within:
-            return f"details:{self._active_details_tab_id()}"
-        if self.is_mounted and self.query_one("#history-panel", Panel).has_focus_within:
-            return "history"
-        if (
-            self.is_mounted
-            and self.query_one("#rollouts-panel", Panel).has_focus_within
-        ):
-            return "rollout"
-        return "snapshot"
+    def _expand_and_scroll_to_match(self, container: VerticalScroll) -> None:
+        """Expand the target section (and nested subsection) and scroll to it."""
+        # Get top-level sections only (direct children of the scroll container).
+        sections = [
+            child for child in container.children if isinstance(child, Collapsible)
+        ]
+        idx = self._highlight_section_index
+        if not (0 <= idx < len(sections)):
+            return
+        parent = sections[idx]
+        if parent.collapsed:
+            parent.collapsed = False
 
-    def _active_details_tab_id(self) -> str:
-        if not self.is_mounted:
-            return "details-task"
-        active = self.query_one("#details-tabs", TabbedContent).active
-        return active or "details-task"
+        # If the hit is in a nested section, expand that too.
+        scroll_target = parent
+        nested_idx = self._highlight_nested_index
+        if nested_idx >= 0:
+            nested_collapsibles = [
+                child for child in parent.query(Collapsible) if child is not parent
+            ]
+            if 0 <= nested_idx < len(nested_collapsibles):
+                nested = nested_collapsibles[nested_idx]
+                if nested.collapsed:
+                    nested.collapsed = False
+                scroll_target = nested
+
+        self.call_after_refresh(lambda t=scroll_target: self._scroll_to_section(t))
+
+    def _scroll_to_section(self, section: Collapsible) -> None:
+        section.scroll_visible(animate=False)
+        title_widget = next(iter(section.children), None)
+        if title_widget is not None and getattr(title_widget, "can_focus", False):
+            title_widget.focus()
 
     def _detail_copy_sections(
         self, record: Dict[str, Any]
@@ -2078,12 +3627,17 @@ class ViewRunScreen(Screen):
     ) -> str:
         indent = "  " * depth
         parts = [f"{indent}{section.title}"]
-        if section.body:
-            parts.append(_indent_block(section.body, f"{indent}  "))
-        parts.extend(
+        body = [_indent_block(section.body, f"{indent}  ")] if section.body else []
+        nested = [
             self._render_history_section_copy_text(child, depth=depth + 1)
             for child in section.nested_sections
-        )
+        ]
+        if section.body_first:
+            parts.extend(body)
+            parts.extend(nested)
+        else:
+            parts.extend(nested)
+            parts.extend(body)
         return "\n\n".join(part for part in parts if part)
 
     def _render_history_copy_text(self, sections: List[HistorySectionData]) -> str:
@@ -2129,9 +3683,7 @@ class ViewRunScreen(Screen):
             f"Current Rollout\n{self._build_rollout_prompt(self.current_record_idx, record).plain}",
         ]
 
-        history_summary = _text_to_plain(
-            self._build_history_summary_text(record, include_hints=False)
-        )
+        history_summary = _text_to_plain(self._build_history_summary_text(record))
         history_text = self._render_history_copy_text(history_sections)
         history_parts = ["Completion History"]
         if history_summary:
@@ -2140,7 +3692,12 @@ class ViewRunScreen(Screen):
             history_parts.append(history_text)
         blocks.append("\n\n".join(history_parts))
 
-        active_tab_id = self._active_details_tab_id()
+        if self.is_mounted:
+            active_tab_id = (
+                self.query_one("#details-tabs", TabbedContent).active or "details-task"
+            )
+        else:
+            active_tab_id = "details-task"
         active_tab_label = next(
             (
                 label
@@ -2277,28 +3834,54 @@ class ViewRunScreen(Screen):
             idx += 1
         return groups
 
+    def _section_matches_highlight(self, section: HistorySectionData) -> bool:
+        if not (self._highlight_regex and self._highlight_column == section.column):
+            return False
+        if self._highlight_regex.search(section.title) or self._highlight_regex.search(
+            section.body
+        ):
+            return True
+        return any(
+            self._section_matches_highlight(nested_section)
+            for nested_section in section.nested_sections
+        )
+
     def _make_section(self, section: HistorySectionData) -> Collapsible:
         collapsed = section.collapsed
-        if (
-            self._highlight_regex
-            and self._highlight_column == section.column
-            and self._highlight_regex.search(section.body)
-        ):
+        if self._section_matches_highlight(section):
             collapsed = False
-        children: List[Any] = []
-        if section.body or not section.nested_sections:
+        body_children: List[Any] = []
+        if section.body:
+            if not self._render_markdown_math or (
+                self._highlight_regex and self._highlight_column == section.column
+            ):
+                text = Text(section.body)
+                if self._highlight_regex and self._highlight_column == section.column:
+                    _stylize_matches(text, self._highlight_regex, "reverse")
+                content = Static(
+                    text,
+                    classes="section-body",
+                    markup=False,
+                )
+            else:
+                content = MathMarkdown(section.body, classes="section-body")
+            body_children.append(content)
+        elif not section.nested_sections:
             text = Text(section.body)
-            if self._highlight_regex and self._highlight_column == section.column:
-                _stylize_matches(text, self._highlight_regex, "reverse")
             content = Static(
                 text,
                 classes="section-body",
                 markup=False,
             )
-            children.append(content)
-        children.extend(
+            body_children.append(content)
+        nested_children = [
             self._make_section(nested_section)
             for nested_section in section.nested_sections
+        ]
+        children = (
+            [*body_children, *nested_children]
+            if section.body_first
+            else [*nested_children, *body_children]
         )
         return Collapsible(
             *children,
@@ -2369,9 +3952,6 @@ class ViewRunScreen(Screen):
                 out.append("\n")
 
         return out
-
-    def _extract_reward_metrics(self, record: Dict[str, Any]) -> List[Tuple[str, Any]]:
-        return sorted(_extract_numeric_metric_values(record).items())
 
     def _build_task_text(self, record: Dict[str, Any]) -> Text:
         out = Text()
@@ -2691,6 +4271,10 @@ class VerifiersTUI(App):
         height: 1fr;
     }
 
+    .details-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
     #details-tabs {
         height: 1fr;
     }
@@ -2738,13 +4322,23 @@ class VerifiersTUI(App):
         margin-right: 8;
     }
 
+    #compare-scroll {
+        padding: 0 1 0 2;
+        scrollbar-size-vertical: 2;
+        scrollbar-gutter: stable;
+    }
+
+    #compare-content {
+        margin-right: 8;
+    }
+
     .browser-columns {
         height: 1fr;
         layout: horizontal;
     }
 
     .browser-tree-panel {
-        width: 48;
+        width: 56;
         height: 1fr;
         layout: vertical;
     }
@@ -2753,6 +4347,7 @@ class VerifiersTUI(App):
         height: 1fr;
         background: $surface;
         color: $text;
+        overflow-x: hidden;
     }
 
     #run-browser-tree:focus {
@@ -2763,7 +4358,15 @@ class VerifiersTUI(App):
         height: 1fr;
         width: 1fr;
     }
-    
+
+    #run-browser-details-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
+    .compare-panel {
+        height: 1fr;
+    }
+
     Footer {
         background: $panel;
     }
@@ -2780,6 +4383,11 @@ class VerifiersTUI(App):
     .modal-panel {
         width: 50%;
         height: 100%;
+        layout: vertical;
+    }
+
+    .compact-copy-body {
+        height: 1fr;
         layout: vertical;
     }
 
@@ -2835,9 +4443,13 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         Binding("enter", "select", "Select"),
     ]
 
-    def __init__(self, prompt_lines: List[str], completion_lines: List[str]):
+    def __init__(
+        self,
+        prompt_lines: List[Tuple[int, int, str]],
+        completion_lines: List[Tuple[int, int, str]],
+    ):
         super().__init__()
-        self._lines: Dict[str, List[str]] = {
+        self._tagged_lines: Dict[str, List[Tuple[int, int, str]]] = {
             "prompt": prompt_lines,
             "completion": completion_lines,
         }
@@ -2919,7 +4531,14 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         if selection is None:
             return
         pattern = self.query_one("#search-input", Input).value
-        self.dismiss(SearchResult(column=selection.column, pattern=pattern))
+        self.dismiss(
+            SearchResult(
+                column=selection.column,
+                pattern=pattern,
+                section_index=selection.section_index,
+                nested_index=selection.nested_index,
+            )
+        )
 
     def _set_active_hit(
         self, column: str, option_id: Optional[str], *, select: bool = False
@@ -2965,13 +4584,21 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
             return
 
         error_label.update("")
-        for column, lines in self._lines.items():
+        for column, tagged_lines in self._tagged_lines.items():
             hits: List[SearchHit] = []
-            for line_index, line in enumerate(lines):
+            for line_index, (section_index, nested_index, line) in enumerate(
+                tagged_lines
+            ):
                 if not compiled.search(line):
                     continue
                 hits.append(
-                    SearchHit(column=column, line_index=line_index, line_text=line)
+                    SearchHit(
+                        column=column,
+                        line_index=line_index,
+                        line_text=line,
+                        section_index=section_index,
+                        nested_index=nested_index,
+                    )
                 )
                 content = Text(line)
                 _stylize_matches(content, compiled, "reverse")
@@ -3052,13 +4679,14 @@ class RolloutCopyScreen(ModalScreen[None]):
     """Modal screen for copying rollout viewer sections."""
 
     BINDINGS = [
-        Binding("escape", "close", "Close"),
-        Binding("tab", "focus_next_pane", "Next pane"),
-        Binding("shift+tab", "focus_prev_pane", show=False),
-        Binding("enter", "copy", "Copy"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
 
     def __init__(
         self,
@@ -3069,28 +4697,19 @@ class RolloutCopyScreen(ModalScreen[None]):
     ):
         super().__init__()
         self._items = items
-        self._items_by_key = {item.key: item for item in items}
-        self._start_key = (
-            start_key
-            if start_key in self._items_by_key
-            else (items[0].key if items else None)
-        )
         self._title = title
-        self._current_key = self._start_key
+        self._current_idx = 0
+        if start_key:
+            for i, item in enumerate(items):
+                if item.key == start_key:
+                    self._current_idx = i
+                    break
         self._last_copied_selection = ""
 
     def compose(self) -> ComposeResult:
         with Container():
             with Panel(classes="modal-header"):
                 yield Label(Text(self._title, style="bold"))
-                yield Label(
-                    Text(
-                        "Choose a viewer section on the left. Tab switches panes; enter or c copies the current target.",
-                        style="dim",
-                    ),
-                    id="rollout-copy-hint",
-                    classes="copy-hint",
-                )
                 yield Label("", id="rollout-copy-status", classes="subtitle")
 
             with Horizontal(classes="modal-columns"):
@@ -3112,23 +4731,23 @@ class RolloutCopyScreen(ModalScreen[None]):
         option_list = self.query_one("#rollout-copy-targets", OptionList)
         for item in self._items:
             option_list.add_option(Option(Text(item.label), id=item.key))
-
-        if self._start_key is not None:
-            for idx, item in enumerate(self._items):
-                if item.key == self._start_key:
-                    option_list.highlighted = idx
-                    option_list.scroll_to_highlight()
-                    break
-
+        option_list.highlighted = self._current_idx
         self._sync_preview()
-        option_list.focus()
+        self.query_one("#rollout-copy-preview", TextArea).focus()
 
     @on(OptionList.OptionHighlighted, "#rollout-copy-targets")
     def _on_target_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id is None:
-            return
-        self._current_key = event.option_id
-        self._sync_preview()
+        if event.option_index is not None and event.option_index != self._current_idx:
+            self._current_idx = event.option_index
+            self._sync_preview()
+
+    @on(OptionList.OptionSelected, "#rollout-copy-targets")
+    def _on_target_selected(self, event: OptionList.OptionSelected) -> None:
+        """Click on a target: update preview and return focus to TextArea."""
+        if event.option_index is not None:
+            self._current_idx = event.option_index
+            self._sync_preview()
+        self.query_one("#rollout-copy-preview", TextArea).focus()
 
     @on(TextArea.SelectionChanged)
     def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
@@ -3141,31 +4760,38 @@ class RolloutCopyScreen(ModalScreen[None]):
             self.query_one("#rollout-copy-status", Label).update(
                 Text(f"Copied selection ({len(selected):,} chars).", style="dim")
             )
-        self._update_hint()
 
-    def on_key(self, event) -> None:
-        if event.key in ("tab", "shift+tab", "backtab"):
-            if event.key == "tab":
-                self.action_focus_next_pane()
-            else:
-                self.action_focus_prev_pane()
+    def on_key(self, event: events.Key) -> None:
+        # Only intercept arrow keys when the OptionList has focus;
+        # let all keys pass through to the TextArea normally.
+        option_list = self.query_one("#rollout-copy-targets", OptionList)
+        if self.focused is not option_list:
+            return
+        if event.key in ("left", "up"):
+            self._move_section(-1)
             event.prevent_default()
             event.stop()
+        elif event.key in ("right", "down"):
+            self._move_section(1)
+            event.prevent_default()
+            event.stop()
+
+    def _move_section(self, delta: int) -> None:
+        if not self._items:
+            return
+        self._current_idx = (self._current_idx + delta) % len(self._items)
+        self.query_one(
+            "#rollout-copy-targets", OptionList
+        ).highlighted = self._current_idx
+        self._sync_preview()
 
     def action_close(self) -> None:
         self.dismiss(None)
 
-    def action_focus_next_pane(self) -> None:
-        self.focus_next()
-
-    def action_focus_prev_pane(self) -> None:
-        self.focus_previous()
-
     def action_copy(self) -> None:
-        item = self._current_item()
-        if item is None:
+        if not self._items:
             return
-
+        item = self._items[self._current_idx]
         preview = self.query_one("#rollout-copy-preview", TextArea)
         selected = preview.selected_text or ""
         copied_text = selected or item.body
@@ -3173,62 +4799,149 @@ class RolloutCopyScreen(ModalScreen[None]):
             self.query_one("#rollout-copy-status", Label).update(
                 Text("Nothing to copy.", style="dim")
             )
-            self._update_hint()
             return
-
         self.app.copy_to_clipboard(copied_text)
         self._last_copied_selection = copied_text
-        if selected:
-            message = f"Copied selection ({len(copied_text):,} chars)."
-        else:
-            message = f"Copied {item.label} ({len(copied_text):,} chars)."
-        self.query_one("#rollout-copy-status", Label).update(Text(message, style="dim"))
-        self._update_hint()
-
-    def _current_item(self) -> Optional[RolloutCopyItem]:
-        if self._current_key is None:
-            return self._items[0] if self._items else None
-        return self._items_by_key.get(self._current_key)
+        label = "selection" if selected else item.label.lower()
+        self.query_one("#rollout-copy-status", Label).update(
+            Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
+        )
 
     def _sync_preview(self) -> None:
-        item = self._current_item()
-        preview_label = self.query_one("#rollout-copy-preview-label", Label)
-        preview = self.query_one("#rollout-copy-preview", TextArea)
-        if item is None:
-            preview_label.update(Text("Preview", style="bold"))
-            preview.load_text("")
-            self._update_hint()
+        if not self._items:
             return
-
-        preview_label.update(
+        item = self._items[self._current_idx]
+        self.query_one("#rollout-copy-preview-label", Label).update(
             Text(f"{item.label}  ({len(item.body):,} chars)", style="bold")
         )
-        preview.load_text(item.body)
-        self._update_hint()
+        self.query_one("#rollout-copy-preview", TextArea).load_text(item.body)
 
-    def _update_hint(self) -> None:
-        item = self._current_item()
-        preview = self.query_one("#rollout-copy-preview", TextArea)
+
+class CompactCopyScreen(ModalScreen[None]):
+    """Compact copy screen with section tabs above a preview area."""
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
+        Binding("tab", "next_section", "Next section"),
+        Binding("shift+tab", "prev_section", "Prev section"),
+        Binding("c", "copy", "Copy"),
+    ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
+
+    def __init__(
+        self,
+        items: List[RolloutCopyItem],
+        *,
+        start_key: Optional[str] = None,
+        title: str = "Copy",
+    ):
+        super().__init__()
+        self._items = items
+        self._title = title
+        self._current_idx = 0
+        if start_key:
+            for i, item in enumerate(items):
+                if item.key == start_key:
+                    self._current_idx = i
+                    break
+        self._last_copied_selection = ""
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            with Panel(classes="modal-header"):
+                yield Label(Text(self._title, style="bold"))
+                yield Label("", id="compact-copy-status", classes="subtitle")
+            with Panel(classes="compact-copy-body"):
+                preview = TextArea(
+                    "", id="compact-copy-preview", classes="copy-textarea"
+                )
+                preview.read_only = True
+                yield preview
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._sync()
+        self.query_one("#compact-copy-preview", TextArea).focus()
+
+    @on(TextArea.SelectionChanged)
+    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area.id != "compact-copy-preview":
+            return
+        selected = event.text_area.selected_text or ""
+        if selected and selected != self._last_copied_selection:
+            self.app.copy_to_clipboard(selected)
+            self._last_copied_selection = selected
+            self.query_one("#compact-copy-status", Label).update(
+                Text(f"Copied selection ({len(selected):,} chars).", style="dim")
+            )
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("tab", "shift+tab", "backtab"):
+            if event.key == "tab":
+                self.action_next_section()
+            else:
+                self.action_prev_section()
+            event.prevent_default()
+            event.stop()
+
+    def action_prev_section(self) -> None:
+        if self._items:
+            self._current_idx = (self._current_idx - 1) % len(self._items)
+            self._sync()
+
+    def action_next_section(self) -> None:
+        if self._items:
+            self._current_idx = (self._current_idx + 1) % len(self._items)
+            self._sync()
+
+    def action_copy(self) -> None:
+        if not self._items:
+            return
+        item = self._items[self._current_idx]
+        preview = self.query_one("#compact-copy-preview", TextArea)
         selected = preview.selected_text or ""
-        if selected:
-            hint = f"Enter/c copies the selection ({len(selected):,} chars)."
-        elif item is not None:
-            hint = f"Enter/c copies {item.label.lower()}. Tab switches panes."
-        else:
-            hint = "Choose a copy target. Tab switches panes."
-        self.query_one("#rollout-copy-hint", Label).update(Text(hint, style="dim"))
+        copied_text = selected or item.body
+        if not copied_text:
+            self.query_one("#compact-copy-status", Label).update(
+                Text("Nothing to copy.", style="dim")
+            )
+            return
+        self.app.copy_to_clipboard(copied_text)
+        self._last_copied_selection = copied_text
+        label = "selection" if selected else item.label.lower()
+        self.query_one("#compact-copy-status", Label).update(
+            Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
+        )
+
+    def _sync(self) -> None:
+        if not self._items:
+            return
+        item = self._items[self._current_idx]
+        preview = self.query_one("#compact-copy-preview", TextArea)
+        preview.load_text(item.body)
 
 
 class CopyScreen(ModalScreen[None]):
     """Modal screen for selecting and copying prompt/completion text."""
 
     BINDINGS = [
-        Binding("escape", "close", "Close"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "close", "Back (esc/b)"),
+        Binding("b,backspace", "close", show=False),
         Binding("tab", "cycle_column", "Next column"),
-        Binding("shift+tab", "cycle_column", show=False),
+        Binding("shift+tab", "cycle_column", "Prev column"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
+
+    async def action_quit(self) -> None:
+        self.app.exit()
 
     def __init__(
         self,
@@ -3363,14 +5076,14 @@ class CopyScreen(ModalScreen[None]):
         if selected:
             count = len(selected)
             unit = "char" if count == 1 else "chars"
-            copy_text = f"c / ctrl+c: copy selection ({count} {unit})"
+            copy_text = f"c: copy selection ({count} {unit})"
         else:
             active_label = (
                 self._prompt_label
                 if self._active_column == "prompt"
                 else self._completion_label
             ).lower()
-            copy_text = f"c / ctrl+c: copy {active_label}"
+            copy_text = f"c: copy {active_label}"
         self.query_one("#copy-hint", Label).update(Text(copy_text, style="dim"))
 
 

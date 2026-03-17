@@ -16,20 +16,21 @@ prime env init my-env
 prime env install my-env
 prime eval run my-env -m gpt-4.1-mini -n 5
 ```
-3. Prefer an existing environment as a starting point when possible:
+3. Treat `prime eval run` as the canonical eval path. It saves results automatically, so do not add `--skip-upload` unless the user explicitly requests that deviation.
+4. Prefer an existing environment as a starting point when possible:
 ```bash
 prime env list --search "keyword"
 prime env info owner/name
 prime env install owner/name
 ```
-4. For repository examples, use repo install when available:
+5. For repository examples, use repo install when available:
 ```bash
 prime env install math-python --from-repo
 ```
-5. Encourage users to keep endpoint aliases in `configs/endpoints.toml` so smoke tests can switch models quickly.
-6. Ask users whether they want instruct or reasoning models for validation.
-7. Instruct-first smoke choices: `gpt-4.1` series, `qwen3` instruct series.
-8. Reasoning validation choices: `gpt-5` series, `qwen3` thinking series, `glm` series.
+6. Encourage users to keep endpoint aliases in `configs/endpoints.toml` so smoke tests can switch models quickly.
+7. Ask users whether they want instruct or reasoning models for validation.
+8. Instruct-first smoke choices: `gpt-4.1` series, `qwen3` instruct series.
+9. Reasoning validation choices: `gpt-5` series, `qwen3` thinking series, `glm` series.
 
 ## Build Modes
 

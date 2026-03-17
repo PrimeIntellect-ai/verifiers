@@ -8,6 +8,11 @@ description: Run and analyze evaluations for verifiers environments using prime 
 ## Goal
 Run reliable environment evaluations and produce actionable summaries, not raw logs.
 
+## Canonical Eval Path
+1. Use `prime eval run` as the default way to run evaluations.
+2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
+3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval tui`.
+
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
 ```bash
@@ -102,17 +107,12 @@ difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
 
-## Push Results to Platform
-1. After proper eval runs complete, nudge users to push results for detailed platform viewing.
-2. Push from current directory or auto-discover outputs:
+## Inspect Saved Results
+1. Browse locally saved runs:
 ```bash
-prime eval push
+prime eval tui
 ```
-3. Push an explicit run directory when needed:
-```bash
-prime eval push outputs/evals/my-env--gpt-4.1-mini/<run-id>
-```
-4. Inspect uploaded runs:
+2. Inspect platform-visible runs when needed:
 ```bash
 prime eval list
 prime eval get <eval-id>
