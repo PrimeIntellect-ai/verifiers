@@ -117,7 +117,6 @@ class TestOpenCodeConfig:
         config_block = run_command.split(prefix, 1)[1].split(suffix, 1)[0]
 
         script = (
-            f"OPENAI_MODEL=openai/gpt-5-mini "
             f"OPENAI_BASE_URL=https://example.invalid "
             f"SCHEMA_DOLLAR='$' "
             f"bash -lc 'cat <<EOFCONFIG\n{config_block}\nEOFCONFIG'"
@@ -133,8 +132,9 @@ class TestOpenCodeConfig:
         config = json.loads(result.stdout)
         assert config["$schema"] == "https://opencode.ai/config.json"
         assert config["plugin"] == ["file:///tmp/opencode-rlm"]
+        assert config["model"] == "intercepted/model"
         assert (
-            config["provider"]["openai"]["options"]["baseURL"]
+            config["provider"]["intercepted"]["options"]["baseURL"]
             == "https://example.invalid"
         )
 
