@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, cast
 
 import verifiers as vf
 from verifiers.decorators import discover_decorated
