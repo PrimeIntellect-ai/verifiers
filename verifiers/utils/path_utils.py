@@ -36,7 +36,9 @@ def get_results_path(
 
 
 def get_eval_results_path(config: EvalConfig) -> Path:
-    base_path = _get_outputs_base_path(config.env_id, config.env_dir_path, config.output_dir)
+    base_path = _get_outputs_base_path(
+        config.env_id, config.env_dir_path, config.output_dir
+    )
     return get_results_path(config.env_id, config.model, base_path)
 
 
@@ -96,7 +98,9 @@ def find_latest_incomplete_eval_results_path(
     output_dir: str | None = None,
 ) -> Path | None:
     """Find the newest resumable, incomplete eval run for the provided config."""
-    runs_dir = get_eval_runs_dir(env_id=env_id, model=model, env_dir_path=env_dir_path, output_dir=output_dir)
+    runs_dir = get_eval_runs_dir(
+        env_id=env_id, model=model, env_dir_path=env_dir_path, output_dir=output_dir
+    )
     if not runs_dir.exists():
         return None
 
