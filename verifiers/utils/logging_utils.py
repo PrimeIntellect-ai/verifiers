@@ -18,26 +18,18 @@ LOGGER_NAME = "verifiers"
 _seen_once_keys: set[tuple[str, str]] = set()
 
 
-def log_once(
-    logger: logging.Logger,
-    level: int,
-    msg: str,
-    *args: object,
-    **kwargs: object,
-) -> None:
+def log_once(logger: logging.Logger, level: int, msg: str) -> None:
     """Log a message only once per (logger name, message) pair for the process lifetime."""
     key = (logger.name, msg)
     if key in _seen_once_keys:
         return
     _seen_once_keys.add(key)
-    logger.log(level, msg, *args, **kwargs)
+    logger.log(level, msg)
 
 
-def warning_once(
-    logger: logging.Logger, msg: str, *args: object, **kwargs: object
-) -> None:
+def warning_once(logger: logging.Logger, msg: str) -> None:
     """Shorthand for ``log_once(logger, logging.WARNING, ...)``."""
-    log_once(logger, logging.WARNING, msg, *args, **kwargs)
+    log_once(logger, logging.WARNING, msg)
 
 
 class JsonFormatter(logging.Formatter):
