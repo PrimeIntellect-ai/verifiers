@@ -2,7 +2,7 @@ import inspect
 from typing import Any, Awaitable, Callable
 
 
-def discover_decorated(obj: Any, attr: str) -> list[Callable]:
+def discover_decorated(obj: Any, attr: str) -> list:
     """Discover methods decorated with a given attribute, sorted by priority.
 
     Returns bound methods on *obj* that have ``attr`` set, ordered by

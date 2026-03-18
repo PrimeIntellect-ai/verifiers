@@ -903,3 +903,190 @@ def test_cli_toml_resume_false_disables_global_resume(monkeypatch, run_cli):
     assert configs[0].resume_path is None
     assert configs[1].env_id == "env-b"
     assert configs[1].resume_path is None
+
+
+# --- Ablation tests ---
+
+
+def test_ablation_basic_expansion():
+    """Single sweep key expands to correct number of configs."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 0.5, 1.0]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 3
+    assert all(c["env_id"] == "my-env" for c in configs)
+    assert [c["temperature"] for c in configs] == [0.0, 0.5, 1.0]
+
+
+def test_ablation_cartesian_product():
+    """Multiple sweep keys produce cartesian product."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n"
+            'model = ["gpt-4.1-mini", "gpt-4.1"]\n'
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 4  # 2 × 2
+    temps = [c["temperature"] for c in configs]
+    models = [c["model"] for c in configs]
+    assert 0.0 in temps and 1.0 in temps
+    assert "gpt-4.1-mini" in models and "gpt-4.1" in models
+
+
+def test_ablation_env_args_sweep():
+    """sweep.env_args keys are merged into env_args dict."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\n'
+            'env_args = {fixed_key = "fixed"}\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n\n"
+            "[ablation.sweep.env_args]\n"
+            'difficulty = ["easy", "hard"]\n'
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 4  # 2 × 2
+    for c in configs:
+        assert c["env_args"]["fixed_key"] == "fixed"
+        assert c["env_args"]["difficulty"] in ("easy", "hard")
+
+
+def test_ablation_global_defaults_apply():
+    """Global defaults are applied to ablation configs."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "num_examples = 100\n\n"
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 2
+    assert all(c["num_examples"] == 100 for c in configs)
+
+
+def test_ablation_with_eval_blocks():
+    """Ablation and eval blocks can coexist."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nenv_id = "plain-env"\n\n'
+            '[[ablation]]\nenv_id = "sweep-env"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 0.5, 1.0]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 4  # 1 eval + 3 ablation
+    assert configs[0]["env_id"] == "plain-env"
+    assert all(c["env_id"] == "sweep-env" for c in configs[1:])
+
+
+def test_ablation_multiple_blocks():
+    """Multiple [[ablation]] blocks are independent."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "env-a"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n\n"
+            '[[ablation]]\nenv_id = "env-b"\n\n'
+            "[ablation.sweep]\n"
+            'model = ["m1", "m2", "m3"]\n'
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 5  # 2 + 3
+    assert sum(1 for c in configs if c["env_id"] == "env-a") == 2
+    assert sum(1 for c in configs if c["env_id"] == "env-b") == 3
+
+
+def test_ablation_env_id_in_sweep():
+    """env_id can be a sweep key itself."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[ablation]]\n\n"
+            "[ablation.sweep]\n"
+            'env_id = ["env-a", "env-b"]\n'
+            "temperature = [0.0, 1.0]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 4  # 2 × 2
+    env_ids = [c["env_id"] for c in configs]
+    assert "env-a" in env_ids and "env-b" in env_ids
+
+
+def test_ablation_empty_sweep_raises():
+    """Ablation without sweep section raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[ablation]]\nenv_id = "my-env"\n')
+        f.flush()
+        with pytest.raises(ValueError, match="non-empty"):
+            load_toml_config(Path(f.name))
+
+
+def test_ablation_invalid_field_raises():
+    """Ablation with invalid fixed field raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\nbogus = true\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0]\n"
+        )
+        f.flush()
+        with pytest.raises(ValueError, match="Invalid"):
+            load_toml_config(Path(f.name))
+
+
+def test_ablation_invalid_sweep_field_raises():
+    """Ablation with invalid sweep key raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "bogus_field = [1, 2]\n"
+        )
+        f.flush()
+        with pytest.raises(ValueError, match="Invalid sweep"):
+            load_toml_config(Path(f.name))
+
+
+def test_ablation_missing_env_id_raises():
+    """Ablation without env_id (fixed or swept) raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write("[[ablation]]\n\n[ablation.sweep]\ntemperature = [0.0, 1.0]\n")
+        f.flush()
+        with pytest.raises(ValueError, match="env_id"):
+            load_toml_config(Path(f.name))
+
+
+def test_ablation_overlapping_env_args_raises():
+    """Same key in fixed env_args and sweep.env_args raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nenv_id = "my-env"\n'
+            'env_args = {difficulty = "easy"}\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n\n"
+            "[ablation.sweep.env_args]\n"
+            'difficulty = ["easy", "hard"]\n'
+        )
+        f.flush()
+        with pytest.raises(ValueError, match="difficulty"):
+            load_toml_config(Path(f.name))

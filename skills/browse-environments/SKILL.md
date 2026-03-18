@@ -51,7 +51,7 @@ For each candidate, collect:
 
 ## Prefer Official Ecosystem Paths
 1. Prefer Hub and Prime CLI workflows before manual third-party setup.
-2. Use install + smoke eval to validate real usability:
+2. Use install + smoke eval to validate real usability. Treat `prime eval run` as the canonical eval path and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime env install owner/name
 prime eval run name -m gpt-4.1-mini -n 5

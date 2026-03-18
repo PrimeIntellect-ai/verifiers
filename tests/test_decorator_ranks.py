@@ -365,6 +365,100 @@ class TestTeardownPriorityOrdering:
         ) < env.teardown_order.index("default_teardown")
 
 
+class TestRubricCleanupTeardown:
+    """Test cleanup/teardown on Rubric and RubricGroup."""
+
+    def test_rubric_cleanup_handlers(self):
+        """Test that @vf.cleanup decorated methods on a Rubric subclass are invoked."""
+        import asyncio
+
+        class MyRubric(vf.Rubric):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.cleaned = []
+
+            @vf.cleanup
+            async def do_cleanup(self, state: State):
+                self.cleaned.append(state.get("id"))
+
+        rubric = MyRubric()
+        asyncio.run(rubric.cleanup({"id": "a"}))
+        assert rubric.cleaned == ["a"]
+
+    def test_rubric_teardown_handlers(self):
+        """Test that @vf.teardown decorated methods on a Rubric subclass are invoked."""
+        import asyncio
+
+        class MyRubric(vf.Rubric):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.torn_down = False
+
+            @vf.teardown
+            async def do_teardown(self):
+                self.torn_down = True
+
+        rubric = MyRubric()
+        asyncio.run(rubric.teardown())
+        assert rubric.torn_down
+
+    def test_rubric_group_runs_own_and_child_cleanup(self):
+        """Test that RubricGroup.cleanup runs both its own and child handlers."""
+        import asyncio
+
+        class ChildRubric(vf.Rubric):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.order = []
+
+            @vf.cleanup
+            async def child_cleanup(self, state: State):
+                self.order.append("child")
+
+        class MyGroup(vf.RubricGroup):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.order = []
+
+            @vf.cleanup
+            async def group_cleanup(self, state: State):
+                self.order.append("group")
+
+        child = ChildRubric()
+        group = MyGroup(rubrics=[child])
+        asyncio.run(group.cleanup({"id": "x"}))
+        assert "group" in group.order
+        assert "child" in child.order
+
+    def test_rubric_group_runs_own_and_child_teardown(self):
+        """Test that RubricGroup.teardown runs both its own and child handlers."""
+        import asyncio
+
+        class ChildRubric(vf.Rubric):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.torn_down = False
+
+            @vf.teardown
+            async def child_teardown(self):
+                self.torn_down = True
+
+        class MyGroup(vf.RubricGroup):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.torn_down = False
+
+            @vf.teardown
+            async def group_teardown(self):
+                self.torn_down = True
+
+        child = ChildRubric()
+        group = MyGroup(rubrics=[child])
+        asyncio.run(group.teardown())
+        assert group.torn_down
+        assert child.torn_down
+
+
 class TestDecoratorPriorityEdgeCases:
     """Test edge cases for decorator priority functionality."""
 

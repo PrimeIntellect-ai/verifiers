@@ -19,7 +19,7 @@ Current GEPA path is for system prompt optimization. If user asks for unsupporte
 5. For benchmark reporting, keep model family fixed between baseline and optimized comparisons unless the user requests a cross-family study.
 
 ## Core Workflow
-1. Verify baseline first:
+1. Verify baseline first with `prime eval run`. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime eval run my-env -m gpt-4.1-mini -n 50 -r 3 -s
 ```
