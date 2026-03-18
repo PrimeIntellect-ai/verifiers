@@ -15,8 +15,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import (
     concat_messages,
-    normalize_messages,
-    requires_normalize_messages,
+    maybe_normalize_messages,
 )
 from verifiers.utils.response_utils import (
     parse_response_message,
@@ -45,7 +44,7 @@ class MultiTurnEnv(vf.Environment):
     @abstractmethod
     async def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Messages | str:
+    ) -> Messages:
         """
         Generate a response from the environment.
         """
@@ -80,7 +79,7 @@ class MultiTurnEnv(vf.Environment):
         prev_turn_completion = state["trajectory"][-1]["completion"]
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(messages, state)
-        env_response_messages = normalize_messages(
+        env_response_messages = maybe_normalize_messages(
             env_response, field_name="env_response"
         )
         return concat_messages([messages, env_response_messages])
@@ -95,17 +94,9 @@ class MultiTurnEnv(vf.Environment):
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
             final_resp = state["final_env_response"]
-            if requires_normalize_messages(final_resp):
-                self.logger.warning(
-                    "final_env_response returned raw dicts/strings instead of "
-                    "vf.Message objects. This triggers normalize_messages() on every "
-                    "turn, which can cause unnecessary Pydantic validation overhead. "
-                    "Return vf.Message types (e.g. vf.UserMessage, vf.AssistantMessage) "
-                    "from env_response() to avoid this overhead."
-                )
-                final_resp = normalize_messages(
-                    final_resp, field_name="final_env_response"
-                )
+            final_resp = maybe_normalize_messages(
+                final_resp, field_name="final_env_response"
+            )
             full_conversation = concat_messages([full_conversation, final_resp])
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
@@ -157,17 +148,10 @@ class MultiTurnEnv(vf.Environment):
             while not await self.is_completed(state):
                 try:
                     prompt_messages = await self.get_prompt_messages(state)
-                    if requires_normalize_messages(prompt_messages):
-                        self.logger.warning(
-                            "get_prompt_messages() returned raw dicts/strings instead of "
-                            "vf.Message objects. This triggers normalize_messages() on every "
-                            "turn, which can cause unnecessary Pydantic validation overhead. "
-                            "Return vf.Message types (e.g. vf.UserMessage, vf.AssistantMessage) "
-                            "from get_prompt_messages() to avoid this overhead."
-                        )
-                        prompt_messages = normalize_messages(
-                            prompt_messages, field_name="prompt_messages"
-                        )
+                    prompt_messages = maybe_normalize_messages(
+                        prompt_messages,
+                        field_name="prompt_messages",
+                    )
                     if state.get("final_env_response") is not None:
                         continue
                     response = await self.get_model_response(state, prompt_messages)

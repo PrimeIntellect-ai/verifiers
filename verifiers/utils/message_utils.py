@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from collections.abc import Mapping
 from typing import Any, cast
@@ -18,6 +19,8 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
@@ -139,9 +142,25 @@ def normalize_messages(
     return normalized
 
 
-def requires_normalize_messages(value: list | str) -> bool:
-    """Check if a message list requires normalization into a list of Message objects."""
-    return not isinstance(value, list) or not all(isinstance(m, Message) for m in value)
+def maybe_normalize_messages(
+    value: Messages | str,
+    *,
+    field_name: str = "messages",
+) -> Messages:
+    """Normalize messages only if needed, logging a warning on first occurrence."""
+    requires_normalize = not isinstance(value, list) or not all(
+        isinstance(m, Message) for m in value
+    )
+    if not requires_normalize:
+        return cast(Messages, value)
+    logger.warning(
+        "%s returned raw dicts/strings instead of vf.Messages. This"
+        " repeatedly triggers normalize_messages(), causing unnecessary"
+        " Pydantic validation overhead. Return vf.Message types (e.g."
+        " vf.UserMessage, vf.AssistantMessage) to avoid this.",
+        field_name,
+    )
+    return normalize_messages(value, field_name=field_name)
 
 
 def concat_messages(messages_list: list[Messages]) -> Messages:
