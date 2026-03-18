@@ -428,6 +428,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "verbose",
         "debug",
         # saving
+        "output_dir",
         "state_columns",
         "save_results",
         "resume",
