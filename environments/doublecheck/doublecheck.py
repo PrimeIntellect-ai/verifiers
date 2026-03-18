@@ -27,7 +27,7 @@ class DoubleCheckEnv(vf.MultiTurnEnv):
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
         """Generate a response from the environment."""
-        return [{"role": "user", "content": "Are you sure?"}]
+        return [vf.UserMessage(content="Are you sure?")]
 
 
 def load_environment(

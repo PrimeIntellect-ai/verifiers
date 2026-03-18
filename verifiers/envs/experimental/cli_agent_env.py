@@ -436,7 +436,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages | str,
+        prompt: Messages,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
