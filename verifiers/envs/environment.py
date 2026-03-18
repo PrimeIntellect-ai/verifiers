@@ -494,7 +494,7 @@ class Environment(ABC):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages,
+        prompt: Messages | str,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -540,6 +540,18 @@ class Environment(ABC):
         )
 
         self._get_usage_tracker(state, create_if_missing=True)
+
+        if not isinstance(prompt, list) or not all(
+            isinstance(m, vf.Message) for m in prompt
+        ):
+            self.logger.warning(
+                "get_model_response() received raw dicts/strings instead of "
+                "vf.Message objects. This triggers normalize_messages() on every "
+                "call, which can cause unnecessary Pydantic validation overhaead. "
+                "Return vf.Message types (e.g. vf.UserMessage, vf.AssistantMessage) "
+                "from get_prompt_messages() to avoid this overhead."
+            )
+            prompt = normalize_messages(prompt)
 
         response = await client.get_response(
             prompt=prompt,
