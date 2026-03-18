@@ -513,3 +513,15 @@ class EvalRunConfig(BaseModel):
 
     evals: list[EvalConfig]
     heartbeat_url: str | None = None
+
+
+class SandboxConfig(BaseModel):
+    docker_image: str = "python:3.11-slim"
+    start_command: str = ""
+    cpu_cores: int = 1
+    memory_gb: int = 2
+    disk_size_gb: int = 5
+    gpu_count: int = 0
+    gpu_types: list[str] | None = None
+    environment_vars: dict[str, str] | None = None
+    allow_internet: bool = False

@@ -1,71 +1,62 @@
-import asyncio
-import logging
 import math
-import time
-import uuid
 from typing import Any, cast
 
-from prime_sandboxes import (
-    AdvancedConfigs,
-    BackgroundJob,
-    BackgroundJobStatus,
-    CreateSandboxRequest,
-)
-from prime_tunnel import Tunnel
+from datasets import Dataset
 
 import verifiers as vf
-from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
-from verifiers.types import (
-    Messages,
-    MessageType,
-    Response,
-    SamplingArgs,
-    State,
-    Tool,
-)
-from verifiers.utils.interception_utils import (
-    InterceptionServer,
-    deliver_response,
-    synthesize_stream,
-)
-from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.worker_utils import get_free_port
-
-logger = logging.getLogger(__name__)
+from verifiers.envs.experimental.harnesses.base import HarnessMonitorRubric
+from verifiers.envs.experimental.harnesses.cli_agent import CliHarness
+from verifiers.envs.experimental.task_agent_env import TaskAgentEnv
+from verifiers.envs.experimental.tasksets.base import SandboxSpec, StaticTaskSet, Task
+from verifiers.types import State, Tool
 
 
-class CliAgentMonitorRubric(vf.Rubric):
-    """Monitor rubric that tracks CLI agent execution state."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.add_metric(self.agent_timeout)
-        self.add_metric(self.agent_error)
-
-    async def agent_timeout(self, state: vf.State) -> float:
-        """Whether the agent timed out."""
-        return float(bool(state.get("agent_timed_out")))
-
-    async def agent_error(self, state: vf.State) -> float:
-        """Whether the agent errored (non-zero exit_code)."""
-        agent_exit_code = state.get("agent_exit_code")
-        if agent_exit_code is None:
-            return 0.0
-        return float(agent_exit_code != 0)
+class CliAgentMonitorRubric(HarnessMonitorRubric):
+    """Backward-compatible alias for the CLI harness monitor rubric."""
 
 
-class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
+class _CliAgentTask(Task):
+    def __init__(self, compat_env: "CliAgentEnv"):
+        super().__init__()
+        self.compat_env = compat_env
+
+    async def get_sandbox_spec(self, state: State) -> SandboxSpec | None:
+        docker_image = await self.compat_env.get_docker_image(state)
+        return SandboxSpec(
+            docker_image=docker_image,
+            start_command=self.compat_env.start_command,
+            cpu_cores=self.compat_env.cpu_cores,
+            memory_gb=self.compat_env.memory_gb,
+            disk_size_gb=self.compat_env.disk_size_gb,
+            gpu_count=self.compat_env.gpu_count,
+            timeout_minutes=max(
+                1, int(math.ceil(self.compat_env.timeout_seconds / 60))
+            ),
+            team_id=self.compat_env.team_id,
+            advanced_configs=self.compat_env.advanced_configs,
+            labels=list(self.compat_env.labels or []),
+        )
+
+    async def build_env_vars(self, state: State) -> dict[str, str]:
+        return await self.compat_env.build_env_vars(state)
+
+    async def setup(self, env: Any, state: State) -> None:
+        await self.compat_env.post_sandbox_setup(state)
+
+    async def post_rollout(self, env: Any, state: State) -> None:
+        await self.compat_env.post_rollout(state)
+
+
+class CliAgentEnv(TaskAgentEnv):
     """
     Environment for running full agent code inside sandboxes.
-    Extends MultiTurnEnv to reuse rollout loop, but intercepts agent's
-    API requests via HTTP proxy server. Each agent request triggers one
-    rollout step.
+    Each intercepted agent request becomes one `MultiTurnEnv` rollout step.
     """
 
     def __init__(
         self,
         run_command: str,
+        dataset: Dataset,
         interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
@@ -79,8 +70,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         gpu_count: int = 0,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
-        advanced_configs: AdvancedConfigs | None = None,
+        advanced_configs: Any | None = None,
         labels: list[str] | None = None,
+        rubric: vf.Rubric | None = None,
         max_retries: int = 5,
         base_delay: float = 0.5,
         backoff_factor: float = 2.0,
@@ -92,18 +84,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_wait_for_creation_max_attempts: int = 120,
         **kwargs,
     ):
-        super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
-        self.init_sandbox_client(
-            max_retries=max_retries,
-            base_delay=base_delay,
-            backoff_factor=backoff_factor,
-            max_backoff_seconds=max_backoff_seconds,
-            jitter=jitter,
-            sandbox_client_max_workers=sandbox_client_max_workers,
-            sandbox_client_max_connections=sandbox_client_max_connections,
-            sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
-            sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
-        )
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.timeout_seconds = timeout_seconds
@@ -118,151 +98,64 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
-        interception_port = (
-            get_free_port() if interception_port is None else interception_port
+        harness = CliHarness(
+            run_command=run_command,
+            interception_port=interception_port,
+            interception_url=interception_url,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
         )
-        self.init_interception(interception_port, interception_url)
-        self.add_rubric(SandboxMonitorRubric())
-        self.add_rubric(CliAgentMonitorRubric())
+        taskset = StaticTaskSet(
+            dataset=dataset,
+            task_factory=lambda state: _CliAgentTask(self),
+            rubric=rubric,
+        )
+
+        super().__init__(
+            harness=harness,
+            taskset=taskset,
+            max_turns=max_turns,
+            environment_vars=None,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            backoff_factor=backoff_factor,
+            max_backoff_seconds=max_backoff_seconds,
+            jitter=jitter,
+            sandbox_client_max_workers=sandbox_client_max_workers,
+            sandbox_client_max_connections=sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
+            sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
+            **kwargs,
+        )
+
+        self.interception_port = harness.interception_port
+        self.interception_url = harness.interception_url
+        self._interception_server = harness._interception_server
+
+    @property
+    def cli_harness(self) -> CliHarness:
+        return cast(CliHarness, self.harness)
 
     def init_interception(
         self,
         interception_port: int = 8765,
         interception_url: str | None = None,
-    ):
-        """Initialize interception server and tunnel resources. Call from __init__."""
-        self.interception_port = interception_port
-        self.interception_url = interception_url
-        self._tunnel: Tunnel | None = None
-        self._tunnel_lock = asyncio.Lock()
-        self._tunnel_monitor_task: asyncio.Task | None = None
-        self._interception_server = InterceptionServer(port=interception_port)
+    ) -> None:
+        self.cli_harness.init_interception(interception_port, interception_url)
+        self.interception_port = self.cli_harness.interception_port
+        self.interception_url = self.cli_harness.interception_url
+        self._interception_server = self.cli_harness._interception_server
 
-    def _require_interception_server(self) -> InterceptionServer:
-        if self._interception_server is None:
-            raise RuntimeError("Interception server is not initialized.")
-        return self._interception_server
+    def _require_interception_server(self):
+        return self.cli_harness._require_interception_server()
 
     async def get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
-        async with self._tunnel_lock:
-            if self._tunnel is not None and not self._tunnel.is_running:
-                frpc_output = "\n".join(self._tunnel.recent_output)
-                logger.warning(
-                    f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
-                )
-                self._tunnel.sync_stop()
-                self._tunnel = None
-
-            if self._tunnel is None:
-                interception_server = self._require_interception_server()
-                port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
-                    self._tunnel = Tunnel(
-                        local_port=port,
-                        log_level="debug",
-                    )
-                else:
-                    self._tunnel = Tunnel(local_port=port)
-                url = await self._tunnel.start()
-                logger.debug(f"Prime Tunnel started: {url}")
-
-                # Lazily start health monitor on first tunnel creation
-                if (
-                    self._tunnel_monitor_task is None
-                    or self._tunnel_monitor_task.done()
-                ):
-                    self._tunnel_monitor_task = asyncio.create_task(
-                        self._tunnel_health_monitor()
-                    )
-
-                return url
-            else:
-                assert self._tunnel.url is not None, "Tunnel started but URL is None"
-                return self._tunnel.url
-
-    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that checks tunnel liveness and restarts a dead tunnel."""
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                async with self._tunnel_lock:
-                    if self._tunnel is not None and not self._tunnel.is_running:
-                        frpc_output = "\n".join(self._tunnel.recent_output)
-                        logger.warning(
-                            f"Health monitor: tunnel dead. frpc output:\n{frpc_output}"
-                        )
-                        self._tunnel.sync_stop()
-                        interception_server = self._require_interception_server()
-                        port = interception_server.port
-                        if logger.isEnabledFor(logging.DEBUG):
-                            self._tunnel = Tunnel(
-                                local_port=port,
-                                log_level="debug",
-                            )
-                        else:
-                            self._tunnel = Tunnel(local_port=port)
-                        url = await self._tunnel.start()
-                        logger.info(f"Health monitor: restarted tunnel url={url}")
-        except asyncio.CancelledError:
-            return
-
-    async def setup_state(self, state: State) -> State:
-        """Setup sandbox + interception for this rollout"""
-        state = await super().setup_state(state)
-
-        rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
-        state["rollout_id"] = rollout_id
-
-        interception_server = self._require_interception_server()
-        await interception_server.start()
-
-        if self.interception_url is None:
-            tunnel_url = await self.get_tunnel_url()
-            state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
-        else:
-            state["interception_base_url"] = (
-                f"{self.interception_url.rstrip('/')}/rollout/{rollout_id}/v1"
-            )
-
-        env_vars = await self.build_env_vars(state)
-        docker_image = await self.get_docker_image(state)
-
-        sandbox_request = CreateSandboxRequest(
-            name=rollout_id,
-            docker_image=docker_image,
-            start_command=self.start_command,
-            cpu_cores=self.cpu_cores,
-            memory_gb=self.memory_gb,
-            disk_size_gb=self.disk_size_gb,
-            gpu_count=self.gpu_count,
-            timeout_minutes=math.ceil(self.timeout_seconds / 60),
-            environment_vars=env_vars,
-            team_id=self.team_id,
-            advanced_configs=self.advanced_configs,
-            labels=self.labels if self.labels else [],
-        )
-        logger.debug(
-            f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
-            f"docker_image={docker_image}"
-        )
-        await self.create_sandbox(state, sandbox_request)
-
-        # Register rollout for interception
-        request_id_queue = interception_server.register_rollout(rollout_id)
-        state["request_id_queue"] = request_id_queue
-        state["agent_completed"] = False
-
-        await self.start_agent(state)
-
-        return state
+        return await self.cli_harness.get_tunnel_url()
 
     async def get_docker_image(self, state: State) -> str:
-        """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
-        """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
         env_vars.setdefault("OPENAI_TIMEOUT", "600")
@@ -275,329 +168,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     async def post_sandbox_setup(self, state: State) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
-        pass
-
-    async def start_agent(self, state: State) -> None:
-        """Start the agent command using background job."""
-        sandbox_id = state["sandbox_id"]
-
-        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
-            sandbox_id,
-            self.run_command,
-        )
-        state["background_job"] = background_job
-        state["agent_start_time"] = time.time()
-
-        state["completion_wait_task"] = asyncio.create_task(
-            self.wait_for_completion(state)
-        )
-
-    async def wait_for_completion(self, state: State) -> None:
-        """Poll for agent completion using background job API."""
-        sandbox_id = state.get("sandbox_id")
-        background_job: BackgroundJob | None = state.get("background_job")
-
-        if not sandbox_id or not background_job:
-            state["agent_completed"] = True
-            return
-
-        try:
-            await asyncio.wait_for(
-                self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
-            state["agent_timed_out"] = True
-        except asyncio.CancelledError:
-            logger.debug("Completion wait task cancelled")
-            raise
-        except Exception as e:
-            logger.debug(f"Completion wait ended: {e}")
-        finally:
-            state["agent_completed"] = True
-
-    async def poll_job_completion(
-        self, state: State, sandbox_id: str, background_job: BackgroundJob
-    ) -> None:
-        """Poll until background job completes, capturing output."""
-        while True:
-            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job
-            )
-            if status.completed:
-                state["agent_exit_code"] = status.exit_code
-                state["agent_stdout"] = status.stdout
-                state["agent_stderr"] = status.stderr
-                if status.exit_code == 0:
-                    logger.debug(
-                        f"Agent completed successfully (exit_code={status.exit_code})"
-                    )
-                else:
-                    logger.warning(
-                        f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
-                    )
-                return
-            await asyncio.sleep(1)
 
     async def check_agent_completed(self, state: State) -> bool:
-        """Check if agent process has completed."""
-        return state.get("agent_completed", False)
+        return await self.cli_harness.check_agent_completed(self, state)
 
     def normalize_intercepted_tools(self, intercept_tools: object) -> list[Tool] | None:
-        """Normalize intercepted request tools for the provider-agnostic runtime.
+        return self.cli_harness.normalize_intercepted_tools(self, intercept_tools)
 
-        Assumes that agent requests arrive in OpenAI-tool format.
+    def normalize_intercepted_messages(self, intercepted_messages: object):
+        return self.cli_harness.normalize_intercepted_messages(intercepted_messages)
+
+    async def post_rollout(self, state: State) -> None:
         """
-        if not isinstance(intercept_tools, list):
-            raise TypeError("Intercepted tools must be provided as a list.")
-
-        normalized_inputs: list[dict[str, Any]] = []
-        for raw_tool in intercept_tools:
-            if isinstance(raw_tool, Tool):
-                normalized_inputs.append(raw_tool.model_dump(exclude_none=True))
-                continue
-            if not isinstance(raw_tool, dict):
-                raise TypeError(
-                    "Intercepted tools must be vf.Tool objects or dict tool definitions."
-                )
-            raw_tool_dict = cast(dict[str, Any], raw_tool)
-
-            function_payload = raw_tool_dict.get("function")
-            if raw_tool_dict.get("type") == "function" and isinstance(
-                function_payload, dict
-            ):
-                parameters = function_payload.get("parameters", {})
-                if not isinstance(parameters, dict):
-                    raise TypeError(
-                        "Intercepted function tool parameters must be a JSON object."
-                    )
-                normalized_inputs.append(
-                    {
-                        "name": function_payload.get("name"),
-                        "description": function_payload.get("description", ""),
-                        "parameters": parameters,
-                        "strict": function_payload.get("strict"),
-                    }
-                )
-                continue
-
-            normalized_inputs.append(raw_tool_dict)
-
-        return self._normalize_tool_defs(normalized_inputs)
-
-    def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
-        """Hook to normalize messages received from the agent before model inference.
-
-        Assumes that agent requests arrive in OpenAI-format.
+        Override for custom post-rollout logic. For example, if sandbox state is
+        needed for reward functions, compute it here before sandbox teardown.
         """
-        return normalize_messages(intercepted_messages)  # type: ignore
-
-    def normalize_response(self, response: Response) -> Response:
-        """Hook to normalize the model response before it is stored in the trajectory.
-
-        Override in subclasses to align the stored step format with the agent's
-        own message history conventions, enabling TITO prefix cache hits.
-        """
-        return response
-
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """Wait for agent to make an API request OR agent completion, whichever comes first."""
-        request_id_queue = state["request_id_queue"]
-        interception_server = self._require_interception_server()
-
-        while True:
-            try:
-                # Short timeout so we can check completion frequently
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
-                )
-                # Got a request, proceed normally
-                state["current_request_id"] = request_id
-                intercept = interception_server.intercepts[request_id]
-                return self.normalize_intercepted_messages(intercept["messages"])
-
-            except asyncio.TimeoutError:
-                # No request yet — check tunnel liveness first
-                if self._tunnel is not None and not self._tunnel.is_running:
-                    frpc_output = "\n".join(self._tunnel.recent_output)
-                    raise vf.TunnelError(
-                        f"Tunnel process died during rollout. "
-                        f"frpc output:\n{frpc_output}"
-                    )
-                # Then check if agent finished or timed out
-                if await self.check_agent_completed(state):
-                    state["agent_completed"] = True
-                    return []
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    return []
-
-    async def get_model_response(
-        self,
-        state: State,
-        prompt: Messages | str,
-        client: Client | None = None,
-        model: str | None = None,
-        tool_defs: list[Tool] | None = None,
-        sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
-    ) -> Response:
-        """Get model response and unblock the waiting HTTP handler."""
-        # Handle agent completion case (empty prompt)
-        if not prompt:
-            resolved_model = model or state["model"]
-            return Response(
-                id="agent-completed",
-                created=int(time.time()),
-                model=resolved_model,
-                usage=None,
-                message=vf.ResponseMessage(
-                    content="",
-                    reasoning_content=None,
-                    tool_calls=None,
-                    finish_reason="stop",
-                    is_truncated=False,
-                    tokens=None,
-                ),
-            )
-
-        request_id = state.get("current_request_id")
-        intercept = None
-        if request_id:
-            intercept = self._require_interception_server().intercepts.get(request_id)
-
-        if intercept:
-            # Always use the configured model from state, not the intercepted model
-            # (agent may send a placeholder like "model" from its config)
-            model = state.get("model") or model
-            intercept_tools = intercept.get("tools")
-            if intercept_tools:
-                tool_defs = (
-                    self.normalize_intercepted_tools(intercept_tools) or tool_defs
-                )
-
-        response: Response | None = None
-        error: BaseException | None = None
-
-        try:
-            # Always use base class path (non-streaming, supports TITO)
-            response = await super().get_model_response(
-                state=state,
-                prompt=prompt,
-                client=client,
-                model=model,
-                tool_defs=tool_defs,
-                sampling_args=sampling_args,
-            )
-        except BaseException as e:
-            error = e
-            raise
-        finally:
-            # Always unblock HTTP handler, even on exception
-            if intercept:
-                if intercept.get("stream"):
-                    await synthesize_stream(intercept, response, error)
-                else:
-                    deliver_response(intercept, response, error)
-                state["current_request_id"] = None
-
-        assert response is not None
-        return response
-
-    async def add_model_response(
-        self,
-        state: State,
-        prompt_messages: Messages,
-        response: Response,
-    ):
-        """Add model response and update top-level prompt on first turn."""
-        # Skip adding empty "agent completed" step - keeps trajectory clean
-        if not prompt_messages:
-            return
-        # On first turn, update state["prompt"] to match the agent's actual prompt
-        if len(state["trajectory"]) == 0:
-            state["prompt"] = prompt_messages
-        await super().add_model_response(
-            state, prompt_messages, self.normalize_response(response)
-        )
-
-    @vf.teardown
-    async def teardown_resources(self):
-        """Stop Prime Tunnel and HTTP interception server."""
-        if (
-            self._tunnel_monitor_task is not None
-            and not self._tunnel_monitor_task.done()
-        ):
-            self._tunnel_monitor_task.cancel()
-            try:
-                await self._tunnel_monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._tunnel_monitor_task = None
-
-        async with self._tunnel_lock:
-            if self._tunnel is not None:
-                try:
-                    self._tunnel.sync_stop()
-                    logger.debug("Prime Tunnel stopped")
-                except Exception as e:
-                    logger.warning(f"Error stopping Prime Tunnel: {e}")
-                finally:
-                    self._tunnel = None
-        if self._interception_server is not None:
-            await self._interception_server.stop()
-
-    @vf.cleanup
-    async def cleanup_interception_context(self, state: State):
-        """Cleanup interception context for rollout"""
-        # Cancel completion wait task if still running
-        task = state.get("completion_wait_task")
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        state.pop("background_job", None)
-
-        rollout_id = state.get("rollout_id")
-        if rollout_id and self._interception_server is not None:
-            self._interception_server.unregister_rollout(rollout_id)
-
-    @vf.stop
-    async def agent_completed(self, state: State) -> bool:
-        """Check if agent has completed."""
-        return state.get("agent_completed", False)
-
-    @vf.stop
-    async def timeout_reached(self, state: State) -> bool:
-        """Check rollout timeout"""
-        elapsed = time.time() - state["timing"]["start_time"]
-        return elapsed > self.timeout_seconds
-
-    async def post_rollout(self, state: State):
-        """
-        Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
-        run computation here and cache the result in state before sandbox is destroyed.
-        """
-        pass
-
-    @vf.cleanup
-    async def destroy_sandbox(self, state: State):
-        """Cleanup sandbox after rollout."""
-        await self.post_rollout(state)
-        sandbox_id = state.get("sandbox_id")
-        if sandbox_id:
-            await self.delete_sandbox(sandbox_id)
-
-    async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
-        """
-        Generate a response from the environment.
-        For CliAgentEnv, there is no environment response - the agent
-        controls the conversation flow via its requests.
-        """
-        return []
