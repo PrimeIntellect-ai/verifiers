@@ -297,19 +297,21 @@ class SandboxMixin:
         Builds a tar.gz archive from ``file_map`` (relative path → UTF-8
         content), uploads it, and extracts into ``dest_dir``.
         """
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for rel_path, content in file_map.items():
-                data = content.encode("utf-8")
-                info = tarfile.TarInfo(name=rel_path)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        bundle_bytes = buf.getvalue()
 
+        def build_tar() -> str:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                for rel_path, content in file_map.items():
+                    data = content.encode("utf-8")
+                    info = tarfile.TarInfo(name=rel_path)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as f:
+                f.write(buf.getvalue())
+                return f.name
+
+        tmp_path = await asyncio.to_thread(build_tar)
         archive_remote = f"{dest_dir}/_bundle.tar.gz"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as f:
-            f.write(bundle_bytes)
-            tmp_path = f.name
         try:
             await self.upload_file(sandbox_id, archive_remote, tmp_path)
         finally:
