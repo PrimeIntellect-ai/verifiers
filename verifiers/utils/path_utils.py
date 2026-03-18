@@ -8,8 +8,14 @@ from verifiers.types import EvalConfig
 logger = logging.getLogger(__name__)
 
 
-def _get_outputs_base_path(env_id: str, env_dir_path: str = "./environments") -> Path:
+def _get_outputs_base_path(
+    env_id: str,
+    env_dir_path: str = "./environments",
+    output_dir: str | None = None,
+) -> Path:
     """Resolve where outputs should be stored for an environment."""
+    if output_dir is not None:
+        return Path(output_dir)
     module_name = env_id.replace("-", "_")
     local_env_dir = Path(env_dir_path) / module_name
 
@@ -30,15 +36,18 @@ def get_results_path(
 
 
 def get_eval_results_path(config: EvalConfig) -> Path:
-    base_path = _get_outputs_base_path(config.env_id, config.env_dir_path)
+    base_path = _get_outputs_base_path(config.env_id, config.env_dir_path, config.output_dir)
     return get_results_path(config.env_id, config.model, base_path)
 
 
 def get_eval_runs_dir(
-    env_id: str, model: str, env_dir_path: str = "./environments"
+    env_id: str,
+    model: str,
+    env_dir_path: str = "./environments",
+    output_dir: str | None = None,
 ) -> Path:
     """Return directory containing all eval run directories for env/model."""
-    base_path = _get_outputs_base_path(env_id, env_dir_path)
+    base_path = _get_outputs_base_path(env_id, env_dir_path, output_dir)
     env_model_str = f"{env_id}--{model.replace('/', '--')}"
     return base_path / "evals" / env_model_str
 
@@ -84,9 +93,10 @@ def find_latest_incomplete_eval_results_path(
     num_examples: int,
     rollouts_per_example: int,
     env_dir_path: str = "./environments",
+    output_dir: str | None = None,
 ) -> Path | None:
     """Find the newest resumable, incomplete eval run for the provided config."""
-    runs_dir = get_eval_runs_dir(env_id=env_id, model=model, env_dir_path=env_dir_path)
+    runs_dir = get_eval_runs_dir(env_id=env_id, model=model, env_dir_path=env_dir_path, output_dir=output_dir)
     if not runs_dir.exists():
         return None
 
@@ -131,6 +141,7 @@ def get_gepa_results_path(
     env_id: str,
     model: str,
     env_dir_path: str = "./environments",
+    output_dir: str | None = None,
 ) -> Path:
     """Generate path for GEPA optimization run.
 
@@ -139,5 +150,5 @@ def get_gepa_results_path(
     Otherwise saves to:
         ./outputs/gepa/{env_id}--{model}/{uuid8}/
     """
-    base_path = _get_outputs_base_path(env_id, env_dir_path)
+    base_path = _get_outputs_base_path(env_id, env_dir_path, output_dir)
     return get_results_path(env_id, model, base_path, subdir="gepa")

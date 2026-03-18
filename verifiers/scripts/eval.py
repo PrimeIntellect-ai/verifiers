@@ -619,6 +619,7 @@ def main():
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
                 env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+                output_dir=raw.get("output_dir"),
             )
             if auto_resume_path is not None:
                 resume_path = auto_resume_path
@@ -636,6 +637,7 @@ def main():
             env_id=env_id,
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            output_dir=raw.get("output_dir"),
             extra_env_kwargs=raw.get("extra_env_kwargs", {}),
             endpoint_id=resolved_endpoint_id,
             model=model,
