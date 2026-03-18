@@ -205,7 +205,7 @@ def state_to_output(
             input_tokens += step_input_tokens
             output_tokens += step_output_tokens
         if usage_seen:
-            usage = {
+            usage: TokenUsage = {
                 "input_tokens": float(input_tokens),
                 "output_tokens": float(output_tokens),
             }
