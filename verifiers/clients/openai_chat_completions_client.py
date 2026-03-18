@@ -495,7 +495,11 @@ class OpenAIChatCompletionsClient(
             model = ""
 
         usage_signature = getattr(response, "usage_signature", None)
-        if usage_signature is None and hasattr(response, "model_extra") and response.model_extra:
+        if (
+            usage_signature is None
+            and hasattr(response, "model_extra")
+            and response.model_extra
+        ):
             usage_signature = response.model_extra.get("usage_signature")
 
         return Response(
@@ -503,7 +507,9 @@ class OpenAIChatCompletionsClient(
             created=created,
             model=model,
             usage=parse_usage(response),
-            usage_signature=usage_signature if isinstance(usage_signature, str) else None,
+            usage_signature=usage_signature
+            if isinstance(usage_signature, str)
+            else None,
             message=ResponseMessage(
                 content=response.choices[0].message.content,
                 reasoning_content=parse_reasoning_content_from_response(response),
