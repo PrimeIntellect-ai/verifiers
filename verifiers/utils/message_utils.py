@@ -148,12 +148,15 @@ def maybe_normalize_messages(
     field_name: str = "messages",
 ) -> Messages:
     """Normalize messages only if needed, logging a warning on first occurrence."""
+    from verifiers.utils.logging_utils import warning_once
+
     requires_normalize = not isinstance(value, list) or not all(
         isinstance(m, Message) for m in value
     )
     if not requires_normalize:
         return cast(Messages, value)
-    logger.warning(
+    warning_once(
+        logger,
         "%s returned raw dicts/strings instead of vf.Messages. This"
         " repeatedly triggers normalize_messages(), causing unnecessary"
         " Pydantic validation overhead. Return vf.Message types (e.g."
