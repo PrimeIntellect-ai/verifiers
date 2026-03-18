@@ -157,11 +157,10 @@ def maybe_normalize_messages(
         return cast(Messages, value)
     warning_once(
         logger,
-        "%s returned raw dicts/strings instead of vf.Messages. This"
+        f"{field_name} returned raw dicts/strings instead of vf.Messages. This"
         " repeatedly triggers normalize_messages(), causing unnecessary"
         " Pydantic validation overhead. Return vf.Message types (e.g."
         " vf.UserMessage, vf.AssistantMessage) to avoid this.",
-        field_name,
     )
     return normalize_messages(value, field_name=field_name)
 
