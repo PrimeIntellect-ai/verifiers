@@ -274,7 +274,7 @@ class SandboxMixin:
             raise vf.SandboxError(
                 f"Sandbox {sandbox_id} OOM during upload to {remote_path}"
             ) from e
-        except SandboxTimeoutError as e:
+        except UploadTimeoutError as e:
             raise vf.SandboxError(
                 f"Sandbox {sandbox_id} timeout during upload to {remote_path}"
             ) from e
