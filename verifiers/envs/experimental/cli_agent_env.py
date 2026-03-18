@@ -166,7 +166,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
+                if self.logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
                         log_level="debug",
