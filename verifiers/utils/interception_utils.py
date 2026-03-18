@@ -217,7 +217,7 @@ class InterceptionServer:
 
         try:
             await response_future
-        except Exception as e:
+        except BaseException as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
