@@ -79,10 +79,8 @@ class MultiTurnEnv(vf.Environment):
         prev_turn_completion = state["trajectory"][-1]["completion"]
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(messages, state)
-        env_response_messages = maybe_normalize_messages(
-            env_response, field_name="env_response"
-        )
-        return concat_messages([messages, env_response_messages])
+        env_response = maybe_normalize_messages(env_response, field_name="env_response")
+        return concat_messages([messages, env_response])
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
@@ -149,8 +147,7 @@ class MultiTurnEnv(vf.Environment):
                 try:
                     prompt_messages = await self.get_prompt_messages(state)
                     prompt_messages = maybe_normalize_messages(
-                        prompt_messages,
-                        field_name="prompt_messages",
+                        prompt_messages, field_name="prompt_messages"
                     )
                     if state.get("final_env_response") is not None:
                         continue
