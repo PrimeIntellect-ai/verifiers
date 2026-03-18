@@ -139,6 +139,11 @@ def normalize_messages(
     return normalized
 
 
+def requires_normalize_messages(value: list | str) -> bool:
+    """Check if a message list requires normalization into a list of Message objects."""
+    return not isinstance(value, list) or not all(isinstance(m, Message) for m in value)
+
+
 def concat_messages(messages_list: list[Messages]) -> Messages:
     """Concatenate multiple Messages lists into one."""
     result = []

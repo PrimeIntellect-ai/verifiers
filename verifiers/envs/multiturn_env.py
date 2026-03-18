@@ -13,7 +13,11 @@ from verifiers.types import (
     State,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import concat_messages, normalize_messages
+from verifiers.utils.message_utils import (
+    concat_messages,
+    normalize_messages,
+    requires_normalize_messages,
+)
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -91,11 +95,14 @@ class MultiTurnEnv(vf.Environment):
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
             final_resp = state["final_env_response"]
-            if isinstance(final_resp, str) or (
-                isinstance(final_resp, list)
-                and final_resp
-                and isinstance(final_resp[0], dict)
-            ):
+            if requires_normalize_messages(final_resp):
+                self.logger.warning(
+                    "final_env_response returned raw dicts/strings instead of "
+                    "vf.Message objects. This triggers normalize_messages() on every "
+                    "turn, which can cause unnecessary Pydantic validation overhead. "
+                    "Return vf.Message types (e.g. vf.UserMessage, vf.AssistantMessage) "
+                    "from env_response() to avoid this overhead."
+                )
                 final_resp = normalize_messages(
                     final_resp, field_name="final_env_response"
                 )
@@ -150,6 +157,17 @@ class MultiTurnEnv(vf.Environment):
             while not await self.is_completed(state):
                 try:
                     prompt_messages = await self.get_prompt_messages(state)
+                    if requires_normalize_messages(prompt_messages):
+                        self.logger.warning(
+                            "get_prompt_messages() returned raw dicts/strings instead of "
+                            "vf.Message objects. This triggers normalize_messages() on every "
+                            "turn, which can cause unnecessary Pydantic validation overhead. "
+                            "Return vf.Message types (e.g. vf.UserMessage, vf.AssistantMessage) "
+                            "from get_prompt_messages() to avoid this overhead."
+                        )
+                        prompt_messages = normalize_messages(
+                            prompt_messages, field_name="prompt_messages"
+                        )
                     if state.get("final_env_response") is not None:
                         continue
                     response = await self.get_model_response(state, prompt_messages)
