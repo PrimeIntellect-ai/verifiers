@@ -16,7 +16,15 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from verifiers.types import ClientConfig
-from verifiers.utils.metric_utils import compute_pass_at_k
+from verifiers.utils.metric_utils import (
+    EnvMetrics,
+    ErrorRateMetric,
+    InputTokensMetric,
+    Metric,
+    OutputTokensMetric,
+    PassAtKMetric,
+    RewardMetric,
+)
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     extract_usage_tokens,
@@ -562,125 +570,8 @@ class TestResumeMetadataValidation:
             )
 
 
-class TestComputePassAtK:
-    @staticmethod
-    def _make_output(example_id: int, reward: float) -> dict:
-        return {"example_id": example_id, "reward": reward}
-
-    def test_single_rollout_returns_empty(self):
-        """rollouts_per_example=1 should return empty dicts."""
-        outputs = [self._make_output(0, 1.0)]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=1)
-        assert pass_at_k == {}
-        assert pass_all_k == {}
-
-    def test_all_correct(self):
-        """All rollouts correct → pass@k = 1.0 and pass^k = 1.0 for all k."""
-        outputs = [self._make_output(0, 1.0) for _ in range(8)]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=8)
-        assert set(pass_at_k.keys()) == {"1", "2", "4", "8"}
-        for k in pass_at_k:
-            assert pass_at_k[k] == pytest.approx(1.0)
-            assert pass_all_k[k] == pytest.approx(1.0)
-
-    def test_none_correct(self):
-        """No rollouts correct → pass@k = 0.0 and pass^k = 0.0 for all k."""
-        outputs = [self._make_output(0, 0.0) for _ in range(8)]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=8)
-        assert set(pass_at_k.keys()) == {"1", "2", "4", "8"}
-        for k in pass_at_k:
-            assert pass_at_k[k] == pytest.approx(0.0)
-            assert pass_all_k[k] == pytest.approx(0.0)
-
-    def test_partial_correctness(self):
-        """Partial correctness: 2 correct out of 4 rollouts."""
-        outputs = [
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 0.0),
-            self._make_output(0, 0.0),
-        ]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
-        # k values: 1, 2, 4
-        assert set(pass_at_k.keys()) == {"1", "2", "4"}
-        # n=4, c=2: pass@1 = 1 - C(2,1)/C(4,1) = 1 - 2/4 = 0.5
-        assert pass_at_k["1"] == pytest.approx(0.5)
-        # n=4, c=2: pass@2 = 1 - C(2,2)/C(4,2) = 1 - 1/6
-        assert pass_at_k["2"] == pytest.approx(1.0 - 1.0 / 6.0)
-        # n=4, c=2: pass@4 = 1 - C(2,4)/C(4,4) = 1 - 0/1 = 1.0 (n-c < k)
-        assert pass_at_k["4"] == pytest.approx(1.0)
-        # pass^k: C(c,k)/C(n,k)
-        # n=4, c=2: pass^1 = C(2,1)/C(4,1) = 2/4 = 0.5
-        assert pass_all_k["1"] == pytest.approx(0.5)
-        # n=4, c=2: pass^2 = C(2,2)/C(4,2) = 1/6
-        assert pass_all_k["2"] == pytest.approx(1.0 / 6.0)
-        # n=4, c=2: pass^4 = C(2,4)/C(4,4) = 0/1 = 0.0
-        assert pass_all_k["4"] == pytest.approx(0.0)
-
-    def test_multiple_examples_averaged(self):
-        """pass@k and pass^k are averaged across multiple examples."""
-        outputs = [
-            # Example 0: all correct
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            # Example 1: none correct
-            self._make_output(1, 0.0),
-            self._make_output(1, 0.0),
-            self._make_output(1, 0.0),
-            self._make_output(1, 0.0),
-        ]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
-        assert set(pass_at_k.keys()) == {"1", "2", "4"}
-        # pass@1: (1.0 + 0.0) / 2 = 0.5
-        assert pass_at_k["1"] == pytest.approx(0.5)
-        # pass@2: (1.0 + 0.0) / 2 = 0.5
-        assert pass_at_k["2"] == pytest.approx(0.5)
-        # pass@4: (1.0 + 0.0) / 2 = 0.5
-        assert pass_at_k["4"] == pytest.approx(0.5)
-        # pass^1: (1.0 + 0.0) / 2 = 0.5
-        assert pass_all_k["1"] == pytest.approx(0.5)
-        # pass^4: (1.0 + 0.0) / 2 = 0.5
-        assert pass_all_k["4"] == pytest.approx(0.5)
-
-    def test_powers_of_two_k_selection(self):
-        """k values are powers of 2 in [1, n]."""
-        outputs = [self._make_output(0, 1.0) for _ in range(16)]
-        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=16)
-        assert set(pass_at_k.keys()) == {"1", "2", "4", "8", "16"}
-
-    def test_n3_k_values(self):
-        """n=3 should give k=1,2."""
-        outputs = [self._make_output(0, 1.0) for _ in range(3)]
-        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=3)
-        assert set(pass_at_k.keys()) == {"1", "2"}
-
-    def test_correctness_threshold(self):
-        """Only reward >= 0.5 counts as correct by default."""
-        outputs = [
-            self._make_output(0, 0.49),  # not correct
-            self._make_output(0, 0.5),  # correct
-            self._make_output(0, 1.0),  # correct
-            self._make_output(0, 0.0),  # not correct
-        ]
-        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4)
-        # n=4, c=2
-        assert pass_at_k["1"] == pytest.approx(0.5)
-
-    def test_custom_threshold(self):
-        """Custom threshold changes which rollouts count as correct."""
-        outputs = [
-            self._make_output(0, 0.4),  # not correct at 0.7
-            self._make_output(0, 0.6),  # not correct at 0.7
-            self._make_output(0, 0.8),  # correct at 0.7
-            self._make_output(0, 0.3),  # not correct at 0.7
-        ]
-        pass_at_k, _ = compute_pass_at_k(outputs, rollouts_per_example=4, threshold=0.7)
-        # n=4, c=1: pass@1 = 1 - C(3,1)/C(4,1) = 1 - 3/4 = 0.25
-        assert pass_at_k["1"] == pytest.approx(0.25)
-        # n=4, c=1: pass@2 = 1 - C(3,2)/C(4,2) = 1 - 3/6 = 0.5
-        assert pass_at_k["2"] == pytest.approx(0.5)
+class TestBuilderPassAtK:
+    """Tests for pass@k integration in GenerateOutputsBuilder."""
 
     def test_builder_includes_pass_at_k(self):
         """GenerateOutputsBuilder.build_metadata() includes pass_at_k and pass_all_k."""
@@ -737,30 +628,272 @@ class TestComputePassAtK:
         # 1 of 4 correct at threshold=0.7: pass^1 = C(1,1)/C(4,1) = 0.25
         assert metadata["pass_all_k"]["1"] == pytest.approx(0.25)
 
-    def test_incomplete_groups_excluded(self):
-        """Examples with fewer outputs than rollouts_per_example are excluded."""
-        outputs = [
-            # Example 0: complete group (4 rollouts), all correct
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            # Example 1: incomplete group (only 2 of 4 rollouts)
-            self._make_output(1, 0.0),
-            self._make_output(1, 0.0),
-        ]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
-        # Only example 0 contributes; example 1 is excluded entirely
+
+class TestMetricProtocol:
+    def test_all_metrics_satisfy_protocol(self):
+        """All metric classes satisfy the Metric protocol."""
+        assert isinstance(RewardMetric(), Metric)
+        assert isinstance(ErrorRateMetric(), Metric)
+        assert isinstance(InputTokensMetric(), Metric)
+        assert isinstance(OutputTokensMetric(), Metric)
+        assert isinstance(EnvMetrics(), Metric)
+        assert isinstance(PassAtKMetric(rollouts_per_example=4), Metric)
+
+
+class TestRewardMetric:
+    def test_basic(self):
+        m = RewardMetric()
+        m.add_output({"reward": 0.3})
+        m.add_output({"reward": 0.7})
+        assert m.compute() == pytest.approx(0.5)
+        assert m.count == 2
+
+    def test_missing_reward_defaults_to_zero(self):
+        m = RewardMetric()
+        m.add_output({})
+        assert m.compute() == pytest.approx(0.0)
+
+    def test_add_outputs(self):
+        m = RewardMetric()
+        m.add_outputs([{"reward": 1.0}, {"reward": 0.0}])
+        assert m.compute() == pytest.approx(0.5)
+
+    def test_reset(self):
+        m = RewardMetric()
+        m.add_output({"reward": 1.0})
+        m.reset()
+        assert m.compute() == 0.0
+        assert m.count == 0
+
+
+class TestErrorRateMetric:
+    def test_basic(self):
+        m = ErrorRateMetric()
+        m.add_output({"error": "some error"})
+        m.add_output({})
+        m.add_output({"error": None})
+        m.add_output({"error": "another"})
+        assert m.compute() == pytest.approx(0.5)
+
+
+class TestInputTokensMetric:
+    def test_skips_outputs_without_usage(self):
+        m = InputTokensMetric()
+        m.add_output({"token_usage": {"input_tokens": 100.0, "output_tokens": 50.0}})
+        m.add_output({})  # skipped
+        m.add_output({"token_usage": {"input_tokens": 200.0, "output_tokens": 100.0}})
+        assert m.compute() == pytest.approx(150.0)
+        assert m.count == 2
+
+
+class TestOutputTokensMetric:
+    def test_skips_outputs_without_usage(self):
+        m = OutputTokensMetric()
+        m.add_output({"token_usage": {"input_tokens": 100.0, "output_tokens": 50.0}})
+        m.add_output({})  # skipped
+        m.add_output({"token_usage": {"input_tokens": 200.0, "output_tokens": 100.0}})
+        assert m.compute() == pytest.approx(75.0)
+        assert m.count == 2
+
+
+class TestEnvMetrics:
+    def test_basic(self):
+        m = EnvMetrics()
+        m.add_output({"metrics": {"accuracy": 1.0, "f1": 0.8}})
+        m.add_output({"metrics": {"accuracy": 0.0, "f1": 0.6}})
+        result = m.compute()
+        assert result["accuracy"] == pytest.approx(0.5)
+        assert result["f1"] == pytest.approx(0.7)
+
+    def test_sparse_keys(self):
+        m = EnvMetrics()
+        m.add_output({"metrics": {"accuracy": 1.0, "f1": 0.8}})
+        m.add_output({"metrics": {"accuracy": 0.0}})
+        m.add_output({"metrics": {"accuracy": 0.0, "f1": 0.4}})
+        result = m.compute()
+        assert result["accuracy"] == pytest.approx(1.0 / 3)
+        assert result["f1"] == pytest.approx(0.6)
+
+    def test_empty(self):
+        m = EnvMetrics()
+        assert m.compute() == {}
+
+    def test_reset(self):
+        m = EnvMetrics()
+        m.add_output({"metrics": {"acc": 1.0}})
+        m.reset()
+        assert m.compute() == {}
+
+
+class TestPassAtKMetric:
+    @staticmethod
+    def _make_output(example_id: int, reward: float) -> dict:
+        return {"example_id": example_id, "reward": reward}
+
+    def test_incremental_matches_batch(self):
+        """Incremental add_output matches batch compute_pass_at_k."""
+        import random
+
+        random.seed(42)
+        rollouts_per_example = 8
+
+        all_outputs = []
+        for eid in range(10):
+            for _ in range(rollouts_per_example):
+                reward = random.choice([0.0, 0.5, 1.0])
+                all_outputs.append(self._make_output(eid, reward))
+
+        random.shuffle(all_outputs)
+
+        # Incremental: one-by-one
+        m1 = PassAtKMetric(rollouts_per_example)
+        for output in all_outputs:
+            m1.add_output(output)
+            m1.compute()  # verify O(1) doesn't crash
+        inc_pass_at_k, inc_pass_all_k = m1.compute()
+
+        # Batch: add_outputs all at once
+        m2 = PassAtKMetric(rollouts_per_example)
+        m2.add_outputs(all_outputs)
+        batch_pass_at_k, batch_pass_all_k = m2.compute()
+
+        assert inc_pass_at_k == pytest.approx(batch_pass_at_k)
+        assert inc_pass_all_k == pytest.approx(batch_pass_all_k)
+
+    def test_add_outputs(self):
+        m = PassAtKMetric(rollouts_per_example=2)
+        m.add_outputs([self._make_output(0, 1.0), self._make_output(0, 0.0)])
+        pass_at_k, _ = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.5)
+
+    def test_incomplete_examples_excluded(self):
+        m = PassAtKMetric(rollouts_per_example=4)
+        for _ in range(4):
+            m.add_output(self._make_output(0, 1.0))
+        for _ in range(2):
+            m.add_output(self._make_output(1, 0.0))
+        pass_at_k, pass_all_k = m.compute()
         assert pass_at_k["1"] == pytest.approx(1.0)
         assert pass_all_k["1"] == pytest.approx(1.0)
 
-    def test_all_groups_incomplete_returns_empty(self):
-        """If no example has a complete group, return empty dicts."""
-        outputs = [
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(1, 1.0),
-        ]
-        pass_at_k, pass_all_k = compute_pass_at_k(outputs, rollouts_per_example=4)
-        assert pass_at_k == {}
-        assert pass_all_k == {}
+    def test_empty(self):
+        m = PassAtKMetric(rollouts_per_example=4)
+        assert m.compute() == ({}, {})
+
+    def test_single_rollout(self):
+        m = PassAtKMetric(rollouts_per_example=1)
+        m.add_output(self._make_output(0, 1.0))
+        assert m.compute() == ({}, {})
+
+    def test_reset(self):
+        m = PassAtKMetric(rollouts_per_example=2)
+        m.add_output(self._make_output(0, 1.0))
+        m.add_output(self._make_output(0, 1.0))
+        pass_at_k, _ = m.compute()
+        assert pass_at_k["1"] == pytest.approx(1.0)
+
+        m.reset()
+        m.add_output(self._make_output(0, 0.0))
+        m.add_output(self._make_output(0, 0.0))
+        pass_at_k, _ = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.0)
+
+    def test_custom_threshold(self):
+        m = PassAtKMetric(rollouts_per_example=4, threshold=0.7)
+        for o in [
+            self._make_output(0, 0.4),
+            self._make_output(0, 0.6),
+            self._make_output(0, 0.8),
+            self._make_output(0, 0.3),
+        ]:
+            m.add_output(o)
+        pass_at_k, _ = m.compute()
+        # 1 of 4 correct at threshold=0.7: pass@1 = 1 - C(3,1)/C(4,1) = 0.25
+        assert pass_at_k["1"] == pytest.approx(0.25)
+        # pass@2 = 1 - C(3,2)/C(4,2) = 1 - 3/6 = 0.5
+        assert pass_at_k["2"] == pytest.approx(0.5)
+
+    def test_all_correct(self):
+        """All rollouts correct → pass@k = 1.0 and pass^k = 1.0 for all k."""
+        m = PassAtKMetric(rollouts_per_example=8)
+        m.add_outputs([self._make_output(0, 1.0) for _ in range(8)])
+        pass_at_k, pass_all_k = m.compute()
+        assert set(pass_at_k.keys()) == {"1", "2", "4", "8"}
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(1.0)
+            assert pass_all_k[k] == pytest.approx(1.0)
+
+    def test_none_correct(self):
+        """No rollouts correct → pass@k = 0.0 and pass^k = 0.0 for all k."""
+        m = PassAtKMetric(rollouts_per_example=8)
+        m.add_outputs([self._make_output(0, 0.0) for _ in range(8)])
+        pass_at_k, pass_all_k = m.compute()
+        for k in pass_at_k:
+            assert pass_at_k[k] == pytest.approx(0.0)
+            assert pass_all_k[k] == pytest.approx(0.0)
+
+    def test_partial_correctness(self):
+        """Partial correctness: 2 correct out of 4 rollouts."""
+        m = PassAtKMetric(rollouts_per_example=4)
+        m.add_outputs(
+            [
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 0.0),
+                self._make_output(0, 0.0),
+            ]
+        )
+        pass_at_k, pass_all_k = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.5)
+        assert pass_at_k["2"] == pytest.approx(1.0 - 1.0 / 6.0)
+        assert pass_at_k["4"] == pytest.approx(1.0)
+        assert pass_all_k["1"] == pytest.approx(0.5)
+        assert pass_all_k["2"] == pytest.approx(1.0 / 6.0)
+        assert pass_all_k["4"] == pytest.approx(0.0)
+
+    def test_multiple_examples_averaged(self):
+        """pass@k and pass^k are averaged across multiple examples."""
+        m = PassAtKMetric(rollouts_per_example=4)
+        m.add_outputs(
+            [
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+            ]
+        )
+        pass_at_k, pass_all_k = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.5)
+        assert pass_all_k["1"] == pytest.approx(0.5)
+
+    def test_powers_of_two_k_selection(self):
+        """k values are powers of 2 in [1, n]."""
+        m = PassAtKMetric(rollouts_per_example=16)
+        m.add_outputs([self._make_output(0, 1.0) for _ in range(16)])
+        pass_at_k, _ = m.compute()
+        assert set(pass_at_k.keys()) == {"1", "2", "4", "8", "16"}
+
+    def test_n3_k_values(self):
+        """n=3 should give k=1,2."""
+        m = PassAtKMetric(rollouts_per_example=3)
+        m.add_outputs([self._make_output(0, 1.0) for _ in range(3)])
+        pass_at_k, _ = m.compute()
+        assert set(pass_at_k.keys()) == {"1", "2"}
+
+    def test_correctness_threshold_boundary(self):
+        """Only reward >= 0.5 counts as correct by default."""
+        m = PassAtKMetric(rollouts_per_example=4)
+        m.add_outputs(
+            [
+                self._make_output(0, 0.49),  # not correct
+                self._make_output(0, 0.5),  # correct
+                self._make_output(0, 1.0),  # correct
+                self._make_output(0, 0.0),  # not correct
+            ]
+        )
+        pass_at_k, _ = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.5)
