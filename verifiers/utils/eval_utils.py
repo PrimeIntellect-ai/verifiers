@@ -794,8 +794,8 @@ async def run_evaluation(
 
 async def run_evaluations(config: EvalRunConfig) -> None:
     # load event loop lag monitor
-    event_loop_lag_monitor = EventLoopLagMonitor()
-    event_loop_lag_monitor.run_in_background()
+    event_loop_lag_monitor = EventLoopLagMonitor(max_measurements=int(1e5))
+    lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 
     on_progress: list[ProgressCallback] | None = None
     if config.heartbeat_url is not None:
@@ -813,25 +813,25 @@ async def run_evaluations(config: EvalRunConfig) -> None:
     )
     end_time = time.time()
 
+    lag_monitor_task.cancel()
+
     if config.heartbeat_url is not None:
         await heart.close()
 
-    event_loop_lags = event_loop_lag_monitor.lags
+    lags = event_loop_lag_monitor.lags
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
     for results in all_results:
         print_results(results)
 
-    if event_loop_lags:
-        print("\nPerformance:")
-        event_loop_lags_arr = np.array(event_loop_lags)
-        med_lag, p90_lag, max_lag = (
-            np.median(event_loop_lags_arr),
-            np.percentile(event_loop_lags_arr, 90),
-            np.max(event_loop_lags_arr),
-        )
+    n = len(lags)
+    if n > 0:
+        lags_arr = np.array(lags)
+        mean_lag = float(lags_arr.mean())
+        p99_lag = float(np.percentile(lags_arr, 99))
+        max_lag = float(lags_arr.max())
         print(
-            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
+            f"\nPerformance:\nevent_loop_lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={n})"
         )
 
 
