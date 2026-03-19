@@ -90,11 +90,15 @@ prime eval run my-env -s -C "judge_response,parsed_answer"
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Run multi-environment TOML suites:
+5. Save results to a custom output directory:
+```bash
+prime eval run my-env -s -o /path/to/output
+```
+6. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-6. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+7. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
