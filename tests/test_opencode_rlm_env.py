@@ -326,21 +326,6 @@ class TestMetrics:
         response = MagicMock(spec=[])  # no usage attr
         assert OpenCodeRLMEnv._extract_token_counts(response) == (0, 0)
 
-    def test_update_main_metrics(self):
-        env = build_env()
-        state = {
-            "main_turns": 1,
-            "main_prompt_tokens": 100,
-            "main_completion_tokens": 50,
-        }
-        response = MagicMock()
-        response.usage.prompt_tokens = 200
-        response.usage.completion_tokens = 80
-        env._update_main_metrics(state, response)
-        assert state["main_turns"] == 2
-        assert state["main_prompt_tokens"] == 300
-        assert state["main_completion_tokens"] == 130
-
     def test_update_sub_metrics(self):
         env = build_env()
         state = {

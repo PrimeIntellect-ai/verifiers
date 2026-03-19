@@ -12,22 +12,17 @@ rollout loop.
 
 import asyncio
 import json
-import logging
 from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.opencode_env import OpenCodeEnv
 from verifiers.types import (
     Messages,
-    MessageType,
     Response,
-    SamplingArgs,
     State,
     Tool,
 )
 from verifiers.utils.interception_utils import deliver_response, synthesize_stream
-
-logger = logging.getLogger(__name__)
 
 
 class OpenCodeRLMMonitorRubric(vf.Rubric):
@@ -293,11 +288,11 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             except BaseException as e:
                 error = e
                 if isinstance(e, Exception):
-                    logger.warning("Sub-LLM request %s failed: %s", request_id, e)
+                    self.logger.warning("Sub-LLM request %s failed: %s", request_id, e)
                 else:
                     # CancelledError / KeyboardInterrupt — deliver error to
                     # unblock the HTTP future, then re-raise.
-                    logger.debug("Sub-LLM request %s cancelled", request_id)
+                    self.logger.debug("Sub-LLM request %s cancelled", request_id)
             finally:
                 if intercept.get("stream"):
                     await synthesize_stream(intercept, response, error)
@@ -339,31 +334,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                         }
                     )
 
-    async def get_model_response(
-        self,
-        state: State,
-        prompt: Messages | str,
-        client: Any | None = None,
-        model: str | None = None,
-        tool_defs: list[Tool] | None = None,
-        sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
-    ) -> Response:
-        """Forward to parent and update main-agent metrics."""
-        response = await super().get_model_response(
-            state=state,
-            prompt=prompt,
-            client=client,
-            model=model,
-            tool_defs=tool_defs,
-            sampling_args=sampling_args,
-            message_type=message_type,
-        )
-        # Only count non-empty turns (skip the synthetic agent-completed step)
-        if prompt:
-            self._update_main_metrics(state, response)
-        return response
-
     @staticmethod
     def _extract_token_counts(response: Response) -> tuple[int, int]:
         usage = getattr(response, "usage", None)
@@ -372,14 +342,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return (
             int(getattr(usage, "prompt_tokens", 0) or 0),
             int(getattr(usage, "completion_tokens", 0) or 0),
-        )
-
-    def _update_main_metrics(self, state: State, response: Response) -> None:
-        prompt_tokens, completion_tokens = self._extract_token_counts(response)
-        state["main_turns"] = state.get("main_turns", 0) + 1
-        state["main_prompt_tokens"] = state.get("main_prompt_tokens", 0) + prompt_tokens
-        state["main_completion_tokens"] = (
-            state.get("main_completion_tokens", 0) + completion_tokens
         )
 
     def _update_sub_metrics(self, state: State, response: Response) -> None:
