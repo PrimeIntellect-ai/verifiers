@@ -94,7 +94,7 @@ class EnvServer(ABC):
             self.env.set_kwargs(**self.extra_env_kwargs)
 
         # Start event loop lag monitor
-        self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
+        self.lag_monitor = EventLoopLagMonitor()
 
     @abstractmethod
     async def serve(self, stop_event: asyncio.Event | None = None):
