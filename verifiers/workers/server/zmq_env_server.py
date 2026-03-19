@@ -4,6 +4,7 @@ import multiprocessing as mp
 from typing import cast
 
 import msgpack
+import numpy as np
 import zmq
 import zmq.asyncio
 
@@ -99,7 +100,7 @@ class ZMQEnvServer(EnvServer):
             f"threshold={gc.get_threshold()}"
         )
 
-        lag_monitor_task = self.lag_monitor.run_in_background()
+        lag_monitor_task = asyncio.create_task(self.lag_monitor.run())
 
         # Start statistics logger
         log_stats_task = asyncio.create_task(self.log_stats_loop())
@@ -195,13 +196,14 @@ class ZMQEnvServer(EnvServer):
             pending = len(self.pending_tasks)
             message = f"Pending tasks: {pending}"
 
-            lags = sorted(self.lag_monitor.lags)
-            self.lag_monitor.reset()
-            if lags:
-                mean_lag = sum(lags) / len(lags)
-                max_lag = lags[-1]
-                p99_lag = lags[int(len(lags) * 0.99)]
-                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={len(lags)})"
+            lags = self.lag_monitor.lags
+            n = len(lags)
+            if n > 0:
+                lags_arr = np.array(lags)
+                mean_lag = float(lags_arr.mean())
+                p99_lag = float(np.percentile(lags_arr, 99))
+                max_lag = float(lags_arr.max())
+                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={n})"
 
             self.logger.info(message)
 
