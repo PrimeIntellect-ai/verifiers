@@ -109,6 +109,13 @@ class EnvServer(ABC):
         """Run the server with signal-based graceful shutdown and cleanup."""
         request_parent_death_signal()
 
+        # Bind the scaled default executor to the *running* event loop.
+        # scale_executors() may have been called during __init__ (before
+        # asyncio.run() created this loop), so we install it here.
+        from verifiers.utils.thread_utils import install_default_executor
+
+        install_default_executor()
+
         stop_event = asyncio.Event()
 
         def signal_handler(sig, frame):

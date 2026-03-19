@@ -85,8 +85,10 @@ def recommended_max_workers(concurrency: int, cap: int = 4096) -> int:
 def scale_executors(max_workers: int) -> int:
     """Scale the default event-loop executor **and** all registered executors.
 
-    The default event-loop executor is *always* set (it does not need to be
-    registered).  Registered executors are resized in-place.
+    If a running event loop exists, the default executor is bound to it
+    immediately.  Otherwise the executor is only created/resized and the
+    caller must call :func:`install_default_executor` once inside the real
+    loop (e.g. at the start of ``async def run()``).
 
     Returns *max_workers*.
     """
@@ -99,10 +101,17 @@ def scale_executors(max_workers: int) -> int:
         _default_executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="vf-default"
         )
-        loop = asyncio.get_event_loop()
-        loop.set_default_executor(_default_executor)
     else:
         _resize(_default_executor, max_workers)
+
+    # If there is already a running loop, bind immediately. When called
+    # outside of an async context (e.g. during __init__ before asyncio.run),
+    # this is a no-op and the caller must use install_default_executor() later.
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(_default_executor)
+    except RuntimeError:
+        pass  # no running loop yet — caller must call install_default_executor()
 
     # explicitly registered executors
     for name, executor in _executor_registry.items():
@@ -113,6 +122,23 @@ def scale_executors(max_workers: int) -> int:
         f"scale_executors({max_workers}): default + {len(_executor_registry)} registered executor(s)"
     )
     return max_workers
+
+
+def install_default_executor() -> None:
+    """Bind the default executor to the **currently running** event loop.
+
+    Call this early inside an ``async`` function (after ``asyncio.run()`` has
+    created the real loop) so that ``run_in_executor(None, ...)`` uses the
+    scaled thread pool.  Safe to call multiple times — it is a no-op if no
+    default executor has been created yet.
+    """
+    if _default_executor is not None:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(_default_executor)
+        logger.debug(
+            f"Installed default executor (max_workers={_default_executor._max_workers}) "
+            f"on loop {id(loop)}"
+        )
 
 
 def shutdown_executors() -> None:
