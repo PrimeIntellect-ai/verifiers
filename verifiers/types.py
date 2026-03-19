@@ -501,6 +501,7 @@ class EvalConfig(BaseModel):
     verbose: bool = False
     debug: bool = False
     # saving
+    output_dir: str | None = None
     state_columns: list[str] | None = None
     save_results: bool = False
     resume_path: Path | None = None

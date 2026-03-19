@@ -24,6 +24,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from verifiers.types import Response
+from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,9 @@ class InterceptionServer:
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
-                logger.error(f"Error processing intercepted request: {e}")
+                logger.debug(
+                    f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}"
+                )
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(response)
@@ -206,12 +209,18 @@ class InterceptionServer:
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
 
-            await response_future
-
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             logger.error(f"[{rollout_id}] Streaming error: {e}")
+            return response
+
+        try:
+            await response_future
+        except BaseException as e:
+            logger.debug(
+                f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+            )
 
         try:
             await response.write_eof()
@@ -434,36 +443,36 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
     return dict(response)
 
 
-def _truncate(s: str, limit: int = 200) -> str:
-    return (s[:limit] + "...") if len(s) > limit else s
-
-
 def _log_request(rollout_id: str, body: dict) -> None:
     """Log an intercepted request."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     log_msg = f"[{rollout_id}] <- INTERCEPTED REQUEST"
     tools = body.get("tools", [])
     log_msg += f" ({len(tools)} tool(s))"
     if tools:
-        log_msg += f"\n[tools]\n{', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
+        log_msg += f"\n[tools] {', '.join([tool.get('function', {}).get('name', '?') for tool in tools])}"
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):
-            log_msg += f"\n[{msg.get('role', '?')}] {_truncate(content)}"
+            log_msg += f"\n[{msg.get('role', '?')}] {truncate(content)}"
         else:
             log_msg += f"\n[{msg.get('role', '?')}] <complex content>"
         for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {})
-            log_msg += f"\n[tool_call]\n{func.get('name')}({_truncate(func.get('arguments', ''), 100)})"
+            log_msg += f"\n[tool_call]\n{func.get('name')}({truncate(func.get('arguments', ''), 100)})"
     logger.debug(log_msg)
 
 
 def _log_response(rollout_id: str, response: dict) -> None:
     """Log the response from the model."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     log_msg = f"[{rollout_id}] -> RESPONSE"
     msg = response.get("choices", [{}])[0].get("message", {})
     if msg.get("content"):
-        log_msg += f"\n[assistant]\n{_truncate(msg['content'])}"
+        log_msg += f"\n[assistant]\n{truncate(msg['content'])}"
     for tc in msg.get("tool_calls") or []:
         func = tc.get("function", {})
-        log_msg += f"\n[tool_call]\n{func.get('name')}({_truncate(func.get('arguments', ''), 100)})"
+        log_msg += f"\n[tool_call]\n{func.get('name')}({truncate(func.get('arguments', ''), 100)})"
     logger.debug(log_msg)

@@ -3,6 +3,7 @@ import logging
 import math
 import time
 import uuid
+from collections import Counter
 from typing import Any, cast
 
 from prime_sandboxes import (
@@ -17,22 +18,29 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
+    AssistantMessage,
     Messages,
     MessageType,
     Response,
     SamplingArgs,
     State,
     Tool,
+    ToolCall,
 )
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.worker_utils import get_free_port
 
 logger = logging.getLogger(__name__)
+
+
+class AgentError(vf.InfraError):
+    """Raised when the agent process fails or exits unexpectedly."""
 
 
 class CliAgentMonitorRubric(vf.Rubric):
@@ -90,6 +98,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
+        keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -104,6 +113,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
         )
+        self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.timeout_seconds = timeout_seconds
@@ -135,7 +145,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
-        self._tunnel_monitor_task: asyncio.Task | None = None
         self._interception_server = InterceptionServer(port=interception_port)
 
     def _require_interception_server(self) -> InterceptionServer:
@@ -148,7 +157,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         async with self._tunnel_lock:
             if self._tunnel is not None and not self._tunnel.is_running:
                 frpc_output = "\n".join(self._tunnel.recent_output)
-                logger.warning(
+                self.logger.warning(
                     f"Tunnel process died, recreating. frpc output:\n{frpc_output}"
                 )
                 self._tunnel.sync_stop()
@@ -157,7 +166,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
-                if logger.isEnabledFor(logging.DEBUG):
+                if self.logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
                         log_level="debug",
@@ -165,47 +174,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 else:
                     self._tunnel = Tunnel(local_port=port)
                 url = await self._tunnel.start()
-                logger.debug(f"Prime Tunnel started: {url}")
-
-                # Lazily start health monitor on first tunnel creation
-                if (
-                    self._tunnel_monitor_task is None
-                    or self._tunnel_monitor_task.done()
-                ):
-                    self._tunnel_monitor_task = asyncio.create_task(
-                        self._tunnel_health_monitor()
-                    )
-
+                self.logger.debug(f"Prime Tunnel started: {url}")
                 return url
             else:
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
-
-    async def _tunnel_health_monitor(self, interval: float = 30.0) -> None:
-        """Background task that checks tunnel liveness and restarts a dead tunnel."""
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                async with self._tunnel_lock:
-                    if self._tunnel is not None and not self._tunnel.is_running:
-                        frpc_output = "\n".join(self._tunnel.recent_output)
-                        logger.warning(
-                            f"Health monitor: tunnel dead. frpc output:\n{frpc_output}"
-                        )
-                        self._tunnel.sync_stop()
-                        interception_server = self._require_interception_server()
-                        port = interception_server.port
-                        if logger.isEnabledFor(logging.DEBUG):
-                            self._tunnel = Tunnel(
-                                local_port=port,
-                                log_level="debug",
-                            )
-                        else:
-                            self._tunnel = Tunnel(local_port=port)
-                        url = await self._tunnel.start()
-                        logger.info(f"Health monitor: restarted tunnel url={url}")
-        except asyncio.CancelledError:
-            return
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -242,7 +215,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             advanced_configs=self.advanced_configs,
             labels=self.labels if self.labels else [],
         )
-        logger.debug(
+        self.logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
         )
@@ -255,6 +228,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         await self.start_agent(state)
 
+        parts = [
+            f"Started  rollout_id={state['rollout_id']}",
+            f"example_id={state['example_id']}",
+        ]
+        self.logger.info(" | ".join(parts))
+
         return state
 
     async def get_docker_image(self, state: State) -> str:
@@ -265,9 +244,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
-        env_vars.setdefault("OPENAI_TIMEOUT", "600")
-        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
-        env_vars.setdefault("HTTPX_TIMEOUT", "600")
+        env_vars.setdefault("OPENAI_TIMEOUT", "3600")
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
+        env_vars.setdefault("HTTPX_TIMEOUT", "3600")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
@@ -281,10 +260,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
-            sandbox_id,
-            self.run_command,
-        )
+        self.logger.debug(f"Starting agent in sandbox {sandbox_id}")
+        try:
+            background_job: BackgroundJob = (
+                await self.sandbox_client.start_background_job(
+                    sandbox_id,
+                    self.run_command,
+                )
+            )
+        except Exception as e:
+            raise vf.SandboxError(f"Failed to start agent: {e}") from e
         state["background_job"] = background_job
         state["agent_start_time"] = time.time()
 
@@ -307,13 +292,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
             state["agent_timed_out"] = True
         except asyncio.CancelledError:
-            logger.debug("Completion wait task cancelled")
+            self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            logger.debug(f"Completion wait ended: {e}")
+            error = AgentError(f"Agent polling failed: {e}")
+            state["error"] = error
+            self.logger.error(f"Agent polling failed: {e}")
         finally:
             state["agent_completed"] = True
 
@@ -330,11 +317,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 state["agent_stdout"] = status.stdout
                 state["agent_stderr"] = status.stderr
                 if status.exit_code == 0:
-                    logger.debug(
+                    self.logger.debug(
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    logger.warning(
+                    self.logger.warning(
                         f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
                     )
                 return
@@ -436,7 +423,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages | str,
+        prompt: Messages,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -525,24 +512,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
-        if (
-            self._tunnel_monitor_task is not None
-            and not self._tunnel_monitor_task.done()
-        ):
-            self._tunnel_monitor_task.cancel()
-            try:
-                await self._tunnel_monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._tunnel_monitor_task = None
-
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
                     self._tunnel.sync_stop()
-                    logger.debug("Prime Tunnel stopped")
+                    self.logger.debug("Prime Tunnel stopped")
                 except Exception as e:
-                    logger.warning(f"Error stopping Prime Tunnel: {e}")
+                    self.logger.warning(f"Error stopping Prime Tunnel: {e}")
                 finally:
                     self._tunnel = None
         if self._interception_server is not None:
@@ -582,15 +558,58 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
         """
-        pass
+        tool_counts: Counter[str] = Counter()
+        for step in state.get("trajectory", []):
+            for msg in step.get("completion", []):
+                if isinstance(msg, AssistantMessage) and isinstance(
+                    msg.tool_calls, list
+                ):
+                    for tc in msg.tool_calls:
+                        if isinstance(tc, ToolCall):
+                            tool_counts[tc.name] += 1
+
+        example_id = state.get("example_id")
+        num_turns = len(state.get("trajectory", []))
+        stop_condition = state.get("stop_condition", "unknown")
+        error = state.get("error")
+        error_info = (
+            f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
+        )
+        exit_code = state.get("agent_exit_code")
+        timed_out = state.get("agent_timed_out", False)
+        duration_s = state["timing"].get("total_ms", 0) / 1000
+        tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
+        parts = [
+            f"Finished rollout_id={state.get('rollout_id')}",
+            f"example_id={example_id}",
+            f"turns={num_turns}",
+            f"tools=[{tools_str}]",
+            f"stop={stop_condition}",
+            f"exit_code={exit_code}",
+            f"duration={print_time(duration_s)}",
+        ]
+        if timed_out:
+            parts.append("timed_out=True")
+        if error_info:
+            parts.append(f"error={error_info}")
+        self.logger.info(" | ".join(parts))
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
-        """Cleanup sandbox after rollout."""
+        """Cleanup sandbox after rollout.
+
+        When `keep_sandbox_for_scoring` is True, sandbox deletion is deferred
+        (e.g. when the rubric needs sandbox access during scoring).
+        The sandbox is still deregistered from active tracking so the
+        environment teardown does not attempt a redundant bulk-delete.
+        """
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            await self.delete_sandbox(sandbox_id)
+            if self.keep_sandbox_for_scoring:
+                self.deregister_sandbox(sandbox_id)
+            else:
+                await self.delete_sandbox(sandbox_id)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
