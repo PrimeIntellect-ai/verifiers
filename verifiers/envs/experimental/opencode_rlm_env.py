@@ -129,8 +129,10 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 EOFCONFIG
 
 cd {agent_workdir}
+set +e
 opencode run < {prompt_path} > {logs_path} 2>&1
 _oc_exit=$?
+set -e
 cat {logs_path}
 exit $_oc_exit
 """
