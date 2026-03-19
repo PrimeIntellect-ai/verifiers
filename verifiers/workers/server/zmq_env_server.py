@@ -77,6 +77,11 @@ class ZMQEnvServer(EnvServer):
         self.stop_health = mp.Event()
         self.health_process: mp.Process | None = None
 
+    def _cleanup_request_task(self, frame_request_id: str, task: asyncio.Task) -> None:
+        self.pending_tasks.discard(task)
+        if self.request_tasks.get(frame_request_id) is task:
+            self.request_tasks.pop(frame_request_id, None)
+
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
 
@@ -135,11 +140,16 @@ class ZMQEnvServer(EnvServer):
                         continue
 
                     # Process in background, tracking the task for cleanup
+                    frame_request_id = request_id.decode()
                     task = asyncio.create_task(
                         self.process_request(client_id, request_id, payload_bytes)
                     )
+                    self.request_tasks[frame_request_id] = task
                     self.pending_tasks.add(task)
-                    task.add_done_callback(self.pending_tasks.discard)
+                    task.add_done_callback(
+                        lambda done_task,
+                        rid=frame_request_id: self._cleanup_request_task(rid, done_task)
+                    )
 
                 except asyncio.CancelledError:
                     break
@@ -203,47 +213,42 @@ class ZMQEnvServer(EnvServer):
         payload_bytes: bytes,
     ):
         request_id = request_id_bytes.decode()
-        frame_request_id = request_id
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            self.request_tasks[frame_request_id] = current_task
         response: BaseResponse
 
         try:
-            try:
-                # deserialize request
-                raw = msgpack.unpackb(payload_bytes, raw=False)
-                request_type = raw.get("request_type")
-                request_id = raw.get("request_id", request_id)
+            # deserialize request
+            raw = msgpack.unpackb(payload_bytes, raw=False)
+            request_type = raw.get("request_type")
+            request_id = raw.get("request_id", request_id)
 
-                # Health requests are handled by the dedicated health process,
-                # so they should not arrive here.
-                if request_type == "run_rollout":
-                    request = RunRolloutRequest.model_validate(raw)
-                    response = await self.handle_run_rollout(request)
-                elif request_type == "run_group":
-                    request = RunGroupRequest.model_validate(raw)
-                    response = await self.handle_run_group(request)
-                else:
-                    self.logger.warning(f"Got unknown request type: {request_type}")
-                    response = BaseResponse(
-                        success=False, error=f"Unknown request type: {request_type}"
-                    )
-
-            except asyncio.CancelledError:
-                return
-
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing request {request_id}: {e}", exc_info=True
-                )
+            # Health requests are handled by the dedicated health process,
+            # so they should not arrive here.
+            if request_type == "run_rollout":
+                request = RunRolloutRequest.model_validate(raw)
+                response = await self.handle_run_rollout(request)
+            elif request_type == "run_group":
+                request = RunGroupRequest.model_validate(raw)
+                response = await self.handle_run_group(request)
+            else:
+                self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(
-                    success=False,
-                    error=repr(e),
+                    success=False, error=f"Unknown request type: {request_type}"
                 )
 
-            # serialize response using Pydantic
-            response_bytes = cast(
+        except asyncio.CancelledError:
+            return
+
+        except Exception as e:
+            self.logger.error(
+                f"Error processing request {request_id}: {e}", exc_info=True
+            )
+            response = BaseResponse(
+                success=False,
+                error=repr(e),
+            )
+
+        def serialize_response() -> bytes:
+            return cast(
                 bytes,
                 msgpack.packb(
                     response.model_dump(mode="python", warnings=False),
@@ -252,15 +257,15 @@ class ZMQEnvServer(EnvServer):
                 ),
             )
 
-            # send response: [client_id, request_id, response]
-            try:
-                await self.socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes]
-                )
-            except zmq.ZMQError as e:
-                self.logger.warning(
-                    f"Failed to send response for request {request_id[:7]}: {e} "
-                    f"(client likely disconnected)"
-                )
-        finally:
-            self.request_tasks.pop(frame_request_id, None)
+        response_bytes = await asyncio.to_thread(serialize_response)
+
+        # send response: [client_id, request_id, response]
+        try:
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(
+                f"Failed to send response for request {request_id[:7]}: {e} "
+                f"(client likely disconnected)"
+            )

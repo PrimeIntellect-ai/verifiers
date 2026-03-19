@@ -2,7 +2,15 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from prime_sandboxes import CommandTimeoutError, SandboxOOMError, SandboxTimeoutError
+import httpx
+from prime_sandboxes import (
+    APIError,
+    CommandTimeoutError,
+    DownloadTimeoutError,
+    SandboxOOMError,
+    SandboxTimeoutError,
+    UploadTimeoutError,
+)
 
 import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import (
@@ -11,6 +19,8 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxNotReadyError,
     SandboxSetupError,
     ThreadedAsyncSandboxClient,
+    is_retryable_sandbox_api_error,
+    is_retryable_sandbox_read_error,
 )
 
 MODULE = "verifiers.envs.experimental.sandbox_mixin"
@@ -39,6 +49,28 @@ def test_init_creates_client_and_retry():
     assert isinstance(obj.active_sandboxes, set) and len(obj.active_sandboxes) == 0
     assert isinstance(obj.sandbox_client, ThreadedAsyncSandboxClient)
     assert callable(obj.with_retry)
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        UploadTimeoutError("sb", "/tmp/file", 300),
+        DownloadTimeoutError("sb", "/tmp/file", 300),
+        CommandTimeoutError("sb", "echo hi", 30),
+        httpx.ReadTimeout("timed out"),
+        APIError("Upload failed: HTTP 503: retry me"),
+        APIError("Upload failed: ConnectError at POST /upload: boom"),
+    ],
+)
+def test_retryable_sandbox_read_error_matches_current_sdk_exceptions(exception):
+    assert is_retryable_sandbox_read_error(exception) is True
+
+
+def test_retryable_sandbox_api_error_ignores_non_retryable_api_error():
+    assert (
+        is_retryable_sandbox_api_error(APIError("Upload failed: HTTP 400: nope"))
+        is False
+    )
 
 
 # ── create_sandbox ───────────────────────────────────────────────────
