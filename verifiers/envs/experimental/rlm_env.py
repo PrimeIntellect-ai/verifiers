@@ -1602,21 +1602,24 @@ class RLMExecutor(SandboxMixin):
         )
         worker_script = self.env.customize_worker_script(worker_script, state)
         worker_path.write_text(worker_script, encoding="utf-8")
+        sandbox_id = session.sandbox_id
+        if sandbox_id is None:
+            raise RLMSessionError("Sandbox not initialized")
 
         await self._upload_file_with_retry(
-            session.sandbox_id,
+            sandbox_id,
             session.paths.context_file,
             str(context_path),
             "context file upload",
         )
         await self._upload_file_with_retry(
-            session.sandbox_id,
+            sandbox_id,
             session.paths.answer_file,
             str(answer_path),
             "answer file upload",
         )
         await self._upload_file_with_retry(
-            session.sandbox_id,
+            sandbox_id,
             session.paths.worker_path,
             str(worker_path),
             "worker file upload",
@@ -2158,7 +2161,7 @@ class RLMEnv(vf.StatefulToolEnv):
             retry=tc.retry_if_exception(is_retryable_sandbox_read_error),
             stop=tc.stop_after_attempt(sandbox_transfer_max_retries),
             wait=tc.wait_exponential_jitter(initial=1, max=30),
-            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(cast(Any, logger), logging.WARNING),
             reraise=True,
         ).wraps
         fixed_root_tools = self._build_fixed_root_tools()

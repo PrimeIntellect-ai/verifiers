@@ -62,7 +62,7 @@ class SandboxMonitorRubric(vf.Rubric):
 # The SDK handles some transient transport retries internally, but upload/download
 # timeouts still surface as typed exceptions. Keep the env-level helpers here so
 # sandbox environments can share one policy for those cases.
-def is_retryable_sandbox_api_error(exception: Exception) -> bool:
+def is_retryable_sandbox_api_error(exception: BaseException) -> bool:
     """Return True for transient sandbox API failures that are safe to retry."""
     if not isinstance(exception, APIError):
         return False
@@ -77,7 +77,7 @@ def is_retryable_sandbox_api_error(exception: Exception) -> bool:
     return any(token in error_str for token in retry_tokens)
 
 
-def is_retryable_sandbox_read_error(exception: Exception) -> bool:
+def is_retryable_sandbox_read_error(exception: BaseException) -> bool:
     """Return True for retryable read/transfer timeouts and transient API errors."""
     return isinstance(
         exception,
