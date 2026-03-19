@@ -1046,10 +1046,10 @@ class Environment(ABC):
                     for cb in extra_on_progress:
                         cb(builder.outputs, new_outputs, metadata)
 
-                    # incrementally save outputs
+                    # incrementally save outputs (offloaded to thread to avoid blocking the event loop)
                     if save_results:
-                        save_new_outputs(new_outputs, builder.results_path)
-                        save_metadata(metadata, builder.results_path)
+                        await asyncio.to_thread(save_new_outputs, new_outputs, builder.results_path)
+                        await asyncio.to_thread(save_metadata, metadata, builder.results_path)
             finally:
                 # cancel all outstanding tasks and await their completion
                 pending = [task for task in tasks.keys() if not task.done()]
@@ -1063,8 +1063,8 @@ class Environment(ABC):
 
             # save if requested
             if save_results:
-                save_outputs(results["outputs"], builder.results_path)
-                save_metadata(results["metadata"], builder.results_path)
+                await asyncio.to_thread(save_outputs, results["outputs"], builder.results_path)
+                await asyncio.to_thread(save_metadata, results["metadata"], builder.results_path)
                 if push_to_hf_hub:
                     push_results_to_hf_hub(results, hf_hub_dataset_name)
                 if on_log is not None:
