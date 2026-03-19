@@ -10,7 +10,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Callable, cast
 
@@ -714,14 +714,6 @@ def quiet_datasets():
         enable_progress_bar()
 
 
-class NullContext:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
@@ -731,7 +723,7 @@ async def run_evaluation(
 ) -> GenerateOutputs:
     # load environment
     maybe_suppress_logs = (
-        log_level(logging.CRITICAL) if not config.disable_env_server else NullContext()
+        log_level(logging.CRITICAL) if not config.disable_env_server else nullcontext()
     )
     with maybe_suppress_logs:
         vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-from verifiers.decorators import discover_decorated
 import json
 import logging
 import multiprocessing as mp
@@ -29,12 +28,14 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
+from verifiers.decorators import discover_decorated
 from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.thread_utils import scale_executors
 from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
@@ -1237,8 +1238,6 @@ class Environment(ABC):
 
     def set_max_workers(self, max_workers: int) -> None:
         """Set max_workers and scale all registered thread-pool executors to match."""
-        from verifiers.utils.thread_utils import scale_executors
-
         self.max_workers = max_workers
         scale_executors(max_workers=max_workers)
 

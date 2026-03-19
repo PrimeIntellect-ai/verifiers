@@ -60,6 +60,22 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 prime eval run my-env -x '{"max_turns": 20}'
 ```
 
+#### Executor autoscaling
+
+Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `max_workers` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_max_workers()`, which resizes both the default event-loop executor and all registered executors.
+
+To override the automatic value:
+
+```bash
+prime eval run my-env -x '{"max_workers": 256}'
+```
+
+You can also call `set_max_workers()` directly at runtime:
+
+```python
+env.set_max_workers(256)
+```
+
 ### Model Configuration
 
 | Flag | Short | Default | Description |
