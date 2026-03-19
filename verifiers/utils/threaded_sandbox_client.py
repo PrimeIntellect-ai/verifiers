@@ -9,6 +9,8 @@ from prime_sandboxes import AsyncSandboxClient
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
     get_or_create_thread_loop,
+    register_executor,
+    unregister_executor,
 )
 
 
@@ -32,6 +34,8 @@ class ThreadedAsyncSandboxClient:
             max_workers=max_workers,
             thread_name_prefix="sandbox-client-executor",
         )
+        self.executor_name = f"sandbox-client-{id(self)}"
+        register_executor(self.executor_name, self.executor)
         self.client_kwargs = {
             "max_connections": max_connections,
             "max_keepalive_connections": max_keepalive_connections,
@@ -60,4 +64,5 @@ class ThreadedAsyncSandboxClient:
 
     def teardown(self, wait: bool = True) -> None:
         """Teardown the thread pool executor."""
+        unregister_executor(self.executor_name)
         self.executor.shutdown(wait=wait)
