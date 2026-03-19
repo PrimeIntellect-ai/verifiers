@@ -36,7 +36,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
-from verifiers.utils.metric_utils import compute_pass_at_k
+from verifiers.utils.metric_utils import PassAtKMetric
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -551,7 +551,9 @@ def print_rewards(results: GenerateOutputs):
         print(out)
 
     threshold = results["metadata"].get("pass_threshold", 0.5)
-    pass_at_k, pass_all_k = compute_pass_at_k(results["outputs"], r, threshold)
+    pass_at_k_metric = PassAtKMetric(r, threshold=threshold)
+    pass_at_k_metric.add_outputs(results["outputs"])
+    pass_at_k, pass_all_k = pass_at_k_metric.compute()
     if pass_at_k:
         parts = [
             f"{k}={v:.3f}"
