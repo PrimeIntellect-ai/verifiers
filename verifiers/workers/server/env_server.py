@@ -56,21 +56,15 @@ class EnvServer(ABC):
         json_logging: bool = False,
     ):
         # setup logging
-        log_file = log_file or f"logs/{env_id}.log"
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        if log_level is None:
-            vf.setup_logging(
-                log_file=log_file,
-                log_file_level=log_file_level,
-                json_logging=json_logging,
-            )
-        else:
-            vf.setup_logging(
-                level=log_level,
-                log_file=log_file,
-                log_file_level=log_file_level,
-                json_logging=json_logging,
-            )
+        logger_kwargs: dict[str, Any] = {"json_logging": json_logging}
+        if log_level is not None:
+            logger_kwargs["level"] = log_level
+        if log_file is not None:
+            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+            logger_kwargs["log_file"] = log_file
+            logger_kwargs["log_file_level"] = log_file_level
+
+        vf.setup_logging(**logger_kwargs)
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(

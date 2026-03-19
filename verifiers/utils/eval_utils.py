@@ -750,22 +750,24 @@ async def run_evaluation(
                 )
                 extra_env_kwargs["max_workers"] = max_workers
 
+            log_file = results_path / "eval.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
             if config.debug:
                 await vf_env.start_server(
                     extra_env_kwargs=extra_env_kwargs,
                     log_level=get_log_level(config.verbose),
+                    log_file=str(log_file),
+                    log_file_level=get_log_level(config.verbose),
                 )
             else:
-                log_file = results_path / "eval.log"
-                log_file.parent.mkdir(parents=True, exist_ok=True)
                 await vf_env.start_server(
                     extra_env_kwargs=extra_env_kwargs,
                     log_level="CRITICAL",  # disable console logging
                     log_file=str(log_file),
                     log_file_level=get_log_level(config.verbose),
                 )
-                if on_log_file is not None:
-                    on_log_file(log_file)
+            if on_log_file is not None:
+                on_log_file(log_file)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(

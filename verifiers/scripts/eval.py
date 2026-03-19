@@ -267,6 +267,13 @@ def main():
         ),
     )
     parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=str,
+        default=None,
+        help="Custom output directory for evaluation results and logs",
+    )
+    parser.add_argument(
         "--verbose", "-v", default=False, action="store_true", help="Verbose output"
     )
     parser.add_argument(
