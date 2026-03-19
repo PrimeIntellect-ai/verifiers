@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -58,12 +57,12 @@ def register_executor(name: str, executor: ThreadPoolExecutor) -> None:
     if _target_max_workers is not None and executor._max_workers != _target_max_workers:
         _resize(executor, _target_max_workers)
         logger.debug(
-            f"Registered executor '{name}' and immediately scaled to "
+            f"Registered executor {name} and immediately scaled to "
             f"max_workers={_target_max_workers}"
         )
     else:
         logger.debug(
-            f"Registered executor '{name}' (max_workers={executor._max_workers})"
+            f"Registered executor {name} (max_workers={executor._max_workers})"
         )
 
 
@@ -72,45 +71,30 @@ def unregister_executor(name: str) -> None:
     _executor_registry.pop(name, None)
 
 
-def recommended_max_workers(concurrency: int) -> int:
-    """Return a max_workers value scaled to *concurrency*, capped only by OS/CPU
-    physical limits rather than Python's default cap of 32.
+def recommended_max_workers(concurrency: int, cap: int = 4096) -> int:
+    """Return a max_workers value scaled to *concurrency*.
 
-    For I/O-bound workloads the thread count can safely exceed the CPU count.
-    We allow up to ``os.cpu_count() * 8`` as an upper bound (a conservative
-    proxy for OS thread limits) while still honouring the caller's requested
-    concurrency.
+    For I/O-bound workloads (API calls, sandbox RPCs) the thread count can
+    safely far exceed the CPU count since threads spend most of their time
+    blocked on network I/O.  The *cap* is a sanity limit to prevent
+    misconfiguration from exhausting memory (~8 MB stack per thread).
     """
-    cpu_count = os.cpu_count() or 4
-    physical_cap = cpu_count * 8
-    return max(1, min(concurrency, physical_cap))
+    return max(1, min(concurrency, cap))
 
 
-def scale_executors(
-    max_workers: int | None = None,
-    *,
-    concurrency: int | None = None,
-) -> int:
+def scale_executors(max_workers: int) -> int:
     """Scale the default event-loop executor **and** all registered executors.
 
     The default event-loop executor is *always* set (it does not need to be
     registered).  Registered executors are resized in-place.
 
-    Either supply an explicit *max_workers* or a *concurrency* hint (from
-    which :func:`recommended_max_workers` derives the value).
-
-    Returns the resolved *max_workers*.
+    Returns *max_workers*.
     """
     global _default_executor, _target_max_workers
 
-    if max_workers is None:
-        if concurrency is None:
-            raise ValueError("Provide either max_workers or concurrency")
-        max_workers = recommended_max_workers(concurrency)
-
     _target_max_workers = max_workers
 
-    # 1. Default event-loop executor (always tracked)
+    # default event-loop executor (always tracked)
     if _default_executor is None:
         _default_executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="vf-default"
@@ -120,10 +104,10 @@ def scale_executors(
     else:
         _resize(_default_executor, max_workers)
 
-    # 2. All explicitly registered executors
+    # explicitly registered executors
     for name, executor in _executor_registry.items():
         _resize(executor, max_workers)
-        logger.debug(f"Scaled executor '{name}' to max_workers={max_workers}")
+        logger.debug(f"Scaled executor {name} to max_workers={max_workers}")
 
     logger.info(
         f"scale_executors({max_workers}): default + {len(_executor_registry)} registered executor(s)"
