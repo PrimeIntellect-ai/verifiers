@@ -45,13 +45,25 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
             self.add_metric(fn)
 
     @staticmethod
+    def _is_main_step(step: dict) -> bool:
+        return not (step.get("extras") or {}).get("is_sub_llm_call")
+
+    @staticmethod
     async def main_turns(state: State) -> float:
-        return float(len(state.get("trajectory", [])))
+        return float(
+            sum(
+                1
+                for s in state.get("trajectory", [])
+                if OpenCodeRLMMonitorRubric._is_main_step(s)
+            )
+        )
 
     @staticmethod
     async def main_prompt_tokens(state: State) -> float:
         total = 0
         for step in state.get("trajectory", []):
+            if not OpenCodeRLMMonitorRubric._is_main_step(step):
+                continue
             resp = step.get("response")
             usage = getattr(resp, "usage", None) if resp else None
             if usage:
@@ -62,6 +74,8 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
     async def main_completion_tokens(state: State) -> float:
         total = 0
         for step in state.get("trajectory", []):
+            if not OpenCodeRLMMonitorRubric._is_main_step(step):
+                continue
             resp = step.get("response")
             usage = getattr(resp, "usage", None) if resp else None
             if usage:

@@ -373,6 +373,25 @@ class TestMonitorRubric:
         assert await rubric.main_completion_tokens(state) == 130.0
 
     @pytest.mark.asyncio
+    async def test_main_metrics_exclude_sub_llm_steps(self):
+        rubric = OpenCodeRLMMonitorRubric()
+        main_resp = MagicMock()
+        main_resp.usage.prompt_tokens = 100
+        main_resp.usage.completion_tokens = 50
+        sub_resp = MagicMock()
+        sub_resp.usage.prompt_tokens = 999
+        sub_resp.usage.completion_tokens = 999
+        state = {
+            "trajectory": [
+                {"response": main_resp},
+                {"response": sub_resp, "extras": {"is_sub_llm_call": True}},
+            ]
+        }
+        assert await rubric.main_turns(state) == 1.0
+        assert await rubric.main_prompt_tokens(state) == 100.0
+        assert await rubric.main_completion_tokens(state) == 50.0
+
+    @pytest.mark.asyncio
     async def test_main_metrics_empty_trajectory(self):
         rubric = OpenCodeRLMMonitorRubric()
         assert await rubric.main_turns({}) == 0.0
