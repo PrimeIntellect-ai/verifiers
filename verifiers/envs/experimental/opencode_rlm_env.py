@@ -28,10 +28,7 @@ from verifiers.utils.interception_utils import deliver_response, synthesize_stre
 class OpenCodeRLMMonitorRubric(vf.Rubric):
     """Tracks main-agent and sub-LLM metrics separately."""
 
-    _METRICS = [
-        "main_turns",
-        "main_prompt_tokens",
-        "main_completion_tokens",
+    _STATE_METRICS = [
         "sub_llm_turns",
         "sub_llm_prompt_tokens",
         "sub_llm_completion_tokens",
@@ -39,12 +36,40 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        for name in self._METRICS:
-            fn = self._make_metric(name)
+        self.add_metric(self.main_turns)
+        self.add_metric(self.main_prompt_tokens)
+        self.add_metric(self.main_completion_tokens)
+        for name in self._STATE_METRICS:
+            fn = self._make_state_metric(name)
             setattr(self, name, fn)
             self.add_metric(fn)
 
-    def _make_metric(self, key: str):
+    @staticmethod
+    async def main_turns(state: State) -> float:
+        return float(len(state.get("trajectory", [])))
+
+    @staticmethod
+    async def main_prompt_tokens(state: State) -> float:
+        total = 0
+        for step in state.get("trajectory", []):
+            resp = step.get("response")
+            usage = getattr(resp, "usage", None) if resp else None
+            if usage:
+                total += int(getattr(usage, "prompt_tokens", 0) or 0)
+        return float(total)
+
+    @staticmethod
+    async def main_completion_tokens(state: State) -> float:
+        total = 0
+        for step in state.get("trajectory", []):
+            resp = step.get("response")
+            usage = getattr(resp, "usage", None) if resp else None
+            if usage:
+                total += int(getattr(usage, "completion_tokens", 0) or 0)
+        return float(total)
+
+    @staticmethod
+    def _make_state_metric(key: str):
         async def metric(state: State) -> float:
             return float(state.get(key, 0))
 
@@ -203,9 +228,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
     async def setup_state(self, state: State) -> State:
         state = await super().setup_state(state)
-        state.setdefault("main_turns", 0)
-        state.setdefault("main_prompt_tokens", 0)
-        state.setdefault("main_completion_tokens", 0)
         state.setdefault("sub_llm_turns", 0)
         state.setdefault("sub_llm_prompt_tokens", 0)
         state.setdefault("sub_llm_completion_tokens", 0)

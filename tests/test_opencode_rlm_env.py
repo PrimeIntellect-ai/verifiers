@@ -278,7 +278,7 @@ class TestIsSubLLMRequest:
 
 class TestSetupState:
     @pytest.mark.asyncio
-    async def test_initializes_metrics(self):
+    async def test_initializes_sub_metrics(self):
         env = build_env()
         state: dict = {}
         with patch.object(
@@ -288,17 +288,15 @@ class TestSetupState:
             return_value=state,
         ):
             result = await env.setup_state(state)
-        assert result["main_turns"] == 0
-        assert result["main_prompt_tokens"] == 0
-        assert result["main_completion_tokens"] == 0
         assert result["sub_llm_turns"] == 0
         assert result["sub_llm_prompt_tokens"] == 0
         assert result["sub_llm_completion_tokens"] == 0
+        assert result["_sub_llm_tasks"] == set()
 
     @pytest.mark.asyncio
-    async def test_preserves_existing_metrics(self):
+    async def test_preserves_existing_sub_metrics(self):
         env = build_env()
-        state: dict = {"main_turns": 5, "sub_llm_turns": 3}
+        state: dict = {"sub_llm_turns": 3}
         with patch.object(
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
@@ -306,7 +304,6 @@ class TestSetupState:
             return_value=state,
         ):
             result = await env.setup_state(state)
-        assert result["main_turns"] == 5
         assert result["sub_llm_turns"] == 3
 
 
@@ -362,13 +359,33 @@ class TestMonitorRubric:
         assert expected.issubset(func_names)
 
     @pytest.mark.asyncio
-    async def test_metric_reads_from_state(self):
+    async def test_main_turns_from_trajectory(self):
         rubric = OpenCodeRLMMonitorRubric()
-        state = {"main_turns": 7, "sub_llm_turns": 3}
-        assert await rubric.main_turns(state) == 7.0
+        resp1 = MagicMock()
+        resp1.usage.prompt_tokens = 100
+        resp1.usage.completion_tokens = 50
+        resp2 = MagicMock()
+        resp2.usage.prompt_tokens = 200
+        resp2.usage.completion_tokens = 80
+        state = {"trajectory": [{"response": resp1}, {"response": resp2}]}
+        assert await rubric.main_turns(state) == 2.0
+        assert await rubric.main_prompt_tokens(state) == 300.0
+        assert await rubric.main_completion_tokens(state) == 130.0
+
+    @pytest.mark.asyncio
+    async def test_main_metrics_empty_trajectory(self):
+        rubric = OpenCodeRLMMonitorRubric()
+        assert await rubric.main_turns({}) == 0.0
+        assert await rubric.main_prompt_tokens({}) == 0.0
+        assert await rubric.main_completion_tokens({}) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_sub_metric_reads_from_state(self):
+        rubric = OpenCodeRLMMonitorRubric()
+        state = {"sub_llm_turns": 3}
         assert await rubric.sub_llm_turns(state) == 3.0
 
     @pytest.mark.asyncio
-    async def test_metric_defaults_to_zero(self):
+    async def test_sub_metric_defaults_to_zero(self):
         rubric = OpenCodeRLMMonitorRubric()
-        assert await rubric.main_turns({}) == 0.0
+        assert await rubric.sub_llm_turns({}) == 0.0
