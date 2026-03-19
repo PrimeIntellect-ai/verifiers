@@ -118,6 +118,7 @@ class TestOpenCodeConfig:
 
         script = (
             f"OPENAI_BASE_URL=https://example.invalid "
+            f"OPENAI_MODEL=myprovider/mymodel "
             f"SCHEMA_DOLLAR='$' "
             f"bash -lc 'cat <<EOFCONFIG\n{config_block}\nEOFCONFIG'"
         )
@@ -132,10 +133,13 @@ class TestOpenCodeConfig:
         config = json.loads(result.stdout)
         assert config["$schema"] == "https://opencode.ai/config.json"
         assert config["plugin"] == ["file:///tmp/opencode-rlm"]
-        assert config["model"] == "intercepted/model"
+        assert config["model"] == "myprovider/mymodel"
         assert (
-            config["provider"]["intercepted"]["options"]["baseURL"]
+            config["provider"]["myprovider"]["options"]["baseURL"]
             == "https://example.invalid"
+        )
+        assert (
+            config["provider"]["myprovider"]["models"]["mymodel"]["name"] == "mymodel"
         )
 
 
