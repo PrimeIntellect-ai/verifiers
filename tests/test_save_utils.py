@@ -835,12 +835,14 @@ class TestPassAtKMetric:
     def test_partial_correctness(self):
         """Partial correctness: 2 correct out of 4 rollouts."""
         m = PassAtKMetric(rollouts_per_example=4)
-        m.add_outputs([
-            self._make_output(0, 1.0),
-            self._make_output(0, 1.0),
-            self._make_output(0, 0.0),
-            self._make_output(0, 0.0),
-        ])
+        m.add_outputs(
+            [
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 0.0),
+                self._make_output(0, 0.0),
+            ]
+        )
         pass_at_k, pass_all_k = m.compute()
         assert pass_at_k["1"] == pytest.approx(0.5)
         assert pass_at_k["2"] == pytest.approx(1.0 - 1.0 / 6.0)
@@ -852,12 +854,18 @@ class TestPassAtKMetric:
     def test_multiple_examples_averaged(self):
         """pass@k and pass^k are averaged across multiple examples."""
         m = PassAtKMetric(rollouts_per_example=4)
-        m.add_outputs([
-            self._make_output(0, 1.0), self._make_output(0, 1.0),
-            self._make_output(0, 1.0), self._make_output(0, 1.0),
-            self._make_output(1, 0.0), self._make_output(1, 0.0),
-            self._make_output(1, 0.0), self._make_output(1, 0.0),
-        ])
+        m.add_outputs(
+            [
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(0, 1.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+                self._make_output(1, 0.0),
+            ]
+        )
         pass_at_k, pass_all_k = m.compute()
         assert pass_at_k["1"] == pytest.approx(0.5)
         assert pass_all_k["1"] == pytest.approx(0.5)
@@ -879,11 +887,13 @@ class TestPassAtKMetric:
     def test_correctness_threshold_boundary(self):
         """Only reward >= 0.5 counts as correct by default."""
         m = PassAtKMetric(rollouts_per_example=4)
-        m.add_outputs([
-            self._make_output(0, 0.49),  # not correct
-            self._make_output(0, 0.5),   # correct
-            self._make_output(0, 1.0),   # correct
-            self._make_output(0, 0.0),   # not correct
-        ])
+        m.add_outputs(
+            [
+                self._make_output(0, 0.49),  # not correct
+                self._make_output(0, 0.5),  # correct
+                self._make_output(0, 1.0),  # correct
+                self._make_output(0, 0.0),  # not correct
+            ]
+        )
         pass_at_k, _ = m.compute()
         assert pass_at_k["1"] == pytest.approx(0.5)
