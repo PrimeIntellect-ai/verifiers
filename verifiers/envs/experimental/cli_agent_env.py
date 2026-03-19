@@ -507,14 +507,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         # Skip adding empty "agent completed" step - keeps trajectory clean
         if not prompt_messages:
             return
-        # On first main turn, update state["prompt"] to match the agent's actual prompt.
-        # Check for first *main* step (not sub-LLM) in case sub-LLM steps were
-        # appended to the trajectory before the first main step.
-        has_main_step = any(
-            not (step.get("extras") or {}).get("is_sub_llm_call")
-            for step in state["trajectory"]
-        )
-        if not has_main_step:
+        # On first turn, update state["prompt"] to match the agent's actual prompt
+        if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
         await super().add_model_response(
             state, prompt_messages, self.normalize_response(response)

@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 import verifiers as vf
+from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.opencode_env import OpenCodeEnv
 from verifiers.types import (
     Messages,
@@ -374,6 +375,32 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                             },
                         }
                     )
+
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: Response,
+    ):
+        """Add model response and update top-level prompt on first main turn.
+
+        Sub-LLM steps may be appended to the trajectory before the first
+        main-agent step, so we check for the presence of a main step rather
+        than an empty trajectory.
+        """
+        if not prompt_messages:
+            return
+        has_main_step = any(
+            not (step.get("extras") or {}).get("is_sub_llm_call")
+            for step in state["trajectory"]
+        )
+        if not has_main_step:
+            state["prompt"] = prompt_messages
+        # Skip CliAgentEnv.add_model_response (which has its own simpler
+        # first-turn check) and call MultiTurnEnv directly.
+        await super(CliAgentEnv, self).add_model_response(
+            state, prompt_messages, self.normalize_response(response)
+        )
 
     @staticmethod
     def _extract_token_counts(response: Response) -> tuple[int, int]:

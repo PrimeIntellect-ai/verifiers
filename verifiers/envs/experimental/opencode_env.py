@@ -339,33 +339,32 @@ class OpenCodeEnv(CliAgentEnv):
         enable_interleaved: bool = True,
     ) -> str:
         """Build OpenCode config."""
-        interleaved_config: dict | bool = (
-            {"field": "reasoning_content"} if enable_interleaved else False
-        )
         config: dict = {
             "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
             "provider": {
-                "intercepted": {
+                "${OPENAI_MODEL%%/*}": {
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "intercepted",
+                    "name": "${OPENAI_MODEL%%/*}",
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "intercepted",
                         "timeout": self.provider_timeout_ms,
                     },
                     "models": {
-                        "model": {
-                            "name": "model",
+                        "${OPENAI_MODEL##*/}": {
+                            "name": "${OPENAI_MODEL##*/}",
                             "modalities": {
                                 "input": ["text", "image"],
                                 "output": ["text"],
                             },
-                            "interleaved": interleaved_config,
+                            "interleaved": {"field": "reasoning_content"}
+                            if enable_interleaved
+                            else False,
                         }
                     },
                 }
             },
-            "model": "intercepted/model",
+            "model": "$OPENAI_MODEL",
         }
 
         if disable_compaction:
