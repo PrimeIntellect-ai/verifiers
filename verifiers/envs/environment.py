@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import inspect
+from verifiers.decorators import discover_decorated
 import json
 import logging
 import multiprocessing as mp
@@ -241,32 +241,9 @@ class Environment(ABC):
         return normalized
 
     def __post_init__(self):
-        self._stop_conditions = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "stop") and callable(method)
-        ]
-        self._stop_conditions.sort(
-            key=lambda m: (-getattr(m, "stop_priority", 0), m.__name__)
-        )
-
-        self._cleanup_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "cleanup") and callable(method)
-        ]
-        self._cleanup_handlers.sort(
-            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
-        )
-
-        self._teardown_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "teardown") and callable(method)
-        ]
-        self._teardown_handlers.sort(
-            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
-        )
+        self._stop_conditions = discover_decorated(self, "stop")
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
 
         def _sync_teardown():
             try:
@@ -517,7 +494,7 @@ class Environment(ABC):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages | str,
+        prompt: Messages,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -562,12 +539,10 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args
         )
 
-        normalized_prompt = normalize_messages(prompt, field_name="prompt")
-
         self._get_usage_tracker(state, create_if_missing=True)
 
         response = await client.get_response(
-            prompt=normalized_prompt,
+            prompt=prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
@@ -667,6 +642,7 @@ class Environment(ABC):
         """
         Tear down environment resources.
         """
+        await self.rubric.teardown()
         for handler in self._teardown_handlers:
             await handler()
 
@@ -747,6 +723,8 @@ class Environment(ABC):
             else:
                 await self.rubric.dummy_score_rollout(state)
 
+            await self.rubric.cleanup(state)
+
             return state
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
@@ -804,6 +782,10 @@ class Environment(ABC):
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
+
+            for state in group_states:
+                await self.rubric.cleanup(state)
+
             return group_states
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()

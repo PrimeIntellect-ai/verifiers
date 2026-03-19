@@ -13,6 +13,9 @@ class OpenCodeQAEnv(OpenCodeEnv):
     DEFAULT_ANSWER_KEY = "answer"
     DEFAULT_INSTRUCTION_PROMPT = ""
     DEFAULT_INSTRUCTION_PROMPT_POST = ""
+    DEFAULT_DIFFICULTY_KEY = None
+    DEFAULT_MIN_AVG_REWARD = 0.0
+    DEFAULT_MAX_AVG_REWARD = 1.0
 
     def __init__(
         self,
@@ -24,6 +27,9 @@ class OpenCodeQAEnv(OpenCodeEnv):
         answer_key: str = DEFAULT_ANSWER_KEY,
         instruction_prompt: str = DEFAULT_INSTRUCTION_PROMPT,
         instruction_prompt_post: str = DEFAULT_INSTRUCTION_PROMPT_POST,
+        difficulty_key: str | None = DEFAULT_DIFFICULTY_KEY,
+        min_avg_reward: float = DEFAULT_MIN_AVG_REWARD,
+        max_avg_reward: float = DEFAULT_MAX_AVG_REWARD,
         **kwargs,
     ):
         dataset = self.construct_dataset(
@@ -34,6 +40,9 @@ class OpenCodeQAEnv(OpenCodeEnv):
             answer_key,
             instruction_prompt,
             instruction_prompt_post,
+            difficulty_key,
+            min_avg_reward,
+            max_avg_reward,
         )
 
         super().__init__(dataset=dataset, rubric=rubric, **kwargs)
@@ -47,6 +56,9 @@ class OpenCodeQAEnv(OpenCodeEnv):
         answer_key: str,
         instruction_prompt: str,
         instruction_prompt_post: str,
+        difficulty_key: str | None = None,
+        min_avg_reward: float = 0.0,
+        max_avg_reward: float = 1.0,
     ) -> Dataset:
         """Constructs a general QA dataset."""
 
@@ -56,6 +68,13 @@ class OpenCodeQAEnv(OpenCodeEnv):
                 "Expected a Dataset for the requested split, got a different dataset type."
             )
         dataset = dataset_obj
+
+        if difficulty_key is not None:
+            column_names = dataset.column_names or []
+            if difficulty_key in column_names:
+                dataset = dataset.filter(
+                    lambda x: min_avg_reward <= x[difficulty_key] <= max_avg_reward
+                )
 
         column_names = dataset.column_names
         if column_names is None:

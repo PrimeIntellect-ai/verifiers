@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import multiprocessing as mp
 from typing import cast
 
@@ -89,6 +90,14 @@ class ZMQEnvServer(EnvServer):
         )
         self.health_process.start()
         self.logger.info(f"Health check responder started on {self.health_address}")
+
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(150_000, 10, 10)
+        self.logger.info(
+            f"GC tuned: frozen {gc.get_freeze_count()} objects, "
+            f"threshold={gc.get_threshold()}"
+        )
 
         lag_monitor_task = self.lag_monitor.run_in_background()
 

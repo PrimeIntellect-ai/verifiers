@@ -12,15 +12,18 @@ from typing import (
     TypeAlias,
 )
 
-from anthropic.types import RedactedThinkingBlock
-from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
+    from anthropic.types import RedactedThinkingBlock
+    from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
 
     from verifiers.clients import Client
     from verifiers.errors import Error
+else:
+    RedactedThinkingBlock = Any
+    AnthropicThinkingBlock = Any
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict

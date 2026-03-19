@@ -262,6 +262,140 @@ class TestSavingResults:
             {"role": "assistant", "content": "Final DONE"},
         ]
 
+    def test_states_to_outputs_preserves_multimodal_images_as_base64(self, make_state):
+        states = [
+            make_state(
+                prompt=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe this image"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc123"},
+                            },
+                        ],
+                    }
+                ],
+                completion=[{"role": "assistant", "content": "A small chart."}],
+                answer="",
+                info={},
+                reward=1.0,
+            )
+        ]
+
+        outputs = states_to_outputs(states, state_columns=[])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
+
+        assert result[0]["prompt"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
+                    },
+                ],
+            }
+        ]
+
+    def test_states_to_outputs_preserves_input_audio_payloads(self, make_state):
+        states = [
+            make_state(
+                prompt=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "transcribe this"},
+                            {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": " ZHVt\nbXk= ",
+                                    "format": "MP3",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                completion=[{"role": "assistant", "content": "dummy"}],
+                answer="",
+                info={},
+                reward=1.0,
+            )
+        ]
+
+        outputs = states_to_outputs(states, state_columns=[])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
+
+        assert result[0]["prompt"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "transcribe this"},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": "ZHVtbXk=",
+                            "format": "mp3",
+                        },
+                    },
+                ],
+            }
+        ]
+
+    def test_states_to_outputs_preserves_multimodal_completion_content(
+        self, make_state
+    ):
+        states = [
+            make_state(
+                prompt=[{"role": "user", "content": "show me the observation"}],
+                completion=[
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_0",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc123"},
+                            },
+                            {
+                                "type": "audio",
+                                "data": " ZHVt\nbXk= ",
+                                "format": "WAV",
+                            },
+                        ],
+                    }
+                ],
+                answer="",
+                info={},
+                reward=1.0,
+            )
+        ]
+
+        outputs = states_to_outputs(states, state_columns=[])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
+
+        assert result[0]["completion"] == [
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
+                    },
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": "ZHVtbXk=",
+                            "format": "wav",
+                        },
+                    },
+                ],
+            }
+        ]
+
     def test_non_serializable_state_column_raises(self, make_state):
         """Non-serializable state_columns should raise ValueError."""
         import pytest

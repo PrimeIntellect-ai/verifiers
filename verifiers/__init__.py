@@ -15,26 +15,11 @@ from .decorators import (  # noqa # isort: skip
 from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
-from .envs.environment import Environment  # noqa # isort: skip
-from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
-from .envs.tool_env import ToolEnv  # noqa # isort: skip
-from .clients.client import Client  # noqa # isort: skip
-from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa # isort: skip
-from .clients.openai_chat_completions_client import OpenAIChatCompletionsClient  # noqa # isort: skip
-from .clients.openai_chat_completions_token_client import (
-    OpenAIChatCompletionsTokenClient,
-)  # noqa # isort: skip
-
-from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
 # main imports
-from .envs.env_group import EnvGroup
-from .envs.singleturn_env import SingleTurnEnv
-from .envs.stateful_tool_env import StatefulToolEnv
 from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
-from .rubrics.judge_rubric import JudgeRubric
 from .rubrics.rubric_group import RubricGroup
 from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.data_utils import (
@@ -42,7 +27,6 @@ from .utils.data_utils import (
     extract_hash_answer,
     load_example_dataset,
 )
-from .utils.env_utils import load_environment
 from .utils.logging_utils import (
     log_level,
     print_prompt_completions_sample,
@@ -108,6 +92,27 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
+    "Client": "verifiers.clients.client:Client",
+    "AnthropicMessagesClient": (
+        "verifiers.clients.anthropic_messages_client:AnthropicMessagesClient"
+    ),
+    "OpenAIChatCompletionsClient": (
+        "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
+    ),
+    "OpenAIChatCompletionsTokenClient": (
+        "verifiers.clients.openai_chat_completions_token_client:OpenAIChatCompletionsTokenClient"
+    ),
+    "OpenAICompletionsClient": (
+        "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
+    "Environment": "verifiers.envs.environment:Environment",
+    "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
+    "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
+    "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
+    "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
+    "EnvGroup": "verifiers.envs.env_group:EnvGroup",
+    "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
+    "load_environment": "verifiers.utils.env_utils:load_environment",
     "get_model": "verifiers_rl.rl.trainer.utils:get_model",
     "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
@@ -159,6 +164,17 @@ def __getattr__(name: str):
 if TYPE_CHECKING:
     from typing import Any
 
+    from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa: F401
+    from .clients.client import Client  # noqa: F401
+    from .clients.openai_chat_completions_client import (  # noqa: F401
+        OpenAIChatCompletionsClient,
+    )
+    from .clients.openai_chat_completions_token_client import (  # noqa: F401
+        OpenAIChatCompletionsTokenClient,
+    )
+    from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .envs.env_group import EnvGroup  # noqa: F401
+    from .envs.environment import Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
@@ -167,9 +183,15 @@ if TYPE_CHECKING:
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
+    from .envs.singleturn_env import SingleTurnEnv  # noqa: F401
+    from .envs.stateful_tool_env import StatefulToolEnv  # noqa: F401
+    from .envs.tool_env import ToolEnv  # noqa: F401
+    from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .utils.env_utils import load_environment  # noqa: F401
 
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any
