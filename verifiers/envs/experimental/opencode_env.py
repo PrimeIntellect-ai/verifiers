@@ -231,7 +231,7 @@ class OpenCodeEnv(CliAgentEnv):
                 sandbox_id, self.remote_prompt_path, local_prompt_path
             )
         finally:
-            await asyncio.to_thread(Path(local_prompt_path).unlink, True)
+            await asyncio.to_thread(Path(local_prompt_path).unlink, missing_ok=True)
 
         # Upload system prompt as file, if provided
         if self.system_prompt:
@@ -247,7 +247,7 @@ class OpenCodeEnv(CliAgentEnv):
                     sandbox_id, self.remote_system_prompt_path, local_system_prompt_path
                 )
             finally:
-                await asyncio.to_thread(Path(local_system_prompt_path).unlink, True)
+                await asyncio.to_thread(Path(local_system_prompt_path).unlink, missing_ok=True)
 
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""

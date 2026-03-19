@@ -261,7 +261,7 @@ class SandboxMixin:
         try:
             await self.upload_file(sandbox_id, remote_path, local_path)
         finally:
-            await asyncio.to_thread(Path(local_path).unlink, True)
+            await asyncio.to_thread(Path(local_path).unlink, missing_ok=True)
 
     async def read_file(
         self,
@@ -312,7 +312,7 @@ class SandboxMixin:
         try:
             await self.upload_file(sandbox_id, archive_remote, tmp_path)
         finally:
-            await asyncio.to_thread(Path(tmp_path).unlink, True)
+            await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
         extract_cmd = (
             f"mkdir -p {dest_dir} && "
