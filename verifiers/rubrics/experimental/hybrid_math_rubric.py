@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
-from math_verify import parse, verify
 from openai import AsyncOpenAI
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
+from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.utils.data_utils import extract_boxed_answer
-from verifiers.utils.logging_utils import truncate
 
 import verifiers as vf
 
@@ -88,7 +87,12 @@ Analysis step by step and Final Judgment:
 
 
 class HybridMathRubric(vf.JudgeRubric):
-    """Runs rule-based math verification first, with optional LLM judge fallback."""
+    """Runs rule-based math verification first, with optional LLM judge fallback.
+
+    Delegates math verification to an internal :class:`MathRubric` instance so
+    the executor-based, non-blocking verification logic is reused rather than
+    duplicated.
+    """
 
     DEFAULT_JUDGE_PARSER = None
     DEFAULT_JUDGE_MODEL = "gpt-5-nano"
@@ -105,6 +109,8 @@ class HybridMathRubric(vf.JudgeRubric):
         judge_model: str = DEFAULT_JUDGE_MODEL,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
         judge_sampling_args: dict | None = None,
+        timeout_seconds: float = 5,
+        max_workers: int = 50,
         **kwargs,
     ):
         judge_sampling_args = judge_sampling_args or self.DEFAULT_JUDGE_SAMPLING_ARGS
@@ -125,32 +131,23 @@ class HybridMathRubric(vf.JudgeRubric):
         self.judge_model = judge_model if use_judge_fallback else None
         self.class_objects["judge_model"] = self.judge_model
 
+        # Delegate math verification to MathRubric (executor-based, non-blocking).
+        # We clear its auto-registered reward func since we manage scoring ourselves.
+        self._math_rubric = MathRubric(
+            parser=self.parser,
+            max_workers=max_workers,
+            timeout_seconds=timeout_seconds,
+        )
+        self._math_rubric.funcs.clear()
+        self._math_rubric.weights.clear()
+
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
     ) -> float:
-        """Basic rule-based math verification."""
-        response = self.parser.parse_answer(completion) or ""
-        if response == "":
-            self.logger.debug("Parsed response is empty.")
-            state["math_verify_score"] = 0.0
-            return 0.0
-
-        try:
-            score = float(
-                verify(
-                    parse(f"\\boxed{{{answer}}}", parsing_timeout=5),
-                    parse(f"\\boxed{{{response}}}", parsing_timeout=5),
-                    timeout_seconds=5,
-                )
-            )
-            answer_str = truncate(answer.strip(), 20)
-            response_str = truncate(response.strip(), 20)
-            self.logger.debug(
-                f"Local math_verify {score} (answer={answer_str}, response={response_str})"
-            )
-        except BaseException as e:
-            self.logger.warning(f"Math verification failed: {e!r}")
-            score = 0.0
+        """Basic rule-based math verification (delegated to MathRubric)."""
+        score = await self._math_rubric.correct_answer(
+            parser=self.parser, completion=completion, answer=answer,
+        )
         state["math_verify_score"] = score
         return score
 
