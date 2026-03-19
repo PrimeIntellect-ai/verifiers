@@ -34,6 +34,14 @@ async def maybe_await(func: Callable, *args, **kwargs):
     return result
 
 
+class NullContext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
 class NullAsyncContext:
     async def __aenter__(self):
         return None

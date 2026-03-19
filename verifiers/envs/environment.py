@@ -1243,6 +1243,13 @@ class Environment(ABC):
         else:
             self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
 
+    def set_max_workers(self, max_workers: int) -> None:
+        """Set max_workers and scale all registered thread-pool executors to match."""
+        from verifiers.utils.thread_utils import scale_executors
+
+        self.max_workers = max_workers
+        scale_executors(max_workers=max_workers)
+
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
