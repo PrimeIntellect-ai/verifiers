@@ -284,7 +284,6 @@ class GenerateOutputsBuilder:
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
-        self.tools_list: list[list[Tool] | None] = []
 
         # Incremental metric accumulators (avoid O(n) rescan in build_metadata)
         self.reward = RewardMetric()
@@ -344,7 +343,6 @@ class GenerateOutputsBuilder:
 
         for output in new_outputs:
             tool_defs = output.get("tool_defs")
-            self.tools_list.append(tool_defs)
 
             # Tools tracking
             tk = self.tools_key(tool_defs)
