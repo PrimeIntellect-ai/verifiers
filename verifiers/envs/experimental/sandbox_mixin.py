@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, cast
 
+from verifiers.utils.path_utils import write_temp_file
+
 import httpx
 import tenacity as tc
 from prime_sandboxes import (
@@ -255,13 +257,11 @@ class SandboxMixin:
         remote_path: str,
     ) -> None:
         """Upload a string as a file to the sandbox."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
-            f.write(content)
-            local_path = f.name
+        local_path = await asyncio.to_thread(write_temp_file, content)
         try:
             await self.upload_file(sandbox_id, remote_path, local_path)
         finally:
-            Path(local_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(local_path).unlink, missing_ok=True)
 
     async def read_file(
         self,
@@ -312,7 +312,7 @@ class SandboxMixin:
         try:
             await self.upload_file(sandbox_id, archive_remote, tmp_path)
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
         extract_cmd = (
             f"mkdir -p {dest_dir} && "

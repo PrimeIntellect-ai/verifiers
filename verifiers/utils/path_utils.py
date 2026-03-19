@@ -1,11 +1,23 @@
 import json
 import logging
+import tempfile
 import uuid
 from pathlib import Path
 
 from verifiers.types import EvalConfig
 
 logger = logging.getLogger(__name__)
+
+
+def write_temp_file(content: str, suffix: str = ".txt") -> str:
+    """Write content to a named temporary file and return its path.
+
+    Intended to be called via ``await asyncio.to_thread(write_temp_file, ...)``
+    so that file I/O does not block the event loop.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=suffix) as f:
+        f.write(content)
+        return f.name
 
 
 def _get_outputs_base_path(
