@@ -221,9 +221,7 @@ class OpenCodeEnv(CliAgentEnv):
         prompt = self.build_prompt(state)
 
         # Upload prompt as file (temp file I/O offloaded to thread)
-        local_prompt_path = await asyncio.to_thread(
-            write_temp_file, prompt
-        )
+        local_prompt_path = await asyncio.to_thread(write_temp_file, prompt)
 
         try:
             logger.debug(
