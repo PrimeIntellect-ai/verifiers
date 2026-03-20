@@ -33,7 +33,7 @@ This guide walks through building environments in Verifiers, from simple single-
 - [Environment Groups](#environment-groups)
 - [Performance](#performance)
   - [Avoiding Sync Operations](#avoiding-sync-operations)
-  - [CPU-Bound Work](#cpu-bound-work)
+  - [Executor Autoscaling](#executor-autoscaling)
 - [Integrations and Experimental Environments](#integrations-and-experimental-environments)
 
 ## Your First Environment
@@ -827,6 +827,18 @@ from verifiers.utils.path_utils import write_temp_file
 tmp_path = await asyncio.to_thread(write_temp_file, data, ".txt")
 ```
 
+Note that `asyncio.to_thread()` releases the event loop but still holds the GIL. For truly CPU-bound operations (heavy computation, compilation, large data transforms >50ms), use a process pool instead:
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+executor = ProcessPoolExecutor(max_workers=4)
+
+async def heavy_reward(data):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, cpu_bound_fn, data)
+```
+
 ### Executor Autoscaling
 
 `asyncio.to_thread()` dispatches work to a thread pool executor. By default Python's executor is small, but environments can scale it via `set_max_workers()`:
@@ -855,20 +867,6 @@ In practice, you rarely need to call `set_max_workers()` yourself. Both `prime e
 
 ```bash
 prime eval run my-env -x '{"max_workers": 256}'
-```
-
-### CPU-Bound Work
-
-`asyncio.to_thread()` releases the event loop but still holds the GIL. For truly CPU-bound operations (heavy computation, compilation, large data transforms >50ms), use a process pool instead:
-
-```python
-from concurrent.futures import ProcessPoolExecutor
-
-executor = ProcessPoolExecutor(max_workers=4)
-
-async def heavy_reward(data):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, cpu_bound_fn, data)
 ```
 
 ## Integrations and Experimental Environments
