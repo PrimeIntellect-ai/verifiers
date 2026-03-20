@@ -122,7 +122,7 @@ class SandboxMixin:
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
-        sandbox_creation_rate_limit: float | None = None,
+        sandbox_creation_rate_limit: float | None = 128,
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__.
 
