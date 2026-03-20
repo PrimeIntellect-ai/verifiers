@@ -361,26 +361,17 @@ class SRLMEnv(MultiTurnEnv):
     # Sub-LLM Backend Resolution
     # =========================================================================
 
-    @staticmethod
-    def _strip_provider_prefix(model: str) -> str:
-        """Strip provider prefix from model name (e.g. 'openai/gpt-5-mini' → 'gpt-5-mini').
-
-        Verifiers uses 'provider/model' format but the rlm library's clients
-        send the model name directly to the API which doesn't accept the prefix.
-        """
-        if "/" in model:
-            return model.split("/", 1)[1]
-        return model
-
     def _derive_backend_kwargs(self, state: State) -> dict[str, Any]:
         """Derive sub-LLM backend_kwargs from the root model's verifiers Client.
 
-        Extracts base_url and api_key from the underlying client so sub-LLM
-        calls from code (llm_query, llm_query_batched) go to the same API
-        endpoint as the root model by default.
+        Extracts base_url, api_key, and model name from the underlying client
+        so sub-LLM calls from code (llm_query, llm_query_batched) go to the
+        same API endpoint as the root model by default.
+
+        The model name is passed through as-is (e.g. 'openai/gpt-5-mini')
+        since the Prime Intellect API uses the provider prefix for routing.
         """
-        raw_model = self._sub_model or state.get("model", "unknown")
-        model_name = self._strip_provider_prefix(raw_model)
+        model_name = self._sub_model or state.get("model", "unknown")
         base_url: str | None = None
         api_key: str | None = None
 
