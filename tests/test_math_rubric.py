@@ -98,9 +98,11 @@ class TestMathRubric:
 
         # very large input triggers timeout, takes ~2s to parse and verify
         answer = "1" * int(1e5)
-        completion = "1" * int(1e5)
+        completion = "\\boxed{" + "1" * int(1e5) + "}"
 
-        rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
+        rubric = vf.MathRubric(
+            max_workers=1, timeout_seconds=timeout_seconds, max_verify_chars=int(2e5)
+        )
 
         state = vf.State(
             input=make_input(
