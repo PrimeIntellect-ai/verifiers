@@ -2159,7 +2159,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sub_llm_timeout = max(1, code_execution_timeout - 5)
         self.with_retry_on_read_errors = tc.AsyncRetrying(
             retry=tc.retry_if_exception(is_retryable_sandbox_read_error),
-            stop=tc.stop_after_attempt(sandbox_transfer_max_retries),
+            stop=tc.stop_after_attempt(sandbox_transfer_max_retries + 1),
             wait=tc.wait_exponential_jitter(initial=1, max=30),
             before_sleep=tc.before_sleep_log(cast(Any, logger), logging.WARNING),
             reraise=True,

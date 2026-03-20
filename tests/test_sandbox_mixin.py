@@ -100,6 +100,19 @@ def test_create_sandbox_creation_fails(mixin):
         asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
 
 
+def test_create_sandbox_max_retries_is_true_retry_count():
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj.logger = MagicMock()
+    sandbox_obj = MagicMock(id="sb-retry")
+    obj.sandbox_client.create = AsyncMock(side_effect=[Exception("boom"), sandbox_obj])
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    result = asyncio.run(obj.create_sandbox({}, request=MagicMock()))
+
+    assert result == "sb-retry"
+    assert obj.sandbox_client.create.await_count == 2
+
+
 def test_create_sandbox_not_ready(mixin):
     sandbox_obj = MagicMock(id="sb-2")
     mixin.sandbox_client.create = AsyncMock(return_value=sandbox_obj)

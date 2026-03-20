@@ -133,7 +133,7 @@ class SandboxMixin:
             max_keepalive_connections=sandbox_client_max_keepalive_connections,
         )
         self.with_retry = tc.AsyncRetrying(
-            stop=tc.stop_after_attempt(max_retries),
+            stop=tc.stop_after_attempt(max_retries + 1),
             wait=tc.wait_exponential_jitter(
                 initial=base_delay,
                 exp_base=backoff_factor,

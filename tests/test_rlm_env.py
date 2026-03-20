@@ -2793,7 +2793,11 @@ class TestFilesystemProvisioning:
     @pytest.mark.asyncio
     async def test_write_sandbox_files_retries_upload_timeout(self):
         dataset = make_dataset({})
-        env = build_env(dataset, repl_language="python")
+        env = build_env(
+            dataset,
+            repl_language="python",
+            sandbox_transfer_max_retries=1,
+        )
         state = {
             "rollout_id": "rlm_test",
             "rlm_fs_root": "/tmp/rlm_rlm_test/rlm_fs",
