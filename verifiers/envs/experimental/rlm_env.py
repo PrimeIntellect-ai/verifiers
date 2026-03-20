@@ -47,13 +47,17 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
+import tenacity as tc
 from prime_sandboxes import CommandTimeoutError, SandboxClient
 from prime_sandboxes.core import APIClient
 from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    is_retryable_sandbox_read_error,
+)
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from verifiers.types import (
     AssistantMessage,
@@ -1287,9 +1291,11 @@ class RLMExecutor(SandboxMixin):
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
         self.init_sandbox_client(
-            sandbox_client_max_workers=50,
-            sandbox_client_max_connections=100,
-            sandbox_client_max_keepalive_connections=50,
+            sandbox_client_max_workers=env.sandbox_client_max_workers,
+            sandbox_client_max_connections=env.sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=(
+                env.sandbox_client_max_keepalive_connections
+            ),
         )
 
     def create_rollout_dirs(self, state: State) -> None:
@@ -1596,15 +1602,27 @@ class RLMExecutor(SandboxMixin):
         )
         worker_script = self.env.customize_worker_script(worker_script, state)
         worker_path.write_text(worker_script, encoding="utf-8")
+        sandbox_id = session.sandbox_id
+        if sandbox_id is None:
+            raise RLMSessionError("Sandbox not initialized")
 
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.context_file, str(context_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.context_file,
+            str(context_path),
+            "context file upload",
         )
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.answer_file, str(answer_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.answer_file,
+            str(answer_path),
+            "answer file upload",
         )
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.worker_path, str(worker_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.worker_path,
+            str(worker_path),
+            "worker file upload",
         )
 
     async def _start_worker(self, session: SandboxRLMReplSession, state: State) -> None:
@@ -1834,7 +1852,12 @@ class RLMExecutor(SandboxMixin):
             with tarfile.open(tar_path, "w:gz") as tar:
                 tar.add(local_path, arcname=".")
             remote_tar = f"/tmp/rlm_upload_{uuid.uuid4().hex}.tar.gz"
-            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self._upload_file_with_retry(
+                sandbox_id,
+                remote_tar,
+                str(tar_path),
+                "directory archive upload",
+            )
             extract_cmd = (
                 "bash -lc '"
                 f'mkdir -p "{remote_dir}"; '
@@ -1869,8 +1892,11 @@ class RLMExecutor(SandboxMixin):
             tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
             tar_path = Path(tmp.name)
             tmp.close()
-            await self.sandbox_client.download_file(
-                sandbox_id, remote_tar, str(tar_path)
+            await self._download_file_with_retry(
+                sandbox_id,
+                remote_tar,
+                str(tar_path),
+                "directory archive download",
             )
             if local_path.exists():
                 shutil.rmtree(local_path, True)
@@ -1909,6 +1935,36 @@ class RLMExecutor(SandboxMixin):
                     tar_path.unlink()
                 except Exception:
                     pass
+
+    async def _upload_file_with_retry(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        local_path: str,
+        context: str,
+    ) -> None:
+        upload = self.env.with_retry_on_read_errors(self.sandbox_client.upload_file)
+        try:
+            await upload(sandbox_id, remote_path, local_path)
+        except Exception as e:
+            raise vf.SandboxError(
+                f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
+            ) from e
+
+    async def _download_file_with_retry(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        local_path: str,
+        context: str,
+    ) -> None:
+        download = self.env.with_retry_on_read_errors(self.sandbox_client.download_file)
+        try:
+            await download(sandbox_id, remote_path, local_path)
+        except Exception as e:
+            raise vf.SandboxError(
+                f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
+            ) from e
 
 
 class RLMEnv(vf.StatefulToolEnv):
@@ -2004,6 +2060,9 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
         sandbox_environment_vars: Extra environment vars for sandbox (default: None)
         sandbox_labels: Optional labels for sandbox (default: None)
+        sandbox_client_max_workers: Max worker threads for the sandbox client
+        sandbox_client_max_connections: Max HTTP connections for the sandbox client
+        sandbox_client_max_keepalive_connections: Max keepalive connections for the sandbox client
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
@@ -2039,6 +2098,10 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
+        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_transfer_max_retries: int = 3,
         **kwargs,
     ):
         if repl_language not in {"bash", "python"}:
@@ -2087,8 +2150,20 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
         self.sandbox_environment_vars = sandbox_environment_vars
         self.sandbox_labels = sandbox_labels
+        self.sandbox_client_max_workers = sandbox_client_max_workers
+        self.sandbox_client_max_connections = sandbox_client_max_connections
+        self.sandbox_client_max_keepalive_connections = (
+            sandbox_client_max_keepalive_connections
+        )
+        self.sandbox_transfer_max_retries = sandbox_transfer_max_retries
         self.sub_llm_timeout = max(1, code_execution_timeout - 5)
-
+        self.with_retry_on_read_errors = tc.AsyncRetrying(
+            retry=tc.retry_if_exception(is_retryable_sandbox_read_error),
+            stop=tc.stop_after_attempt(sandbox_transfer_max_retries + 1),
+            wait=tc.wait_exponential_jitter(initial=1, max=30),
+            before_sleep=tc.before_sleep_log(cast(Any, logger), logging.WARNING),
+            reraise=True,
+        ).wraps
         fixed_root_tools = self._build_fixed_root_tools()
         self.root_tools, self.root_tool_map = _merge_tool_lists(
             fixed_tools=fixed_root_tools,
