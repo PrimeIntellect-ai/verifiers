@@ -75,15 +75,12 @@ def register_executor(
                 f"max_workers={target} (concurrency={_target_concurrency})"
             )
             return
-    logger.debug(
-        f"Registered executor {name} (max_workers={executor._max_workers})"
-    )
+    logger.debug(f"Registered executor {name} (max_workers={executor._max_workers})")
 
 
 def unregister_executor(name: str) -> None:
     """Remove a previously registered executor (does **not** shut it down)."""
     _executor_registry.pop(name, None)
-
 
 
 def scale_executors(concurrency: int) -> int:
@@ -121,13 +118,18 @@ def scale_executors(concurrency: int) -> int:
         pass  # no running loop yet — caller must call install_default_executor()
 
     # explicitly registered executors — each applies its own scaling
+    targets = []
     for name, (executor, scaling_fn) in _executor_registry.items():
         target = max(1, scaling_fn(concurrency))
         _resize(executor, target)
-        logger.debug(f"Scaled executor {name} to max_workers={target} (concurrency={concurrency})")
+        logger.debug(f"Scaled executor {name} to max_workers={target} ({concurrency=})")
+        targets.append(target)
 
+    targets_str = ", ".join(
+        f"{n}={t}" for n, t in zip(_executor_registry.keys(), targets)
+    )
     logger.info(
-        f"scale_executors(concurrency={concurrency}): default + {len(_executor_registry)} registered executor(s)"
+        f"Scaled {len(_executor_registry)} registered executor(s) and default executor ({targets_str})"
     )
     return concurrency
 
