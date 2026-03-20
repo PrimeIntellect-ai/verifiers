@@ -370,7 +370,6 @@ class TestTaskCancellation:
             )
 
             await asyncio.wait_for(process_request_blocked.wait(), timeout=5)
-            assert len(server.pending_tasks) == 1
             assert len(server.request_tasks) == 1
             assert not original_process_request_entered.is_set()
 
@@ -408,7 +407,7 @@ class TestTaskCancellation:
 
             # Wait for the server to actually start processing
             await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.pending_tasks) == 1
+            assert len(server.request_tasks) == 1
 
             # Cancel on the client side
             client_task.cancel()
@@ -453,7 +452,7 @@ class TestTaskCancellation:
 
             # Confirm the server started processing
             await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.pending_tasks) == 1
+            assert len(server.request_tasks) == 1
 
             # Give the system time to propagate
             await asyncio.sleep(0.5)

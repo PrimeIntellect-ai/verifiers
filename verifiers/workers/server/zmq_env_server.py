@@ -72,7 +72,8 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
-        # Map frame request-id -> asyncio.Task so we can cancel on demand
+        # Map frame request-id -> asyncio.Task so we can cancel on demand and
+        # track in-flight work from a single source of truth.
         self.request_tasks: dict[str, asyncio.Task] = {}
 
         # Health check runs in a separate process (immune to env workload)
@@ -80,7 +81,6 @@ class ZMQEnvServer(EnvServer):
         self.health_process: mp.Process | None = None
 
     def _cleanup_request_task(self, frame_request_id: str, task: asyncio.Task) -> None:
-        self.pending_tasks.discard(task)
         if self.request_tasks.get(frame_request_id) is task:
             self.request_tasks.pop(frame_request_id, None)
 
@@ -155,7 +155,6 @@ class ZMQEnvServer(EnvServer):
                         self.process_request(client_id, request_id, payload_bytes)
                     )
                     self.request_tasks[frame_request_id] = task
-                    self.pending_tasks.add(task)
                     task.add_done_callback(
                         lambda done_task,
                         rid=frame_request_id: self._cleanup_request_task(rid, done_task)
@@ -184,12 +183,12 @@ class ZMQEnvServer(EnvServer):
             self.health_process = None
 
         # Cancel and await all pending tasks
-        if self.pending_tasks:
-            self.logger.info(f"Cancelling {len(self.pending_tasks)} pending tasks")
-            for task in self.pending_tasks:
+        if self.request_tasks:
+            tasks = list(self.request_tasks.values())
+            self.logger.info(f"Cancelling {len(tasks)} pending tasks")
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(*self.pending_tasks, return_exceptions=True)
-            self.pending_tasks.clear()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         self.request_tasks.clear()
 
@@ -203,7 +202,7 @@ class ZMQEnvServer(EnvServer):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
-            pending = len(self.pending_tasks)
+            pending = len(self.request_tasks)
             message = f"Pending tasks: {pending}"
 
             lags = self.lag_monitor.lags
