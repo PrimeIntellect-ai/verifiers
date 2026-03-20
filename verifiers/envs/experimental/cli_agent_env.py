@@ -376,12 +376,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         return normalized
 
-    def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
+    async def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
         """Hook to normalize messages received from the agent before model inference.
 
         Assumes that agent requests arrive in OpenAI-format.
         """
-        return normalize_messages(intercepted_messages)  # type: ignore
+        return await asyncio.to_thread(normalize_messages, intercepted_messages)
 
     def normalize_response(self, response: Response) -> Response:
         """Hook to normalize the model response before it is stored in the trajectory.
@@ -426,7 +426,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         state["current_request_id"] = request_id
         intercept = interception_server.intercepts[request_id]
-        return self.normalize_intercepted_messages(intercept["messages"])
+        return await self.normalize_intercepted_messages(intercept["messages"])
 
     async def get_model_response(
         self,
