@@ -287,7 +287,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                 continue
 
             state["current_request_id"] = request_id
-            return self.normalize_intercepted_messages(intercept["messages"])
+            return await self.normalize_intercepted_messages(intercept["messages"])
 
     @vf.cleanup(priority=1)
     async def cancel_sub_llm_tasks(self, state: State) -> None:
@@ -307,12 +307,12 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         """Handle a single sub-LLM request outside the rollout loop."""
         async with self._sub_llm_semaphore:
             model = self.sub_model or state.get("model")
-            prompt = self.normalize_intercepted_messages(intercept["messages"])
+            prompt = await self.normalize_intercepted_messages(intercept["messages"])
 
             tool_defs: list[Tool] | None = None
             intercept_tools = intercept.get("tools")
             if intercept_tools:
-                tool_defs = self.normalize_intercepted_tools(intercept_tools) or None
+                tool_defs = (self.normalize_intercepted_tools(intercept_tools)) or None
 
             response: Response | None = None
             error: BaseException | None = None
@@ -399,7 +399,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         # Skip CliAgentEnv.add_model_response (which has its own simpler
         # first-turn check) and call MultiTurnEnv directly.
         await super(CliAgentEnv, self).add_model_response(
-            state, prompt_messages, self.normalize_response(response)
+            state, prompt_messages, await self.normalize_response(response)
         )
 
     @staticmethod
