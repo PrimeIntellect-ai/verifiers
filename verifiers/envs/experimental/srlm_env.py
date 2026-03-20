@@ -120,6 +120,44 @@ def _usage_from_summary(summary: Any) -> Usage | None:
     )
 
 
+def _inject_final_into_env(rlm_env: Any) -> None:
+    """Inject a ``FINAL`` function into the RLM REPL environment.
+
+    The rlm library's LocalREPL provides ``FINAL_VAR`` (variable lookup) but
+    no ``FINAL`` (direct value).  Models may use either form inside ``repl``
+    code blocks *or* in plain response text.  ``find_final_answer`` already
+    handles both patterns in text; this function ensures they also work
+    inside executed code.
+
+    ``FINAL(value)``  → ``str(value)``, sets the final answer immediately.
+    ``FINAL_VAR(name)`` → looks up a variable, same as before.
+    """
+    env_globals = getattr(rlm_env, "globals", None)
+    if env_globals is None:
+        return  # not a LocalREPL-like env, skip
+
+    def _final(value: Any) -> str:
+        answer = str(value)
+        rlm_env._last_final_answer = answer
+        return answer
+
+    env_globals["FINAL"] = _final
+
+    # Also patch _restore_scaffold so FINAL survives across code executions.
+    # LocalREPL._restore_scaffold resets reserved names after each exec();
+    # FINAL is not in RESERVED_TOOL_NAMES so it *could* be overwritten by
+    # user code (e.g. ``FINAL = "something"``).  We wrap the original to
+    # re-inject it.
+    original_restore = getattr(rlm_env, "_restore_scaffold", None)
+    if original_restore is not None:
+
+        def _patched_restore() -> None:
+            original_restore()
+            env_globals["FINAL"] = _final
+
+        rlm_env._restore_scaffold = _patched_restore
+
+
 def _extract_tokens_from_response(response: Response | Any) -> tuple[int, int]:
     """Extract (prompt_tokens, completion_tokens) from a Response."""
     if not response:
@@ -264,9 +302,12 @@ class SRLMEnv(MultiTurnEnv):
 
     def __init__(
         self,
-        # RLM backend for sub-calls (root model uses verifiers Client)
+        # Sub-LLM backend for calls from code (root model uses verifiers Client).
+        # By default, derives base_url/api_key/model from the root model's
+        # verifiers Client so sub-calls go to the same endpoint.
         backend: str = "openai",
         backend_kwargs: dict[str, Any] | None = None,
+        sub_model: str | None = None,
         # RLM environment (REPL)
         environment: str = "local",
         environment_kwargs: dict[str, Any] | None = None,
@@ -295,7 +336,8 @@ class SRLMEnv(MultiTurnEnv):
     ):
         super().__init__(max_turns=max_iterations, **kwargs)
         self._backend = backend
-        self._backend_kwargs = backend_kwargs or {}
+        self._backend_kwargs = backend_kwargs
+        self._sub_model = sub_model
         self._environment_type = environment
         self._environment_kwargs = environment_kwargs or {}
         self._max_depth = max_depth
@@ -314,6 +356,50 @@ class SRLMEnv(MultiTurnEnv):
         self._verbose = verbose
 
         self.add_rubric(SRLMMonitorRubric())
+
+    # =========================================================================
+    # Sub-LLM Backend Resolution
+    # =========================================================================
+
+    @staticmethod
+    def _strip_provider_prefix(model: str) -> str:
+        """Strip provider prefix from model name (e.g. 'openai/gpt-5-mini' → 'gpt-5-mini').
+
+        Verifiers uses 'provider/model' format but the rlm library's clients
+        send the model name directly to the API which doesn't accept the prefix.
+        """
+        if "/" in model:
+            return model.split("/", 1)[1]
+        return model
+
+    def _derive_backend_kwargs(self, state: State) -> dict[str, Any]:
+        """Derive sub-LLM backend_kwargs from the root model's verifiers Client.
+
+        Extracts base_url and api_key from the underlying client so sub-LLM
+        calls from code (llm_query, llm_query_batched) go to the same API
+        endpoint as the root model by default.
+        """
+        raw_model = self._sub_model or state.get("model", "unknown")
+        model_name = self._strip_provider_prefix(raw_model)
+        base_url: str | None = None
+        api_key: str | None = None
+
+        vf_client = state.get("client")
+        if vf_client is not None:
+            # Try to extract from the underlying client (AsyncOpenAI, etc.)
+            underlying = getattr(vf_client, "client", None)
+            if underlying is not None:
+                raw_url = getattr(underlying, "base_url", None)
+                if raw_url is not None:
+                    base_url = str(raw_url).rstrip("/")
+                api_key = getattr(underlying, "api_key", None)
+
+        kwargs: dict[str, Any] = {"model_name": model_name}
+        if base_url:
+            kwargs["base_url"] = base_url
+        if api_key:
+            kwargs["api_key"] = api_key
+        return kwargs
 
     # =========================================================================
     # State Setup
@@ -363,8 +449,15 @@ class SRLMEnv(MultiTurnEnv):
             if isinstance(info, dict):
                 root_prompt = info.get(self._root_prompt_key)
 
+        # Resolve sub-LLM backend kwargs. When not explicitly provided,
+        # derive from the root model's verifiers Client so sub-calls go
+        # to the same API endpoint by default.
+        backend_kwargs = self._backend_kwargs
+        if backend_kwargs is None:
+            backend_kwargs = self._derive_backend_kwargs(state)
+
         # Create sub-call backend client and LMHandler (for sub-LLM calls from code)
-        sub_client = get_client(self._backend, self._backend_kwargs)
+        sub_client = get_client(self._backend, backend_kwargs)
         other_backend_client = None
         if self._other_backends and self._other_backend_kwargs:
             other_backend_client = get_client(
@@ -392,6 +485,7 @@ class SRLMEnv(MultiTurnEnv):
         if self._custom_sub_tools is not None:
             env_kwargs["custom_sub_tools"] = self._custom_sub_tools
         rlm_env = get_environment(self._environment_type, env_kwargs)
+        _inject_final_into_env(rlm_env)
 
         # Build RLM system prompt — pass context_payload directly so
         # QueryMetadata sees the actual type (str/list/dict).
@@ -577,7 +671,9 @@ class SRLMEnv(MultiTurnEnv):
         lm_handler = state.get("rlm_lm_handler")
         if lm_handler:
             env_kwargs["lm_handler_address"] = lm_handler.address
-        state["rlm_env"] = get_environment(self._environment_type, env_kwargs)
+        new_env = get_environment(self._environment_type, env_kwargs)
+        _inject_final_into_env(new_env)
+        state["rlm_env"] = new_env
 
     async def _execute_code_blocks(self, state: State, response_text: str) -> None:
         """Parse and execute ALL code blocks, then check for final answer.
@@ -925,6 +1021,7 @@ def load_environment(
     rubric: vf.Rubric | None = None,
     backend: str = "openai",
     backend_kwargs: dict[str, Any] | None = None,
+    sub_model: str | None = None,
     environment: str = "local",
     environment_kwargs: dict[str, Any] | None = None,
     max_iterations: int = 30,
@@ -951,8 +1048,11 @@ def load_environment(
     the rlm library for code execution and sub-LLM calls.
 
     Args:
-        backend: Backend for sub-LLM calls (root model uses verifiers Client).
-        backend_kwargs: Backend configuration (must include model_name for sub-calls).
+        backend: Backend type for sub-LLM calls ("openai", "anthropic", etc.).
+        backend_kwargs: Explicit backend configuration. When None (default),
+            base_url and api_key are derived from the root model's verifiers
+            Client so sub-calls go to the same API endpoint automatically.
+        sub_model: Model name for sub-LLM calls. Defaults to the root model.
         environment: RLM REPL environment type ("local", "docker", etc.).
         environment_kwargs: Environment configuration.
         max_iterations: Maximum REPL iterations (root model calls) per rollout.
@@ -987,7 +1087,8 @@ def load_environment(
         dataset=dataset,
         rubric=rubric,
         backend=backend,
-        backend_kwargs=backend_kwargs or {},
+        backend_kwargs=backend_kwargs,
+        sub_model=sub_model,
         environment=environment,
         environment_kwargs=environment_kwargs or {},
         max_iterations=max_iterations,
