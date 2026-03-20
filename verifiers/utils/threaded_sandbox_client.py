@@ -24,8 +24,8 @@ class ThreadedAsyncSandboxClient:
     def __init__(
         self,
         max_workers: int = 128,
-        max_connections: int = 100,
-        max_keepalive_connections: int = 50,
+        max_connections: int = 1000,
+        max_keepalive_connections: int = 200,
         **client_kwargs,
     ):
         """Initialize the threaded sandbox client."""
