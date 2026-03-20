@@ -247,6 +247,12 @@ class ZMQEnvServer(EnvServer):
                 )
 
         except asyncio.CancelledError:
+            # Clear the task's internal cancellation flag so that subsequent
+            # awaits (serialize_response, send_multipart) don't immediately
+            # re-raise CancelledError before we can send the response.
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()
             response = BaseResponse(success=False, error="Request was cancelled")
 
         except Exception as e:
