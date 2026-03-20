@@ -175,7 +175,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     )
                 else:
                     self._tunnel = Tunnel(local_port=port)
-                url = await self._tunnel.start()
+                url = await self.with_retry(self._tunnel.start)()
                 self.logger.debug(f"Prime Tunnel started: {url}")
                 return url
             else:

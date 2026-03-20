@@ -7,7 +7,6 @@ import msgpack
 import numpy as np
 import zmq
 import zmq.asyncio
-
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
