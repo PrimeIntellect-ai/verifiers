@@ -35,7 +35,11 @@ class ThreadedAsyncSandboxClient:
             thread_name_prefix="sandbox-client-executor",
         )
         self.executor_name = f"sandbox-client-{id(self)}"
-        register_executor(self.executor_name, self.executor)
+        register_executor(
+            self.executor_name,
+            self.executor,
+            scaling_fn=lambda c: min(max(1, c // 4), 128),
+        )
         self.client_kwargs = {
             "max_connections": max_connections,
             "max_keepalive_connections": max_keepalive_connections,
