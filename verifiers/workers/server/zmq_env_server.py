@@ -156,8 +156,9 @@ class ZMQEnvServer(EnvServer):
                     )
                     self.request_tasks[frame_request_id] = task
                     task.add_done_callback(
-                        lambda done_task,
-                        rid=frame_request_id: self._cleanup_request_task(rid, done_task)
+                        lambda done_task, rid=frame_request_id: (
+                            self._cleanup_request_task(rid, done_task)
+                        )
                     )
 
                 except asyncio.CancelledError:
