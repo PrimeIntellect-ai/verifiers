@@ -82,7 +82,7 @@ class LocalCUAMode:
         sandbox_timeout_per_command_seconds: int = 120,
         # Pre-built image configuration
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox/team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
+        prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
         # Base image for custom builds
         docker_image: str = "node:20-bookworm-slim",
     ):
@@ -399,8 +399,8 @@ class LocalCUAMode:
 
         await self._execute_sandbox_command(
             sandbox_id,
-            f"cd /app/cua-local-server && "
-            f"{env_vars} nohup ./cua-local-server-linux-x64 > /tmp/cua-server.log 2>&1 &",
+            f"cd /app/cua-server && "
+            f"{env_vars} nohup ./cua-server-linux-x64 > /tmp/cua-server.log 2>&1 &",
         )
 
         if self.logger:
@@ -683,6 +683,15 @@ class LocalCUAMode:
 
             state["session_id"] = session_id
             state["browser_state"] = result.get("state", {})
+
+            # Navigate to the app URL (since CUA server starts at about:blank)
+            if self.logger:
+                self.logger.debug(f"Navigating to app URL: {self.app_url}")
+            await self._execute_action_curl(
+                session_id,
+                {"type": "goto", "url": self.app_url},
+                sandbox_id,
+            )
 
             if self.logger:
                 self.logger.info("Local CUA sandbox ready")

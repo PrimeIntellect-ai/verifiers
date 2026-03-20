@@ -115,7 +115,7 @@ async def judge_answer(
     return 1.0 if is_correct else 0.0
 
 
-class LocalBrowserEnv(vf.MultiTurnEnv):
+class LocalBrowserEnv(vf.StatefulToolEnv):
     """
     Environment for testing localhost applications with browser automation.
 
@@ -147,13 +147,14 @@ class LocalBrowserEnv(vf.MultiTurnEnv):
         cpu_cores: int = 2,
         memory_gb: int = 4,
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox/team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
+        prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
         **kwargs,
     ):
         super().__init__(
             dataset=dataset,
             system_prompt=system_prompt,
             max_turns=max_turns,
+            stop_errors=[vf.SandboxError],
             **kwargs,
         )
 
@@ -174,16 +175,12 @@ class LocalBrowserEnv(vf.MultiTurnEnv):
         )
 
         self._rubric = rubric
-
-    def setup(self, **kwargs):
-        """Register tools and setup the environment."""
-        super().setup(**kwargs)
         self._local_cua_mode.register_tools(self)
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Initialize the local browser sandbox."""
-        state = await super().setup_state(state, **kwargs)
-        return await self._local_cua_mode.setup_state(state, **kwargs)
+        state = await self._local_cua_mode.setup_state(state, **kwargs)
+        return await super().setup_state(state, **kwargs)
 
     def update_tool_args(
         self,
@@ -198,37 +195,21 @@ class LocalBrowserEnv(vf.MultiTurnEnv):
             tool_name, tool_args, messages, state, **kwargs
         )
 
+    async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
+        """Get prompt messages, filtering screenshots."""
+        messages = await super().get_prompt_messages(state)
+        return self._local_cua_mode.filter_screenshots_in_messages(list(messages))
+
+    @vf.cleanup
     async def cleanup_session(self, state: vf.State) -> None:
         """Clean up the browser session and sandbox."""
         await self._local_cua_mode.cleanup_session(state)
-        await super().cleanup_session(state)
 
+    @vf.teardown
     async def teardown(self) -> None:
         """Clean up all resources."""
-        await self._local_cua_mode.teardown()
-        await super().teardown()
-
-    def filter_messages(
-        self,
-        messages: vf.Messages,
-        state: vf.State,
-        **kwargs,
-    ) -> vf.Messages:
-        """Filter older screenshots to save context."""
-        return self._local_cua_mode.filter_screenshots_in_messages(messages)
-
-    async def compute_reward(
-        self,
-        prompt: str | list,
-        completion: str | list,
-        state: vf.State,
-        messages: vf.Messages,
-        **kwargs,
-    ) -> float:
-        """Compute reward using the rubric."""
-        return await self._rubric.compute_reward(
-            prompt, completion, state, messages, **kwargs
-        )
+        if hasattr(self, "_local_cua_mode") and self._local_cua_mode is not None:
+            await self._local_cua_mode.teardown()
 
 
 def load_environment(
