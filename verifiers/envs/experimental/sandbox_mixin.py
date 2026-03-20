@@ -7,12 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
-from aiolimiter import AsyncLimiter
-
-from verifiers.utils.path_utils import write_temp_file
-
 import httpx
 import tenacity as tc
+from aiolimiter import AsyncLimiter
 from prime_sandboxes import (
     APIError,
     CommandTimeoutError,
@@ -25,6 +22,7 @@ from prime_sandboxes import (
 from prime_sandboxes.core import APIClient
 
 import verifiers as vf
+from verifiers.utils.path_utils import write_temp_file
 from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 # Enable httpx debug logging if HTTPX_LOG_LEVEL is set
@@ -90,15 +88,9 @@ class SandboxMixin:
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
-        sandbox_creation_rate_limit: float | None = 128,
+        sandbox_creations_per_minute: float | None = 128,
     ):
-        """Initialize sandbox client and retry wrapper. Call from subclass __init__.
-
-        Args:
-            sandbox_creation_rate_limit: Maximum sandbox creations per minute.
-                When set, ``create_sandbox`` will throttle to avoid burst load
-                on the sandbox API. ``None`` disables rate limiting.
-        """
+        """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
@@ -106,8 +98,8 @@ class SandboxMixin:
             sandbox_wait_for_creation_max_attempts
         )
         self.sandbox_creation_rate_limiter = (
-            AsyncLimiter(max_rate=sandbox_creation_rate_limit, time_period=60.0)
-            if sandbox_creation_rate_limit is not None
+            AsyncLimiter(max_rate=sandbox_creations_per_minute, time_period=60.0)
+            if sandbox_creations_per_minute is not None
             else None
         )
         self.sandbox_client = ThreadedAsyncSandboxClient(
