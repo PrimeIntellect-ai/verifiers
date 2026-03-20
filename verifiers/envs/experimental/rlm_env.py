@@ -47,13 +47,17 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
+import tenacity as tc
 from prime_sandboxes import CommandTimeoutError, SandboxClient
 from prime_sandboxes.core import APIClient
 from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    is_retryable_sandbox_read_error,
+)
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from verifiers.types import (
     AssistantMessage,
@@ -1287,9 +1291,11 @@ class RLMExecutor(SandboxMixin):
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
         self.init_sandbox_client(
-            sandbox_client_max_workers=50,
-            sandbox_client_max_connections=100,
-            sandbox_client_max_keepalive_connections=50,
+            sandbox_client_max_workers=env.sandbox_client_max_workers,
+            sandbox_client_max_connections=env.sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=(
+                env.sandbox_client_max_keepalive_connections
+            ),
         )
 
     def create_rollout_dirs(self, state: State) -> None:
@@ -1596,15 +1602,27 @@ class RLMExecutor(SandboxMixin):
         )
         worker_script = self.env.customize_worker_script(worker_script, state)
         worker_path.write_text(worker_script, encoding="utf-8")
+        sandbox_id = session.sandbox_id
+        if sandbox_id is None:
+            raise RLMSessionError("Sandbox not initialized")
 
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.context_file, str(context_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.context_file,
+            str(context_path),
+            "context file upload",
         )
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.answer_file, str(answer_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.answer_file,
+            str(answer_path),
+            "answer file upload",
         )
-        await self.sandbox_client.upload_file(
-            session.sandbox_id, session.paths.worker_path, str(worker_path)
+        await self._upload_file_with_retry(
+            sandbox_id,
+            session.paths.worker_path,
+            str(worker_path),
+            "worker file upload",
         )
 
     async def _start_worker(self, session: SandboxRLMReplSession, state: State) -> None:
@@ -1834,7 +1852,12 @@ class RLMExecutor(SandboxMixin):
             with tarfile.open(tar_path, "w:gz") as tar:
                 tar.add(local_path, arcname=".")
             remote_tar = f"/tmp/rlm_upload_{uuid.uuid4().hex}.tar.gz"
-            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self._upload_file_with_retry(
+                sandbox_id,
+                remote_tar,
+                str(tar_path),
+                "directory archive upload",
+            )
             extract_cmd = (
                 "bash -lc '"
                 f'mkdir -p "{remote_dir}"; '
@@ -1869,8 +1892,11 @@ class RLMExecutor(SandboxMixin):
             tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
             tar_path = Path(tmp.name)
             tmp.close()
-            await self.sandbox_client.download_file(
-                sandbox_id, remote_tar, str(tar_path)
+            await self._download_file_with_retry(
+                sandbox_id,
+                remote_tar,
+                str(tar_path),
+                "directory archive download",
             )
             if local_path.exists():
                 shutil.rmtree(local_path, True)
@@ -1909,6 +1935,36 @@ class RLMExecutor(SandboxMixin):
                     tar_path.unlink()
                 except Exception:
                     pass
+
+    async def _upload_file_with_retry(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        local_path: str,
+        context: str,
+    ) -> None:
+        upload = self.env.with_retry_on_read_errors(self.sandbox_client.upload_file)
+        try:
+            await upload(sandbox_id, remote_path, local_path)
+        except Exception as e:
+            raise vf.SandboxError(
+                f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
+            ) from e
+
+    async def _download_file_with_retry(
+        self,
+        sandbox_id: str,
+        remote_path: str,
+        local_path: str,
+        context: str,
+    ) -> None:
+        download = self.env.with_retry_on_read_errors(self.sandbox_client.download_file)
+        try:
+            await download(sandbox_id, remote_path, local_path)
+        except Exception as e:
+            raise vf.SandboxError(
+                f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
+            ) from e
 
 
 class RLMEnv(vf.StatefulToolEnv):
@@ -2004,6 +2060,9 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
         sandbox_environment_vars: Extra environment vars for sandbox (default: None)
         sandbox_labels: Optional labels for sandbox (default: None)
+        sandbox_client_max_workers: Max worker threads for the sandbox client
+        sandbox_client_max_connections: Max HTTP connections for the sandbox client
+        sandbox_client_max_keepalive_connections: Max keepalive connections for the sandbox client
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
@@ -2039,6 +2098,10 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
+        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_transfer_max_retries: int = 3,
         **kwargs,
     ):
         if repl_language not in {"bash", "python"}:
@@ -2087,8 +2150,20 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
         self.sandbox_environment_vars = sandbox_environment_vars
         self.sandbox_labels = sandbox_labels
+        self.sandbox_client_max_workers = sandbox_client_max_workers
+        self.sandbox_client_max_connections = sandbox_client_max_connections
+        self.sandbox_client_max_keepalive_connections = (
+            sandbox_client_max_keepalive_connections
+        )
+        self.sandbox_transfer_max_retries = sandbox_transfer_max_retries
         self.sub_llm_timeout = max(1, code_execution_timeout - 5)
-
+        self.with_retry_on_read_errors = tc.AsyncRetrying(
+            retry=tc.retry_if_exception(is_retryable_sandbox_read_error),
+            stop=tc.stop_after_attempt(sandbox_transfer_max_retries + 1),
+            wait=tc.wait_exponential_jitter(initial=1, max=30),
+            before_sleep=tc.before_sleep_log(cast(Any, logger), logging.WARNING),
+            reraise=True,
+        ).wraps
         fixed_root_tools = self._build_fixed_root_tools()
         self.root_tools, self.root_tool_map = _merge_tool_lists(
             fixed_tools=fixed_root_tools,
@@ -2652,8 +2727,17 @@ class RLMEnv(vf.StatefulToolEnv):
                 ]
                 return contents, summary_lines
 
+        rid = state_ref.get("rollout_id", "?")
+
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
+        logger.debug(
+            "[%s] main turn %d: llm_batch called with %d prompts (batch=%s)",
+            rid,
+            parent_turn,
+            len(prompts),
+            batch_id,
+        )
         results: list[dict[str, Any] | None] = [
             cast(dict[str, Any] | None, None)
         ] * len(prompts)
@@ -2705,6 +2789,18 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         batch_elapsed = perf_counter() - batch_start
+        succeeded = sum(
+            1 for r in results if r and not r.get("_rlm_metadata", {}).get("error")
+        )
+        logger.debug(
+            "[%s] main turn %d: llm_batch done in %.2fs, %d/%d succeeded (batch=%s)",
+            rid,
+            parent_turn,
+            batch_elapsed,
+            succeeded,
+            len(prompts),
+            batch_id,
+        )
         summary_lines = [f"llm_batch: {len(prompts)} call(s) in {batch_elapsed:.2f}s"]
         contents: list[str] = []
         for index, result in enumerate(results):
@@ -2832,6 +2928,16 @@ class RLMEnv(vf.StatefulToolEnv):
                     },
                 }
 
+        rid = state_ref.get("rollout_id", "?")
+        logger.debug(
+            "[%s/%s:%s] sub-llm start (%d messages, model=%s)",
+            rid,
+            batch_id,
+            request_id,
+            len(messages),
+            sub_model,
+        )
+
         messages_with_system: Messages = [
             SystemMessage(
                 content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
@@ -2851,6 +2957,18 @@ class RLMEnv(vf.StatefulToolEnv):
         num_turns = result["num_turns"]
         max_turns_reached = result["max_turns_reached"]
         turns = result["turns"]
+
+        logger.debug(
+            "[%s/%s:%s] sub-llm done: %d turns, %d+%d tokens, %d tool calls, max_turns=%s",
+            rid,
+            batch_id,
+            request_id,
+            num_turns,
+            prompt_tokens,
+            completion_tokens,
+            tool_call_count,
+            max_turns_reached,
+        )
 
         boxed_content = extract_boxed_answer(final_content)
 
@@ -3504,7 +3622,19 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> str:
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
-            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+            self.active_rollouts[rollout_id]["current_turn"] = self._main_turn_count(
+                state
+            )
+
+        rid = rollout_id or "?"
+        main_turn = self._main_turn_count(state)
+        logger.debug(
+            "[%s] main turn %d: repl called (%s, %d chars)",
+            rid,
+            main_turn,
+            self.repl_language,
+            len(code),
+        )
 
         if self.expose_message_history:
             await self._upload_message_history(state)
@@ -3529,9 +3659,16 @@ class RLMEnv(vf.StatefulToolEnv):
             output += f"\n[Execution time: {execution_time:.2f}s]"
 
         answer = result.get("answer", {})
-        if answer.get("ready", False):
+        answer_ready = answer.get("ready", False)
+        logger.debug(
+            "[%s] main turn %d: repl done in %.2fs, answer_ready=%s",
+            rid,
+            main_turn,
+            execution_time,
+            answer_ready,
+        )
+        if answer_ready:
             state["final_answer"] = answer.get("content", "")
-            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
         output = self._maybe_add_context_warning(
             output, state, ready_instruction=ready_instruction
@@ -3624,8 +3761,19 @@ class RLMEnv(vf.StatefulToolEnv):
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
 
+    def _main_turn_count(self, state: State) -> int:
+        """Count the number of main-model trajectory steps."""
+        main_id = state.get("trajectory_id")
+        return sum(
+            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
+        )
+
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
+        rid = state.get("rollout_id", "?")
+        main_turn = self._main_turn_count(state)
+        logger.debug("[%s] main turn %d: requesting model response", rid, main_turn)
+
         if len(state["trajectory"]) == 0:
             # First turn: inject RLM scaffolding into the first user message
             prompt = state.get("prompt", [])
@@ -3745,11 +3893,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Count only main-model trajectory steps, not sub-LLM steps."""
         if self.max_turns <= 0:
             return False
-        main_id = state.get("trajectory_id")
-        count = sum(
-            1 for s in state.get("trajectory", []) if s.get("trajectory_id") == main_id
-        )
-        return count >= self.max_turns
+        return self._main_turn_count(state) >= self.max_turns
 
     @vf.stop
     async def no_tools_called(self, state: State) -> bool:
@@ -3790,6 +3934,16 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
+        rid = state.get("rollout_id", "?")
+        _ensure_rlm_metric_state(state)
+        logger.debug(
+            "[%s] rollout stopped: answer_ready=%s, turns=%d, sub_llm_calls=%d, repl_calls=%d",
+            rid,
+            "final_answer" in state,
+            self._main_turn_count(state),
+            state.get("sub_llm_call_count", 0),
+            state.get("repl_call_count", 0),
+        )
 
         if len(state["trajectory"]) == 0:
             state["completion"] = []

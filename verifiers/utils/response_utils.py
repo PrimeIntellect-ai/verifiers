@@ -9,14 +9,12 @@ from verifiers.types import (
 async def parse_response_message(response: Response) -> Messages:
     """Parse a vf.Response into a vf.Messages list (single vf.AssistantMessage)."""
     response_message = response.message
-    message_payload = {
-        "role": "assistant",
-        "content": response_message.content,
-        "reasoning_content": response_message.reasoning_content,
-        "thinking_blocks": response_message.thinking_blocks,
-        "tool_calls": response_message.tool_calls,
-    }
-    message = AssistantMessage.model_validate(message_payload)
+    message = AssistantMessage(
+        content=response_message.content,
+        reasoning_content=response_message.reasoning_content,
+        thinking_blocks=response_message.thinking_blocks,
+        tool_calls=response_message.tool_calls,
+    )
     return [message]
 
 

@@ -50,13 +50,14 @@ dependencies = [
     "gepa",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
+    "aiolimiter>=1.2.1",
 ]
 
 [dependency-groups]
 dev = [
     "ruff",
     "pre-commit",
-    "ty>=0.0.1a29",
+    "ty>=0.0.1a29,<0.0.22",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",

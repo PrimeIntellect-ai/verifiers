@@ -15,6 +15,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
 - [Environment Defaults](#environment-defaults)
 - [Multi-Environment Evaluation](#multi-environment-evaluation)
   - [TOML Configuration](#toml-configuration)
+  - [Ablation Sweeps](#ablation-sweeps)
   - [Configuration Precedence](#configuration-precedence)
 
 Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
@@ -57,6 +58,22 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 
 ```bash
 prime eval run my-env -x '{"max_turns": 20}'
+```
+
+#### Executor autoscaling
+
+Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `max_workers` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_max_workers()`, which resizes both the default event-loop executor and all registered executors.
+
+To override the automatic value:
+
+```bash
+prime eval run my-env -x '{"max_workers": 256}'
+```
+
+You can also call `set_max_workers()` directly at runtime:
+
+```python
+env.set_max_workers(256)
 ```
 
 ### Model Configuration
@@ -159,6 +176,7 @@ When evaluating multiple environments, the display shows an overview panel at th
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
+| `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
@@ -166,7 +184,7 @@ When evaluating multiple environments, the display shows an overview panel at th
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
 | `--heartbeat-url` | — | — | Heartbeat URL for uptime monitoring |
 
-Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
+By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. Use `--output-dir` to override the base output directory — when set, results (and logs) are saved under `{output_dir}/evals/{env_id}--{model}/{run_id}/` instead. The directory contains:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
@@ -307,6 +325,38 @@ num_examples = 50
 difficulty = "hard"
 split = "test"
 ```
+
+### Ablation Sweeps
+
+Use `[[ablation]]` blocks to automatically generate eval configs from a cartesian product of parameter values. This is useful for hyperparameter sweeps and ablation studies without manually writing each combination.
+
+```toml
+# Global defaults apply to all evals and ablations
+model = "openai/gpt-4.1-mini"
+num_examples = 50
+
+# Sweep temperature × difficulty → 6 eval configs
+# split is fixed across all combinations
+[[ablation]]
+env_id = "my-env"
+env_args = {split = "test"}
+
+[ablation.sweep]
+temperature = [0.0, 0.5, 1.0]
+
+[ablation.sweep.env_args]
+difficulty = ["easy", "hard"]
+```
+
+- **Fixed fields** in the `[[ablation]]` block (like `env_id`) apply to all expanded configs
+- **`[ablation.sweep]`** keys are lists of values crossed as a cartesian product
+- **`[ablation.sweep.env_args]`** keys are swept and merged into the `env_args` dict
+- **Fixed `env_args`** can be set alongside swept ones (e.g. `env_args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept env_args.
+- Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
+- `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
+- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `env_args` — use separate `[[ablation]]` blocks for envs with different argument schemas
+
+Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
 
 ### Configuration Precedence
 

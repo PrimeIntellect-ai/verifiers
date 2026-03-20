@@ -1,4 +1,21 @@
-from typing import Awaitable, Callable
+import inspect
+from typing import Any, Awaitable, Callable
+
+
+def discover_decorated(obj: Any, attr: str) -> list:
+    """Discover methods decorated with a given attribute, sorted by priority.
+
+    Returns bound methods on *obj* that have ``attr`` set, ordered by
+    descending ``{attr}_priority`` then ascending ``__name__``.
+    """
+    methods = [
+        method
+        for _, method in inspect.getmembers(obj, predicate=inspect.ismethod)
+        if hasattr(method, attr) and callable(method)
+    ]
+    priority_attr = f"{attr}_priority"
+    methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
+    return methods
 
 
 def stop(

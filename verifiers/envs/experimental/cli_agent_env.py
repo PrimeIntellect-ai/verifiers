@@ -94,10 +94,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
-        sandbox_client_max_workers: int = 10,
-        sandbox_client_max_connections: int = 100,
-        sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_connections: int = 1000,
+        sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
+        sandbox_creations_per_minute: float | None = 128,
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
@@ -112,6 +113,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_connections=sandbox_client_max_connections,
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
+            sandbox_creations_per_minute=sandbox_creations_per_minute,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
@@ -152,14 +154,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             raise RuntimeError("Interception server is not initialized.")
         return self._interception_server
 
-    async def _start_tunnel(self) -> Tunnel:
-        """Create and start a new tunnel. Retryable via self.with_retry."""
-        port = self._require_interception_server().port
-        log_level = "debug" if logger.isEnabledFor(logging.DEBUG) else "info"
-        tunnel = Tunnel(local_port=port, log_level=log_level)
-        await tunnel.start()
-        return tunnel
-
     async def get_tunnel_url(self) -> str:
         """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
@@ -172,9 +166,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self._tunnel = None
 
             if self._tunnel is None:
-                self._tunnel = await self.with_retry(self._start_tunnel)()
-                self.logger.info(f"Tunnel started: {self._tunnel.url}")
-                return self._tunnel.url
+                interception_server = self._require_interception_server()
+                port = interception_server.port
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self._tunnel = Tunnel(
+                        local_port=port,
+                        log_level="debug",
+                    )
+                else:
+                    self._tunnel = Tunnel(local_port=port)
+                url = await self.with_retry(self._tunnel.start)()
+                self.logger.debug(f"Prime Tunnel started: {url}")
+                return url
             else:
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
@@ -334,14 +337,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Normalize intercepted request tools for the provider-agnostic runtime.
 
         Assumes that agent requests arrive in OpenAI-tool format.
+        Avoids redundant Pydantic round-trips for already-validated Tool objects.
         """
         if not isinstance(intercept_tools, list):
             raise TypeError("Intercepted tools must be provided as a list.")
 
-        normalized_inputs: list[dict[str, Any]] = []
+        normalized: list[Tool] = []
         for raw_tool in intercept_tools:
             if isinstance(raw_tool, Tool):
-                normalized_inputs.append(raw_tool.model_dump(exclude_none=True))
+                normalized.append(raw_tool)
                 continue
             if not isinstance(raw_tool, dict):
                 raise TypeError(
@@ -358,28 +362,30 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     raise TypeError(
                         "Intercepted function tool parameters must be a JSON object."
                     )
-                normalized_inputs.append(
-                    {
-                        "name": function_payload.get("name"),
-                        "description": function_payload.get("description", ""),
-                        "parameters": parameters,
-                        "strict": function_payload.get("strict"),
-                    }
+                normalized.append(
+                    Tool(
+                        name=function_payload.get("name", ""),
+                        description=function_payload.get("description", ""),
+                        parameters=parameters,
+                        strict=function_payload.get("strict"),
+                    )
                 )
                 continue
 
-            normalized_inputs.append(raw_tool_dict)
+            normalized.append(Tool.model_validate(raw_tool_dict))
 
-        return self._normalize_tool_defs(normalized_inputs)
+        return normalized
 
-    def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
+    async def normalize_intercepted_messages(
+        self, intercepted_messages: object
+    ) -> Messages:
         """Hook to normalize messages received from the agent before model inference.
 
         Assumes that agent requests arrive in OpenAI-format.
         """
-        return normalize_messages(intercepted_messages)  # type: ignore
+        return await asyncio.to_thread(normalize_messages, intercepted_messages)  # type: ignore
 
-    def normalize_response(self, response: Response) -> Response:
+    async def normalize_response(self, response: Response) -> Response:
         """Hook to normalize the model response before it is stored in the trajectory.
 
         Override in subclasses to align the stored step format with the agent's
@@ -387,42 +393,47 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """
         return response
 
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """Wait for agent to make an API request OR agent completion, whichever comes first."""
-        request_id_queue = state["request_id_queue"]
-        interception_server = self._require_interception_server()
+    async def _poll_next_request(self, state: State) -> str | None:
+        """Poll for the next intercepted request, checking liveness in between.
 
+        Returns a request_id when a request arrives, or None when the agent
+        has completed or the rollout has timed out.
+        """
+        request_id_queue = state["request_id_queue"]
         while True:
             try:
-                # Short timeout so we can check completion frequently
-                request_id = await asyncio.wait_for(
-                    request_id_queue.get(),
-                    timeout=self.poll_interval,
+                return await asyncio.wait_for(
+                    request_id_queue.get(), timeout=self.poll_interval
                 )
-                # Got a request, proceed normally
-                state["current_request_id"] = request_id
-                intercept = interception_server.intercepts[request_id]
-                return self.normalize_intercepted_messages(intercept["messages"])
-
             except asyncio.TimeoutError:
-                # No request yet — check tunnel liveness first
                 if self._tunnel is not None and not self._tunnel.is_running:
                     frpc_output = "\n".join(self._tunnel.recent_output)
                     raise vf.TunnelError(
                         f"Tunnel process died during rollout. "
                         f"frpc output:\n{frpc_output}"
                     )
-                # Then check if agent finished or timed out
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    return []
+                    return None
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    return []
+                    return None
+
+    async def get_prompt_messages(self, state: State) -> Messages:
+        """Wait for agent to make an API request OR agent completion, whichever comes first."""
+        interception_server = self._require_interception_server()
+
+        request_id = await self._poll_next_request(state)
+        if request_id is None:
+            return []
+
+        state["current_request_id"] = request_id
+        intercept = interception_server.intercepts[request_id]
+        return await self.normalize_intercepted_messages(intercept["messages"])
 
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages | str,
+        prompt: Messages,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -459,9 +470,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             model = state.get("model") or model
             intercept_tools = intercept.get("tools")
             if intercept_tools:
-                tool_defs = (
-                    self.normalize_intercepted_tools(intercept_tools) or tool_defs
-                )
+                # Cache normalized tools per rollout — agents typically send
+                # the same tool definitions on every request. Key on the
+                # number of tools as a cheap check; normalize_intercepted_tools
+                # is idempotent so a false miss just re-normalizes.
+                cache_key = len(intercept_tools)
+                cached_key, cached_defs = state.get("_cached_tool_defs", (None, None))
+                if cached_key == cache_key and cached_defs is not None:
+                    tool_defs = cached_defs
+                else:
+                    tool_defs = (
+                        self.normalize_intercepted_tools(intercept_tools) or tool_defs
+                    )
+                    state["_cached_tool_defs"] = (cache_key, tool_defs)
 
         response: Response | None = None
         error: BaseException | None = None
@@ -505,7 +526,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
         await super().add_model_response(
-            state, prompt_messages, self.normalize_response(response)
+            state, prompt_messages, await self.normalize_response(response)
         )
 
     @vf.teardown
@@ -599,11 +620,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         When `keep_sandbox_for_scoring` is True, sandbox deletion is deferred
         (e.g. when the rubric needs sandbox access during scoring).
+        The sandbox is still deregistered from active tracking so the
+        environment teardown does not attempt a redundant bulk-delete.
         """
         await self.post_rollout(state)
-        if not self.keep_sandbox_for_scoring:
-            sandbox_id = state.get("sandbox_id")
-            if sandbox_id:
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            if self.keep_sandbox_for_scoring:
+                self.deregister_sandbox(sandbox_id)
+            else:
                 await self.delete_sandbox(sandbox_id)
 
     async def env_response(

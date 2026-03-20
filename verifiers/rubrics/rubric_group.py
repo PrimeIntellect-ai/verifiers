@@ -79,8 +79,15 @@ class RubricGroup(Rubric):
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
+        await super().cleanup(state)
         for rubric in self.rubrics:
             await rubric.cleanup(state)
+
+    async def teardown(self):
+        """Run teardown for all rubrics in the group."""
+        await super().teardown()
+        for rubric in self.rubrics:
+            await rubric.teardown()
 
     async def score_group(self, states: list[State]):
         """

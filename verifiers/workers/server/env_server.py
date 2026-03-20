@@ -56,21 +56,15 @@ class EnvServer(ABC):
         json_logging: bool = False,
     ):
         # setup logging
-        log_file = log_file or f"logs/{env_id}.log"
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        if log_level is None:
-            vf.setup_logging(
-                log_file=log_file,
-                log_file_level=log_file_level,
-                json_logging=json_logging,
-            )
-        else:
-            vf.setup_logging(
-                level=log_level,
-                log_file=log_file,
-                log_file_level=log_file_level,
-                json_logging=json_logging,
-            )
+        logger_kwargs: dict[str, Any] = {"json_logging": json_logging}
+        if log_level is not None:
+            logger_kwargs["level"] = log_level
+        if log_file is not None:
+            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+            logger_kwargs["log_file"] = log_file
+            logger_kwargs["log_file_level"] = log_file_level
+
+        vf.setup_logging(**logger_kwargs)
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(
@@ -82,7 +76,6 @@ class EnvServer(ABC):
         self.extra_env_kwargs = extra_env_kwargs or {}
 
         self.clients: dict[str, Client] = {}
-        self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
         self.logger.info(f"Loading environment {env_id} with {env_args=}")
@@ -94,7 +87,7 @@ class EnvServer(ABC):
             self.env.set_kwargs(**self.extra_env_kwargs)
 
         # Start event loop lag monitor
-        self.lag_monitor = EventLoopLagMonitor(logger=self.logger)
+        self.lag_monitor = EventLoopLagMonitor()
 
     @abstractmethod
     async def serve(self, stop_event: asyncio.Event | None = None):
@@ -108,6 +101,13 @@ class EnvServer(ABC):
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown and cleanup."""
         request_parent_death_signal()
+
+        # Bind the scaled default executor to the *running* event loop.
+        # scale_executors() may have been called during __init__ (before
+        # asyncio.run() created this loop), so we install it here.
+        from verifiers.utils.thread_utils import install_default_executor
+
+        install_default_executor()
 
         stop_event = asyncio.Event()
 

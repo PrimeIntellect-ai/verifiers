@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import inspect
 import json
 import logging
 import multiprocessing as mp
@@ -29,12 +28,14 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
+from verifiers.decorators import discover_decorated
 from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.thread_utils import scale_executors
 from verifiers.utils.worker_utils import get_free_port_pair
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
@@ -241,32 +242,9 @@ class Environment(ABC):
         return normalized
 
     def __post_init__(self):
-        self._stop_conditions = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "stop") and callable(method)
-        ]
-        self._stop_conditions.sort(
-            key=lambda m: (-getattr(m, "stop_priority", 0), m.__name__)
-        )
-
-        self._cleanup_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "cleanup") and callable(method)
-        ]
-        self._cleanup_handlers.sort(
-            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
-        )
-
-        self._teardown_handlers = [
-            method
-            for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
-            if hasattr(method, "teardown") and callable(method)
-        ]
-        self._teardown_handlers.sort(
-            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
-        )
+        self._stop_conditions = discover_decorated(self, "stop")
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
 
         def _sync_teardown():
             try:
@@ -517,7 +495,7 @@ class Environment(ABC):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages | str,
+        prompt: Messages,
         client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -562,12 +540,10 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args
         )
 
-        normalized_prompt = normalize_messages(prompt, field_name="prompt")
-
         self._get_usage_tracker(state, create_if_missing=True)
 
         response = await client.get_response(
-            prompt=normalized_prompt,
+            prompt=prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
@@ -667,6 +643,7 @@ class Environment(ABC):
         """
         Tear down environment resources.
         """
+        await self.rubric.teardown()
         for handler in self._teardown_handlers:
             await handler()
 
@@ -1070,10 +1047,14 @@ class Environment(ABC):
                     for cb in extra_on_progress:
                         cb(builder.outputs, new_outputs, metadata)
 
-                    # incrementally save outputs
+                    # incrementally save outputs (offloaded to thread to avoid blocking the event loop)
                     if save_results:
-                        save_new_outputs(new_outputs, builder.results_path)
-                        save_metadata(metadata, builder.results_path)
+                        await asyncio.to_thread(
+                            save_new_outputs, new_outputs, builder.results_path
+                        )
+                        await asyncio.to_thread(
+                            save_metadata, metadata, builder.results_path
+                        )
             finally:
                 # cancel all outstanding tasks and await their completion
                 pending = [task for task in tasks.keys() if not task.done()]
@@ -1087,8 +1068,12 @@ class Environment(ABC):
 
             # save if requested
             if save_results:
-                save_outputs(results["outputs"], builder.results_path)
-                save_metadata(results["metadata"], builder.results_path)
+                await asyncio.to_thread(
+                    save_outputs, results["outputs"], builder.results_path
+                )
+                await asyncio.to_thread(
+                    save_metadata, results["metadata"], builder.results_path
+                )
                 if push_to_hf_hub:
                     push_results_to_hf_hub(results, hf_hub_dataset_name)
                 if on_log is not None:
@@ -1264,6 +1249,15 @@ class Environment(ABC):
             self.rubric.rubrics.append(rubric)
         else:
             self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
+
+    def set_concurrency(self, concurrency: int) -> None:
+        """Set concurrency and scale all registered thread-pool executors.
+
+        Each executor applies its own scaling function to map concurrency
+        to max_workers (default 1:1).
+        """
+        self.concurrency = concurrency
+        scale_executors(concurrency=concurrency)
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""

@@ -224,7 +224,7 @@ def load_environment(
             assistant_count = len([m for m in messages if m["role"] == "assistant"])
             follow_ups = state["info"]["follow_ups"]
             follow_up_idx = assistant_count - 1
-            return [{"role": "user", "content": follow_ups[follow_up_idx]}]
+            return [vf.UserMessage(content=follow_ups[follow_up_idx])]
 
     def score_response(
         predicted: List[str], expected: List[str], apply_power: bool = True
