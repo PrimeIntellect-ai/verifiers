@@ -242,9 +242,7 @@ class ZMQEnvServer(EnvServer):
                     )
 
             except asyncio.CancelledError:
-                response = BaseResponse(
-                    success=False, error="Request was cancelled"
-                )
+                response = BaseResponse(success=False, error="Request was cancelled")
 
             except Exception as e:
                 self.logger.error(
