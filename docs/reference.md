@@ -853,10 +853,10 @@ vf.load_example_dataset(name: str) -> Dataset
 Load a built-in example dataset.
 
 ```python
-vf.extract_boxed_answer(text: str) -> str | None
+vf.extract_boxed_answer(text: str, strict: bool = False) -> str
 ```
 
-Extract answer from LaTeX `\boxed{}` format.
+Extract answer from LaTeX `\boxed{}` format. When `strict=True`, returns `""` if no `\boxed{}` is found (used by `MathRubric` to avoid scoring unformatted responses). When `strict=False` (default), returns the original text as a passthrough.
 
 ```python
 vf.extract_hash_answer(text: str) -> str | None

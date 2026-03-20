@@ -61,8 +61,8 @@ class TestMathRubric:
     @pytest.mark.parametrize(
         "test_case",
         [
-            {"completion": "1", "answer": "2"},
-            {"completion": "\\frac{1}{3}", "answer": "0.5"},
+            {"completion": "\\boxed{1}", "answer": "2"},
+            {"completion": "\\boxed{\\frac{1}{3}}", "answer": "0.5"},
         ],
         ids=lambda x: f"{x['completion']} != {x['answer']}",
     )
