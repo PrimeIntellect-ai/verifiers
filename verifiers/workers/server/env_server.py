@@ -76,7 +76,6 @@ class EnvServer(ABC):
         self.extra_env_kwargs = extra_env_kwargs or {}
 
         self.clients: dict[str, Client] = {}
-        self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
         self.logger.info(f"Loading environment {env_id} with {env_args=}")

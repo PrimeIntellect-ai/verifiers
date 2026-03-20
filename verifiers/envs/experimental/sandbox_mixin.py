@@ -15,9 +15,11 @@ from prime_sandboxes import (
     APIError,
     CommandTimeoutError,
     CreateSandboxRequest,
+    DownloadTimeoutError,
     SandboxClient,
     SandboxOOMError,
     SandboxTimeoutError,
+    UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
 
@@ -57,6 +59,37 @@ class SandboxMonitorRubric(vf.Rubric):
     async def sandbox_timeout(self, state: vf.State) -> float:
         """Whether the sandbox timed out."""
         return float(bool(state.get("sandbox_timeout")))
+
+
+# The SDK handles some transient transport retries internally, but upload/download
+# timeouts still surface as typed exceptions. Keep the env-level helpers here so
+# sandbox environments can share one policy for those cases.
+def is_retryable_sandbox_api_error(exception: BaseException) -> bool:
+    """Return True for transient sandbox API failures that are safe to retry."""
+    if not isinstance(exception, APIError):
+        return False
+
+    error_str = str(exception)
+    retry_tokens = (
+        "502",
+        "503",
+        "ConnectError",
+        "Temporary failure in name resolution",
+    )
+    return any(token in error_str for token in retry_tokens)
+
+
+def is_retryable_sandbox_read_error(exception: BaseException) -> bool:
+    """Return True for retryable read/transfer timeouts and transient API errors."""
+    return isinstance(
+        exception,
+        (
+            httpx.ReadTimeout,
+            CommandTimeoutError,
+            UploadTimeoutError,
+            DownloadTimeoutError,
+        ),
+    ) or is_retryable_sandbox_api_error(exception)
 
 
 class SandboxMixin:
@@ -100,7 +133,7 @@ class SandboxMixin:
             max_keepalive_connections=sandbox_client_max_keepalive_connections,
         )
         self.with_retry = tc.AsyncRetrying(
-            stop=tc.stop_after_attempt(max_retries),
+            stop=tc.stop_after_attempt(max_retries + 1),
             wait=tc.wait_exponential_jitter(
                 initial=base_delay,
                 exp_base=backoff_factor,
