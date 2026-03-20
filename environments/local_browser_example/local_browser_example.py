@@ -146,8 +146,8 @@ class LocalBrowserEnv(vf.MultiTurnEnv):
         # Sandbox configuration
         cpu_cores: int = 2,
         memory_gb: int = 4,
-        use_prebuilt_image: bool = False,  # Default to building from source
-        prebuilt_image: str = "deepdream19/cua-local-server:latest",
+        use_prebuilt_image: bool = True,
+        prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
         **kwargs,
     ):
         super().__init__(
@@ -251,8 +251,8 @@ def load_environment(
     # Sandbox configuration
     cpu_cores: int = 2,
     memory_gb: int = 4,
-    use_prebuilt_image: bool = False,
-    prebuilt_image: str = "deepdream19/cua-local-server:latest",
+    use_prebuilt_image: bool = True,
+    prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
     **kwargs,
 ) -> vf.Environment:
     """

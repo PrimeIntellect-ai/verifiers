@@ -82,7 +82,7 @@ class LocalCUAMode:
         sandbox_timeout_per_command_seconds: int = 120,
         # Pre-built image configuration
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "deepdream19/cua-local-server:latest",
+        prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
         # Base image for custom builds
         docker_image: str = "node:20-bookworm-slim",
     ):
