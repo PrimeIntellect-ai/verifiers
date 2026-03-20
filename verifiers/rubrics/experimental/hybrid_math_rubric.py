@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from openai import AsyncOpenAI
+
+import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.utils.data_utils import extract_boxed_answer
-
-import verifiers as vf
 
 # https://github.com/open-compass/CompassVerifier/blob/2d7cba6df0b21f9c6121786ac1e5770c68473598/src/prompts.py#L28
 DEFAULT_JUDGE_PROMPT = """\
@@ -131,21 +131,21 @@ class HybridMathRubric(vf.JudgeRubric):
         self.judge_model = judge_model if use_judge_fallback else None
         self.class_objects["judge_model"] = self.judge_model
 
-        # Delegate math verification to MathRubric (executor-based, non-blocking).
-        # We clear its auto-registered reward func since we manage scoring ourselves.
-        self._math_rubric = MathRubric(
+        # Delegate math verification to default MathRubric
+        # We clear its auto-registered reward func since we manage scoring ourselves
+        self.math_rubric = MathRubric(
             parser=self.parser,
             max_workers=max_workers,
             timeout_seconds=timeout_seconds,
         )
-        self._math_rubric.funcs.clear()
-        self._math_rubric.weights.clear()
+        self.math_rubric.funcs.clear()
+        self.math_rubric.weights.clear()
 
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
     ) -> float:
-        """Basic rule-based math verification (delegated to MathRubric)."""
-        score = await self._math_rubric.correct_answer(
+        """Basic rule-based math verification."""
+        score = await self.math_rubric.correct_answer(
             parser=self.parser,
             completion=completion,
             answer=answer,
@@ -161,7 +161,7 @@ class HybridMathRubric(vf.JudgeRubric):
         state: vf.State,
         **kwargs,
     ) -> float:
-        """Calls judge model if math verification did not pass and a judge model is set, else returns math verification score."""
+        """Calls judge if math verification failed and a judge model is set."""
         if state.get("math_verify_score", 0) == 1 or self.judge_model is None:
             return state.get("math_verify_score", 0)
 
@@ -178,7 +178,7 @@ class HybridMathRubric(vf.JudgeRubric):
         return judge_score
 
     async def correct_answer(self, state: vf.State, **kwargs) -> float:
-        """Whether either math verification or judge passed."""
+        """Whether math verification or judge succeeded."""
         return float(
             state.get("math_verify_score", 0.0) or state.get("judge_score", 0.0)
         )
