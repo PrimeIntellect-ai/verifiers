@@ -98,7 +98,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
-        sandbox_creation_rate_limit: float | None = None,
+        sandbox_creations_per_minute: float | None = 128,
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
@@ -113,7 +113,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_connections=sandbox_client_max_connections,
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
-            sandbox_creation_rate_limit=sandbox_creation_rate_limit,
+            sandbox_creations_per_minute=sandbox_creations_per_minute,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
@@ -376,14 +376,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         return normalized
 
-    async def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
+    async def normalize_intercepted_messages(
+        self, intercepted_messages: object
+    ) -> Messages:
         """Hook to normalize messages received from the agent before model inference.
 
         Assumes that agent requests arrive in OpenAI-format.
         """
-        return await asyncio.to_thread(normalize_messages, intercepted_messages)
+        return await asyncio.to_thread(normalize_messages, intercepted_messages)  # type: ignore
 
-    def normalize_response(self, response: Response) -> Response:
+    async def normalize_response(self, response: Response) -> Response:
         """Hook to normalize the model response before it is stored in the trajectory.
 
         Override in subclasses to align the stored step format with the agent's
@@ -524,7 +526,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if len(state["trajectory"]) == 0:
             state["prompt"] = prompt_messages
         await super().add_model_response(
-            state, prompt_messages, self.normalize_response(response)
+            state, prompt_messages, await self.normalize_response(response)
         )
 
     @vf.teardown

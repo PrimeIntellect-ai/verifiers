@@ -10,8 +10,8 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.types import AssistantMessage, Messages, ToolCall
-from verifiers.utils.path_utils import write_temp_file
 from verifiers.utils.logging_utils import truncate
+from verifiers.utils.path_utils import write_temp_file
 
 logger = logging.getLogger(__name__)
 
@@ -258,48 +258,48 @@ class OpenCodeEnv(CliAgentEnv):
             env_vars["OPENCODE_ENABLE_EXA"] = str(1)
         return env_vars
 
-    def normalize_response(self, response: vf.Response) -> vf.Response:
-        """Normalize model response to match OpenCode's message history conventions:
-        - Compact JSON arugments
-        - Strip trailing newlines from assistant content
+    # def normalize_response(self, response: vf.Response) -> vf.Response:
+    #     """Normalize model response to match OpenCode's message history conventions:
+    #     - Compact JSON arugments
+    #     - Strip trailing newlines from assistant content
 
-        Applying the same normalization to the stored step enables TITO prefix hits.
-        """
-        message = response.message
-        normalized_tool_calls = message.tool_calls or []
-        if message.tool_calls:
-            normalized_tool_calls = []
-            for tc in message.tool_calls:
-                if not isinstance(tc, ToolCall):
-                    normalized_tool_calls.append(tc)
-                    continue
-                try:
-                    compact_arguments = json.dumps(
-                        json.loads(tc.arguments),
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    )
-                except (json.JSONDecodeError, TypeError):
-                    compact_arguments = tc.arguments
-                normalized_tool_calls.append(
-                    tc.model_copy(
-                        update={"name": tc.name.lower(), "arguments": compact_arguments}
-                    )
-                )
-        content = message.content
-        if content is None:
-            content = ""
-        elif isinstance(content, str):
-            content = content.rstrip()
-        reasoning_content = message.reasoning_content or None
-        normalized_message = message.model_copy(
-            update={
-                "content": content,
-                "tool_calls": normalized_tool_calls,
-                "reasoning_content": reasoning_content,
-            }
-        )
-        return response.model_copy(update={"message": normalized_message})
+    #     Applying the same normalization to the stored step enables TITO prefix hits.
+    #     """
+    #     message = response.message
+    #     normalized_tool_calls = message.tool_calls or []
+    #     if message.tool_calls:
+    #         normalized_tool_calls = []
+    #         for tc in message.tool_calls:
+    #             if not isinstance(tc, ToolCall):
+    #                 normalized_tool_calls.append(tc)
+    #                 continue
+    #             try:
+    #                 compact_arguments = json.dumps(
+    #                     json.loads(tc.arguments),
+    #                     separators=(",", ":"),
+    #                     ensure_ascii=False,
+    #                 )
+    #             except (json.JSONDecodeError, TypeError):
+    #                 compact_arguments = tc.arguments
+    #             normalized_tool_calls.append(
+    #                 tc.model_copy(
+    #                     update={"name": tc.name.lower(), "arguments": compact_arguments}
+    #                 )
+    #             )
+    #     content = message.content
+    #     if content is None:
+    #         content = ""
+    #     elif isinstance(content, str):
+    #         content = content.rstrip()
+    #     reasoning_content = message.reasoning_content or None
+    #     normalized_message = message.model_copy(
+    #         update={
+    #             "content": content,
+    #             "tool_calls": normalized_tool_calls,
+    #             "reasoning_content": reasoning_content,
+    #         }
+    #     )
+    #     return response.model_copy(update={"message": normalized_message})
 
     async def post_rollout(self, state: vf.State) -> None:
         """Collect agent logs from sandbox before teardown."""
