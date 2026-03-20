@@ -31,6 +31,9 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Managing Dependencies](#managing-dependencies)
   - [Installation](#installation)
 - [Environment Groups](#environment-groups)
+- [Performance](#performance)
+  - [Avoiding Sync Operations](#avoiding-sync-operations)
+  - [Executor Autoscaling](#executor-autoscaling)
 - [Integrations and Experimental Environments](#integrations-and-experimental-environments)
 
 ## Your First Environment
@@ -778,6 +781,93 @@ combined = vf.EnvGroup(
 ```
 
 The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together. 
+
+## Performance
+
+Verifiers runs rollouts concurrently on a single `asyncio` event loop. Any synchronous operation in environment code blocks **all** concurrent rollouts for its duration. At scale this adds up quickly — a 10ms sync call in at 2,000 concurrent rollouts serializes into 20 seconds of wall-clock blocking where no other rollout can make progress. The most impactful optimization is eliminating sync operations on the hot path rollout execution code, i.e. any method that runs *for each rollout* (e.g. `setup_state`, `env_response`, or reward functions).
+
+### Avoiding Sync Operations
+
+Common offenders include `time.sleep`, sync HTTP/LLM clients (`httpx.Client`, `OpenAI`), `deepcopy`, serialization, and file I/O. These should be **avoided at all costs**. Instead, use an async-native alternatives (e.g. `asyncio.sleep`, `httpx.AsyncClient`, `AsyncOpenAI`, `aiofiles`) or offload to the default thread pool with `asyncio.to_thread()`:
+
+```python
+# ❌ time.sleep blocks the event loop
+time.sleep(1)
+# ✅ asyncio.sleep yields control
+await asyncio.sleep(1)
+
+# ❌ sync HTTP clients
+requests.get(url)
+# ✅ async HTTP clients
+async with httpx.AsyncClient() as client:
+    await client.get(url)
+
+# ❌ sync LLM clients
+sync_client = OpenAI()
+sync_client.chat.completions.create(...)
+# ✅ use built-in async LLM calls
+async_client = AsyncOpenAI()
+await async_client.chat.completions.create(...)
+
+# ❌ deepcopy blocks for large objects
+copy.deepcopy(large_obj)
+# ✅ offload to thread pool
+await asyncio.to_thread(copy.deepcopy, large_obj)
+
+# ❌ serialization blocks for large payloads
+data_str = json.dumps(data)
+# ✅ offload to thread pool (+use faster lib)
+await asyncio.to_thread(orjson.dumps, data)
+
+# ❌ sync file I/O
+with open(file, "w") as f:
+    f.write(data)
+# ✅ use the built-in helper
+from verifiers.utils.path_utils import write_temp_file
+tmp_path = await asyncio.to_thread(write_temp_file, data, ".txt")
+```
+
+Note that `asyncio.to_thread()` releases the event loop but still holds the GIL. For truly CPU-bound operations (heavy computation, compilation, large data transforms >50ms), use a process pool instead:
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+executor = ProcessPoolExecutor(max_workers=4)
+
+async def heavy_reward(data):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, cpu_bound_fn, data)
+```
+
+### Executor Autoscaling
+
+`asyncio.to_thread()` dispatches work to a thread pool executor. By default Python's executor is small, but environments can scale it via `set_max_workers()`:
+
+```python
+env.set_max_workers(256)
+```
+
+This resizes both the default event-loop executor (used by `asyncio.to_thread()`) and all registered executors in one call. If your environment creates its own `ThreadPoolExecutor` (e.g. for a custom client), register it so it scales automatically:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from verifiers.utils.thread_utils import register_executor, unregister_executor
+
+# register during init — if set_max_workers() was already called,
+# the executor is immediately resized to match
+self.my_executor = ThreadPoolExecutor(max_workers=4)
+register_executor("my-env-client", self.my_executor)
+
+# unregister during teardown (does not shut down the executor)
+unregister_executor("my-env-client")
+self.my_executor.shutdown()
+```
+
+In practice, you rarely need to call `set_max_workers()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
+
+```bash
+prime eval run my-env -x '{"max_workers": 256}'
+```
 
 ## Integrations and Experimental Environments
 
