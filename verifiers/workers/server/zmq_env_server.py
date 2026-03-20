@@ -251,8 +251,8 @@ class ZMQEnvServer(EnvServer):
             # awaits (serialize_response, send_multipart) don't immediately
             # re-raise CancelledError before we can send the response.
             task = asyncio.current_task()
-            if task is not None:
-                task.uncancel()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()  # Python 3.11+
             response = BaseResponse(success=False, error="Request was cancelled")
 
         except Exception as e:
@@ -276,6 +276,10 @@ class ZMQEnvServer(EnvServer):
 
         try:
             response_bytes = await asyncio.to_thread(serialize_response)
+        except asyncio.CancelledError:
+            # On Python 3.10 (no Task.uncancel), the cancellation flag may
+            # still be set — fall back to synchronous serialization.
+            response_bytes = serialize_response()
         except Exception as e:
             self.logger.error(
                 f"Failed to serialize response for request {request_id}: {e}",
@@ -298,6 +302,18 @@ class ZMQEnvServer(EnvServer):
             await self.socket.send_multipart(
                 [client_id, request_id.encode(), response_bytes]
             )
+        except asyncio.CancelledError:
+            # Best-effort non-async send so the client isn't left hanging.
+            try:
+                self.socket.send_multipart(
+                    [client_id, request_id.encode(), response_bytes],
+                    flags=zmq.NOBLOCK,
+                )
+            except zmq.ZMQError:
+                self.logger.warning(
+                    f"Failed to send cancelled response for request {request_id[:7]} "
+                    f"(client likely disconnected)"
+                )
         except zmq.ZMQError as e:
             self.logger.warning(
                 f"Failed to send response for request {request_id[:7]}: {e} "
