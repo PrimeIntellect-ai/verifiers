@@ -98,6 +98,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
+        sandbox_creation_rate_limit: float | None = None,
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
@@ -112,6 +113,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_connections=sandbox_client_max_connections,
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
+            sandbox_creation_rate_limit=sandbox_creation_rate_limit,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
@@ -335,14 +337,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Normalize intercepted request tools for the provider-agnostic runtime.
 
         Assumes that agent requests arrive in OpenAI-tool format.
+        Avoids redundant Pydantic round-trips for already-validated Tool objects.
         """
         if not isinstance(intercept_tools, list):
             raise TypeError("Intercepted tools must be provided as a list.")
 
-        normalized_inputs: list[dict[str, Any]] = []
+        normalized: list[Tool] = []
         for raw_tool in intercept_tools:
             if isinstance(raw_tool, Tool):
-                normalized_inputs.append(raw_tool.model_dump(exclude_none=True))
+                normalized.append(raw_tool)
                 continue
             if not isinstance(raw_tool, dict):
                 raise TypeError(
@@ -359,19 +362,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     raise TypeError(
                         "Intercepted function tool parameters must be a JSON object."
                     )
-                normalized_inputs.append(
-                    {
-                        "name": function_payload.get("name"),
-                        "description": function_payload.get("description", ""),
-                        "parameters": parameters,
-                        "strict": function_payload.get("strict"),
-                    }
+                normalized.append(
+                    Tool(
+                        name=function_payload.get("name", ""),
+                        description=function_payload.get("description", ""),
+                        parameters=parameters,
+                        strict=function_payload.get("strict"),
+                    )
                 )
                 continue
 
-            normalized_inputs.append(raw_tool_dict)
+            normalized.append(Tool.model_validate(raw_tool_dict))
 
-        return self._normalize_tool_defs(normalized_inputs)
+        return normalized
 
     def normalize_intercepted_messages(self, intercepted_messages: object) -> Messages:
         """Hook to normalize messages received from the agent before model inference.
@@ -465,9 +468,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             model = state.get("model") or model
             intercept_tools = intercept.get("tools")
             if intercept_tools:
-                tool_defs = (
-                    self.normalize_intercepted_tools(intercept_tools) or tool_defs
-                )
+                # Cache normalized tools per rollout — agents typically send
+                # the same tool definitions on every request
+                cached = state.get("_cached_tool_defs")
+                if cached is not None:
+                    tool_defs = cached
+                else:
+                    tool_defs = (
+                        self.normalize_intercepted_tools(intercept_tools) or tool_defs
+                    )
+                    state["_cached_tool_defs"] = tool_defs
 
         response: Response | None = None
         error: BaseException | None = None
