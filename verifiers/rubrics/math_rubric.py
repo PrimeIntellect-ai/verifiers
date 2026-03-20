@@ -16,6 +16,7 @@ from verifiers.utils.data_utils import extract_boxed_answer
 
 class MathRubric(Rubric):
     HARD_TIMEOUT_SECONDS: float = 120.0
+    MAX_VERIFY_CHARS: int = 50_000
 
     def __init__(
         self,
@@ -24,8 +25,10 @@ class MathRubric(Rubric):
         parser: Parser | None = None,
         max_workers: int = 50,
         timeout_seconds: float = 5,
+        max_verify_chars: int = MAX_VERIFY_CHARS,
     ):
         parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
+        self.max_verify_chars = max_verify_chars
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
@@ -55,6 +58,14 @@ class MathRubric(Rubric):
             start = time.perf_counter()
             response = parser.parse_answer(completion) or ""
             if response == "":
+                elapsed = time.perf_counter() - start
+                return 0.0, elapsed
+
+            if len(response) > self.max_verify_chars:
+                self.logger.warning(
+                    f"Skipping math verification: parsed response too long "
+                    f"({len(response)} chars > {self.max_verify_chars} limit)"
+                )
                 elapsed = time.perf_counter() - start
                 return 0.0, elapsed
 
