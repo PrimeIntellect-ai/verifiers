@@ -1,0 +1,45 @@
+# Dockerfile.local
+#
+# Sandbox image for running the CUA server alongside a locally-launched
+# Chromium browser. Used when env="LOCAL" so that browser traffic stays
+# entirely within the sandbox — no Browserbase required.
+#
+# Build:
+#   docker build --platform linux/amd64 -f Dockerfile.local -t cua-local:latest .
+#
+# Requires the CUA server binary to be built first:
+#   pnpm build:binary:docker   (from assets/templates/browserbase/cua/)
+
+FROM --platform=linux/amd64 node:20-bookworm-slim
+
+# Install Chromium and runtime dependencies.
+# chromium pulls in the full set of shared libs it needs.
+# fonts-* keep text rendering sane on headless pages.
+# curl is required by the sandbox health-check commands.
+RUN apt-get update -qq && \
+    apt-get install -y -qq \
+        chromium \
+        fonts-noto-color-emoji \
+        fonts-liberation \
+        curl \
+        --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
+
+# Tell anything that looks for Chrome where to find it
+ENV CHROMIUM_PATH=/usr/bin/chromium
+# Prevent Playwright/Puppeteer from trying to download their own bundle
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=true
+
+# ── CUA server ────────────────────────────────────────────────────────────────
+WORKDIR /app/cua-server
+
+COPY dist/sea/cua-server-linux-x64 ./cua-server-linux-x64
+RUN chmod +x ./cua-server-linux-x64
+
+# CUA server runs on 3001 so it doesn't collide with the Next.js app on 3000
+ENV CUA_SERVER_PORT=3001
+ENV CUA_SERVER_HOST=0.0.0.0
+EXPOSE 3001
+
+CMD ["./cua-server-linux-x64"]

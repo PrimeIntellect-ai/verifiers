@@ -2,7 +2,8 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import type { Page } from "@browserbasehq/stagehand";
 
 /**
- * CUA Action Types - Browser primitives that can be executed
+ * CUA Action Types - Browser primitives for local app interaction.
+ * Note: 'goto' is omitted as this mode is for localhost apps without internet access.
  */
 export type ActionType =
   | "click"
@@ -14,7 +15,6 @@ export type ActionType =
   | "scroll"
   | "drag"
   | "move"
-  | "goto"
   | "back"
   | "forward"
   | "wait"
@@ -36,8 +36,6 @@ export interface ActionRequest {
   // Scroll params
   scroll_x?: number;
   scroll_y?: number;
-  // Navigation params
-  url?: string;
   // Wait params
   timeMs?: number;
   // Drag params
@@ -79,31 +77,29 @@ export interface ActionResponse {
 }
 
 /**
- * Session Create Request
+ * Session Create Request - Local mode only
  */
 export interface SessionCreateRequest {
-  env?: "LOCAL" | "BROWSERBASE";
-  browserbaseApiKey?: string;
-  browserbaseProjectId?: string;
   viewport?: Viewport;
-  proxies?: boolean;
   /**
    * Path to the Chromium/Chrome executable inside the container.
-   * Only used when env="LOCAL". If not set, Stagehand will attempt
-   * to find Chrome automatically (usually fails in minimal containers).
    * Example: "/usr/bin/chromium"
    */
   executablePath?: string;
   /**
    * CDP WebSocket URL to connect to an already-running browser.
-   * Only used when env="LOCAL". Takes precedence over executablePath
-   * when both are set — Stagehand will connect to the existing browser
-   * rather than launching a new one.
+   * Takes precedence over executablePath when both are set.
    * Example: "ws://localhost:9222"
    */
   cdpUrl?: string;
   args?: string[];
   headless?: boolean;
+  /**
+   * Initial URL to navigate to after session creation.
+   * For local app mode, this should be the localhost URL of your app.
+   * Example: "http://localhost:3000"
+   */
+  startUrl?: string;
 }
 
 /**

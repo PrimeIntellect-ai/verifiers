@@ -12,8 +12,8 @@ function generateSessionId(): string {
 /**
  * BrowserSessionManager
  *
- * Manages multiple Stagehand browser instances by session ID.
- * Handles creation, retrieval, and cleanup of browser sessions.
+ * Manages Stagehand browser instances in LOCAL mode only.
+ * Designed for controlling localhost applications without internet access.
  */
 export class BrowserSessionManager {
   private sessions: Map<string, BrowserSession> = new Map();
@@ -24,65 +24,50 @@ export class BrowserSessionManager {
   async createSession(options?: SessionCreateRequest): Promise<BrowserSession> {
     const sessionId = generateSessionId();
     const startTime = Date.now();
-    const envType = options?.env ?? "LOCAL";
 
-    console.log(`[Session] Creating ${sessionId} with env: ${envType}, proxies: ${options?.proxies ?? false}`);
+    console.log(`[Session] Creating ${sessionId} in LOCAL mode`);
 
     // Build localBrowserLaunchOptions for LOCAL mode.
     // executablePath and cdpUrl are forwarded when provided so that
     // callers running inside a container can point Stagehand at the
     // correct Chromium binary or an already-running browser.
-    const localLaunchOptions =
-      envType === "LOCAL"
+    const localLaunchOptions = {
+      viewport: options?.viewport
         ? {
-            viewport: options?.viewport
-              ? {
-                  width: options.viewport.width,
-                  height: options.viewport.height,
-                }
-              : { width: 1024, height: 768 },
-            headless: options?.headless ?? true,
-            args: options?.args ?? [
-              "--no-sandbox",
-              "--disable-gpu",
-              "--disable-dev-shm-usage",
-              "--disable-setuid-sandbox",
-            ],
-            ...(options?.cdpUrl ? { cdpUrl: options.cdpUrl } : {}),
-            ...(options?.executablePath && !options?.cdpUrl
-              ? { executablePath: options.executablePath }
-              : {}),
+            width: options.viewport.width,
+            height: options.viewport.height,
           }
-        : undefined;
+        : { width: 1024, height: 768 },
+      headless: options?.headless ?? true,
+      args: options?.args ?? [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-setuid-sandbox",
+      ],
+      ...(options?.cdpUrl ? { cdpUrl: options.cdpUrl } : {}),
+      ...(options?.executablePath && !options?.cdpUrl
+        ? { executablePath: options.executablePath }
+        : {}),
+    };
 
     const stagehand = new Stagehand({
-      env: envType,
-      apiKey: options?.browserbaseApiKey,
-      projectId: options?.browserbaseProjectId,
+      env: "LOCAL",
       modelApiKey: process.env.OPENAI_API_KEY,
       verbose: 1,
       disablePino: true,
-      browserbaseSessionCreateParams:
-        envType === "BROWSERBASE"
-          ? {
-              projectId: options?.browserbaseProjectId,
-              proxies: options?.proxies ?? false,
-              browserSettings: {
-                viewport: options?.viewport
-                  ? {
-                      width: options.viewport.width,
-                      height: options.viewport.height,
-                    }
-                  : { width: 1024, height: 768 },
-              },
-            }
-          : undefined,
       localBrowserLaunchOptions: localLaunchOptions,
     });
 
     await stagehand.init();
 
     const page = stagehand.context.pages()[0];
+
+    // Navigate to start URL if provided (e.g., localhost:3000 for the target app)
+    if (options?.startUrl) {
+      console.log(`[Session] Navigating to start URL: ${options.startUrl}`);
+      await page.goto(options.startUrl, { waitUntil: "load" });
+    }
 
     const session: BrowserSession = {
       id: sessionId,
@@ -95,7 +80,7 @@ export class BrowserSessionManager {
 
     const duration = Date.now() - startTime;
     console.log(
-      `[Session] Created ${sessionId} in ${duration}ms (env: ${envType}, active sessions: ${this.sessions.size})`
+      `[Session] Created ${sessionId} in ${duration}ms (active sessions: ${this.sessions.size})`
     );
 
     return session;

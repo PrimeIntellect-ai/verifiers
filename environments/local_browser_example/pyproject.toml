@@ -1,0 +1,21 @@
+[project]
+name = "local-browser-example"
+version = "0.1.0"
+description = "Example environment for testing localhost applications with CUA-style browser automation"
+tags = ["browser", "local", "cua", "vision", "example", "nextjs"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+    "prime-sandboxes>=0.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["local_browser_example.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
