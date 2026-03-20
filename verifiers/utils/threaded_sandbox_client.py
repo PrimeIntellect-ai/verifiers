@@ -23,7 +23,7 @@ class ThreadedAsyncSandboxClient:
 
     def __init__(
         self,
-        max_workers: int = 50,
+        max_workers: int = 128,
         max_connections: int = 100,
         max_keepalive_connections: int = 50,
         **client_kwargs,
@@ -31,14 +31,14 @@ class ThreadedAsyncSandboxClient:
         """Initialize the threaded sandbox client."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.executor = ThreadPoolExecutor(
-            max_workers=max_workers,
+            max_workers=50,  # initial value, will be scaled by register_executor
             thread_name_prefix="sandbox-client-executor",
         )
         self.executor_name = f"sandbox-client-{id(self)}"
         register_executor(
             self.executor_name,
             self.executor,
-            scaling_fn=lambda c: min(max(1, c // 4), 128),
+            scaling_fn=lambda c: min(max(1, c // 4), max_workers),
         )
         self.client_kwargs = {
             "max_connections": max_connections,
