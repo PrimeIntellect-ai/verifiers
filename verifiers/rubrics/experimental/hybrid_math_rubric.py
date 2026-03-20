@@ -146,7 +146,9 @@ class HybridMathRubric(vf.JudgeRubric):
     ) -> float:
         """Basic rule-based math verification (delegated to MathRubric)."""
         score = await self._math_rubric.correct_answer(
-            parser=self.parser, completion=completion, answer=answer,
+            parser=self.parser,
+            completion=completion,
+            answer=answer,
         )
         state["math_verify_score"] = score
         return score
