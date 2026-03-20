@@ -5,7 +5,9 @@ import os
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable, Optional, cast
+
+from aiolimiter import AsyncLimiter
 
 from verifiers.utils.path_utils import write_temp_file
 
@@ -98,6 +100,7 @@ class SandboxMixin:
     active_sandboxes: set[str]
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
+    sandbox_creation_rate_limiter: Optional[AsyncLimiter]
     with_retry: Callable
 
     def register_sandbox(self, sandbox_id: str) -> None:
@@ -119,13 +122,25 @@ class SandboxMixin:
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_wait_for_creation_max_attempts: int = 120,
+        sandbox_creation_rate_limit: float | None = None,
     ):
-        """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
+        """Initialize sandbox client and retry wrapper. Call from subclass __init__.
+
+        Args:
+            sandbox_creation_rate_limit: Maximum sandbox creations per minute.
+                When set, ``create_sandbox`` will throttle to avoid burst load
+                on the sandbox API. ``None`` disables rate limiting.
+        """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
         self.sandbox_wait_for_creation_max_attempts = (
             sandbox_wait_for_creation_max_attempts
+        )
+        self.sandbox_creation_rate_limiter = (
+            AsyncLimiter(max_rate=sandbox_creation_rate_limit, time_period=60.0)
+            if sandbox_creation_rate_limit is not None
+            else None
         )
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
@@ -150,11 +165,17 @@ class SandboxMixin:
     async def create_sandbox(self, state, request: CreateSandboxRequest) -> str:
         """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook.
 
+        When a sandbox_creation_rate_limit is configured, this method
+        throttles to avoid overwhelming the sandbox API under burst load.
+
         Raises:
             SandboxCreationError: If sandbox creation fails after retries.
             SandboxNotReadyError: If sandbox fails to become ready.
             SandboxSetupError: If post_sandbox_setup hook fails.
         """
+        if self.sandbox_creation_rate_limiter is not None:
+            await self.sandbox_creation_rate_limiter.acquire()
+
         try:
             sandbox = await self.with_retry(self.sandbox_client.create)(request)
         except Exception as e:
