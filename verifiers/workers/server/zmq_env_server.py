@@ -217,6 +217,58 @@ class ZMQEnvServer(EnvServer):
 
             self.logger.info(message)
 
+    async def _serialize_and_send(
+        self,
+        client_id: bytes,
+        request_id: str,
+        response: BaseResponse,
+    ) -> None:
+        """Serialize *response* and send it back to the client.
+
+        Extracted so it can be wrapped in ``asyncio.shield()`` — this lets
+        the response reach the client even when the owning task has been
+        cancelled.
+        """
+
+        def _serialize() -> bytes:
+            return cast(
+                bytes,
+                msgpack.packb(
+                    response.model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
+
+        try:
+            response_bytes = await asyncio.to_thread(_serialize)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to serialize response for request {request_id}: {e}",
+                exc_info=True,
+            )
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    BaseResponse(
+                        success=False,
+                        error=f"Response serialization failed: {repr(e)}",
+                    ).model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
+
+        try:
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(
+                f"Failed to send response for request {request_id[:7]}: {e} "
+                f"(client likely disconnected)"
+            )
+
     async def process_request(
         self,
         client_id: bytes,
@@ -247,12 +299,6 @@ class ZMQEnvServer(EnvServer):
                 )
 
         except asyncio.CancelledError:
-            # Clear the task's internal cancellation flag so that subsequent
-            # awaits (serialize_response, send_multipart) don't immediately
-            # re-raise CancelledError before we can send the response.
-            task = asyncio.current_task()
-            if task is not None and hasattr(task, "uncancel"):
-                task.uncancel()  # Python 3.11+
             response = BaseResponse(success=False, error="Request was cancelled")
 
         except Exception as e:
@@ -264,58 +310,17 @@ class ZMQEnvServer(EnvServer):
                 error=repr(e),
             )
 
-        def serialize_response() -> bytes:
-            return cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
+        # Shield the serialize+send work so it completes even if this task is
+        # cancelled (e.g. after catching CancelledError above).  shield()
+        # runs the coroutine in a fresh inner task whose cancellation flag is
+        # clear, avoiding the Python 3.10 problem where Task.uncancel() does
+        # not exist and every subsequent await would re-raise CancelledError.
         try:
-            response_bytes = await asyncio.to_thread(serialize_response)
-        except asyncio.CancelledError:
-            # On Python 3.10 (no Task.uncancel), the cancellation flag may
-            # still be set — fall back to synchronous serialization.
-            response_bytes = serialize_response()
-        except Exception as e:
-            self.logger.error(
-                f"Failed to serialize response for request {request_id}: {e}",
-                exc_info=True,
-            )
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    BaseResponse(
-                        success=False,
-                        error=f"Response serialization failed: {repr(e)}",
-                    ).model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
-        # send response: [client_id, request_id, response]
-        try:
-            await self.socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
+            await asyncio.shield(
+                self._serialize_and_send(client_id, request_id, response)
             )
         except asyncio.CancelledError:
-            # Best-effort non-async send so the client isn't left hanging.
-            try:
-                self.socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes],
-                    flags=zmq.NOBLOCK,
-                )
-            except zmq.ZMQError:
-                self.logger.warning(
-                    f"Failed to send cancelled response for request {request_id[:7]} "
-                    f"(client likely disconnected)"
-                )
-        except zmq.ZMQError as e:
-            self.logger.warning(
-                f"Failed to send response for request {request_id[:7]}: {e} "
-                f"(client likely disconnected)"
-            )
+            # shield() protects the inner coroutine but re-raises
+            # CancelledError to the caller — safe to swallow here since the
+            # shielded send is still running to completion.
+            pass
