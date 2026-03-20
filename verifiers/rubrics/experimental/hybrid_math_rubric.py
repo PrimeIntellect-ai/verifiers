@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from openai import AsyncOpenAI
-
-import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.utils.data_utils import extract_boxed_answer
+
+import verifiers as vf
 
 # https://github.com/open-compass/CompassVerifier/blob/2d7cba6df0b21f9c6121786ac1e5770c68473598/src/prompts.py#L28
 DEFAULT_JUDGE_PROMPT = """\
@@ -230,9 +230,9 @@ class RemoteHybridMathRubric(SandboxMixin, HybridMathRubric):
         solution_path: str = DEFAULT_SOLUTION_PATH,
         scorer_path: str = DEFAULT_SCORER_PATH,
         scorer_timeout: int = DEFAULT_SCORER_TIMEOUT,
-        sandbox_client_max_workers: int = 10,
-        sandbox_client_max_connections: int = 100,
-        sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_connections: int = 1000,
+        sandbox_client_max_keepalive_connections: int = 200,
         **kwargs,
     ):
         super().__init__(**kwargs)

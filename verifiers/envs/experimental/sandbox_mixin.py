@@ -117,8 +117,8 @@ class SandboxMixin:
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
         sandbox_client_max_workers: int = 50,
-        sandbox_client_max_connections: int = 100,
-        sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_client_max_connections: int = 1000,
+        sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
     ):
