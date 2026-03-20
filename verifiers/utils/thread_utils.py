@@ -35,9 +35,13 @@ def get_or_create_thread_loop() -> asyncio.AbstractEventLoop:
 
 # --- Executor registry & scaling ---
 
-_executor_registry: dict[str, ThreadPoolExecutor] = {}
+# Default scaling: 1:1 concurrency to max_workers
+ScalingFn = Callable[[int], int]
+_default_scaling: ScalingFn = lambda concurrency: concurrency
+
+_executor_registry: dict[str, tuple[ThreadPoolExecutor, ScalingFn]] = {}
 _default_executor: ThreadPoolExecutor | None = None
-_target_max_workers: int | None = None  # sticky target from last scale_executors call
+_target_concurrency: int | None = None  # sticky target from last scale_executors call
 
 
 def _resize(executor: ThreadPoolExecutor, max_workers: int) -> None:
@@ -46,24 +50,34 @@ def _resize(executor: ThreadPoolExecutor, max_workers: int) -> None:
     executor._max_workers = max_workers
 
 
-def register_executor(name: str, executor: ThreadPoolExecutor) -> None:
+def register_executor(
+    name: str,
+    executor: ThreadPoolExecutor,
+    scaling_fn: ScalingFn | None = None,
+) -> None:
     """Register an executor so it is resized by future :func:`scale_executors` calls.
 
-    If :func:`scale_executors` was already called, the executor is immediately
-    resized to match the active target.
-    """
-    _executor_registry[name] = executor
+    *scaling_fn* maps concurrency → max_workers for this executor.
+    Defaults to 1:1 if not provided.
 
-    if _target_max_workers is not None and executor._max_workers != _target_max_workers:
-        _resize(executor, _target_max_workers)
-        logger.debug(
-            f"Registered executor {name} and immediately scaled to "
-            f"max_workers={_target_max_workers}"
-        )
-    else:
-        logger.debug(
-            f"Registered executor {name} (max_workers={executor._max_workers})"
-        )
+    If :func:`scale_executors` was already called, the executor is immediately
+    resized using the scaling function.
+    """
+    fn = scaling_fn or _default_scaling
+    _executor_registry[name] = (executor, fn)
+
+    if _target_concurrency is not None:
+        target = max(1, fn(_target_concurrency))
+        if executor._max_workers != target:
+            _resize(executor, target)
+            logger.debug(
+                f"Registered executor {name} and immediately scaled to "
+                f"max_workers={target} (concurrency={_target_concurrency})"
+            )
+            return
+    logger.debug(
+        f"Registered executor {name} (max_workers={executor._max_workers})"
+    )
 
 
 def unregister_executor(name: str) -> None:
@@ -71,38 +85,31 @@ def unregister_executor(name: str) -> None:
     _executor_registry.pop(name, None)
 
 
-def recommended_max_workers(concurrency: int, cap: int = 4096) -> int:
-    """Return a max_workers value scaled to *concurrency*.
 
-    For I/O-bound workloads (API calls, sandbox RPCs) the thread count can
-    safely far exceed the CPU count since threads spend most of their time
-    blocked on network I/O.  The *cap* is a sanity limit to prevent
-    misconfiguration from exhausting memory (~8 MB stack per thread).
-    """
-    return max(1, min(concurrency, cap))
-
-
-def scale_executors(max_workers: int) -> int:
+def scale_executors(concurrency: int) -> int:
     """Scale the default event-loop executor **and** all registered executors.
+
+    Each registered executor applies its own scaling function to map
+    *concurrency* to a max_workers value (default 1:1).
 
     If a running event loop exists, the default executor is bound to it
     immediately.  Otherwise the executor is only created/resized and the
     caller must call :func:`install_default_executor` once inside the real
     loop (e.g. at the start of ``async def run()``).
 
-    Returns *max_workers*.
+    Returns *concurrency*.
     """
-    global _default_executor, _target_max_workers
+    global _default_executor, _target_concurrency
 
-    _target_max_workers = max_workers
+    _target_concurrency = concurrency
 
-    # default event-loop executor (always tracked)
+    # default event-loop executor: 1:1 scaling
     if _default_executor is None:
         _default_executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="vf-default"
+            max_workers=concurrency, thread_name_prefix="vf-default"
         )
     else:
-        _resize(_default_executor, max_workers)
+        _resize(_default_executor, concurrency)
 
     # If there is already a running loop, bind immediately. When called
     # outside of an async context (e.g. during __init__ before asyncio.run),
@@ -113,15 +120,16 @@ def scale_executors(max_workers: int) -> int:
     except RuntimeError:
         pass  # no running loop yet — caller must call install_default_executor()
 
-    # explicitly registered executors
-    for name, executor in _executor_registry.items():
-        _resize(executor, max_workers)
-        logger.debug(f"Scaled executor {name} to max_workers={max_workers}")
+    # explicitly registered executors — each applies its own scaling
+    for name, (executor, scaling_fn) in _executor_registry.items():
+        target = max(1, scaling_fn(concurrency))
+        _resize(executor, target)
+        logger.debug(f"Scaled executor {name} to max_workers={target} (concurrency={concurrency})")
 
     logger.info(
-        f"scale_executors({max_workers}): default + {len(_executor_registry)} registered executor(s)"
+        f"scale_executors(concurrency={concurrency}): default + {len(_executor_registry)} registered executor(s)"
     )
-    return max_workers
+    return concurrency
 
 
 def install_default_executor() -> None:
@@ -143,11 +151,11 @@ def install_default_executor() -> None:
 
 def shutdown_executors() -> None:
     """Shut down the default executor and all registered executors."""
-    global _default_executor, _target_max_workers
-    _target_max_workers = None
+    global _default_executor, _target_concurrency
+    _target_concurrency = None
     if _default_executor is not None:
         _default_executor.shutdown(wait=False)
         _default_executor = None
-    for executor in _executor_registry.values():
+    for executor, _ in _executor_registry.values():
         executor.shutdown(wait=False)
     _executor_registry.clear()

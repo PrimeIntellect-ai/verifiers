@@ -41,7 +41,6 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
-from verifiers.utils.thread_utils import recommended_max_workers
 
 logger = logging.getLogger(__name__)
 
@@ -738,17 +737,16 @@ async def run_evaluation(
     try:
         if not config.disable_env_server:
             extra_env_kwargs = dict(config.extra_env_kwargs)
-            if "max_workers" not in extra_env_kwargs:
+            if "concurrency" not in extra_env_kwargs:
                 if config.max_concurrent <= 0:
                     concurrency = config.num_examples * config.rollouts_per_example
                 else:
                     concurrency = config.max_concurrent
 
-                max_workers = recommended_max_workers(concurrency)
                 logger.info(
-                    f"Automatically determined {max_workers=} for {concurrency=}"
+                    f"Automatically determined {concurrency=}"
                 )
-                extra_env_kwargs["max_workers"] = max_workers
+                extra_env_kwargs["concurrency"] = concurrency
 
             log_file = results_path / "eval.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
