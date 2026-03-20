@@ -147,7 +147,7 @@ class LocalBrowserEnv(vf.MultiTurnEnv):
         cpu_cores: int = 2,
         memory_gb: int = 4,
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
+        prebuilt_image: str = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox/team-cmlr3u2er002zhr01tj8f48ts/localbrowserapp:v1.0.1",
         **kwargs,
     ):
         super().__init__(

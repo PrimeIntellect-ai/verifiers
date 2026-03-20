@@ -9,10 +9,11 @@ import verifiers as vf
 from .modes.base import BrowserMode
 from .modes.cua_mode import CUAMode
 from .modes.dom_mode import DOMMode
+from .modes.local_cua_mode import LocalCUAMode
 
 logger = logging.getLogger(__name__)
 
-ModeType = Literal["dom", "cua"]
+ModeType = Literal["dom", "cua", "local_cua"]
 
 
 class BrowserEnv(vf.StatefulToolEnv):
