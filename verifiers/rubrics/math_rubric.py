@@ -10,6 +10,7 @@ from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, RewardFunc
+from verifiers.utils.thread_utils import register_executor, unregister_executor
 from verifiers.utils.data_utils import extract_boxed_answer
 
 
@@ -33,6 +34,8 @@ class MathRubric(Rubric):
             max_workers=max_workers,
             thread_name_prefix="math-verify",
         )
+        self.executor_name = f"math-verify-{id(self)}"
+        register_executor(self.executor_name, self.executor)
 
         # suppress math_verify timeout warnings (we handle timeouts ourselves)
         logging.getLogger("math_verify.parser").setLevel(logging.ERROR)
@@ -98,5 +101,7 @@ class MathRubric(Rubric):
 
     def __del__(self):
         """Shutdown the thread pool executor when the object is garbage collected."""
+        if hasattr(self, "executor_name"):
+            unregister_executor(self.executor_name)
         if hasattr(self, "executor"):
             self.executor.shutdown(wait=False)

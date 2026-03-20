@@ -1,6 +1,6 @@
+import asyncio
 import json
 import logging
-import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Callable
@@ -10,6 +10,7 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.types import AssistantMessage, Messages, ToolCall
+from verifiers.utils.path_utils import write_temp_file
 from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
@@ -219,10 +220,8 @@ class OpenCodeEnv(CliAgentEnv):
 
         prompt = self.build_prompt(state)
 
-        # Upload prompt as file
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
-            f.write(prompt)
-            local_prompt_path = f.name
+        # Upload prompt as file (temp file I/O offloaded to thread)
+        local_prompt_path = await asyncio.to_thread(write_temp_file, prompt)
 
         try:
             logger.debug(
@@ -232,15 +231,13 @@ class OpenCodeEnv(CliAgentEnv):
                 sandbox_id, self.remote_prompt_path, local_prompt_path
             )
         finally:
-            Path(local_prompt_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(local_prompt_path).unlink, missing_ok=True)
 
         # Upload system prompt as file, if provided
         if self.system_prompt:
-            with tempfile.NamedTemporaryFile(
-                mode="w", delete=False, suffix=".txt"
-            ) as f:
-                f.write(self.system_prompt)
-                local_system_prompt_path = f.name
+            local_system_prompt_path = await asyncio.to_thread(
+                write_temp_file, self.system_prompt
+            )
 
             try:
                 logger.debug(
@@ -250,7 +247,9 @@ class OpenCodeEnv(CliAgentEnv):
                     sandbox_id, self.remote_system_prompt_path, local_system_prompt_path
                 )
             finally:
-                Path(local_system_prompt_path).unlink(missing_ok=True)
+                await asyncio.to_thread(
+                    Path(local_system_prompt_path).unlink, missing_ok=True
+                )
 
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""

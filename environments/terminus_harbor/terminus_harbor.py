@@ -1,9 +1,10 @@
+import asyncio
 import logging
-import tempfile
 from pathlib import Path
 
 import verifiers as vf
 from verifiers.envs.experimental.harbor_env import HarborEnv
+from verifiers.utils.path_utils import write_temp_file
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +81,7 @@ class TerminusHarborEnv(HarborEnv):
 
         # Upload the run_agent.py script
         script_content = self._get_run_agent_script()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(script_content)
-            temp_path = f.name
+        temp_path = await asyncio.to_thread(write_temp_file, script_content, ".py")
 
         try:
             await self.sandbox_client.upload_file(
@@ -91,7 +90,7 @@ class TerminusHarborEnv(HarborEnv):
                 temp_path,
             )
         finally:
-            Path(temp_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(temp_path).unlink, True)
 
     def _get_run_agent_script(self) -> str:
         return """#!/usr/bin/env python3

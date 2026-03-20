@@ -12,9 +12,24 @@ from rich.text import Text
 from verifiers.errors import Error
 from verifiers.types import ErrorInfo, Messages
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import format_messages
 
 LOGGER_NAME = "verifiers"
+
+_seen_once_keys: set[tuple[str, str]] = set()
+
+
+def log_once(logger: logging.Logger, level: int, msg: str) -> None:
+    """Log a message only once per (logger name, message) pair for the process lifetime."""
+    key = (logger.name, msg)
+    if key in _seen_once_keys:
+        return
+    _seen_once_keys.add(key)
+    logger.log(level, msg)
+
+
+def warning_once(logger: logging.Logger, msg: str) -> None:
+    """Shorthand for ``log_once(logger, logging.WARNING, ...)``."""
+    log_once(logger, logging.WARNING, msg)
 
 
 class JsonFormatter(logging.Formatter):
@@ -144,6 +159,8 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
+    from verifiers.utils.message_utils import format_messages
+
     def format_error(error: ErrorInfo | BaseException) -> Text:
         out = Text()
         if isinstance(error, BaseException):

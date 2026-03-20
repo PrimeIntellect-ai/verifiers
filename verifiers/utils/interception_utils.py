@@ -156,6 +156,7 @@ class InterceptionServer:
             "stream": is_streaming,
             "chunk_queue": chunk_queue,
             "response_future": asyncio.Future(),
+            "headers": {k.lower(): v for k, v in request.headers.items()},
         }
 
         self.intercepts[request_id] = intercept

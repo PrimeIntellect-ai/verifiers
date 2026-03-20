@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-from collections import defaultdict
 from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
@@ -27,7 +26,14 @@ from verifiers.utils.message_utils import (
     sanitize_tool_calls,
     serialize_messages_for_output,
 )
-from verifiers.utils.metric_utils import compute_pass_at_k
+from verifiers.utils.metric_utils import (
+    EnvMetrics,
+    ErrorRateMetric,
+    InputTokensMetric,
+    OutputTokensMetric,
+    PassAtKMetric,
+    RewardMetric,
+)
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.usage_utils import (
     StateUsageTracker,
@@ -273,82 +279,46 @@ class GenerateOutputsBuilder:
         self.results_path = results_path or get_results_path(env_id, model)
         self.pass_threshold = pass_threshold
         self.start_time = time.time()
-        self.base_url = self._compute_base_url(self.client)
+        self.base_url = self.compute_base_url(self.client)
         self.version_info = get_version_info(env_id=env_id)
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
-        self.tools_list: list[list[Tool] | None] = []
+
+        # Incremental metric accumulators (avoid O(n) rescan in build_metadata)
+        self.reward = RewardMetric()
+        self.error_rate = ErrorRateMetric()
+        self.env_metrics = EnvMetrics()
+        self.input_tokens = InputTokensMetric()
+        self.output_tokens = OutputTokensMetric()
+        self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
+
+        # Tools tracking
+        self.unique_tools_keys: set[str] = set()
+        self.first_tools: list[Tool] | None = None
 
     @staticmethod
-    def _format_base_url(url: str) -> str:
+    def format_base_url(url: str) -> str:
         return url
 
-    def _compute_base_url(self, client: AsyncOpenAI | ClientConfig | object) -> str:
+    def compute_base_url(self, client: AsyncOpenAI | ClientConfig | object) -> str:
         if isinstance(client, ClientConfig):
             if client.endpoint_configs:
                 endpoint_urls = [cfg.api_base_url for cfg in client.endpoint_configs]
                 if endpoint_urls:
                     return ",".join(endpoint_urls)
-            return self._format_base_url(client.api_base_url)
+            return self.format_base_url(client.api_base_url)
 
         if hasattr(client, "base_url"):
             return str(getattr(client, "base_url"))
         return ""
 
-    def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
-        """Accumulate new outputs."""
-        self.outputs.extend(new_outputs)
-        for output in new_outputs:
-            self.tools_list.append(output.get("tool_defs"))
+    @staticmethod
+    def tools_key(tools: list[Tool] | None) -> str:
+        if not tools:
+            return ""
 
-    def build_metadata(self) -> GenerateMetadata:
-        """Build metadata from accumulated outputs."""
-        # compute reward stats from accumulated outputs
-        rewards = [o.get("reward", 0.0) for o in self.outputs]
-        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-
-        # compute metrics stats from accumulated outputs
-        metrics: dict[str, list[float]] = defaultdict(list)
-        for output in self.outputs:
-            output_metrics = output.get("metrics", {})
-            if output_metrics:
-                for metric_name, metric_value in output_metrics.items():
-                    if isinstance(metric_value, (int, float)):
-                        metrics[metric_name].append(metric_value)
-        avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
-
-        # compute error rate from accumulated outputs
-        errors = [o.get("error") for o in self.outputs]
-        has_errors = [e is not None for e in errors]
-        avg_error = sum(has_errors) / len(has_errors) if has_errors else 0.0
-
-        # compute pass@k and pass^k from accumulated outputs
-        pass_at_k, pass_all_k = compute_pass_at_k(
-            self.outputs, self.rollouts_per_example, self.pass_threshold
-        )
-
-        input_tokens_total = 0.0
-        output_tokens_total = 0.0
-        usage_seen = False
-        usage_count = 0
-        for output in self.outputs:
-            token_usage = output.get("token_usage")
-            if not isinstance(token_usage, dict):
-                continue
-            usage_seen = True
-            usage_count += 1
-            input_tokens_total += float(token_usage.get("input_tokens", 0.0))
-            output_tokens_total += float(token_usage.get("output_tokens", 0.0))
-        usage: TokenUsage | None = None
-        if usage_seen and usage_count > 0:
-            usage = {
-                "input_tokens": input_tokens_total / usage_count,
-                "output_tokens": output_tokens_total / usage_count,
-            }
-
-        # Determine tools (use first non-None if all same)
-        def tool_name(tool: Tool | dict[str, Any]) -> str:
+        def _tool_name(tool: Tool | dict[str, Any]) -> str:
             if isinstance(tool, dict):
                 function = tool.get("function")
                 if isinstance(function, dict):
@@ -359,17 +329,38 @@ class GenerateOutputsBuilder:
                 return name if isinstance(name, str) else ""
             return tool.name
 
-        def tools_key(tools: list[Tool] | None) -> str:
-            if not tools:
-                return ""
-            return str(sorted(tool_name(t) for t in tools))
+        return str(sorted(_tool_name(t) for t in tools))
 
-        unique_tools = set(tools_key(t) for t in self.tools_list)
-        tools = (
-            next((t for t in self.tools_list if t), None)
-            if len(unique_tools) == 1
-            else None
-        )
+    def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
+        """Accumulate new outputs and update incremental accumulators."""
+        self.outputs.extend(new_outputs)
+        self.reward.add_outputs(new_outputs)
+        self.error_rate.add_outputs(new_outputs)
+        self.env_metrics.add_outputs(new_outputs)
+        self.input_tokens.add_outputs(new_outputs)
+        self.output_tokens.add_outputs(new_outputs)
+        self.pass_at_k.add_outputs(new_outputs)
+
+        for output in new_outputs:
+            tool_defs = output.get("tool_defs")
+
+            # Tools tracking
+            tk = self.tools_key(tool_defs)
+            self.unique_tools_keys.add(tk)
+            if self.first_tools is None and tool_defs:
+                self.first_tools = tool_defs
+
+    def build_metadata(self) -> GenerateMetadata:
+        """Build metadata from incremental accumulators. O(1) per call."""
+        pass_at_k_result, pass_all_k_result = self.pass_at_k.compute()
+        tools = self.first_tools if len(self.unique_tools_keys) == 1 else None
+
+        usage: TokenUsage | None = None
+        if self.input_tokens.count > 0:
+            usage = {
+                "input_tokens": self.input_tokens.compute(),
+                "output_tokens": self.output_tokens.compute(),
+            }
 
         return GenerateMetadata(
             env_id=self.env_id,
@@ -381,11 +372,11 @@ class GenerateOutputsBuilder:
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
             time_ms=(time.time() - self.start_time) * 1000.0,
-            avg_reward=avg_reward,
-            avg_metrics=avg_metrics,
-            avg_error=avg_error,
-            pass_at_k=pass_at_k,
-            pass_all_k=pass_all_k,
+            avg_reward=self.reward.compute(),
+            avg_metrics=self.env_metrics.compute(),
+            avg_error=self.error_rate.compute(),
+            pass_at_k=pass_at_k_result,
+            pass_all_k=pass_all_k_result,
             pass_threshold=self.pass_threshold,
             usage=usage,
             version_info=self.version_info,
