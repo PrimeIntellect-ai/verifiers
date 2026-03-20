@@ -108,14 +108,6 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
     return text[content_start:closing_brace]
 
 
-def strict_extract_boxed_answer(text: str) -> str:
-    """Like extract_boxed_answer but returns empty string when no \\boxed{} is found."""
-    result = extract_boxed_answer(text)
-    if result == text:
-        return ""
-    return result
-
-
 def strip_non_numeric(text: str) -> str:
     return "".join(c for c in text if c.isdigit() or c == ".")
 
