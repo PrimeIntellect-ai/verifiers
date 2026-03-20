@@ -361,6 +361,10 @@ class SRLMEnv(MultiTurnEnv):
     # Sub-LLM Backend Resolution
     # =========================================================================
 
+    # Default API endpoint for sub-LLM calls (Prime Intellect)
+    _DEFAULT_SUB_LLM_BASE_URL = "https://api.pinference.ai/api/v1"
+    _DEFAULT_SUB_LLM_API_KEY_VAR = "PRIME_API_KEY"
+
     def _derive_backend_kwargs(self, state: State) -> dict[str, Any]:
         """Derive sub-LLM backend_kwargs from the root model's verifiers Client.
 
@@ -368,9 +372,10 @@ class SRLMEnv(MultiTurnEnv):
         so sub-LLM calls from code (llm_query, llm_query_batched) go to the
         same API endpoint as the root model by default.
 
-        The model name is passed through as-is (e.g. 'openai/gpt-5-mini')
-        since the Prime Intellect API uses the provider prefix for routing.
+        Falls back to the Prime Intellect API if extraction fails.
         """
+        import os
+
         model_name = self._sub_model or state.get("model", "unknown")
         base_url: str | None = None
         api_key: str | None = None
@@ -385,11 +390,35 @@ class SRLMEnv(MultiTurnEnv):
                     base_url = str(raw_url).rstrip("/")
                 api_key = getattr(underlying, "api_key", None)
 
+        # Fall back to Prime Intellect defaults if extraction failed
+        if not base_url:
+            base_url = self._DEFAULT_SUB_LLM_BASE_URL
+            logger.debug(
+                "Could not extract base_url from verifiers Client, "
+                "falling back to %s",
+                base_url,
+            )
+        if not api_key:
+            api_key = os.environ.get(self._DEFAULT_SUB_LLM_API_KEY_VAR)
+            if api_key:
+                logger.debug(
+                    "Could not extract api_key from verifiers Client, "
+                    "falling back to %s env var",
+                    self._DEFAULT_SUB_LLM_API_KEY_VAR,
+                )
+
         kwargs: dict[str, Any] = {"model_name": model_name}
         if base_url:
             kwargs["base_url"] = base_url
         if api_key:
             kwargs["api_key"] = api_key
+
+        logger.info(
+            "Sub-LLM backend: model_name=%s, base_url=%s, api_key=%s",
+            model_name,
+            base_url,
+            f"{api_key[:10]}..." if api_key else "None",
+        )
         return kwargs
 
     # =========================================================================
