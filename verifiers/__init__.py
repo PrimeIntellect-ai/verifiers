@@ -25,6 +25,7 @@ from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.data_utils import (
     extract_boxed_answer,
     extract_hash_answer,
+    strict_extract_boxed_answer,
     load_example_dataset,
 )
 from .utils.logging_utils import (
@@ -70,6 +71,7 @@ __all__ = [
     "OpenAICompletionsClient",
     "extract_boxed_answer",
     "extract_hash_answer",
+    "strict_extract_boxed_answer",
     "load_example_dataset",
     "setup_logging",
     "log_level",
