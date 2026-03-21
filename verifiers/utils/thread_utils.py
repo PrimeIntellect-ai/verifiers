@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from typing import Any, Callable, cast
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +39,21 @@ def get_or_create_thread_loop() -> asyncio.AbstractEventLoop:
 ScalingFn = Callable[[int], int]
 _default_scaling: ScalingFn = lambda concurrency: concurrency
 
-_executor_registry: dict[str, tuple[ThreadPoolExecutor, ScalingFn]] = {}
+Executor = ThreadPoolExecutor | ProcessPoolExecutor
+_executor_registry: dict[str, tuple[Executor, ScalingFn]] = {}
 _default_executor: ThreadPoolExecutor | None = None
 _target_concurrency: int | None = None  # sticky target from last scale_executors call
 
 
-def _resize(executor: ThreadPoolExecutor, max_workers: int) -> None:
-    """Resize a ThreadPoolExecutor in-place. Threads are spawned lazily so
-    raising the limit simply allows more threads on the next submit."""
-    executor._max_workers = max_workers
+def _resize(executor: Executor, max_workers: int) -> None:
+    """Resize an executor in-place. Workers are spawned lazily so
+    raising the limit simply allows more workers on the next submit."""
+    cast(Any, executor)._max_workers = max_workers
 
 
 def register_executor(
     name: str,
-    executor: ThreadPoolExecutor,
+    executor: Executor,
     scaling_fn: ScalingFn | None = None,
 ) -> None:
     """Register an executor so it is resized by future :func:`scale_executors` calls.
@@ -68,14 +69,14 @@ def register_executor(
 
     if _target_concurrency is not None:
         target = max(1, fn(_target_concurrency))
-        if executor._max_workers != target:
+        if cast(Any, executor)._max_workers != target:
             _resize(executor, target)
             logger.debug(
                 f"Registered executor {name} and immediately scaled to "
                 f"max_workers={target} (concurrency={_target_concurrency})"
             )
             return
-    logger.debug(f"Registered executor {name} (max_workers={executor._max_workers})")
+    logger.debug(f"Registered executor {name} (max_workers={cast(Any, executor)._max_workers})")
 
 
 def unregister_executor(name: str) -> None:
