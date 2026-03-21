@@ -37,8 +37,11 @@ def get_or_create_thread_loop() -> asyncio.AbstractEventLoop:
 
 # Default scaling: 1:1 concurrency to max_workers
 ScalingFn = Callable[[int], int]
+
+
 def _default_scaling(concurrency: int) -> int:
     return concurrency
+
 
 Executor = ThreadPoolExecutor | ProcessPoolExecutor
 _executor_registry: dict[str, tuple[Executor, ScalingFn]] = {}

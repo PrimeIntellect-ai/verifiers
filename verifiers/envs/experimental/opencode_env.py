@@ -285,7 +285,10 @@ class OpenCodeEnv(CliAgentEnv):
                         compact_arguments = tc.arguments
                     normalized_tool_calls.append(
                         tc.model_copy(
-                            update={"name": tc.name.lower(), "arguments": compact_arguments}
+                            update={
+                                "name": tc.name.lower(),
+                                "arguments": compact_arguments,
+                            }
                         )
                     )
             content = message.content
