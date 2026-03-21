@@ -183,10 +183,10 @@ class ZMQEnvServer(EnvServer):
                 self.health_process.join(timeout=2)
             self.health_process = None
 
-        # Cancel and await all pending tasks
+        # Cancel and await all active tasks
         if self.request_tasks:
             tasks = list(self.request_tasks.values())
-            self.logger.info(f"Cancelling {len(tasks)} pending tasks")
+            self.logger.info(f"Cancelling {len(tasks)} active tasks")
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -203,8 +203,8 @@ class ZMQEnvServer(EnvServer):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
-            pending = len(self.request_tasks)
-            message = f"Pending tasks: {pending}"
+            active = len(self.request_tasks)
+            message = f"Active tasks: {active}"
 
             lags = self.lag_monitor.lags
             n = len(lags)
