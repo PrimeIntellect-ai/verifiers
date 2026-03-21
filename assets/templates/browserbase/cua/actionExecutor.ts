@@ -1,5 +1,9 @@
 import type { Page } from "@browserbasehq/stagehand";
-import { ActionRequest, ActionExecutionResult } from "./types";
+import {
+  ActionRequest,
+  ActionExecutionResult,
+  ValidationErrorDetail,
+} from "./types";
 
 /**
  * Logger interface for structured logging (compatible with Fastify logger)
@@ -7,6 +11,17 @@ import { ActionRequest, ActionExecutionResult } from "./types";
 export interface ActionLogger {
   info: (obj: object, msg?: string) => void;
   error: (obj: object, msg?: string) => void;
+}
+
+export class ActionValidationError extends Error {
+  readonly code = "INVALID_ACTION_ARGS";
+  readonly details: ValidationErrorDetail[];
+
+  constructor(actionType: string, details: ValidationErrorDetail[]) {
+    super(`Invalid arguments for ${actionType}`);
+    this.name = "ActionValidationError";
+    this.details = details;
+  }
 }
 
 /**
@@ -61,6 +76,75 @@ function mapKeyToPlaywright(key: string): string {
   return KEY_MAP[upperKey] || key;
 }
 
+function describeValueType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function integerFieldError(
+  field: string,
+  value: unknown,
+  expected = "an integer"
+): ValidationErrorDetail {
+  return {
+    field,
+    expected,
+    receivedType: describeValueType(value),
+    receivedValue: value,
+    message: `${field} must be ${expected}, received ${JSON.stringify(value)} (${describeValueType(value)})`,
+  };
+}
+
+function stringFieldError(
+  field: string,
+  value: unknown,
+  expected = "a string"
+): ValidationErrorDetail {
+  return {
+    field,
+    expected,
+    receivedType: describeValueType(value),
+    receivedValue: value,
+    message: `${field} must be ${expected}, received ${JSON.stringify(value)} (${describeValueType(value)})`,
+  };
+}
+
+function validateClickLikeArgs(
+  actionType: string,
+  x: unknown,
+  y: unknown
+): { x: number; y: number } {
+  const details: ValidationErrorDetail[] = [];
+  if (!Number.isInteger(x)) {
+    details.push(integerFieldError("x", x, "an integer pixel coordinate"));
+  }
+  if (!Number.isInteger(y)) {
+    details.push(integerFieldError("y", y, "an integer pixel coordinate"));
+  }
+  if (details.length > 0) {
+    throw new ActionValidationError(actionType, details);
+  }
+  return { x: x as number, y: y as number };
+}
+
+function validateOptionalScrollInteger(
+  field: string,
+  value: unknown,
+  defaultValue: number,
+  expected = "an integer"
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (!Number.isInteger(value)) {
+    throw new ActionValidationError("scroll", [
+      integerFieldError(field, value, expected),
+    ]);
+  }
+  return value as number;
+}
+
 /**
  * ActionExecutor
  *
@@ -90,14 +174,8 @@ export async function executeAction(
     switch (action.type) {
       case "click": {
         const { x, y, button = "left", clickCount = 1 } = action;
-        if (typeof x !== "number" || typeof y !== "number") {
-          result = {
-            success: false,
-            error: "click requires x and y coordinates",
-          };
-          break;
-        }
-        await page.click(x, y, {
+        const coords = validateClickLikeArgs("click", x, y);
+        await page.click(coords.x, coords.y, {
           button: button as "left" | "right" | "middle",
           clickCount,
         });
@@ -108,14 +186,8 @@ export async function executeAction(
       case "double_click":
       case "doubleClick": {
         const { x, y } = action;
-        if (typeof x !== "number" || typeof y !== "number") {
-          result = {
-            success: false,
-            error: "double_click requires x and y coordinates",
-          };
-          break;
-        }
-        await page.click(x, y, {
+        const coords = validateClickLikeArgs("double_click", x, y);
+        await page.click(coords.x, coords.y, {
           button: "left",
           clickCount: 2,
         });
@@ -125,14 +197,8 @@ export async function executeAction(
 
       case "tripleClick": {
         const { x, y } = action;
-        if (typeof x !== "number" || typeof y !== "number") {
-          result = {
-            success: false,
-            error: "tripleClick requires x and y coordinates",
-          };
-          break;
-        }
-        await page.click(x, y, {
+        const coords = validateClickLikeArgs("tripleClick", x, y);
+        await page.click(coords.x, coords.y, {
           button: "left",
           clickCount: 3,
         });
@@ -143,8 +209,9 @@ export async function executeAction(
       case "type": {
         const { text } = action;
         if (typeof text !== "string") {
-          result = { success: false, error: "type requires text parameter" };
-          break;
+          throw new ActionValidationError("type", [
+            stringFieldError("text", text, "a string to type"),
+          ]);
         }
         await page.type(text);
         result = { success: true };
@@ -154,8 +221,17 @@ export async function executeAction(
       case "keypress": {
         const { keys } = action;
         if (!keys) {
-          result = { success: false, error: "keypress requires keys parameter" };
-          break;
+          throw new ActionValidationError("keypress", [
+            stringFieldError("keys", keys, "a string or array of strings"),
+          ]);
+        }
+        if (
+          typeof keys !== "string" &&
+          (!Array.isArray(keys) || keys.some((key) => typeof key !== "string"))
+        ) {
+          throw new ActionValidationError("keypress", [
+            stringFieldError("keys", keys, "a string or array of strings"),
+          ]);
         }
         const keyList = Array.isArray(keys) ? keys : [keys];
         for (const rawKey of keyList) {
@@ -167,12 +243,15 @@ export async function executeAction(
       }
 
       case "scroll": {
-        const { x = 0, y = 0, scroll_x = 0, scroll_y = 0 } = action;
+        const x = validateOptionalScrollInteger("x", action.x, 0, "an integer pixel coordinate");
+        const y = validateOptionalScrollInteger("y", action.y, 0, "an integer pixel coordinate");
+        const scroll_x = validateOptionalScrollInteger("scroll_x", action.scroll_x, 0, "an integer pixel delta");
+        const scroll_y = validateOptionalScrollInteger("scroll_y", action.scroll_y, 0, "an integer pixel delta");
         await page.scroll(
-          x as number,
-          y as number,
-          scroll_x as number,
-          scroll_y as number,
+          x,
+          y,
+          scroll_x,
+          scroll_y,
         );
         result = { success: true };
         break;
@@ -206,6 +285,11 @@ export async function executeAction(
 
       case "wait": {
         const time = action.timeMs ?? 1000;
+        if (!Number.isInteger(time) || time < 0) {
+          throw new ActionValidationError("wait", [
+            integerFieldError("timeMs", time, "a non-negative integer number of milliseconds"),
+          ]);
+        }
         await new Promise((r) => setTimeout(r, time));
         result = { success: true };
         break;
@@ -221,8 +305,9 @@ export async function executeAction(
       case "goto": {
         const { url } = action;
         if (typeof url !== "string") {
-          result = { success: false, error: "goto requires url parameter" };
-          break;
+          throw new ActionValidationError("goto", [
+            stringFieldError("url", url, "a URL string"),
+          ]);
         }
         await page.goto(url, { waitUntil: "load" });
         result = { success: true };
@@ -271,10 +356,7 @@ export async function executeAction(
       { action: action.type, duration, success: false, error: errorMessage },
       `[Action] Exception: ${action.type} after ${duration}ms - ${errorMessage}`
     );
-    
-    return {
-      success: false,
-      error: errorMessage,
-    };
+
+    throw error;
   }
 }
