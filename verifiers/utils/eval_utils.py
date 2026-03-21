@@ -743,9 +743,7 @@ async def run_evaluation(
                 else:
                     concurrency = config.max_concurrent
 
-                logger.info(
-                    f"Automatically determined {concurrency=}"
-                )
+                logger.info(f"Automatically determined {concurrency=}")
                 extra_env_kwargs["concurrency"] = concurrency
 
             log_file = results_path / "eval.log"
