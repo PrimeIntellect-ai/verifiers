@@ -314,7 +314,7 @@ Abstract base class for all environments.
 | Method | Description |
 |--------|-------------|
 | `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
-| `set_max_workers(max_workers)` | Set `max_workers` and scale all registered thread-pool executors to match |
+| `set_concurrency(concurrency)` | Set `concurrency` and scale all registered thread-pool executors to match |
 | `add_rubric(rubric)` | Add or merge rubric |
 | `set_max_seq_len(max_seq_len)` | Set maximum sequence length |
 | `set_score_rollouts(bool)` | Enable/disable scoring |

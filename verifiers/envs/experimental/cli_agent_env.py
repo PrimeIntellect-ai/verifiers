@@ -471,10 +471,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             intercept_tools = intercept.get("tools")
             if intercept_tools:
                 # Cache normalized tools per rollout — agents typically send
-                # the same tool definitions on every request. Key on the
-                # number of tools as a cheap check; normalize_intercepted_tools
-                # is idempotent so a false miss just re-normalizes.
-                cache_key = len(intercept_tools)
+                # the same tool definitions on every request. Key on tool
+                # names so swapping tools with the same count invalidates
+                # the cache; normalize_intercepted_tools is idempotent so
+                # a false miss just re-normalizes.
+                def _tool_name(t: object) -> str:
+                    if isinstance(t, Tool):
+                        return t.name
+                    if isinstance(t, dict):
+                        fn = t.get("function") or {}
+                        return fn.get("name", "")
+                    return ""
+
+                cache_key = tuple(sorted(_tool_name(t) for t in intercept_tools))
                 cached_key, cached_defs = state.get("_cached_tool_defs", (None, None))
                 if cached_key == cache_key and cached_defs is not None:
                     tool_defs = cached_defs

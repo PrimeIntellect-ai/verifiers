@@ -847,19 +847,19 @@ async def heavy_reward(data):
 
 ### Executor Autoscaling
 
-`asyncio.to_thread()` dispatches work to a thread pool executor. By default Python's executor is small, but environments can scale it via `set_max_workers()`:
+`asyncio.to_thread()` dispatches work to a thread pool executor. By default Python's executor is small, but environments can scale it via `set_concurrency()`:
 
 ```python
-env.set_max_workers(256)
+env.set_concurrency(256)
 ```
 
-This resizes both the default event-loop executor (used by `asyncio.to_thread()`) and all registered executors in one call. If your environment creates its own `ThreadPoolExecutor` (e.g. for a custom client), register it so it scales automatically:
+This resizes both the default event-loop executor (used by `asyncio.to_thread()`) and all registered executors in one call. If your environment creates its own `ThreadPoolExecutor` or `ProcessPoolExecutor` (e.g. for a custom client), register it so it scales automatically:
 
 ```python
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor  # or ProcessPoolExecutor
 from verifiers.utils.thread_utils import register_executor, unregister_executor
 
-# register during init — if set_max_workers() was already called,
+# register during init — if set_concurrency() was already called,
 # the executor is immediately resized to match
 self.my_executor = ThreadPoolExecutor(max_workers=4)
 register_executor("my-env-client", self.my_executor)
@@ -869,10 +869,10 @@ unregister_executor("my-env-client")
 self.my_executor.shutdown()
 ```
 
-In practice, you rarely need to call `set_max_workers()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
+In practice, you rarely need to call `set_concurrency()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
 
 ```bash
-prime eval run my-env -x '{"max_workers": 256}'
+prime eval run my-env -x '{"concurrency": 256}'
 ```
 
 ## Integrations and Experimental Environments

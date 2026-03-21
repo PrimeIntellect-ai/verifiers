@@ -31,7 +31,7 @@ class ThreadedAsyncSandboxClient:
         """Initialize the threaded sandbox client."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.executor = ThreadPoolExecutor(
-            max_workers=50,  # initial value, will be scaled by register_executor
+            max_workers=max_workers,
             thread_name_prefix="threaded-sandbox-client-executor",
         )
         self.executor_name = f"threaded-sandbox-client-{id(self)}"
