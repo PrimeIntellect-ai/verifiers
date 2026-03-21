@@ -76,7 +76,9 @@ def register_executor(
                 f"max_workers={target} (concurrency={_target_concurrency})"
             )
             return
-    logger.debug(f"Registered executor {name} (max_workers={cast(Any, executor)._max_workers})")
+    logger.debug(
+        f"Registered executor {name} (max_workers={cast(Any, executor)._max_workers})"
+    )
 
 
 def unregister_executor(name: str) -> None:
