@@ -89,9 +89,12 @@ class OpenAICompletionsClient(
         def normalize_sampling_args(sampling_args: SamplingArgs):
             return {k: v for k, v in sampling_args.items() if v is not None}
 
+        extra_headers = kwargs.pop("extra_headers", None)
+
         response = await self.client.completions.create(
             model=model,
             prompt=prompt,
+            extra_headers=extra_headers,
             **normalize_sampling_args(sampling_args),
         )
         return response
