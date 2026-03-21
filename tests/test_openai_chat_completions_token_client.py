@@ -20,7 +20,9 @@ class _RecordingClient(_NoopClient):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def post(self, path: str, body: dict[str, Any], cast_to: type) -> Any:
+    async def post(
+        self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
+    ) -> Any:
         self.calls.append({"path": path, "body": body, "cast_to": cast_to})
         return {"ok": True, "path": path, "body": body}
 
