@@ -40,8 +40,10 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
     def __init__(self, client_or_config: ClientT | ClientConfig) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         if isinstance(client_or_config, ClientConfig):
+            self._config = client_or_config
             self._client = self.setup_client(client_or_config)
         else:
+            self._config = None
             self._client = client_or_config
 
     @property
@@ -97,6 +99,17 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
             native_tools.append(await self.to_native_tool(tool))
         return native_tools
 
+    def _build_state_headers(self, state) -> dict[str, str] | None:
+        """Build per-request HTTP headers from state using extra_headers_from_state mapping."""
+        if not self._config or not self._config.extra_headers_from_state or not state:
+            return None
+        headers = {}
+        for header_name, state_key in self._config.extra_headers_from_state.items():
+            val = state.get(state_key)
+            if val is not None:
+                headers[header_name] = str(val)
+        return headers or None
+
     async def get_response(
         self,
         prompt: Messages,
@@ -107,6 +120,10 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
     ) -> Response:
         """Get the response from the client."""
         try:
+            extra_headers = self._build_state_headers(kwargs.get("state"))
+            if extra_headers:
+                kwargs["extra_headers"] = extra_headers
+
             native_prompt, extra_kwargs = await self.to_native_prompt(prompt)
             native_tools = await self.to_native_tools(tools)
             native_response = await self.get_native_response(

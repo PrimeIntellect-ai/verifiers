@@ -77,6 +77,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
+        extra_headers = kwargs.pop("extra_headers", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
         # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
@@ -89,12 +90,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         )
         if len(state["trajectory"]) == 0 or has_multimodal:
             return await super().get_native_response(
-                prompt, model, sampling_args, tools
+                prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
         if prompt_ids is None:
             return await super().get_native_response(
-                prompt, model, sampling_args, tools
+                prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
@@ -110,6 +111,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "/chat/completions/tokens",
             body=body,
             cast_to=ChatCompletion,
+            options={"headers": extra_headers} if extra_headers else {},
         )
 
     async def get_prompt_ids(

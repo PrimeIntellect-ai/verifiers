@@ -418,6 +418,13 @@ class ClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    extra_headers_from_state: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps HTTP header names to state field names. "
+        "For each request, the header value is read from the state dict. "
+        'e.g. {"X-Session-ID": "example_id"} adds a X-Session-ID header '
+        "with the value of state['example_id'].",
+    )
 
     @field_validator("endpoint_configs", mode="before")
     @classmethod
