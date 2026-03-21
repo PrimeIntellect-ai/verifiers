@@ -180,6 +180,7 @@ class Response(CustomBaseModel):
     created: int
     model: str
     usage: Usage | None = None
+    usage_signature: str | None = None
     message: ResponseMessage  # can call tools
 
 
@@ -206,6 +207,7 @@ class TrajectoryStepTokens(TypedDict):
 class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
+    usage_signature: NotRequired[str]
 
 
 class VersionInfo(TypedDict):
