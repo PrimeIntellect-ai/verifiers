@@ -111,7 +111,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "/chat/completions/tokens",
             body=body,
             cast_to=ChatCompletion,
-            options={"extra_headers": extra_headers} if extra_headers else {},
+            options={"headers": extra_headers} if extra_headers else {},
         )
 
     async def get_prompt_ids(

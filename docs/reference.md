@@ -683,10 +683,12 @@ class ClientConfig(BaseModel):
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
     timeout: float = 3600.0
+    connect_timeout: float = 5.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = {}
+    extra_headers_from_state: dict[str, str] = {}
 ```
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
