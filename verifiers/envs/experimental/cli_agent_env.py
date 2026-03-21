@@ -479,7 +479,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     if isinstance(t, Tool):
                         return t.name
                     if isinstance(t, dict):
-                        fn = t.get("function") or {}
+                        td = cast(dict[str, Any], t)
+                        fn = td.get("function") or {}
                         return fn.get("name", "")
                     return ""
 
