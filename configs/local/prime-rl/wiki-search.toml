@@ -3,6 +3,8 @@ trainer_gpu_ids = [6,7]
 
 max_steps = 500
 max_async_level = 4
+mask_truncated_completions = false
+zero_truncated_completions = true
 
 [model]
 name = "Qwen/Qwen3-4B-Thinking-2507"
@@ -33,8 +35,6 @@ target_modules = [
 batch_size = 512
 rollouts_per_example = 16
 seq_len = 16384
-mask_truncated_completions = false
-zero_truncated_completions = true
 oversampling_factor = 2.0
 
 [orchestrator.sampling]
