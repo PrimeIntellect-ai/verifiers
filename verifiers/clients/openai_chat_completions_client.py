@@ -274,17 +274,21 @@ class OpenAIChatCompletionsClient(
         if has_audio and "modalities" not in sampling_args:
             sampling_args = {**sampling_args, "modalities": ["text"]}
 
+        extra_headers = kwargs.pop("extra_headers", None)
+
         if tools:
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=prompt,
                 tools=tools,
+                extra_headers=extra_headers,
                 **normalize_sampling_args(sampling_args),
             )
         else:
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=prompt,
+                extra_headers=extra_headers,
                 **normalize_sampling_args(sampling_args),
             )
         return response
