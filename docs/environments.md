@@ -847,10 +847,10 @@ async def heavy_reward(data):
 env.set_max_workers(256)
 ```
 
-This resizes both the default event-loop executor (used by `asyncio.to_thread()`) and all registered executors in one call. If your environment creates its own `ThreadPoolExecutor` (e.g. for a custom client), register it so it scales automatically:
+This resizes both the default event-loop executor (used by `asyncio.to_thread()`) and all registered executors in one call. If your environment creates its own `ThreadPoolExecutor` or `ProcessPoolExecutor` (e.g. for a custom client), register it so it scales automatically:
 
 ```python
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor  # or ProcessPoolExecutor
 from verifiers.utils.thread_utils import register_executor, unregister_executor
 
 # register during init — if set_max_workers() was already called,
