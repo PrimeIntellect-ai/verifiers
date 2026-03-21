@@ -1251,6 +1251,10 @@ class Environment(ABC):
         to max_workers (default 1:1).
         """
         self.concurrency = concurrency
+        # Keep self.max_workers in sync because some code paths still read it
+        # (e.g., synchronous generate/evaluate create a ThreadPoolExecutor with self.max_workers).
+        # Default mapping is 1:1 here; executors can apply their own scaling_fn.
+        self.max_workers = max(1, concurrency)
         scale_executors(concurrency=concurrency)
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:

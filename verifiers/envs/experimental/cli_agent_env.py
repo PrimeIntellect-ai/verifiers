@@ -471,18 +471,33 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             intercept_tools = intercept.get("tools")
             if intercept_tools:
                 # Cache normalized tools per rollout — agents typically send
-                # the same tool definitions on every request. Key on the
-                # number of tools as a cheap check; normalize_intercepted_tools
-                # is idempotent so a false miss just re-normalizes.
-                cache_key = len(intercept_tools)
+                # the same tool definitions on every request.
+                # Key by tool names tuple to detect swaps with same count.
+                try:
+                    names_key = tuple(
+                        (
+                            t.name
+                            if isinstance(t, Tool)
+                            else (
+                                (t.get("function") or {}).get("name")
+                                if isinstance(t, dict)
+                                else None
+                            )
+                        )
+                        for t in intercept_tools
+                    )
+                except Exception:
+                    names_key = None
+
                 cached_key, cached_defs = state.get("_cached_tool_defs", (None, None))
-                if cached_key == cache_key and cached_defs is not None:
+                if names_key is not None and cached_key == names_key and cached_defs is not None:
                     tool_defs = cached_defs
                 else:
                     tool_defs = (
                         self.normalize_intercepted_tools(intercept_tools) or tool_defs
                     )
-                    state["_cached_tool_defs"] = (cache_key, tool_defs)
+                    if names_key is not None:
+                        state["_cached_tool_defs"] = (names_key, tool_defs)
 
         response: Response | None = None
         error: BaseException | None = None
