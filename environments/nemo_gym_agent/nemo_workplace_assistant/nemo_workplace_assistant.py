@@ -16,9 +16,7 @@ def load_environment(
     head_server_port: int = 11000,
     **kwargs: Any,
 ) -> vf.Environment:
-    dataset, _ = _build_dataset(
-        resource_server="workplace_assistant", dataset_split=dataset_split
-    )
+    dataset, _ = _build_dataset("workplace_assistant", dataset_split)
     return NemoGymAgentEnv(
         gym_configs=[_resolve_gym_config("workplace_assistant")],
         dataset=dataset,
