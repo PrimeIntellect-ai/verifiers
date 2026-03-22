@@ -93,9 +93,8 @@ def _build_trajectory_from_nemo(
     trajectory_id: str,
 ) -> tuple[list[TrajectoryStep], Messages]:
     # Items with generation_token_ids are assistant turns; function_call_output
-    # items are env responses. Tool-response tokens never appear in any
-    # completion_ids — they live in the next step's prompt_ids only, so they
-    # are never trained on (matches rollout_mask=0 in the TRL integration).
+    # items are env responses. Tool-response tokens live in the next step's
+    # prompt_ids only and are never trained on.
     trajectory: list[TrajectoryStep] = []
     completion_messages: list = []
     all_messages: list = list(initial_prompt)
