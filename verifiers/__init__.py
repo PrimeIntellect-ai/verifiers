@@ -1,4 +1,4 @@
-__version__ = "0.1.11"
+__version__ = "0.1.12.dev0"
 
 import importlib
 import os
