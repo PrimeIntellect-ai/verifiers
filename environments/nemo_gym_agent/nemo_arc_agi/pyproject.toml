@@ -1,0 +1,21 @@
+[project]
+name = "nemo-arc-agi-agent"
+description = "NeMo Gym arc_agi via the agent server (RunHelper)"
+tags = ["nemo-gym", "knowledge", "single-turn"]
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers>=0.1.11.dev1",
+    "nemo-gym>=0.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["nemo_arc_agi.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1

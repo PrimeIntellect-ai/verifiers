@@ -17,30 +17,8 @@ from verifiers.envs.integrations.nemo_gym.utils import _build_dataset  # noqa: F
 
 
 class NemoGymAgentEnv(vf.Environment):
-    """NeMo Gym integration via the NeMo Gym agent server (RunHelper).
-
-    Delegates the entire multi-turn rollout loop to the agent server: it calls
-    vLLM directly, manages tool interactions with resource servers, and returns
-    the completed rollout with per-turn token IDs, log probs, and reward.
-    verifiers does not drive the LLM here.
-
-    Parameters
-    ----------
-    gym_configs:
-        Paths to NeMo Gym resource-server YAML config files passed as
-        ``config_paths`` to RunHelper.
-    dataset:
-        HuggingFace Dataset produced by ``_build_dataset``, with
-        ``info["dataset_row_json"]`` carrying the serialised NeMo Gym row.
-    rubric:
-        Optional custom rubric. Defaults to reading ``state["nemo_reward"]``.
-    vllm_server_host / vllm_server_port:
-        vLLM policy server address. Should be the same instance verifiers uses.
-    head_server_host / head_server_port:
-        Address the NeMo Gym head server (RunHelper) will listen on.
-    head_server_client_host:
-        Host RolloutCollectionHelper uses to reach the head server.
-    """
+    """NeMo Gym integration via RunHelper. The agent server handles full multi-turn rollout,
+    returning token IDs, logprobs, and rewards."""
 
     def __init__(
         self,
@@ -63,7 +41,6 @@ class NemoGymAgentEnv(vf.Environment):
         self.head_server_port = head_server_port
         self.head_server_client_host = head_server_client_host
 
-        # Lazily initialised on first rollout.
         self._run_helper: Any | None = None
         self._rch: Any | None = None
         self._head_server_config: Any | None = None
@@ -78,7 +55,6 @@ class NemoGymAgentEnv(vf.Environment):
         )
 
     def _start_run_helper(self, model: str) -> None:
-        """Synchronous RunHelper startup — called from an executor."""
         try:
             from nemo_gym.cli import GlobalConfigDictParserConfig, RunHelper
             from nemo_gym.rollout_collection import RolloutCollectionHelper
@@ -89,7 +65,7 @@ class NemoGymAgentEnv(vf.Environment):
                 "NemoGymAgentEnv requires nemo-gym. Install with: pip install nemo-gym"
             ) from exc
 
-        initial_global_config = {
+        config = {
             HEAD_SERVER_KEY_NAME: {
                 "host": self.head_server_host,
                 "port": self.head_server_port,
@@ -104,12 +80,12 @@ class NemoGymAgentEnv(vf.Environment):
 
         hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         if hf_token:
-            initial_global_config["hf_token"] = hf_token
+            config["hf_token"] = hf_token
 
         rh = RunHelper()
         rh.start(
             global_config_dict_parser_config=GlobalConfigDictParserConfig(
-                initial_global_config_dict=DictConfig(initial_global_config),
+                initial_global_config_dict=DictConfig(config),
                 skip_load_from_cli=True,
             )
         )
@@ -124,16 +100,13 @@ class NemoGymAgentEnv(vf.Environment):
     async def _ensure_server(self, model: str) -> tuple[Any, Any]:
         if self._rch is not None:
             return self._rch, self._head_server_config
-
         if self._server_lock is None:
             self._server_lock = asyncio.Lock()
-
         async with self._server_lock:
             if self._rch is not None:
                 return self._rch, self._head_server_config
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._start_run_helper, model)
-
         return self._rch, self._head_server_config
 
     @vf.teardown
@@ -164,13 +137,11 @@ class NemoGymAgentEnv(vf.Environment):
             dataset_row: dict[str, Any] = json.loads(state["info"]["dataset_row_json"])
             dataset_row["_rowidx"] = 0
 
-            responses_create_params: dict[str, Any] = dataset_row.setdefault(
-                "responses_create_params", {}
-            )
+            rcp: dict[str, Any] = dataset_row.setdefault("responses_create_params", {})
             if sampling_args:
                 for key in ("temperature", "top_p", "max_tokens"):
                     if key in sampling_args:
-                        responses_create_params[key] = sampling_args[key]
+                        rcp[key] = sampling_args[key]
 
             nemo_result: Any = None
             for task in rch.run_examples(
@@ -190,7 +161,6 @@ class NemoGymAgentEnv(vf.Environment):
             return state
 
         _map_nemo_result_to_state(state, nemo_result, model)
-
         state["stop_condition"] = "has_error" if state.get("error") else "completed"
         state["is_completed"] = True
         _fill_timing(state, start_time)

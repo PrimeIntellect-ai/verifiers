@@ -14,8 +14,18 @@ from verifiers.types import (
     ToolCall,
     ToolMessage,
     TrajectoryStep,
-    TrajectoryStepTokens,
 )
+
+
+def _resolve_gym_config(resource_server: str) -> str:
+    from verifiers.envs.integrations.nemo_gym.utils import _resolve_resources_servers_root
+    root = _resolve_resources_servers_root()
+    path = root / resource_server / "configs" / f"{resource_server}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Could not find NeMo Gym config for '{resource_server}': {path}"
+        )
+    return str(path)
 
 
 def _reward_from_nemo(state: State, **kwargs: Any) -> float:
@@ -52,7 +62,6 @@ def _make_synthetic_response(
     logprobs: list[float],
     prompt_ids: list[int],
 ) -> Response:
-    finish_reason = "tool_calls" if msg.tool_calls else "stop"
     tokens = ResponseTokens(
         prompt_ids=prompt_ids,
         prompt_mask=[1] * len(prompt_ids),
@@ -61,20 +70,19 @@ def _make_synthetic_response(
         completion_logprobs=logprobs,
         routed_experts=None,
     )
-    response_msg = ResponseMessage(
-        role="assistant",
-        content=msg.content,
-        tool_calls=msg.tool_calls,
-        finish_reason=finish_reason,
-        is_truncated=False,
-        tokens=tokens,
-    )
     return Response(
         id=f"nemo-agent-{uuid.uuid4().hex[:8]}",
         created=int(time.time()),
         model=model,
         usage=None,
-        message=response_msg,
+        message=ResponseMessage(
+            role="assistant",
+            content=msg.content,
+            tool_calls=msg.tool_calls,
+            finish_reason="tool_calls" if msg.tool_calls else "stop",
+            is_truncated=False,
+            tokens=tokens,
+        ),
     )
 
 
@@ -84,24 +92,16 @@ def _build_trajectory_from_nemo(
     model: str,
     trajectory_id: str,
 ) -> tuple[list[TrajectoryStep], Messages]:
-    """Build a verifiers trajectory from NeMo Gym output items.
-
-    Items with ``generation_token_ids`` are assistant turns (one per LLM call).
-    Items of type ``function_call_output`` are environment tool responses.
-
-    Each assistant turn becomes one TrajectoryStep. Tool-response tokens are
-    not included in any completion_ids — they live in the next step's
-    prompt_ids and are never trained on. This matches the rollout_mask=0 logic
-    in the TRL reference integration.
-    """
+    # Items with generation_token_ids are assistant turns; function_call_output
+    # items are env responses. Tool-response tokens never appear in any
+    # completion_ids — they live in the next step's prompt_ids only, so they
+    # are never trained on (matches rollout_mask=0 in the TRL integration).
     trajectory: list[TrajectoryStep] = []
     completion_messages: list = []
     all_messages: list = list(initial_prompt)
 
     for item in output_items:
-        item_type = item.get("type")
-
-        if item_type == "function_call_output":
+        if item.get("type") == "function_call_output":
             tool_msg = ToolMessage(
                 role="tool",
                 tool_call_id=str(item.get("call_id", "")),
@@ -122,44 +122,36 @@ def _build_trajectory_from_nemo(
 
         step_prompt: Messages = list(all_messages)
         assistant_msg = _nemo_item_to_assistant_message(item)
-
         all_messages.append(assistant_msg)
         completion_messages.append(assistant_msg)
 
-        step_tokens: TrajectoryStepTokens = {
-            "prompt_ids": prompt_ids,
-            "prompt_mask": [1] * len(prompt_ids),
-            "completion_ids": gen_ids,
-            "completion_mask": [1] * len(gen_ids),
-            "completion_logprobs": logprobs,
-            "overlong_prompt": False,
-            "is_truncated": False,
-            "routed_experts": None,
-        }
-
-        step: TrajectoryStep = {
+        trajectory.append({
             "prompt": step_prompt,
             "completion": [assistant_msg],
             "response": _make_synthetic_response(
                 assistant_msg, model, gen_ids, logprobs, prompt_ids
             ),
-            "tokens": step_tokens,
+            "tokens": {
+                "prompt_ids": prompt_ids,
+                "prompt_mask": [1] * len(prompt_ids),
+                "completion_ids": gen_ids,
+                "completion_mask": [1] * len(gen_ids),
+                "completion_logprobs": logprobs,
+                "overlong_prompt": False,
+                "is_truncated": False,
+                "routed_experts": None,
+            },
             "reward": None,
             "advantage": None,
             "is_truncated": False,
             "trajectory_id": trajectory_id,
             "extras": {},
-        }
-        trajectory.append(step)
+        })
 
     return trajectory, completion_messages
 
 
-def _map_nemo_result_to_state(
-    state: State,
-    nemo_result: Any,
-    model: str,
-) -> None:
+def _map_nemo_result_to_state(state: State, nemo_result: Any, model: str) -> None:
     import verifiers as vf
 
     if not isinstance(nemo_result, dict) or nemo_result.get("error"):
