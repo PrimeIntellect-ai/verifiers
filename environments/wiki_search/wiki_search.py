@@ -260,7 +260,10 @@ def load_environment(
     )
 
     async def judge_reward_func(judge, prompt, completion, answer, state) -> float:
-        judge_response = await judge(prompt, completion, answer, state)
+        cleaned_completion = [
+            {x["role"]: x["content"].split("</think>")[-1] for x in completion}
+        ]
+        judge_response = await judge(prompt, cleaned_completion, answer, state)
         if "yes" in judge_response.lower():
             return 1.0
         else:
