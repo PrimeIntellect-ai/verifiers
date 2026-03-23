@@ -86,17 +86,11 @@ class EnvWorker:
             logger_kwargs["log_file_level"] = log_file_level
         vf.setup_logging(**logger_kwargs)
 
-        self.logger = logging.LoggerAdapter(
-            logging.getLogger(f"{__name__}.{self.__class__.__name__}"),
-        )
-        self.logger.process = lambda msg, kwargs: (
-            f"[W{self.worker_id}] {msg}",
-            kwargs,
-        )
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         # setup env
         self.logger.info(
-            f"Loading environment {env_id} ({env_args=}, {extra_env_kwargs=})"
+            f"Loading environment {env_id} for worker {worker_name} ({env_args=}, {extra_env_kwargs=})"
         )
         self.env = vf.load_environment(env_id, **(env_args or {}))
         if extra_env_kwargs:
@@ -127,7 +121,7 @@ class EnvWorker:
         # stats
         self.lag_monitor = EventLoopLagMonitor()
 
-        self.logger.info(f"Initialized worker on {request_address}")
+        self.logger.info(f"Initialized worker {worker_name} on {request_address}")
 
     async def resolve_client(self, client_config: ClientConfig) -> Client:
         """Resolve the client instance given the request client config."""
@@ -278,7 +272,7 @@ class EnvWorker:
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         """Main worker loop."""
-        self.logger.info("Starting worker")
+        self.logger.info(f"Starting worker {self.worker_name}")
 
         gc.collect()
         gc.freeze()
@@ -343,7 +337,9 @@ class EnvWorker:
     async def close(self) -> None:
         if self.active_tasks:
             tasks = list(self.active_tasks.values())
-            self.logger.info(f"Cancelling {len(tasks)} active tasks")
+            self.logger.info(
+                f"Cancelling {len(tasks)} active tasks on worker {self.worker_name}"
+            )
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -360,7 +356,7 @@ class EnvWorker:
         self.stats_socket.close()
         self.ctx.term()
 
-        self.logger.info("Shut down worker")
+        self.logger.info(f"Shut down worker {self.worker_name}")
 
     async def run(self) -> None:
         request_parent_death_signal()

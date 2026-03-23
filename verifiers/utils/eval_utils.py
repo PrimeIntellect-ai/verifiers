@@ -775,6 +775,11 @@ async def run_evaluation(
                 )
             if on_log_file is not None:
                 on_log_file(log_file)
+                # register per-worker log files
+                for wid in range(num_workers):
+                    worker_name = f"{config.env_id}-{wid}"
+                    worker_log = log_file.parent / f"{worker_name}.log"
+                    on_log_file(worker_log)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
