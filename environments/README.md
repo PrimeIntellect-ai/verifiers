@@ -30,7 +30,6 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv (native function-calling)**
   - **tool_test**: Validates parallel tool calls and checks exact tool usage via `ToolRubric` + custom reward.
   - **wiki_search**: Multi-tool retrieval (search/view/read) with `ToolEnv`; final judgment combined via `RubricGroup` with a `JudgeRubric`.
-  - **nemo_gym**: NeMo Gym integration via `NemoGymEnv`; the agent server manages the full rollout loop including tool interactions and rewards.
 
 ### Sandboxes
 - **PythonEnv (ipython-style REPL)**
@@ -49,6 +48,9 @@ This folder contains installable example environments that showcase common usage
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
+
+- **NeMo Gym**
+  - **nemo_gym**: NeMo Gym integration via `NemoGymEnv`. The NeMo Gym agent server manages the full multi turn rollout, including tools, state logic and verification.
 
 ### Composition
 - **EnvGroup**
