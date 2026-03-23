@@ -3319,6 +3319,15 @@ class RLMEnv(vf.StatefulToolEnv):
                     self.root_prompt_verbosity
                 ]
 
+            # Allow GEPA prompt_components to override base_system_prompt
+            _info = state.get("info")
+            if isinstance(_info, dict):
+                prompt_components = _info.get("prompt_components")
+                if isinstance(prompt_components, dict):
+                    override_prompt = prompt_components.get("base_system_prompt")
+                    if isinstance(override_prompt, str) and override_prompt:
+                        base_system_prompt = override_prompt
+
             packages_docs = self._generate_packages_documentation()
             root_tools_docs = self._generate_root_tools_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
@@ -3398,6 +3407,21 @@ class RLMEnv(vf.StatefulToolEnv):
                 finally:
                     await self._teardown_tunnel()
             raise
+
+    def get_prompt_components(self) -> dict[str, str]:
+        components = super().get_prompt_components()
+        if self.custom_system_prompt:
+            base_system_prompt = self.custom_system_prompt
+        elif self.repl_language == "bash":
+            base_system_prompt = _RLM_BASH_SYSTEM_PROMPT_STORE[
+                self.root_prompt_verbosity
+            ]
+        else:
+            base_system_prompt = _RLM_PYTHON_SYSTEM_PROMPT_STORE[
+                self.root_prompt_verbosity
+            ]
+        components["base_system_prompt"] = base_system_prompt
+        return components
 
     # =========================================================================
     # Code Execution
