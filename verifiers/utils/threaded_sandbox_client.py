@@ -9,6 +9,8 @@ from prime_sandboxes import AsyncSandboxClient
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
     get_or_create_thread_loop,
+    register_executor,
+    unregister_executor,
 )
 
 
@@ -21,22 +23,31 @@ class ThreadedAsyncSandboxClient:
 
     def __init__(
         self,
-        max_workers: int = 100,
-        max_connections: int = 100,
-        max_keepalive_connections: int = 50,
+        max_workers: int = 50,
+        max_connections: int = 1000,
+        max_keepalive_connections: int = 200,
         **client_kwargs,
     ):
         """Initialize the threaded sandbox client."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix="sandbox-client-executor",
+            thread_name_prefix="threaded-sandbox-client-executor",
+        )
+        self.executor_name = f"threaded-sandbox-client-{id(self)}"
+        register_executor(
+            self.executor_name,
+            self.executor,
+            scaling_fn=lambda c: min(max(1, c // 8), max_workers),
         )
         self.client_kwargs = {
             "max_connections": max_connections,
             "max_keepalive_connections": max_keepalive_connections,
             **client_kwargs,
         }
+        self.logger.info(
+            f"Initialized ThreadedAsyncSandboxClient ({max_workers=}, {max_connections=}, {max_keepalive_connections=})"
+        )
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         """Dynamically proxy attribute access to dispatch method calls to the thread pool."""
@@ -60,4 +71,5 @@ class ThreadedAsyncSandboxClient:
 
     def teardown(self, wait: bool = True) -> None:
         """Teardown the thread pool executor."""
+        unregister_executor(self.executor_name)
         self.executor.shutdown(wait=wait)

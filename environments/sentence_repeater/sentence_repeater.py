@@ -83,12 +83,7 @@ class SentenceRepeaterEnv(vf.MultiTurnEnv):
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
         num_turn = len(state["trajectory"])
-        return [
-            {
-                "role": "user",
-                "content": state["info"]["questions"][num_turn],
-            }
-        ]
+        return [vf.UserMessage(content=state["info"]["questions"][num_turn])]
 
 
 def load_environment(**kwargs) -> vf.Environment:

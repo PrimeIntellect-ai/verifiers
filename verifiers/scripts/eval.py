@@ -269,6 +269,13 @@ def main():
         ),
     )
     parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=str,
+        default=None,
+        help="Custom output directory for evaluation results and logs",
+    )
+    parser.add_argument(
         "--verbose", "-v", default=False, action="store_true", help="Verbose output"
     )
     parser.add_argument(
@@ -644,6 +651,7 @@ def main():
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
                 env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+                output_dir=raw.get("output_dir"),
             )
             if auto_resume_path is not None:
                 resume_path = auto_resume_path
@@ -661,6 +669,7 @@ def main():
             env_id=env_id,
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            output_dir=raw.get("output_dir"),
             extra_env_kwargs=raw.get("extra_env_kwargs", {}),
             endpoint_id=resolved_endpoint_id,
             model=model,

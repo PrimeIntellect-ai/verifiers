@@ -1,8 +1,10 @@
 import asyncio
+import gc
 import multiprocessing as mp
 from typing import cast
 
 import msgpack
+import numpy as np
 import zmq
 import zmq.asyncio
 
@@ -70,12 +72,17 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
         self.socket.bind(self.address)
 
-        # Map frame request-id -> asyncio.Task so we can cancel on demand
+        # Map frame request-id -> asyncio.Task so we can cancel on demand and
+        # track in-flight work from a single source of truth.
         self.request_tasks: dict[str, asyncio.Task] = {}
 
         # Health check runs in a separate process (immune to env workload)
         self.stop_health = mp.Event()
         self.health_process: mp.Process | None = None
+
+    def _cleanup_request_task(self, frame_request_id: str, task: asyncio.Task) -> None:
+        if self.request_tasks.get(frame_request_id) is task:
+            self.request_tasks.pop(frame_request_id, None)
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"{self.__class__.__name__} started on {self.address}")
@@ -90,7 +97,15 @@ class ZMQEnvServer(EnvServer):
         self.health_process.start()
         self.logger.info(f"Health check responder started on {self.health_address}")
 
-        lag_monitor_task = self.lag_monitor.run_in_background()
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(150_000, 10, 10)
+        self.logger.info(
+            f"GC tuned: frozen {gc.get_freeze_count()} objects, "
+            f"threshold={gc.get_threshold()}"
+        )
+
+        lag_monitor_task = asyncio.create_task(self.lag_monitor.run())
 
         # Start statistics logger
         log_stats_task = asyncio.create_task(self.log_stats_loop())
@@ -135,11 +150,16 @@ class ZMQEnvServer(EnvServer):
                         continue
 
                     # Process in background, tracking the task for cleanup
+                    frame_request_id = request_id.decode()
                     task = asyncio.create_task(
                         self.process_request(client_id, request_id, payload_bytes)
                     )
-                    self.pending_tasks.add(task)
-                    task.add_done_callback(self.pending_tasks.discard)
+                    self.request_tasks[frame_request_id] = task
+                    task.add_done_callback(
+                        lambda done_task, rid=frame_request_id: (
+                            self._cleanup_request_task(rid, done_task)
+                        )
+                    )
 
                 except asyncio.CancelledError:
                     break
@@ -163,13 +183,13 @@ class ZMQEnvServer(EnvServer):
                 self.health_process.join(timeout=2)
             self.health_process = None
 
-        # Cancel and await all pending tasks
-        if self.pending_tasks:
-            self.logger.info(f"Cancelling {len(self.pending_tasks)} pending tasks")
-            for task in self.pending_tasks:
+        # Cancel and await all active tasks
+        if self.request_tasks:
+            tasks = list(self.request_tasks.values())
+            self.logger.info(f"Cancelling {len(tasks)} active tasks")
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(*self.pending_tasks, return_exceptions=True)
-            self.pending_tasks.clear()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         self.request_tasks.clear()
 
@@ -183,67 +203,35 @@ class ZMQEnvServer(EnvServer):
         """Periodically log statistics."""
         while True:
             await asyncio.sleep(interval)
-            pending = len(self.pending_tasks)
-            message = f"Pending tasks: {pending}"
+            active = len(self.request_tasks)
+            message = f"Active tasks: {active}"
 
-            lags = sorted(self.lag_monitor.lags)
-            self.lag_monitor.reset()
-            if lags:
-                mean_lag = sum(lags) / len(lags)
-                max_lag = lags[-1]
-                p99_lag = lags[int(len(lags) * 0.99)]
-                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={len(lags)})"
+            lags = self.lag_monitor.lags
+            n = len(lags)
+            if n > 0:
+                lags_arr = np.array(lags)
+                mean_lag = float(lags_arr.mean())
+                p99_lag = float(np.percentile(lags_arr, 99))
+                max_lag = float(lags_arr.max())
+                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={n})"
 
             self.logger.info(message)
 
-    async def process_request(
+    async def _serialize_and_send(
         self,
         client_id: bytes,
-        request_id_bytes: bytes,
-        payload_bytes: bytes,
-    ):
-        request_id = request_id_bytes.decode()
-        frame_request_id = request_id
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            self.request_tasks[frame_request_id] = current_task
-        response: BaseResponse
+        request_id: str,
+        response: BaseResponse,
+    ) -> None:
+        """Serialize *response* and send it back to the client.
 
-        try:
-            try:
-                # deserialize request
-                raw = msgpack.unpackb(payload_bytes, raw=False)
-                request_type = raw.get("request_type")
-                request_id = raw.get("request_id", request_id)
+        Extracted so it can be wrapped in ``asyncio.shield()`` — this lets
+        the response reach the client even when the owning task has been
+        cancelled.
+        """
 
-                # Health requests are handled by the dedicated health process,
-                # so they should not arrive here.
-                if request_type == "run_rollout":
-                    request = RunRolloutRequest.model_validate(raw)
-                    response = await self.handle_run_rollout(request)
-                elif request_type == "run_group":
-                    request = RunGroupRequest.model_validate(raw)
-                    response = await self.handle_run_group(request)
-                else:
-                    self.logger.warning(f"Got unknown request type: {request_type}")
-                    response = BaseResponse(
-                        success=False, error=f"Unknown request type: {request_type}"
-                    )
-
-            except asyncio.CancelledError:
-                return
-
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing request {request_id}: {e}", exc_info=True
-                )
-                response = BaseResponse(
-                    success=False,
-                    error=repr(e),
-                )
-
-            # serialize response using Pydantic
-            response_bytes = cast(
+        def _serialize() -> bytes:
+            return cast(
                 bytes,
                 msgpack.packb(
                     response.model_dump(mode="python", warnings=False),
@@ -252,15 +240,87 @@ class ZMQEnvServer(EnvServer):
                 ),
             )
 
-            # send response: [client_id, request_id, response]
-            try:
-                await self.socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes]
+        try:
+            response_bytes = await asyncio.to_thread(_serialize)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to serialize response for request {request_id}: {e}",
+                exc_info=True,
+            )
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    BaseResponse(
+                        success=False,
+                        error=f"Response serialization failed: {repr(e)}",
+                    ).model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
+
+        try:
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(
+                f"Failed to send response for request {request_id[:7]}: {e} "
+                f"(client likely disconnected)"
+            )
+
+    async def process_request(
+        self,
+        client_id: bytes,
+        request_id_bytes: bytes,
+        payload_bytes: bytes,
+    ):
+        request_id = request_id_bytes.decode()
+        response: BaseResponse
+
+        try:
+            # deserialize request
+            raw = msgpack.unpackb(payload_bytes, raw=False)
+            request_type = raw.get("request_type")
+            request_id = raw.get("request_id", request_id)
+
+            # Health requests are handled by the dedicated health process,
+            # so they should not arrive here.
+            if request_type == "run_rollout":
+                request = RunRolloutRequest.model_validate(raw)
+                response = await self.handle_run_rollout(request)
+            elif request_type == "run_group":
+                request = RunGroupRequest.model_validate(raw)
+                response = await self.handle_run_group(request)
+            else:
+                self.logger.warning(f"Got unknown request type: {request_type}")
+                response = BaseResponse(
+                    success=False, error=f"Unknown request type: {request_type}"
                 )
-            except zmq.ZMQError as e:
-                self.logger.warning(
-                    f"Failed to send response for request {request_id[:7]}: {e} "
-                    f"(client likely disconnected)"
-                )
-        finally:
-            self.request_tasks.pop(frame_request_id, None)
+
+        except asyncio.CancelledError:
+            response = BaseResponse(success=False, error="Request was cancelled")
+
+        except Exception as e:
+            self.logger.error(
+                f"Error processing request {request_id}: {e}", exc_info=True
+            )
+            response = BaseResponse(
+                success=False,
+                error=repr(e),
+            )
+
+        # Shield the serialize+send work so it completes even if this task is
+        # cancelled (e.g. after catching CancelledError above).  shield()
+        # runs the coroutine in a fresh inner task whose cancellation flag is
+        # clear, avoiding the Python 3.10 problem where Task.uncancel() does
+        # not exist and every subsequent await would re-raise CancelledError.
+        try:
+            await asyncio.shield(
+                self._serialize_and_send(client_id, request_id, response)
+            )
+        except asyncio.CancelledError:
+            # shield() protects the inner coroutine but re-raises
+            # CancelledError to the caller — safe to swallow here since the
+            # shielded send is still running to completion.
+            pass

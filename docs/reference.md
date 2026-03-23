@@ -314,6 +314,7 @@ Abstract base class for all environments.
 | Method | Description |
 |--------|-------------|
 | `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
+| `set_concurrency(concurrency)` | Set `concurrency` and scale all registered thread-pool executors to match |
 | `add_rubric(rubric)` | Add or merge rubric |
 | `set_max_seq_len(max_seq_len)` | Set maximum sequence length |
 | `set_score_rollouts(bool)` | Enable/disable scoring |
@@ -682,11 +683,15 @@ class ClientConfig(BaseModel):
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
     timeout: float = 3600.0
+    connect_timeout: float = 5.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = {}
+    extra_headers_from_state: dict[str, str] = {}
 ```
+
+`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
@@ -861,10 +866,10 @@ vf.load_example_dataset(name: str) -> Dataset
 Load a built-in example dataset.
 
 ```python
-vf.extract_boxed_answer(text: str) -> str | None
+vf.extract_boxed_answer(text: str, strict: bool = False) -> str
 ```
 
-Extract answer from LaTeX `\boxed{}` format.
+Extract answer from LaTeX `\boxed{}` format. When `strict=True`, returns `""` if no `\boxed{}` is found (used by `MathRubric` to avoid scoring unformatted responses). When `strict=False` (default), returns the original text as a passthrough.
 
 ```python
 vf.extract_hash_answer(text: str) -> str | None

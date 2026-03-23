@@ -12,15 +12,18 @@ from typing import (
     TypeAlias,
 )
 
-from anthropic.types import RedactedThinkingBlock
-from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
+    from anthropic.types import RedactedThinkingBlock
+    from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
 
     from verifiers.clients import Client
     from verifiers.errors import Error
+else:
+    RedactedThinkingBlock = Any
+    AnthropicThinkingBlock = Any
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
@@ -429,6 +432,13 @@ class ClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    extra_headers_from_state: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps HTTP header names to state field names. "
+        "For each request, the header value is read from the state dict. "
+        'e.g. {"X-Session-ID": "example_id"} adds a X-Session-ID header '
+        "with the value of state['example_id'].",
+    )
 
     @field_validator("extra_headers", mode="before")
     @classmethod
@@ -522,6 +532,7 @@ class EvalConfig(BaseModel):
     verbose: bool = False
     debug: bool = False
     # saving
+    output_dir: str | None = None
     state_columns: list[str] | None = None
     save_results: bool = False
     resume_path: Path | None = None

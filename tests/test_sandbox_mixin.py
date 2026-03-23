@@ -2,7 +2,15 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from prime_sandboxes import CommandTimeoutError, SandboxOOMError, SandboxTimeoutError
+import httpx
+from prime_sandboxes import (
+    APIError,
+    CommandTimeoutError,
+    DownloadTimeoutError,
+    SandboxOOMError,
+    SandboxTimeoutError,
+    UploadTimeoutError,
+)
 
 import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import (
@@ -11,6 +19,8 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxNotReadyError,
     SandboxSetupError,
     ThreadedAsyncSandboxClient,
+    is_retryable_sandbox_api_error,
+    is_retryable_sandbox_read_error,
 )
 
 MODULE = "verifiers.envs.experimental.sandbox_mixin"
@@ -41,6 +51,28 @@ def test_init_creates_client_and_retry():
     assert callable(obj.with_retry)
 
 
+@pytest.mark.parametrize(
+    "exception",
+    [
+        UploadTimeoutError("sb", "/tmp/file", 300),
+        DownloadTimeoutError("sb", "/tmp/file", 300),
+        CommandTimeoutError("sb", "echo hi", 30),
+        httpx.ReadTimeout("timed out"),
+        APIError("Upload failed: HTTP 503: retry me"),
+        APIError("Upload failed: ConnectError at POST /upload: boom"),
+    ],
+)
+def test_retryable_sandbox_read_error_matches_current_sdk_exceptions(exception):
+    assert is_retryable_sandbox_read_error(exception) is True
+
+
+def test_retryable_sandbox_api_error_ignores_non_retryable_api_error():
+    assert (
+        is_retryable_sandbox_api_error(APIError("Upload failed: HTTP 400: nope"))
+        is False
+    )
+
+
 # ── create_sandbox ───────────────────────────────────────────────────
 
 
@@ -66,6 +98,19 @@ def test_create_sandbox_creation_fails(mixin):
 
     with pytest.raises(SandboxCreationError):
         asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
+
+
+def test_create_sandbox_max_retries_is_true_retry_count():
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj.logger = MagicMock()
+    sandbox_obj = MagicMock(id="sb-retry")
+    obj.sandbox_client.create = AsyncMock(side_effect=[Exception("boom"), sandbox_obj])
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    result = asyncio.run(obj.create_sandbox({}, request=MagicMock()))
+
+    assert result == "sb-retry"
+    assert obj.sandbox_client.create.await_count == 2
 
 
 def test_create_sandbox_not_ready(mixin):

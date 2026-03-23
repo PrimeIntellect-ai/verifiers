@@ -26,9 +26,9 @@ class TestMathRubric:
     @pytest.mark.parametrize(
         "test_case",
         [
-            {"completion": "1", "answer": "1"},
-            {"completion": "x + 1", "answer": "1 + x"},
-            {"completion": "\\frac{1}{2}", "answer": "0.5"},
+            {"completion": "\\boxed{1}", "answer": "1"},
+            {"completion": "\\boxed{x + 1}", "answer": "1 + x"},
+            {"completion": "\\boxed{\\frac{1}{2}}", "answer": "0.5"},
         ],
         ids=lambda x: f"{x['completion']} == {x['answer']}",
     )
@@ -61,8 +61,8 @@ class TestMathRubric:
     @pytest.mark.parametrize(
         "test_case",
         [
-            {"completion": "1", "answer": "2"},
-            {"completion": "\\frac{1}{3}", "answer": "0.5"},
+            {"completion": "\\boxed{1}", "answer": "2"},
+            {"completion": "\\boxed{\\frac{1}{3}}", "answer": "0.5"},
         ],
         ids=lambda x: f"{x['completion']} != {x['answer']}",
     )
@@ -98,9 +98,11 @@ class TestMathRubric:
 
         # very large input triggers timeout, takes ~2s to parse and verify
         answer = "1" * int(1e5)
-        completion = "1" * int(1e5)
+        completion = "\\boxed{" + "1" * int(1e5) + "}"
 
-        rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
+        rubric = vf.MathRubric(
+            max_workers=1, timeout_seconds=timeout_seconds, max_verify_chars=int(2e5)
+        )
 
         state = vf.State(
             input=make_input(

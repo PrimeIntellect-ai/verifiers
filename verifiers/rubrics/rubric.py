@@ -5,6 +5,7 @@ import time
 from typing import Any, cast
 
 import verifiers as vf
+from verifiers.decorators import discover_decorated
 from verifiers.types import (
     GroupRewardFunc,
     RewardFunc,
@@ -52,6 +53,9 @@ class Rubric:
         self.class_objects = {}
         if self.parser:
             self.class_objects["parser"] = self.parser
+
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
 
     # public helpers
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
@@ -212,6 +216,16 @@ class Rubric:
                 )
                 ans = [0.0] * len(states)
         return ans
+
+    async def cleanup(self, state: State):
+        """Run all @vf.cleanup-decorated methods on this rubric."""
+        for handler in self._cleanup_handlers:
+            await handler(state)
+
+    async def teardown(self):
+        """Run all @vf.teardown-decorated methods on this rubric."""
+        for handler in self._teardown_handlers:
+            await handler()
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""

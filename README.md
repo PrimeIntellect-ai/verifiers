@@ -34,6 +34,7 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 ## News & Updates
 
+- [03/22/26] v0.1.12.dev0 release prep is up, featuring opencode RLM environments, performance and autoscaling improvements, stronger cancellation/runtime handling, multimodal save fidelity, and updated development docs.
 - [03/12/26] v0.1.11 is released, featuring a unified client stack, major `RLMEnv` and env server reliability improvements, a substantially refined eval TUI, new pass@k and ablation sweep support, and bundled opencode environments.
 - [02/10/26] v0.1.10 is released, featuring OpenEnv and BrowserEnv integrations, resumed evals, improved rollout and token tracking, safer sandbox lifecycle behavior, refreshed workspace setup, and opencode harbor improvements.
 - [01/08/26] v0.1.9 is released, featuring a number of new experimental environment class types, monitor rubrics for automatic metric collection, improved workspace setup flow, improved error handling, bug fixes, and a documentation overhaul.

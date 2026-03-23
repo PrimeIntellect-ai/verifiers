@@ -60,6 +60,22 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 prime eval run my-env -x '{"max_turns": 20}'
 ```
 
+#### Executor autoscaling
+
+Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `concurrency` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_concurrency()`, which resizes both the default event-loop executor and all registered executors.
+
+To override the automatic value:
+
+```bash
+prime eval run my-env -x '{"concurrency": 256}'
+```
+
+You can also call `set_concurrency()` directly at runtime:
+
+```python
+env.set_concurrency(256)
+```
+
 ### Model Configuration
 
 | Flag | Short | Default | Description |
@@ -173,6 +189,7 @@ When evaluating multiple environments, the display shows an overview panel at th
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
+| `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
@@ -180,7 +197,7 @@ When evaluating multiple environments, the display shows an overview panel at th
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
 | `--heartbeat-url` | — | — | Heartbeat URL for uptime monitoring |
 
-Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
+By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. Use `--output-dir` to override the base output directory — when set, results (and logs) are saved under `{output_dir}/evals/{env_id}--{model}/{run_id}/` instead. The directory contains:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics

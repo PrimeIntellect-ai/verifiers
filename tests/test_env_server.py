@@ -332,6 +332,55 @@ class TestTaskCancellation:
     """
 
     @pytest.mark.asyncio
+    async def test_cancelled_client_task_should_cancel_server_task_before_request_processing(
+        self,
+    ):
+        """Cancellation should still propagate before process_request enters its body."""
+        process_request_blocked = asyncio.Event()
+        original_process_request_entered = asyncio.Event()
+        server_task_cancelled = asyncio.Event()
+
+        async with run_server_and_client() as (server, client):
+            original_process_request = server.process_request
+
+            async def delayed_process_request(
+                client_id,
+                request_id_bytes,
+                payload_bytes,
+            ):
+                process_request_blocked.set()
+                try:
+                    await asyncio.Event().wait()
+                    original_process_request_entered.set()
+                    return await original_process_request(
+                        client_id,
+                        request_id_bytes,
+                        payload_bytes,
+                    )
+                except asyncio.CancelledError:
+                    server_task_cancelled.set()
+                    raise
+
+            server.process_request = delayed_process_request  # type: ignore[assignment]
+
+            client_task = asyncio.create_task(
+                client.send_request(
+                    make_rollout_request(), RunRolloutResponse, timeout=30
+                )
+            )
+
+            await asyncio.wait_for(process_request_blocked.wait(), timeout=5)
+            assert len(server.request_tasks) == 1
+            assert not original_process_request_entered.is_set()
+
+            client_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await client_task
+
+            await asyncio.wait_for(server_task_cancelled.wait(), timeout=5)
+            assert not original_process_request_entered.is_set()
+
+    @pytest.mark.asyncio
     async def test_cancelled_client_task_should_cancel_server_task(self):
         """When the asyncio task awaiting send_request() is cancelled on the
         client, the corresponding server-side task should also be cancelled
@@ -358,7 +407,7 @@ class TestTaskCancellation:
 
             # Wait for the server to actually start processing
             await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.pending_tasks) == 1
+            assert len(server.request_tasks) == 1
 
             # Cancel on the client side
             client_task.cancel()
@@ -403,7 +452,7 @@ class TestTaskCancellation:
 
             # Confirm the server started processing
             await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.pending_tasks) == 1
+            assert len(server.request_tasks) == 1
 
             # Give the system time to propagate
             await asyncio.sleep(0.5)

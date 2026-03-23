@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
+from prime_sandboxes import UploadTimeoutError
 
 import verifiers as vf
 from verifiers.envs.experimental import rlm_env as rlm_module
@@ -2707,6 +2708,28 @@ class TestCleanupSemantics:
 
 
 class TestFilesystemProvisioning:
+    def test_rlm_env_threads_sandbox_client_pool_settings_to_executor(self):
+        dataset = make_dataset({})
+        with (
+            patch("verifiers.envs.environment.signal.signal"),
+            patch(
+                "verifiers.envs.experimental.sandbox_mixin.ThreadedAsyncSandboxClient"
+            ) as mock_client_cls,
+        ):
+            mock_client_cls.return_value = MagicMock()
+            RLMEnv(
+                dataset=dataset,
+                sandbox_client_max_workers=123,
+                sandbox_client_max_connections=234,
+                sandbox_client_max_keepalive_connections=56,
+            )
+
+        mock_client_cls.assert_called_with(
+            max_workers=123,
+            max_connections=234,
+            max_keepalive_connections=56,
+        )
+
     @pytest.mark.asyncio
     async def test_prepare_filesystem_uploads_and_sets_paths(self, tmp_path: Path):
         dataset = make_dataset({})
@@ -2766,3 +2789,41 @@ class TestFilesystemProvisioning:
         await executor._write_sandbox_files(session, state)
 
         assert executor.sandbox_client.upload_file.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_write_sandbox_files_retries_upload_timeout(self):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            sandbox_transfer_max_retries=1,
+        )
+        state = {
+            "rollout_id": "rlm_test",
+            "rlm_fs_root": "/tmp/rlm_rlm_test/rlm_fs",
+            "model": "m",
+            "client": MagicMock(),
+            "interception_url": "http://example.invalid",
+            "root_tool_url": "http://example.invalid",
+        }
+
+        executor = env._executor
+        executor._sessions.clear()
+        session = executor._get_or_create_session(state)
+        session.sandbox_id = "sbx_1"
+        session.sandbox_control_dir = "/tmp/rlm_rlm_test/rlm_control"
+        session.sandbox_fs_root = "/tmp/rlm_rlm_test/rlm_fs"
+        session.paths = rlm_module._build_worker_paths(session.sandbox_control_dir)
+
+        executor.sandbox_client.upload_file = AsyncMock(
+            side_effect=[
+                UploadTimeoutError("sbx_1", session.paths.context_file, 300),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+            ]
+        )
+
+        await executor._write_sandbox_files(session, state)
+
+        assert executor.sandbox_client.upload_file.await_count == 4

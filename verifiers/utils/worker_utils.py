@@ -43,18 +43,31 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
+_reserved_sockets: list[socket.socket] = []
+
+
+def _make_reusable_socket(port: int = 0) -> socket.socket:
+    """Create a TCP socket with SO_REUSEADDR bound to the given port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("localhost", port))
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
 def get_free_port_pair() -> int:
     """Get a free port whose successor (port+1) is also free."""
     for _ in range(10):
-        with (
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s1,
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2,
-        ):
-            s1.bind(("localhost", 0))
-            port = s1.getsockname()[1]
-            try:
-                s2.bind(("localhost", port + 1))
-                return port
-            except OSError:
-                continue
+        s1 = _make_reusable_socket()
+        port = s1.getsockname()[1]
+        try:
+            s2 = _make_reusable_socket(port + 1)
+        except OSError:
+            s1.close()
+            continue
+        _reserved_sockets.extend([s1, s2])
+        return port
     raise RuntimeError("Could not find a free port pair after 10 attempts")

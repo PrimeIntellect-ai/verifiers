@@ -99,22 +99,26 @@ prime eval run my-env -s -C "judge_response,parsed_answer"
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Run multi-environment TOML suites:
+5. Save results to a custom output directory:
+```bash
+prime eval run my-env -s -o /path/to/output
+```
+6. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-6. Pass extra HTTP headers via CLI (repeatable):
+7. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-7. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+8. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-8. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+9. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"

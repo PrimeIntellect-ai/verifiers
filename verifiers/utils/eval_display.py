@@ -411,9 +411,13 @@ class EvalDisplay(BaseDisplay):
             config_line.append("  |  ", style="dim")
             config_line.append("custom sampling ", style="white")
             config_line.append("(", style="dim")
-            for key, value in config.sampling_args.items():
-                if value is not None:
-                    config_line.append(f"{key}={value}", style="dim")
+            non_none_items = [
+                (k, v) for k, v in config.sampling_args.items() if v is not None
+            ]
+            for i, (key, value) in enumerate(non_none_items):
+                if i > 0:
+                    config_line.append(", ", style="dim")
+                config_line.append(f"{key}={value}", style="dim")
             config_line.append(")", style="dim")
         if config.save_results:
             config_line.append("  |  ", style="dim")

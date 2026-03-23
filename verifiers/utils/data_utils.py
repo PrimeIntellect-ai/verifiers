@@ -72,7 +72,17 @@ def format_dataset(
     return dataset
 
 
-def extract_boxed_answer(text: str) -> str:
+def extract_boxed_answer(text: str, strict: bool = False) -> str:
+    """Extract the last \\boxed{...} answer from text.
+
+    Args:
+        text: The text to extract from.
+        strict: If True, return "" when no \\boxed{} is found (for reward
+            scoring where format compliance matters). If False, return the
+            original text as a passthrough (for environments that use this
+            as a general text extractor).
+    """
+
     def find_matching_brace(s: str, start: int) -> int:
         count = 1
         i = start
@@ -87,13 +97,13 @@ def extract_boxed_answer(text: str) -> str:
     # Find last \boxed{
     boxed_start = text.rfind("\\boxed{")
     if boxed_start == -1:
-        return text
+        return "" if strict else text
     # Find the content between the braces
     content_start = boxed_start + 7  # len('\\boxed{')
     closing_brace = find_matching_brace(text, content_start)
 
     if closing_brace == -1:
-        return text
+        return "" if strict else text
 
     return text[content_start:closing_brace]
 
