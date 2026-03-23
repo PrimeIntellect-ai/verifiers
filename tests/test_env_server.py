@@ -16,9 +16,9 @@ import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
 from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.workers.client.zmq_env_client import ZMQEnvClient
-from verifiers.workers.server.zmq_env_server import ZMQEnvServer
-from verifiers.workers.types import (
+from verifiers.serve.client.zmq_env_client import ZMQEnvClient
+from verifiers.serve.server.zmq_env_server import ZMQEnvServer
+from verifiers.serve.types import (
     HealthRequest,
     HealthResponse,
     PendingRequest,
@@ -36,7 +36,7 @@ def make_client(address: str = "tcp://127.0.0.1:5555", **kwargs) -> ZMQEnvClient
 
 def make_mock_server(address: str) -> ZMQEnvServer:
     """Create a ZMQEnvServer with a mocked environment (no real env loading)."""
-    with patch("verifiers.workers.server.env_server.vf") as mock_vf:
+    with patch("verifiers.serve.server.env_server.vf") as mock_vf:
         mock_env = MagicMock()
         mock_env._teardown = AsyncMock()
         mock_vf.load_environment.return_value = mock_env

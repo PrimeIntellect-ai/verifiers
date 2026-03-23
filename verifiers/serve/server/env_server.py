@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import verifiers as vf
-from verifiers.workers.server.env_router import EnvRouter
+from verifiers.serve.server.env_router import EnvRouter
 
 
 def request_parent_death_signal() -> None:

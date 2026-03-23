@@ -24,7 +24,7 @@ import zmq.asyncio
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.process_utils import terminate_process
 from verifiers.utils.worker_utils import make_ipc_address
-from verifiers.workers.types import WorkerStats
+from verifiers.serve.types import WorkerStats
 
 
 @dataclass
@@ -126,7 +126,7 @@ class EnvRouter:
 
     def start_worker(self, worker_id: int) -> WorkerHandle:
         """Start an EnvWorker process."""
-        from verifiers.workers.server.env_worker import EnvWorker
+        from verifiers.serve.server.env_worker import EnvWorker
 
         worker_name = self.get_worker_name(worker_id)
         worker_addr = self.get_worker_address(worker_id)

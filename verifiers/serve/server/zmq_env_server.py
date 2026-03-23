@@ -12,9 +12,9 @@ import time
 import zmq
 import zmq.asyncio
 
+from verifiers.serve.server.env_server import EnvServer
 from verifiers.utils.process_utils import terminate_process
 from verifiers.utils.worker_utils import derive_health_address, run_health_responder
-from verifiers.workers.server.env_server import EnvServer
 
 
 class ZMQEnvServer(EnvServer):
@@ -120,7 +120,7 @@ class ZMQEnvServer(EnvServer):
                 # ── periodic checks ──────────────────────────────
                 now = time.time()
                 if now - last_stats_log >= self.router.stats_log_interval:
-                    self.router.log_aggregate_stats()
+                    self.router.log_stats()
                     last_stats_log = now
                 if now - last_heartbeat_check >= 5.0:
                     await self.router.check_workers()

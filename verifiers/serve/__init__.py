@@ -1,6 +1,6 @@
-from verifiers.workers.client.zmq_env_client import ZMQEnvClient
-from verifiers.workers.server import EnvRouter, EnvServer, EnvWorker, ZMQEnvServer
-from verifiers.workers.types import (
+from verifiers.serve.client.zmq_env_client import ZMQEnvClient
+from verifiers.serve.server import EnvRouter, EnvServer, EnvWorker, ZMQEnvServer
+from verifiers.serve.types import (
     BaseRequest,
     BaseResponse,
     HealthRequest,
