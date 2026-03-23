@@ -12,7 +12,7 @@ import zmq.asyncio
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.serve.client.env_client import EnvClient
-from verifiers.serve.server.zmq_env_server import derive_health_address
+from verifiers.utils.worker_utils import derive_health_address
 from verifiers.serve.types import (
     BaseRequest,
     BaseResponseT,

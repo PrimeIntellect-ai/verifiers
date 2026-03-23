@@ -6,15 +6,17 @@ Adds a ZMQ ROUTER frontend socket and health-check responder on top of
 """
 
 import asyncio
-import multiprocessing as mp
 import time
 
+import msgpack
 import zmq
 import zmq.asyncio
 
 from verifiers.serve.server.env_server import EnvServer
-from verifiers.utils.process_utils import terminate_process
-from verifiers.utils.worker_utils import derive_health_address, run_health_responder
+from verifiers.utils.worker_utils import derive_health_address
+
+# Pre-serialized health response — avoids repeated packing on every ping.
+_HEALTH_RESPONSE = msgpack.packb({"success": True, "error": None}, use_bin_type=True)
 
 
 class ZMQEnvServer(EnvServer):
@@ -25,6 +27,7 @@ class ZMQEnvServer(EnvServer):
         self.address = address
         self.health_address = derive_health_address(address)
 
+        # Client-facing ROUTER socket
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -33,20 +36,13 @@ class ZMQEnvServer(EnvServer):
         self.frontend.setsockopt(zmq.LINGER, 0)
         self.frontend.bind(self.address)
 
-        self.stop_health = mp.Event()
-        self.health_process: mp.Process | None = None
+        # Health check REP socket (in-process, no subprocess needed)
+        self.health_socket = self.ctx.socket(zmq.REP)
+        self.health_socket.setsockopt(zmq.LINGER, 0)
+        self.health_socket.bind(self.health_address)
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"ZMQEnvServer started on {self.address}")
-
-        # Health responder
-        self.health_process = mp.Process(
-            target=run_health_responder,
-            args=(self.health_address, self.stop_health),
-            name="health-responder",
-            daemon=True,
-        )
-        self.health_process.start()
         self.logger.info(f"Health responder on {self.health_address}")
 
         # Start worker pool
@@ -55,6 +51,7 @@ class ZMQEnvServer(EnvServer):
         # Register all sockets in a single poller
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
+        poller.register(self.health_socket, zmq.POLLIN)
         poller.register(self.router.response_pull, zmq.POLLIN)
         poller.register(self.router.stats_pull, zmq.POLLIN)
 
@@ -68,6 +65,11 @@ class ZMQEnvServer(EnvServer):
                     break
 
                 events = dict(await poller.poll(timeout=100))
+
+                # ── health checks ─────────────────────────────────
+                if self.health_socket in events:
+                    await self.health_socket.recv()
+                    await self.health_socket.send(_HEALTH_RESPONSE)
 
                 # ── client requests ──────────────────────────────
                 if self.frontend in events:
@@ -130,17 +132,13 @@ class ZMQEnvServer(EnvServer):
             pass
         finally:
             poller.unregister(self.frontend)
+            poller.unregister(self.health_socket)
             poller.unregister(self.router.response_pull)
             poller.unregister(self.router.stats_pull)
 
     async def close(self) -> None:
-        # Health process
-        self.stop_health.set()
-        terminate_process(self.health_process)
-        self.health_process = None
-
-        # Frontend socket
         self.frontend.close()
+        self.health_socket.close()
         self.ctx.term()
 
         self.logger.info("ZMQEnvServer shut down")
