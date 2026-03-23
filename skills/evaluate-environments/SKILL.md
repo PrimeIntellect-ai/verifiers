@@ -48,6 +48,15 @@ model = "qwen/qwen3-32b-instruct"
 url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
 ```
+7. Endpoint entries support optional `headers` (or `extra_headers`) for custom HTTP headers sent with inference requests:
+```toml
+[[endpoint]]
+endpoint_id = "my-proxy"
+model = "gpt-4.1-mini"
+url = "https://api.example/v1"
+key = "OPENAI_API_KEY"
+headers = { "X-Custom-Header" = "value" }
+```
 
 ## Publish Gate Before Large Runs
 1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
@@ -94,7 +103,18 @@ prime eval run my-env -n 1000 -s --resume
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-6. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+6. Pass extra HTTP headers via CLI (repeatable):
+```bash
+prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
+```
+7. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+```toml
+[[eval]]
+env_id = "my-env"
+headers = { "X-Custom-Header" = "value" }
+header = ["X-Another: val"]
+```
+8. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
