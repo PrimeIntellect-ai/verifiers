@@ -9,20 +9,12 @@ from verifiers.envs.integrations.nemo_gym import (
 
 
 def load_environment(
-    dataset_split: str = "example",
-    vllm_server_host: str = "127.0.0.1",
-    vllm_server_port: int = 8000,
-    head_server_host: str = "0.0.0.0",
-    head_server_port: int = 11000,
+    dataset_path: str | None = None,
     **kwargs: Any,
 ) -> vf.Environment:
-    dataset, _ = _build_dataset("arc_agi", dataset_split)
+    dataset, _ = _build_dataset("arc_agi", "example", dataset_path=dataset_path)
     return NemoGymEnv(
         gym_configs=[_resolve_gym_config("arc_agi")],
         dataset=dataset,
-        vllm_server_host=vllm_server_host,
-        vllm_server_port=vllm_server_port,
-        head_server_host=head_server_host,
-        head_server_port=head_server_port,
         **kwargs,
     )
