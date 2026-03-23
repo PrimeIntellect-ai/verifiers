@@ -279,32 +279,39 @@ class EnvRouter:
                 await self.restart_worker(worker_id)
 
     def log_stats(self) -> None:
-        """Log router stats (worker aggregates)."""
+        """Log aggregate + per-worker stats."""
         total_active = 0
-        per_worker = []
         lag_means: list[float] = []
         lag_p99s: list[float] = []
         lag_maxes: list[float] = []
 
+        worker_lines: list[str] = []
         for worker_id in sorted(self.workers):
             worker = self.workers[worker_id]
             total_active += worker.active_count
-            per_worker.append(f"W{worker_id}:{worker.active_count}")
-            if worker.stats and worker.stats.lag.n > 0:
-                lag_means.append(worker.stats.lag.mean)
-                lag_p99s.append(worker.stats.lag.p99)
-                lag_maxes.append(worker.stats.lag.max)
+            if worker.stats:
+                worker_lines.append(f"  W{worker_id}: {worker.stats}")
+                if worker.stats.lag.n > 0:
+                    lag_means.append(worker.stats.lag.mean)
+                    lag_p99s.append(worker.stats.lag.p99)
+                    lag_maxes.append(worker.stats.lag.max)
+            else:
+                worker_lines.append(
+                    f"  W{worker_id}: Active tasks: {worker.active_count} | No stats yet"
+                )
 
         parts = [
             f"Workers: {len(self.workers)}",
-            f"Active: {total_active} ({', '.join(per_worker)})",
+            f"Active: {total_active}",
         ]
         if lag_means:
             parts.append(
                 f"Lag: mean={print_time(sum(lag_means) / len(lag_means))} "
                 f"p99={print_time(max(lag_p99s))} max={print_time(max(lag_maxes))}"
             )
-        self.logger.info(" | ".join(parts))
+
+        header = " | ".join(parts)
+        self.logger.info(f"{header}\n" + "\n".join(worker_lines))
 
     async def close(self) -> None:
         """Close all router resources."""

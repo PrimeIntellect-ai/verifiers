@@ -74,15 +74,16 @@ class EnvWorker:
         self.worker_id = worker_id
         self.worker_name = worker_name
 
-        # setup logging
+        # setup logging — each worker gets its own log file
         logger_kwargs: dict[str, Any] = {}
         if log_level is not None:
             logger_kwargs["level"] = log_level
         if log_file is not None:
             from pathlib import Path
 
-            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-            logger_kwargs["log_file"] = log_file
+            worker_log_file = Path(log_file).parent / f"{worker_name}.log"
+            worker_log_file.parent.mkdir(parents=True, exist_ok=True)
+            logger_kwargs["log_file"] = str(worker_log_file)
             logger_kwargs["log_file_level"] = log_file_level
         vf.setup_logging(**logger_kwargs)
 
@@ -90,7 +91,7 @@ class EnvWorker:
             logging.getLogger(f"{__name__}.{self.__class__.__name__}"),
         )
         self.logger.process = lambda msg, kwargs: (
-            f"[{self.worker_name}] {msg}",
+            f"[W{self.worker_id}] {msg}",
             kwargs,
         )
 
