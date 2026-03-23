@@ -36,6 +36,47 @@ def msgpack_encoder(obj):
         raise TypeError(f"Object of type {type(obj)} is not msgpack serializable")
 
 
+def make_ipc_address(session_id: str, name: str) -> str:
+    """Build an IPC address for inter-process communication."""
+    return f"ipc:///tmp/vf-{session_id}-{name}"
+
+
+def derive_health_address(address: str) -> str:
+    """Derive health check address from main address (port + 1)."""
+    prefix, port_str = address.rsplit(":", 1)
+    return f"{prefix}:{int(port_str) + 1}"
+
+
+def run_health_responder(address: str, stop_event) -> None:
+    """Synchronous health check responder in a dedicated process.
+
+    Completely isolated from the main server process's GIL, so health
+    pings always receive a prompt response regardless of workload.
+    """
+    import msgpack
+    import zmq
+
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.REP)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, 1000)
+    sock.bind(address)
+
+    resp = msgpack.packb({"success": True, "error": None}, use_bin_type=True)
+
+    while not stop_event.is_set():
+        try:
+            sock.recv()
+            sock.send(resp)
+        except zmq.Again:
+            continue
+        except zmq.ZMQError:
+            break
+
+    sock.close()
+    ctx.term()
+
+
 def get_free_port() -> int:
     """Get a free port on the system."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

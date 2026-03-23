@@ -85,6 +85,16 @@ class ServerState(str, Enum):
 class ServerError(RuntimeError): ...
 
 
+class WorkerStats(BaseModel):
+    worker_id: int
+    timestamp: float
+    active_tasks: int
+    lag_mean: float = 0.0
+    lag_p99: float = 0.0
+    lag_max: float = 0.0
+    lag_n: int = 0
+
+
 class PendingRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

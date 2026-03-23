@@ -1,5 +1,11 @@
+"""Base environment server.
+
+Owns an :class:`EnvRouter` (worker pool), sets up logging, and provides
+the ``run()`` / ``run_server()`` lifecycle.  Subclasses implement the
+client-facing transport in ``serve()`` and ``close()``.
+"""
+
 import asyncio
-import ctypes
 import logging
 import signal
 import sys
@@ -8,32 +14,16 @@ from pathlib import Path
 from typing import Any
 
 import verifiers as vf
-from verifiers.clients import Client, resolve_client
-from verifiers.types import ClientConfig
-from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.workers.types import (
-    HealthRequest,
-    HealthResponse,
-    RunGroupRequest,
-    RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
-)
+from verifiers.workers.server.env_router import EnvRouter
 
 
 def request_parent_death_signal() -> None:
-    """
-    Ask the Linux kernel to send SIGTERM when the parent process dies.
-
-    This ensures the env server subprocess shuts down cleanly even if the
-    parent is killed with SIGKILL or crashes without running cleanup handlers.
-    The server already handles SIGTERM via its signal handler, so this
-    triggers a normal graceful shutdown. Silently no-ops on non-Linux.
-    """
+    """Ask the Linux kernel to send SIGTERM when the parent process dies."""
     if sys.platform != "linux":
         return
     try:
+        import ctypes
+
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         PR_SET_PDEATHSIG = 1
         libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
@@ -42,11 +32,14 @@ def request_parent_death_signal() -> None:
 
 
 class EnvServer(ABC):
-    """Base class for environment server."""
+    """Base class for environment server.
+
+    Manages a pool of worker processes via an :class:`EnvRouter`.
+    Subclasses add the client-facing protocol (e.g. ZMQ ROUTER socket).
+    """
 
     def __init__(
         self,
-        # environment
         env_id: str,
         env_args: dict[str, Any] | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
@@ -54,8 +47,12 @@ class EnvServer(ABC):
         log_file: str | None = None,
         log_file_level: str | None = None,
         json_logging: bool = False,
+        *,
+        num_workers: int = 1,
+        worker_heartbeat_timeout: float = 30.0,
+        stats_log_interval: float = 10.0,
     ):
-        # setup logging
+        # ── logging ──────────────────────────────────────────────
         logger_kwargs: dict[str, Any] = {"json_logging": json_logging}
         if log_level is not None:
             logger_kwargs["level"] = log_level
@@ -63,51 +60,38 @@ class EnvServer(ABC):
             Path(log_file).parent.mkdir(parents=True, exist_ok=True)
             logger_kwargs["log_file"] = log_file
             logger_kwargs["log_file_level"] = log_file_level
-
         vf.setup_logging(**logger_kwargs)
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(
-            f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=})"
+            f"Initializing {self.__class__.__name__} to serve {env_id} "
+            f"({env_args=}, {extra_env_kwargs=}, {num_workers=})"
         )
 
-        self.env_id = env_id
-        self.env_args = env_args or {}
-        self.extra_env_kwargs = extra_env_kwargs or {}
-
-        self.clients: dict[str, Client] = {}
-
-        # load environment
-        self.logger.info(f"Loading environment {env_id} with {env_args=}")
-        self.env = vf.load_environment(self.env_id, **self.env_args)
-        if self.extra_env_kwargs:
-            self.logger.info(
-                f"Setting extra environment kwargs: {self.extra_env_kwargs}"
-            )
-            self.env.set_kwargs(**self.extra_env_kwargs)
-
-        # Start event loop lag monitor
-        self.lag_monitor = EventLoopLagMonitor()
+        # ── router (worker pool) ─────────────────────────────────
+        self.router = EnvRouter(
+            env_id=env_id,
+            env_args=env_args,
+            extra_env_kwargs=extra_env_kwargs,
+            log_level=log_level,
+            log_file=log_file,
+            log_file_level=log_file_level,
+            num_workers=num_workers,
+            worker_heartbeat_timeout=worker_heartbeat_timeout,
+            stats_log_interval=stats_log_interval,
+        )
 
     @abstractmethod
-    async def serve(self, stop_event: asyncio.Event | None = None):
-        """Main serve loop. Subclasses implement this."""
-        pass
+    async def serve(self, stop_event: asyncio.Event | None = None) -> None:
+        """Client-facing serve loop. Subclasses implement this."""
 
     @abstractmethod
-    async def close(self):
-        pass
+    async def close(self) -> None:
+        """Clean up client-facing resources (sockets, health process, etc.)."""
 
     async def run(self) -> None:
-        """Run the server with signal-based graceful shutdown and cleanup."""
+        """Run the server with signal-based graceful shutdown."""
         request_parent_death_signal()
-
-        # Bind the scaled default executor to the *running* event loop.
-        # scale_executors() may have been called during __init__ (before
-        # asyncio.run() created this loop), so we install it here.
-        from verifiers.utils.thread_utils import install_default_executor
-
-        install_default_executor()
 
         stop_event = asyncio.Event()
 
@@ -123,53 +107,10 @@ class EnvServer(ABC):
         try:
             await self.serve(stop_event=stop_event)
         finally:
-            await self.env._teardown()
             await self.close()
+            await self.router.close()
 
     @classmethod
     def run_server(cls, *args, **kwargs):
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())
-
-    async def handle_health(self, _request: HealthRequest) -> HealthResponse:
-        return HealthResponse()
-
-    async def handle_run_rollout(
-        self, request: RunRolloutRequest
-    ) -> RunRolloutResponse:
-        client = await self.resolve_client(request.client_config)
-        output = await self.env.run_rollout(
-            input=request.input,
-            client=client,
-            model=request.model,
-            sampling_args=request.sampling_args,
-            max_retries=request.max_retries,
-            state_columns=request.state_columns,
-        )
-        return RunRolloutResponse(output=output)
-
-    async def handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
-        client = await self.resolve_client(request.client_config)
-        outputs = await self.env.run_group(
-            group_inputs=request.group_inputs,
-            client=client,
-            model=request.model,
-            sampling_args=request.sampling_args,
-            max_retries=request.max_retries,
-            state_columns=request.state_columns,
-        )
-        return RunGroupResponse(outputs=outputs)
-
-    async def resolve_client(self, client_config: ClientConfig) -> Client:
-        resolved_client_config = resolve_client_config(client_config)
-        client_key = resolved_client_config.model_dump_json()
-        if client_key in self.clients:
-            return self.clients[client_key]
-        client = resolve_client(resolved_client_config)
-        self.clients[client_key] = client
-        return client
-
-    async def close_cached_clients(self) -> None:
-        for client in self.clients.values():
-            await client.close()
-        self.clients.clear()

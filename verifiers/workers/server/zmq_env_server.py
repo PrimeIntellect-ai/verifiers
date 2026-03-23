@@ -1,93 +1,47 @@
-import asyncio
-import gc
-import multiprocessing as mp
-from typing import cast
+"""ZMQ-based environment server.
 
-import msgpack
-import numpy as np
+Adds a ZMQ ROUTER frontend socket and health-check responder on top of
+:class:`EnvServer`.  The poll loop bridges client frames to/from the
+:class:`EnvRouter` worker pool.
+"""
+
+import asyncio
+import multiprocessing as mp
+import time
+
 import zmq
 import zmq.asyncio
 
-from verifiers.utils.logging_utils import print_time
-from verifiers.utils.worker_utils import msgpack_encoder
+from verifiers.utils.process_utils import terminate_process
+from verifiers.utils.worker_utils import derive_health_address, run_health_responder
 from verifiers.workers.server.env_server import EnvServer
-from verifiers.workers.types import (
-    BaseResponse,
-    RunGroupRequest,
-    RunRolloutRequest,
-)
-
-
-def derive_health_address(address: str) -> str:
-    """Derive health check address from main address (port + 1)."""
-    prefix, port_str = address.rsplit(":", 1)
-    return f"{prefix}:{int(port_str) + 1}"
-
-
-def run_health_responder(address: str, stop_event) -> None:
-    """
-    Synchronous health check responder that runs in a dedicated process.
-
-    Completely isolated from the main server process's GIL, so health
-    pings always receive a prompt response regardless of env workload.
-    """
-    import msgpack
-    import zmq
-
-    ctx = zmq.Context()
-    sock = ctx.socket(zmq.REP)
-    sock.setsockopt(zmq.LINGER, 0)
-    sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1s timeout for clean shutdown
-    sock.bind(address)
-
-    resp = msgpack.packb({"success": True, "error": None}, use_bin_type=True)
-
-    while not stop_event.is_set():
-        try:
-            sock.recv()
-            sock.send(resp)
-        except zmq.Again:
-            continue
-        except zmq.ZMQError:
-            break
-
-    sock.close()
-    ctx.term()
 
 
 class ZMQEnvServer(EnvServer):
-    """ZMQ-based environment server."""
+    """ZMQ ROUTER frontend + EnvRouter worker pool."""
 
     def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)
         self.address = address
         self.health_address = derive_health_address(address)
 
+        # ── ZMQ frontend (client-facing) ─────────────────────────
         self.ctx = zmq.asyncio.Context()
-        self.socket = self.ctx.socket(zmq.ROUTER)
-        # require client to receive all messages
-        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
-        self.socket.setsockopt(zmq.SNDHWM, 0)  # no limit
-        self.socket.setsockopt(zmq.RCVHWM, 0)  # no limit
-        self.socket.setsockopt(zmq.LINGER, 0)  # discard msgs on socket close
-        self.socket.bind(self.address)
+        self.frontend = self.ctx.socket(zmq.ROUTER)
+        self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
+        self.frontend.setsockopt(zmq.SNDHWM, 0)
+        self.frontend.setsockopt(zmq.RCVHWM, 0)
+        self.frontend.setsockopt(zmq.LINGER, 0)
+        self.frontend.bind(self.address)
 
-        # Map frame request-id -> asyncio.Task so we can cancel on demand and
-        # track in-flight work from a single source of truth.
-        self.request_tasks: dict[str, asyncio.Task] = {}
-
-        # Health check runs in a separate process (immune to env workload)
+        # ── health check (separate process) ──────────────────────
         self.stop_health = mp.Event()
         self.health_process: mp.Process | None = None
 
-    def _cleanup_request_task(self, frame_request_id: str, task: asyncio.Task) -> None:
-        if self.request_tasks.get(frame_request_id) is task:
-            self.request_tasks.pop(frame_request_id, None)
-
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
-        self.logger.info(f"{self.__class__.__name__} started on {self.address}")
+        self.logger.info(f"ZMQEnvServer started on {self.address}")
 
-        # Start health responder in a daemon process
+        # Health responder
         self.health_process = mp.Process(
             target=run_health_responder,
             args=(self.health_address, self.stop_health),
@@ -95,232 +49,100 @@ class ZMQEnvServer(EnvServer):
             daemon=True,
         )
         self.health_process.start()
-        self.logger.info(f"Health check responder started on {self.health_address}")
+        self.logger.info(f"Health responder on {self.health_address}")
 
-        gc.collect()
-        gc.freeze()
-        gc.set_threshold(150_000, 10, 10)
-        self.logger.info(
-            f"GC tuned: frozen {gc.get_freeze_count()} objects, "
-            f"threshold={gc.get_threshold()}"
-        )
+        # Start worker pool
+        self.router.start_workers()
 
-        lag_monitor_task = asyncio.create_task(self.lag_monitor.run())
-
-        # Start statistics logger
-        log_stats_task = asyncio.create_task(self.log_stats_loop())
-
-        # Use a poller to check for incoming data instead of asyncio.wait_for.
-        # asyncio.wait_for wraps recv_multipart in a Task and cancels it on
-        # timeout. There is a race in CPython's Task.__step where the recv
-        # completes (consuming data from the ZMQ buffer) but _must_cancel is
-        # already set, so the result is silently discarded — the message is
-        # gone forever. A poller is non-destructive: it only checks socket
-        # readability without consuming any data.
+        # Register all sockets in a single poller
         poller = zmq.asyncio.Poller()
-        poller.register(self.socket, zmq.POLLIN)
+        poller.register(self.frontend, zmq.POLLIN)
+        poller.register(self.router.response_pull, zmq.POLLIN)
+        poller.register(self.router.stats_pull, zmq.POLLIN)
+
+        last_stats_log = time.time()
+        last_heartbeat_check = time.time()
 
         try:
             while True:
                 if stop_event and stop_event.is_set():
-                    self.logger.info("Stop event received, shutting down gracefully")
+                    self.logger.info("Stop event received, shutting down")
                     break
 
-                try:
-                    events = dict(await poller.poll(timeout=1000))
-                    if self.socket not in events:
-                        continue
+                events = dict(await poller.poll(timeout=100))
 
-                    frames = await self.socket.recv_multipart()
-
+                # ── client requests ──────────────────────────────
+                if self.frontend in events:
+                    frames = await self.frontend.recv_multipart()
                     if len(frames) != 3:
                         self.logger.warning(
                             f"Invalid message: expected 3 frames, got {len(frames)}"
                         )
-                        continue
+                    else:
+                        client_id, request_id, payload = frames
+                        if not payload:
+                            await self.router.forward_cancel(request_id, client_id)
+                        else:
+                            try:
+                                await self.router.dispatch(
+                                    client_id, request_id, payload
+                                )
+                            except zmq.ZMQError as e:
+                                self.logger.error(f"Failed to dispatch request: {e}")
 
-                    client_id, request_id, payload_bytes = frames
+                # ── worker responses → client ────────────────────
+                if self.router.response_pull in events:
+                    while True:
+                        try:
+                            frames = await self.router.response_pull.recv_multipart(
+                                zmq.NOBLOCK
+                            )
+                        except zmq.Again:
+                            break
+                        if len(frames) != 3:
+                            continue
+                        client_id, request_id, response_bytes = frames
+                        try:
+                            await self.frontend.send_multipart(
+                                [client_id, request_id, response_bytes]
+                            )
+                        except zmq.ZMQError as e:
+                            self.logger.warning(f"Failed to forward response: {e}")
+                        self.router.complete_request(request_id)
 
-                    # Empty payload = cancel signal from client
-                    if not payload_bytes:
-                        req_id = request_id.decode()
-                        task = self.request_tasks.get(req_id)
-                        if task is not None:
-                            task.cancel()
-                        continue
+                # ── worker stats ─────────────────────────────────
+                if self.router.stats_pull in events:
+                    while True:
+                        try:
+                            data = await self.router.stats_pull.recv(zmq.NOBLOCK)
+                        except zmq.Again:
+                            break
+                        self.router.handle_stats_message(data)
 
-                    # Process in background, tracking the task for cleanup
-                    frame_request_id = request_id.decode()
-                    task = asyncio.create_task(
-                        self.process_request(client_id, request_id, payload_bytes)
-                    )
-                    self.request_tasks[frame_request_id] = task
-                    task.add_done_callback(
-                        lambda done_task, rid=frame_request_id: (
-                            self._cleanup_request_task(rid, done_task)
-                        )
-                    )
-
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    self.logger.error(f"Error in server loop: {e}", exc_info=True)
-        finally:
-            poller.unregister(self.socket)
-            for t in (log_stats_task, lag_monitor_task):
-                t.cancel()
-            await asyncio.gather(
-                log_stats_task, lag_monitor_task, return_exceptions=True
-            )
-
-    async def close(self):
-        # Stop health process
-        self.stop_health.set()
-        if self.health_process is not None:
-            self.health_process.join(timeout=5)
-            if self.health_process.is_alive():
-                self.health_process.terminate()
-                self.health_process.join(timeout=2)
-            self.health_process = None
-
-        # Cancel and await all active tasks
-        if self.request_tasks:
-            tasks = list(self.request_tasks.values())
-            self.logger.info(f"Cancelling {len(tasks)} active tasks")
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        self.request_tasks.clear()
-
-        await self.close_cached_clients()
-
-        self.socket.close()
-        self.ctx.term()
-        self.logger.info("Environment server shut down")
-
-    async def log_stats_loop(self, interval: float = 10.0):
-        """Periodically log statistics."""
-        while True:
-            await asyncio.sleep(interval)
-            active = len(self.request_tasks)
-            message = f"Active tasks: {active}"
-
-            lags = self.lag_monitor.lags
-            n = len(lags)
-            if n > 0:
-                lags_arr = np.array(lags)
-                mean_lag = float(lags_arr.mean())
-                p99_lag = float(np.percentile(lags_arr, 99))
-                max_lag = float(lags_arr.max())
-                message += f", Event loop lag: mean={print_time(mean_lag)}, p99={print_time(p99_lag)}, max={print_time(max_lag)} (n={n})"
-
-            self.logger.info(message)
-
-    async def _serialize_and_send(
-        self,
-        client_id: bytes,
-        request_id: str,
-        response: BaseResponse,
-    ) -> None:
-        """Serialize *response* and send it back to the client.
-
-        Extracted so it can be wrapped in ``asyncio.shield()`` — this lets
-        the response reach the client even when the owning task has been
-        cancelled.
-        """
-
-        def _serialize() -> bytes:
-            return cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
-        try:
-            response_bytes = await asyncio.to_thread(_serialize)
-        except Exception as e:
-            self.logger.error(
-                f"Failed to serialize response for request {request_id}: {e}",
-                exc_info=True,
-            )
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    BaseResponse(
-                        success=False,
-                        error=f"Response serialization failed: {repr(e)}",
-                    ).model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
-        try:
-            await self.socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
-            )
-        except zmq.ZMQError as e:
-            self.logger.warning(
-                f"Failed to send response for request {request_id[:7]}: {e} "
-                f"(client likely disconnected)"
-            )
-
-    async def process_request(
-        self,
-        client_id: bytes,
-        request_id_bytes: bytes,
-        payload_bytes: bytes,
-    ):
-        request_id = request_id_bytes.decode()
-        response: BaseResponse
-
-        try:
-            # deserialize request
-            raw = msgpack.unpackb(payload_bytes, raw=False)
-            request_type = raw.get("request_type")
-            request_id = raw.get("request_id", request_id)
-
-            # Health requests are handled by the dedicated health process,
-            # so they should not arrive here.
-            if request_type == "run_rollout":
-                request = RunRolloutRequest.model_validate(raw)
-                response = await self.handle_run_rollout(request)
-            elif request_type == "run_group":
-                request = RunGroupRequest.model_validate(raw)
-                response = await self.handle_run_group(request)
-            else:
-                self.logger.warning(f"Got unknown request type: {request_type}")
-                response = BaseResponse(
-                    success=False, error=f"Unknown request type: {request_type}"
-                )
+                # ── periodic checks ──────────────────────────────
+                now = time.time()
+                if now - last_stats_log >= self.router.stats_log_interval:
+                    self.router.log_aggregate_stats()
+                    last_stats_log = now
+                if now - last_heartbeat_check >= 5.0:
+                    await self.router.check_workers()
+                    last_heartbeat_check = now
 
         except asyncio.CancelledError:
-            response = BaseResponse(success=False, error="Request was cancelled")
-
-        except Exception as e:
-            self.logger.error(
-                f"Error processing request {request_id}: {e}", exc_info=True
-            )
-            response = BaseResponse(
-                success=False,
-                error=repr(e),
-            )
-
-        # Shield the serialize+send work so it completes even if this task is
-        # cancelled (e.g. after catching CancelledError above).  shield()
-        # runs the coroutine in a fresh inner task whose cancellation flag is
-        # clear, avoiding the Python 3.10 problem where Task.uncancel() does
-        # not exist and every subsequent await would re-raise CancelledError.
-        try:
-            await asyncio.shield(
-                self._serialize_and_send(client_id, request_id, response)
-            )
-        except asyncio.CancelledError:
-            # shield() protects the inner coroutine but re-raises
-            # CancelledError to the caller — safe to swallow here since the
-            # shielded send is still running to completion.
             pass
+        finally:
+            poller.unregister(self.frontend)
+            poller.unregister(self.router.response_pull)
+            poller.unregister(self.router.stats_pull)
+
+    async def close(self) -> None:
+        # Health process
+        self.stop_health.set()
+        terminate_process(self.health_process)
+        self.health_process = None
+
+        # Frontend socket
+        self.frontend.close()
+        self.ctx.term()
+
+        self.logger.info("ZMQEnvServer shut down")

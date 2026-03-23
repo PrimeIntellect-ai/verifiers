@@ -1,5 +1,5 @@
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
-from verifiers.workers.server.zmq_env_server import ZMQEnvServer
+from verifiers.workers.server import EnvRouter, EnvServer, EnvWorker, ZMQEnvServer
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponse,
@@ -9,6 +9,7 @@ from verifiers.workers.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    WorkerStats,
 )
 
 __all__ = [
@@ -21,7 +22,12 @@ __all__ = [
     "RunRolloutResponse",
     "RunGroupRequest",
     "RunGroupResponse",
-    # clients/servers
-    "ZMQEnvClient",
+    "WorkerStats",
+    # server
+    "EnvRouter",
+    "EnvServer",
+    "EnvWorker",
     "ZMQEnvServer",
+    # client
+    "ZMQEnvClient",
 ]
