@@ -295,6 +295,23 @@ def test_load_endpoints_python_registry_accepts_headers_dict(tmp_path: Path):
     assert endpoints["p"][0]["extra_headers"] == {"X-Foo": "bar"}
 
 
+def test_load_endpoints_malformed_headers_string_falls_back_to_empty_registry(
+    tmp_path: Path,
+):
+    toml_path = tmp_path / "endpoints.toml"
+    toml_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "x"\n'
+        'model = "m"\n'
+        'url = "https://api.example/v1"\n'
+        'key = "K"\n'
+        'headers = "invalid"\n',
+        encoding="utf-8",
+    )
+
+    assert load_endpoints(str(toml_path)) == {}
+
+
 def test_client_config_validates_extra_header_keys():
     with pytest.raises(ValidationError):
         ClientConfig(extra_headers={"": "x"})

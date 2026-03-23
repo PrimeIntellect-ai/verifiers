@@ -404,7 +404,7 @@ Endpoints = dict[str, list[Endpoint]]
 
 def _validate_extra_headers_value(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise TypeError("extra_headers must be a dict")
+        raise ValueError("extra_headers must be a dict")
     out: dict[str, str] = {}
     for k, v in value.items():
         if not isinstance(k, str) or not k.strip():
