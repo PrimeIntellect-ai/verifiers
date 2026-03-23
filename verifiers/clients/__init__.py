@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 from verifiers.clients.client import Client
+from verifiers.clients.null_client import NullClient
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
@@ -32,6 +33,7 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
 
 __all__ = [
     "AnthropicMessagesClient",
+    "NullClient",
     "OpenAICompletionsClient",
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",

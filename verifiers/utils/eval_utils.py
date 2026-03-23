@@ -786,8 +786,15 @@ async def run_evaluation(
                     effective_group_max_concurrent, config.num_examples
                 )
 
+        if config.no_inference:
+            from verifiers.clients import NullClient
+
+            eval_client = NullClient()
+        else:
+            eval_client = config.client_config
+
         outputs = await vf_env.evaluate(
-            client=config.client_config,
+            client=eval_client,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,

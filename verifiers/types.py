@@ -504,6 +504,7 @@ class EvalConfig(BaseModel):
     extra_env_kwargs: dict = {}
     max_retries: int = 0
     disable_env_server: bool = False
+    no_inference: bool = False
     # logging
     verbose: bool = False
     debug: bool = False
