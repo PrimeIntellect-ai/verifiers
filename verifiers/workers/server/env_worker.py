@@ -27,6 +27,7 @@ from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.types import (
     BaseResponse,
+    LagStats,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -259,28 +260,31 @@ class EnvWorker:
 
             lags = self.lag_monitor.lags
             n = len(lags)
-            lag_mean = lag_p99 = lag_max = 0.0
+            lag = LagStats(n=n)
             if n > 0:
                 arr = np.array(lags)
-                lag_mean = float(arr.mean())
-                lag_p99 = float(np.percentile(arr, 99))
-                lag_max = float(arr.max())
+                lag = LagStats(
+                    min=float(arr.min()),
+                    mean=float(arr.mean()),
+                    median=float(np.median(arr)),
+                    p90=float(np.percentile(arr, 90)),
+                    p99=float(np.percentile(arr, 99)),
+                    max=float(arr.max()),
+                    n=n,
+                )
 
             stats = WorkerStats(
                 worker_id=self.worker_id,
                 timestamp=time.time(),
                 active_tasks=active,
-                lag_mean=lag_mean,
-                lag_p99=lag_p99,
-                lag_max=lag_max,
-                lag_n=n,
+                lag=lag,
             )
 
             lag_str = ""
-            if n > 0:
+            if lag.n > 0:
                 lag_str = (
-                    f", Lag: mean={print_time(lag_mean)} "
-                    f"p99={print_time(lag_p99)} max={print_time(lag_max)} (n={n})"
+                    f", Lag: mean={print_time(lag.mean)} "
+                    f"p99={print_time(lag.p99)} max={print_time(lag.max)} (n={lag.n})"
                 )
             self.logger.info(f"Active tasks: {active}{lag_str}")
 

@@ -295,10 +295,10 @@ class EnvRouter:
             handle = self.workers[wid]
             total_active += handle.active_count
             per_worker.append(f"W{wid}:{handle.active_count}")
-            if handle.stats and handle.stats.lag_n > 0:
-                lag_means.append(handle.stats.lag_mean)
-                lag_p99s.append(handle.stats.lag_p99)
-                lag_maxes.append(handle.stats.lag_max)
+            if handle.stats and handle.stats.lag.n > 0:
+                lag_means.append(handle.stats.lag.mean)
+                lag_p99s.append(handle.stats.lag.p99)
+                lag_maxes.append(handle.stats.lag.max)
 
         parts = [
             f"Workers: {len(self.workers)}",
