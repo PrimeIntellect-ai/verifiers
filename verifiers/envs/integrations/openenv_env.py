@@ -163,6 +163,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        num_workers: int = 1,
         # logging configs
         log_level: str | None = None,
         log_file: str | None = None,
@@ -175,6 +176,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         await super().start_server(
             address=address,
             extra_env_kwargs=extra_env_kwargs or {},
+            num_workers=num_workers,
             log_level=log_level,
             log_file=log_file,
             log_file_level=log_file_level,
