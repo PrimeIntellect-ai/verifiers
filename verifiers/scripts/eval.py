@@ -364,6 +364,12 @@ def main():
         help="Do not start env servers when evaluating environments",
     )
     parser.add_argument(
+        "--num-workers",
+        "-w",
+        default="auto",
+        help='Number of env server worker processes ("auto" = concurrency // 512, or an integer)',
+    )
+    parser.add_argument(
         "--abbreviated-summary",
         "-A",
         default=False,
@@ -654,6 +660,7 @@ def main():
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
+            num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
             debug=raw.get("debug", False),

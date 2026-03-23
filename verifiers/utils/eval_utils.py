@@ -746,11 +746,21 @@ async def run_evaluation(
                 logger.info(f"Automatically determined {concurrency=}")
                 extra_env_kwargs["concurrency"] = concurrency
 
+            # resolve num_workers
+            num_workers = config.num_workers
+            if num_workers == "auto":
+                concurrency = extra_env_kwargs.get("concurrency", config.max_concurrent)
+                num_workers = max(1, concurrency // 512)
+            else:
+                num_workers = int(num_workers)
+            logger.info(f"Using {num_workers=} env server worker(s)")
+
             log_file = results_path / "eval.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
             if config.debug:
                 await vf_env.start_server(
                     extra_env_kwargs=extra_env_kwargs,
+                    num_workers=num_workers,
                     log_level=get_log_level(config.verbose),
                     log_file=str(log_file),
                     log_file_level=get_log_level(config.verbose),
@@ -758,6 +768,7 @@ async def run_evaluation(
             else:
                 await vf_env.start_server(
                     extra_env_kwargs=extra_env_kwargs,
+                    num_workers=num_workers,
                     log_level="CRITICAL",  # disable console logging
                     log_file=str(log_file),
                     log_file_level=get_log_level(config.verbose),

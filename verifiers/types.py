@@ -500,6 +500,7 @@ class EvalConfig(BaseModel):
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
+    num_workers: int | str = "auto"
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0

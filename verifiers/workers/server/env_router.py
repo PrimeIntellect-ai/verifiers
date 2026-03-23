@@ -190,7 +190,7 @@ class EnvRouter:
         self.workers[worker_id] = self.start_worker(worker_id)
 
         for info in to_redispatch:
-            new_wid = self._select_worker()
+            new_wid = self.select_worker()
             handle = self.workers[new_wid]
             try:
                 await handle.socket.send_multipart(
@@ -209,14 +209,15 @@ class EnvRouter:
 
     # ── dispatch ─────────────────────────────────────────────────
 
-    def _select_worker(self) -> int:
+    def select_worker(self) -> int:
+        """Select the least-busy worker."""
         return min(self.workers, key=lambda wid: self.workers[wid].active_count)
 
     async def dispatch(
         self, client_id: bytes, request_id: bytes, payload: bytes
     ) -> None:
         """Send a request to the least-busy worker."""
-        wid = self._select_worker()
+        wid = self.select_worker()
         handle = self.workers[wid]
         await handle.socket.send_multipart([client_id, request_id, payload])
         info = ActiveRequestInfo(
@@ -283,6 +284,7 @@ class EnvRouter:
                 await self.restart_worker(wid)
 
     def log_aggregate_stats(self) -> None:
+        """Log aggregate stats for all workers."""
         total_active = 0
         per_worker = []
         lag_means: list[float] = []
@@ -312,6 +314,7 @@ class EnvRouter:
     # ── shutdown ─────────────────────────────────────────────────
 
     async def close(self) -> None:
+        """Close all router resources."""
         for handle in self.workers.values():
             terminate_process(handle.process)
             handle.socket.close()
