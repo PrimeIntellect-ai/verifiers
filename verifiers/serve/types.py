@@ -12,7 +12,6 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
-from verifiers.utils.async_utils import EventLoopLagStats
 
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
@@ -86,25 +85,6 @@ class ServerState(str, Enum):
 
 
 class ServerError(RuntimeError): ...
-
-
-class WorkerStats(BaseModel):
-    worker_id: int
-    timestamp: float
-    active_tasks: int
-    lag: EventLoopLagStats = EventLoopLagStats()
-
-    def __str__(self) -> str:
-        from verifiers.utils.logging_utils import print_time
-
-        parts = [f"Active tasks: {self.active_tasks}"]
-        if self.lag.n > 0:
-            parts.append(
-                f"Event Loop Lag: mean={print_time(self.lag.mean)} "
-                f"p99={print_time(self.lag.p99)} max={print_time(self.lag.max)} "
-                f"(n={self.lag.n})"
-            )
-        return " | ".join(parts)
 
 
 class PendingRequest(BaseModel):

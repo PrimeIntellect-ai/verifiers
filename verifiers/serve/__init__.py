@@ -1,17 +1,18 @@
 from verifiers.serve.client.zmq_env_client import ZMQEnvClient
 from verifiers.serve.server import EnvRouter, EnvServer, EnvWorker, ZMQEnvServer
+from verifiers.serve.server.env_router import EnvRouterStats
+from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.serve.types import (
     BaseRequest,
     BaseResponse,
     HealthRequest,
     HealthResponse,
-    EventLoopLagStats,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
-    WorkerStats,
 )
+from verifiers.utils.async_utils import EventLoopLagStats
 
 __all__ = [
     # types
@@ -20,11 +21,12 @@ __all__ = [
     "HealthRequest",
     "HealthResponse",
     "EventLoopLagStats",
+    "EnvRouterStats",
+    "EnvWorkerStats",
     "RunRolloutRequest",
     "RunRolloutResponse",
     "RunGroupRequest",
     "RunGroupResponse",
-    "WorkerStats",
     # server
     "EnvRouter",
     "EnvServer",

@@ -23,10 +23,10 @@ from typing import Any
 import msgpack
 import zmq
 import zmq.asyncio
+from pydantic import BaseModel
 
-from verifiers.serve.types import WorkerStats
+from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-from verifiers.utils.logging_utils import print_time
 from verifiers.utils.process_utils import terminate_process
 from verifiers.utils.worker_utils import make_ipc_address
 
@@ -47,11 +47,48 @@ class WorkerHandle:
     socket: zmq.asyncio.Socket
     active_requests: dict[bytes, ActiveRequestInfo] = field(default_factory=dict)
     last_heartbeat: float = field(default_factory=time.time)
-    stats: WorkerStats | None = None
+    stats: EnvWorkerStats | None = None
 
     @property
     def active_count(self) -> int:
         return len(self.active_requests)
+
+
+class EnvRouterStats(BaseModel):
+    lag: EventLoopLagStats = EventLoopLagStats()
+    workers: dict[int, EnvWorkerStats | None] = {}
+
+    @property
+    def num_workers(self) -> int:
+        return len(self.workers)
+
+    @property
+    def active_tasks(self) -> int:
+        return sum(w.active_tasks for w in self.workers.values() if w is not None)
+
+    @staticmethod
+    def _worker_str(stats: EnvWorkerStats | None) -> str:
+        if stats is None:
+            return "no stats yet"
+        return str(stats)
+
+    def __str__(self) -> str:
+        worker_counts = ", ".join(
+            f"W{wid}: {w.active_tasks if w is not None else '?'}"
+            for wid, w in sorted(self.workers.items())
+        )
+        header = f"Active tasks: {self.active_tasks} ({worker_counts})"
+
+        # compute label width for alignment
+        labels = ["Server"] + [f"W{wid}" for wid in sorted(self.workers)]
+        pad = max(len(label) for label in labels)
+
+        lines = [header, f"  {'Server':<{pad}} | Lag: {self.lag}"]
+        for wid in sorted(self.workers):
+            lines.append(
+                f"  {f'W{wid}':<{pad}} | {self._worker_str(self.workers[wid])}"
+            )
+        return "\n".join(lines)
 
 
 class EnvRouter:
@@ -257,7 +294,7 @@ class EnvRouter:
         """Parse a stats message and update the worker handle."""
         try:
             raw = msgpack.unpackb(data, raw=False)
-            stats = WorkerStats.model_validate(raw)
+            stats = EnvWorkerStats.model_validate(raw)
             worker = self.workers.get(stats.worker_id)
             if worker is not None:
                 worker.stats = stats
@@ -286,35 +323,11 @@ class EnvRouter:
 
     def log_stats(self) -> None:
         """Log server lag + per-worker stats."""
-        total_active = 0
-
-        # server event loop lag
-        server_lag = EventLoopLagStats.from_monitor(self.lag_monitor)
-        parts = [
-            f"Workers: {len(self.workers)}",
-        ]
-        if server_lag.n > 0:
-            parts.append(
-                f"Server Lag: mean={print_time(server_lag.mean)} "
-                f"p99={print_time(server_lag.p99)} max={print_time(server_lag.max)}"
-            )
-
-        # per-worker stats
-        worker_lines: list[str] = []
-        for worker_id in sorted(self.workers):
-            worker = self.workers[worker_id]
-            total_active += worker.active_count
-            if worker.stats:
-                worker_lines.append(f"  W{worker_id}: {worker.stats}")
-            else:
-                worker_lines.append(
-                    f"  W{worker_id}: Active tasks: {worker.active_count} | No stats yet"
-                )
-
-        parts.insert(1, f"Active: {total_active}")
-
-        header = " | ".join(parts)
-        self.logger.info(f"{header}\n" + "\n".join(worker_lines))
+        stats = EnvRouterStats(
+            lag=EventLoopLagStats.from_monitor(self.lag_monitor),
+            workers={wid: w.stats for wid, w in sorted(self.workers.items())},
+        )
+        self.logger.info(stats)
 
     async def close(self) -> None:
         """Close all router resources."""

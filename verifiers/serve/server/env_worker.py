@@ -1,8 +1,11 @@
-"""Self-contained environment worker process.
+"""Environment worker subprocess.
 
-Receives requests from the router via a PULL socket, runs rollouts against
-a local environment instance, and pushes responses + stats back via PUSH
-sockets.
+Owns a single environment instance, a client cache, and three ZMQ
+sockets (PULL for requests, PUSH for responses, PUSH for stats).
+Receives requests from the router, runs rollouts, and pushes
+responses + stats back.
+
+This is spawned by :class:`EnvRouter` — one per worker slot.
 """
 
 import asyncio
@@ -16,22 +19,21 @@ from typing import Any, cast
 import msgpack
 import zmq
 import zmq.asyncio
+from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client, resolve_client
-from verifiers.types import ClientConfig
-from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.serve.types import (
     BaseResponse,
-    EventLoopLagStats,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
-    WorkerStats,
 )
+from verifiers.types import ClientConfig
+from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
+from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.worker_utils import msgpack_encoder
 
 
 def request_parent_death_signal() -> None:
@@ -47,12 +49,21 @@ def request_parent_death_signal() -> None:
         pass
 
 
-class EnvWorker:
-    """Worker that receives env requests from a router via IPC PUSH/PULL.
+class EnvWorkerStats(BaseModel):
+    worker_id: int
+    timestamp: float
+    active_tasks: int
+    lag: EventLoopLagStats = EventLoopLagStats()
 
-    Owns a single environment instance, a client cache, and three ZMQ
-    sockets (PULL for requests, PUSH for responses, PUSH for stats).
-    """
+    def __str__(self) -> str:
+        parts = []
+        if self.lag.n > 0:
+            parts.append(f"Lag: {self.lag}")
+        return " | ".join(parts) if parts else "no lag data"
+
+
+class EnvWorker:
+    """Subprocess worker that runs rollouts against a local environment instance."""
 
     def __init__(
         self,
@@ -91,7 +102,7 @@ class EnvWorker:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         # setup env
-        self.logger.info(
+        self.logger.debug(
             f"Loading environment {env_id} for worker {worker_name} ({env_args=}, {extra_env_kwargs=})"
         )
         self.env = vf.load_environment(env_id, **(env_args or {}))
@@ -249,18 +260,15 @@ class EnvWorker:
         """Loop to push worker stats to the router."""
         while True:
             await asyncio.sleep(interval)
-            active = len(self.active_tasks)
 
-            lag = EventLoopLagStats.from_monitor(self.lag_monitor)
-
-            stats = WorkerStats(
+            stats = EnvWorkerStats(
                 worker_id=self.worker_id,
                 timestamp=time.time(),
-                active_tasks=active,
-                lag=lag,
+                active_tasks=len(self.active_tasks),
+                lag=EventLoopLagStats.from_monitor(self.lag_monitor),
             )
 
-            self.logger.info(stats)
+            self.logger.debug(stats)
 
             try:
                 data = msgpack.packb(
