@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import time
@@ -86,6 +87,17 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return dict(value)
     else:
         return str(value)
+
+
+def compute_prompt_hash(prompt: list | None) -> str | None:
+    """MD5 hash of JSON-serialized prompt for deduplication."""
+    if prompt is None:
+        return None
+    return hashlib.md5(
+        json.dumps(
+            prompt, sort_keys=True, separators=(",", ":"), default=make_serializable
+        ).encode()
+    ).hexdigest()
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
@@ -207,6 +219,7 @@ def state_to_output(
     if prompt is not None:
         output_prompt = sanitize_tool_calls(serialize_messages_for_output(prompt))
         output["prompt"] = output_prompt
+        output["prompt_hash"] = compute_prompt_hash(output_prompt)
     completion = state.get("completion")
     if completion is not None:
         output_completion = sanitize_tool_calls(
@@ -297,6 +310,9 @@ class GenerateOutputsBuilder:
         self.unique_tools_keys: set[str] = set()
         self.first_tools: list[Tool] | None = None
 
+        # Prompt hash tracking
+        self._prompt_hashes: set[str] = set()
+
     @staticmethod
     def format_base_url(url: str) -> str:
         return url
@@ -350,6 +366,11 @@ class GenerateOutputsBuilder:
             if self.first_tools is None and tool_defs:
                 self.first_tools = tool_defs
 
+            # Prompt hash tracking
+            ph = output.get("prompt_hash")
+            if ph is not None:
+                self._prompt_hashes.add(ph)
+
     def build_metadata(self) -> GenerateMetadata:
         """Build metadata from incremental accumulators. O(1) per call."""
         pass_at_k_result, pass_all_k_result = self.pass_at_k.compute()
@@ -383,6 +404,8 @@ class GenerateOutputsBuilder:
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,
+            num_distinct_prompts=len(self._prompt_hashes),
+            prompt_hashes=sorted(self._prompt_hashes),
         )
 
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:

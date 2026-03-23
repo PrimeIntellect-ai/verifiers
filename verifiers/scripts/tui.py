@@ -1583,6 +1583,7 @@ class CompareRunsScreen(Screen):
         self._group_mode: bool = False
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
+        self._distinct_prompts_by_group: Dict[Tuple[str, ...], int] = {}
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -1691,6 +1692,7 @@ class CompareRunsScreen(Screen):
             self._build_comparison_header()
         )
         self._refresh_outcomes()
+        self._load_distinct_prompt_counts()
 
     def _refresh_outcomes(self) -> None:
         if not self._stats_by_path:
@@ -1698,6 +1700,80 @@ class CompareRunsScreen(Screen):
         self.query_one("#compare-outcomes", Static).update(
             self._build_comparison_outcomes()
         )
+
+    @work(
+        thread=True,
+        group="prompt-counting",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_distinct_prompt_counts(self) -> None:
+        """Compute distinct prompt counts per group in a background thread."""
+        from verifiers.utils.save_utils import compute_prompt_hash
+
+        group_keys = (
+            [self._grouped_by_key] if self._grouped_by_key else self._setting_keys
+        )
+
+        # Build group membership
+        groups: Dict[Tuple[str, ...], List[Tuple[RunInfo, Dict[str, str]]]] = (
+            defaultdict(list)
+        )
+        for run, settings in self._run_settings:
+            gk = tuple(settings.get(key, "(unset)") for key in group_keys)
+            groups[gk].append((run, settings))
+
+        # Process one group at a time; update table after each group completes
+        for group_key_val, group_runs in groups.items():
+            hashes: set[str] = set()
+
+            for run, _ in group_runs:
+                if not self.is_mounted:
+                    return
+
+                # Fast path: metadata has prompt_hashes
+                metadata = run.load_metadata()
+                meta_hashes = metadata.get("prompt_hashes")
+                if isinstance(meta_hashes, list) and meta_hashes:
+                    hashes.update(meta_hashes)
+                    continue
+
+                # Slow path: stream results.jsonl, extract/compute hashes
+                try:
+                    with (run.path / "results.jsonl").open("r", encoding="utf-8") as f:
+                        for line in f:
+                            if not self.is_mounted:
+                                return
+                            try:
+                                record = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(record, dict):
+                                continue
+                            ph = record.get("prompt_hash")
+                            if ph is not None:
+                                hashes.add(ph)
+                                continue
+                            # Fallback: hash from prompt field
+                            prompt = record.get("prompt")
+                            ph = compute_prompt_hash(prompt)
+                            if ph is not None:
+                                hashes.add(ph)
+                except OSError:
+                    pass
+
+            # Update this group's count and refresh table
+            self.app.call_from_thread(
+                self._update_group_prompt_count, group_key_val, len(hashes)
+            )
+
+    def _update_group_prompt_count(
+        self, group_key: Tuple[str, ...], count: int
+    ) -> None:
+        if not self.is_mounted:
+            return
+        self._distinct_prompts_by_group[group_key] = count
+        self._refresh_outcomes()
 
     def action_enter_group_mode(self) -> None:
         if not self._setting_keys:
@@ -1723,13 +1799,17 @@ class CompareRunsScreen(Screen):
         if not self._group_mode or not self._setting_keys:
             return
         self._grouped_by_key = self._setting_keys[self._group_cursor]
+        self._distinct_prompts_by_group = {}
         self._refresh_outcomes()
+        self._load_distinct_prompt_counts()
 
     def action_exit_group_mode(self) -> None:
         if self._group_mode:
             self._group_mode = False
             self._grouped_by_key = None
+            self._distinct_prompts_by_group = {}
             self._refresh_outcomes()
+            self._load_distinct_prompt_counts()
 
     def _short_setting_key(self, key: str) -> str:
         replacements = {
@@ -1958,11 +2038,14 @@ class CompareRunsScreen(Screen):
                 no_wrap=True,
             )
         table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        table.add_column("rollouts", justify="right", width=8, header_style="bold dim")
+        table.add_column(
+            "unique prompts", justify="right", width=8, header_style="bold dim"
+        )
         table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
         table.add_column("=0", justify="right", width=5, header_style="bold red")
         table.add_column("=1", justify="right", width=5, header_style="bold green")
         table.add_column("mix", width=20, header_style="bold dim")
-        table.add_column("ids", ratio=1, header_style="bold dim")
 
         for _group_key_val, group in rows:
             rewards = cast(List[float], group["rewards"])
@@ -1989,13 +2072,6 @@ class CompareRunsScreen(Screen):
                 ),
                 0,
             )
-            run_ids = ", ".join(
-                run.run_id for run in cast(List[RunInfo], group["runs"])[:3]
-            )
-            hidden_ids = max(0, len(cast(List[RunInfo], group["runs"])) - 3)
-            if hidden_ids:
-                run_ids += f" +{hidden_ids}"
-
             # Build setting cells.
             setting_cells: List[Text] = []
             for key in setting_keys:
@@ -2024,9 +2100,14 @@ class CompareRunsScreen(Screen):
                             Text(f"{len(distinct)} values", style="dim italic")
                         )
 
+            prompt_count = self._distinct_prompts_by_group.get(_group_key_val)
             table.add_row(
                 *setting_cells,
                 str(len(cast(List[RunInfo], group["runs"]))),
+                str(len(rewards)) if rewards else "—",
+                Text(
+                    str(prompt_count) if prompt_count is not None else "?", style="dim"
+                ),
                 Text(
                     _format_reward_value(avg_reward) if avg_reward is not None else "—",
                     style=_reward_style(avg_reward)
@@ -2046,7 +2127,6 @@ class CompareRunsScreen(Screen):
                     ),
                 ),
                 self._build_reward_mix_bar(rewards),
-                Text(run_ids or "—", style="dim"),
             )
 
         return table

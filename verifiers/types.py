@@ -369,6 +369,8 @@ class GenerateMetadata(TypedDict):
     state_columns: list[str]
     path_to_save: Path
     tools: list[Tool] | None
+    num_distinct_prompts: int
+    prompt_hashes: list[str]
 
 
 class GenerateOutputs(TypedDict):
