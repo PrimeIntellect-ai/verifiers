@@ -52,7 +52,6 @@ class EnvServer(ABC):
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
     ):
-        # ── logging ──────────────────────────────────────────────
         logger_kwargs: dict[str, Any] = {"json_logging": json_logging}
         if log_level is not None:
             logger_kwargs["level"] = log_level
@@ -68,7 +67,6 @@ class EnvServer(ABC):
             f"({env_args=}, {extra_env_kwargs=}, {num_workers=})"
         )
 
-        # ── router (worker pool) ─────────────────────────────────
         self.router = EnvRouter(
             env_id=env_id,
             env_args=env_args,

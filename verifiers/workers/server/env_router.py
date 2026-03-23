@@ -66,7 +66,7 @@ class EnvRouter:
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
     ):
-        self.logger = logging.getLogger(f"{__name__}.EnvRouter")
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         # Config forwarded to workers
         self.env_id = env_id
@@ -99,7 +99,7 @@ class EnvRouter:
 
         # setup state
         self.workers: dict[int, WorkerHandle] = {}
-        self._request_worker: dict[bytes, int] = {}  # request_id → worker_id
+        self.request_to_worker: dict[bytes, int] = {}  # request_id → worker_id
 
         self.ipc_paths: list[str] = [
             self.response_address.replace("ipc://", ""),
@@ -114,8 +114,6 @@ class EnvRouter:
             for handle in self.workers.values()
             for rid, info in handle.active_requests.items()
         }
-
-    # ── worker lifecycle ─────────────────────────────────────────
 
     def get_worker_name(self, worker_id: int) -> str:
         """Get the name of an env worker."""
@@ -163,7 +161,7 @@ class EnvRouter:
         socket.connect(worker_addr)
 
         self.logger.info(
-            f"Started {worker_name} (id={worker_id}, name={worker_name}, address={worker_addr}, pid={process.pid})"
+            f"Started worker (id={worker_id}, name={worker_name}, address={worker_addr}, pid={process.pid})"
         )
 
         return WorkerHandle(
@@ -175,130 +173,127 @@ class EnvRouter:
 
     def start_workers(self) -> None:
         """Spawn all worker processes."""
-        for wid in range(self.num_workers):
-            self.workers[wid] = self.start_worker(wid)
-
-    async def restart_worker(self, worker_id: int) -> None:
-        old = self.workers.get(worker_id)
-        to_redispatch: list[ActiveRequestInfo] = []
-        if old is not None:
-            to_redispatch = list(old.active_requests.values())
-            old.active_requests.clear()
-            terminate_process(old.process)
-            old.socket.close()
-
-        self.workers[worker_id] = self.start_worker(worker_id)
-
-        for info in to_redispatch:
-            new_wid = self.select_worker()
-            handle = self.workers[new_wid]
-            try:
-                await handle.socket.send_multipart(
-                    [info.client_id, info.request_id, info.payload]
-                )
-                info.worker_id = new_wid
-                handle.active_requests[info.request_id] = info
-                self._request_worker[info.request_id] = new_wid
-                self.logger.info(
-                    f"Re-dispatched request {info.request_id[:7]} "
-                    f"from dead worker {worker_id} to worker {new_wid}"
-                )
-            except zmq.ZMQError as e:
-                self._request_worker.pop(info.request_id, None)
-                self.logger.error(f"Failed to re-dispatch request: {e}")
-
-    # ── dispatch ─────────────────────────────────────────────────
+        for worker_id in range(self.num_workers):
+            self.workers[worker_id] = self.start_worker(worker_id)
 
     def select_worker(self) -> int:
         """Select the least-busy worker."""
         return min(self.workers, key=lambda wid: self.workers[wid].active_count)
 
+    async def restart_worker(self, worker_id: int) -> None:
+        """Restart a dead or unresponsive worker. Re-dispatches all pending requests."""
+        old_worker = self.workers.get(worker_id)
+        to_redispatch: list[ActiveRequestInfo] = []
+        if old_worker is not None:
+            to_redispatch = list(old_worker.active_requests.values())
+            old_worker.active_requests.clear()
+            terminate_process(old_worker.process)
+            old_worker.socket.close()
+
+        self.workers[worker_id] = self.start_worker(worker_id)
+
+        for info in to_redispatch:
+            new_worker_id = self.select_worker()
+            new_worker = self.workers[new_worker_id]
+            try:
+                await new_worker.socket.send_multipart(
+                    [info.client_id, info.request_id, info.payload]
+                )
+                info.worker_id = new_worker_id
+                new_worker.active_requests[info.request_id] = info
+                self.request_to_worker[info.request_id] = new_worker_id
+                self.logger.debug(
+                    f"Re-dispatched request {info.request_id[:7]} "
+                    f"from dead worker {worker_id} to worker {new_worker_id}"
+                )
+            except zmq.ZMQError as e:
+                self.request_to_worker.pop(info.request_id, None)
+                self.logger.error(f"Failed to re-dispatch request: {e}")
+
     async def dispatch(
         self, client_id: bytes, request_id: bytes, payload: bytes
     ) -> None:
         """Send a request to the least-busy worker."""
-        wid = self.select_worker()
-        handle = self.workers[wid]
-        await handle.socket.send_multipart([client_id, request_id, payload])
+        worker_id = self.select_worker()
+        worker = self.workers[worker_id]
+        await worker.socket.send_multipart([client_id, request_id, payload])
         info = ActiveRequestInfo(
             client_id=client_id,
             request_id=request_id,
             payload=payload,
-            worker_id=wid,
+            worker_id=worker_id,
         )
-        handle.active_requests[request_id] = info
-        self._request_worker[request_id] = wid
+        worker.active_requests[request_id] = info
+        self.request_to_worker[request_id] = worker_id
 
     async def forward_cancel(self, request_id: bytes, client_id: bytes) -> None:
         """Forward a cancel signal to the worker owning this request."""
-        wid = self._request_worker.get(request_id)
-        if wid is not None:
-            handle = self.workers.get(wid)
-            if handle is not None:
+        worker_id = self.request_to_worker.get(request_id)
+        if worker_id is not None:
+            worker = self.workers.get(worker_id)
+            if worker is not None:
                 try:
-                    await handle.socket.send_multipart([client_id, request_id, b""])
+                    await worker.socket.send_multipart([client_id, request_id, b""])
                 except zmq.ZMQError:
                     pass
 
     def complete_request(self, request_id: bytes) -> ActiveRequestInfo | None:
         """Update bookkeeping after a response is received. Returns the info or None."""
-        wid = self._request_worker.pop(request_id, None)
-        if wid is None:
+        worker_id = self.request_to_worker.pop(request_id, None)
+        if worker_id is None:
             return None
-        handle = self.workers.get(wid)
-        if handle is None:
-            return None
-        return handle.active_requests.pop(request_id, None)
+        worker = self.workers.get(worker_id)
+        if worker is not None:
+            return worker.active_requests.pop(request_id, None)
+        return None
 
     def handle_stats_message(self, data: bytes) -> None:
         """Parse a stats message and update the worker handle."""
         try:
             raw = msgpack.unpackb(data, raw=False)
             stats = WorkerStats.model_validate(raw)
-            handle = self.workers.get(stats.worker_id)
-            if handle is not None:
-                handle.stats = stats
-                handle.last_heartbeat = stats.timestamp
+            worker = self.workers.get(stats.worker_id)
+            if worker is not None:
+                worker.stats = stats
+                worker.last_heartbeat = stats.timestamp
         except Exception:
             pass
-
-    # ── periodic checks ──────────────────────────────────────────
 
     async def check_workers(self) -> None:
         """Restart dead or unresponsive workers."""
         now = time.time()
-        for wid, handle in list(self.workers.items()):
-            if not handle.process.is_alive():
+        for worker_id, worker in list(self.workers.items()):
+            if not worker.process.is_alive():
                 self.logger.warning(
-                    f"Worker {wid} (pid={handle.process.pid}) died, restarting"
+                    f"Worker {worker_id} (pid={worker.process.pid}) died, restarting"
                 )
-                await self.restart_worker(wid)
+                await self.restart_worker(worker_id)
             elif (
-                now - handle.last_heartbeat > self.worker_heartbeat_timeout
-                and handle.last_heartbeat > 0
+                now - worker.last_heartbeat > self.worker_heartbeat_timeout
+                and worker.last_heartbeat > 0
             ):
                 self.logger.warning(
-                    f"Worker {wid} heartbeat timeout "
-                    f"({now - handle.last_heartbeat:.1f}s), restarting"
+                    f"Worker {worker_id} heartbeat timeout "
+                    f"({now - worker.last_heartbeat:.1f}s), restarting"
                 )
-                await self.restart_worker(wid)
+                await self.restart_worker(worker_id)
 
-    def log_aggregate_stats(self) -> None:
-        """Log aggregate stats for all workers."""
+    def log_stats(self) -> None:
+        """Log router stats (worker aggregates)."""
         total_active = 0
         per_worker = []
         lag_means: list[float] = []
         lag_p99s: list[float] = []
         lag_maxes: list[float] = []
 
-        for wid in sorted(self.workers):
-            handle = self.workers[wid]
-            total_active += handle.active_count
-            per_worker.append(f"W{wid}:{handle.active_count}")
-            if handle.stats and handle.stats.lag.n > 0:
-                lag_means.append(handle.stats.lag.mean)
-                lag_p99s.append(handle.stats.lag.p99)
-                lag_maxes.append(handle.stats.lag.max)
+        for worker_id in sorted(self.workers):
+            worker = self.workers[worker_id]
+            total_active += worker.active_count
+            per_worker.append(f"W{worker_id}:{worker.active_count}")
+            if worker.stats and worker.stats.lag.n > 0:
+                lag_means.append(worker.stats.lag.mean)
+                lag_p99s.append(worker.stats.lag.p99)
+                lag_maxes.append(worker.stats.lag.max)
 
         parts = [
             f"Workers: {len(self.workers)}",
@@ -311,16 +306,14 @@ class EnvRouter:
             )
         self.logger.info(" | ".join(parts))
 
-    # ── shutdown ─────────────────────────────────────────────────
-
     async def close(self) -> None:
         """Close all router resources."""
-        for handle in self.workers.values():
-            terminate_process(handle.process)
-            handle.socket.close()
+        for worker in self.workers.values():
+            terminate_process(worker.process)
+            worker.socket.close()
 
         self.workers.clear()
-        self._request_worker.clear()
+        self.request_to_worker.clear()
 
         self.response_pull.close()
         self.stats_pull.close()

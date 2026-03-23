@@ -25,7 +25,6 @@ class ZMQEnvServer(EnvServer):
         self.address = address
         self.health_address = derive_health_address(address)
 
-        # ── ZMQ frontend (client-facing) ─────────────────────────
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -34,7 +33,6 @@ class ZMQEnvServer(EnvServer):
         self.frontend.setsockopt(zmq.LINGER, 0)
         self.frontend.bind(self.address)
 
-        # ── health check (separate process) ──────────────────────
         self.stop_health = mp.Event()
         self.health_process: mp.Process | None = None
 

@@ -127,7 +127,7 @@ class EnvWorker:
         # stats
         self.lag_monitor = EventLoopLagMonitor()
 
-        self.logger.info(f"Initialized worker {self.worker_name} on {request_address}")
+        self.logger.info(f"Initialized worker on {request_address}")
 
     async def resolve_client(self, client_config: ClientConfig) -> Client:
         """Resolve the client instance given the request client config."""
@@ -291,7 +291,7 @@ class EnvWorker:
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         """Main worker loop."""
-        self.logger.info(f"Starting worker {self.worker_name}")
+        self.logger.info("Starting worker")
 
         gc.collect()
         gc.freeze()
@@ -373,7 +373,7 @@ class EnvWorker:
         self.stats_socket.close()
         self.ctx.term()
 
-        self.logger.info(f"Worker {self.worker_name} shut down")
+        self.logger.info("Shut down worker")
 
     async def run(self) -> None:
         request_parent_death_signal()
