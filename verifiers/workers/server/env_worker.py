@@ -23,11 +23,10 @@ from verifiers.clients import Client, resolve_client
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.logging_utils import print_time
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.types import (
     BaseResponse,
-    LagStats,
+    EventLoopLagStats,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -36,7 +35,7 @@ from verifiers.workers.types import (
 )
 
 
-def _request_parent_death_signal() -> None:
+def request_parent_death_signal() -> None:
     """Ask Linux to SIGTERM us when the parent dies."""
     if sys.platform != "linux":
         return
@@ -50,7 +49,7 @@ def _request_parent_death_signal() -> None:
 
 
 class EnvWorker:
-    """Worker process that receives requests from a router via IPC PUSH/PULL.
+    """Worker that receives env requests from a router via IPC PUSH/PULL.
 
     Owns a single environment instance, a client cache, and three ZMQ
     sockets (PULL for requests, PUSH for responses, PUSH for stats).
@@ -128,18 +127,15 @@ class EnvWorker:
         # stats
         self.lag_monitor = EventLoopLagMonitor()
 
-        self.logger.info(f"Initialized EnvWorker {env_id} on {request_address}")
-
-    # ── client resolution ────────────────────────────────────────
+        self.logger.info(f"Initialized worker {self.worker_name} on {request_address}")
 
     async def resolve_client(self, client_config: ClientConfig) -> Client:
+        """Resolve the client instance given the request client config."""
         resolved = resolve_client_config(client_config)
         key = resolved.model_dump_json()
         if key not in self.clients:
             self.clients[key] = resolve_client(resolved)
         return self.clients[key]
-
-    # ── request handling ─────────────────────────────────────────
 
     async def handle_run_rollout(
         self, request: RunRolloutRequest
@@ -202,68 +198,69 @@ class EnvWorker:
             )
             response = BaseResponse(success=False, error=repr(e))
 
+        async def serialize_and_send(
+            client_id: bytes,
+            request_id: str,
+            response: BaseResponse,
+        ) -> None:
+            """Helper to serialize and send the response."""
+
+            def serialize() -> bytes:
+                """Serialize the response."""
+                return cast(
+                    bytes,
+                    msgpack.packb(
+                        response.model_dump(mode="python", warnings=False),
+                        default=msgpack_encoder,
+                        use_bin_type=True,
+                    ),
+                )
+
+            try:
+                response_bytes = await asyncio.to_thread(serialize)
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to serialize response for {request_id}: {e}",
+                    exc_info=True,
+                )
+                response_bytes = cast(
+                    bytes,
+                    msgpack.packb(
+                        BaseResponse(
+                            success=False,
+                            error=f"Response serialization failed: {repr(e)}",
+                        ).model_dump(mode="python", warnings=False),
+                        default=msgpack_encoder,
+                        use_bin_type=True,
+                    ),
+                )
+
+            try:
+                await self.response_socket.send_multipart(
+                    [client_id, request_id.encode(), response_bytes]
+                )
+            except zmq.ZMQError as e:
+                self.logger.warning(
+                    f"Failed to send response for {request_id[:7]}: {e}"
+                )
+
         try:
-            await asyncio.shield(
-                self._serialize_and_send(client_id, request_id, response)
-            )
+            await asyncio.shield(serialize_and_send(client_id, request_id, response))
         except asyncio.CancelledError:
             pass
 
-    async def _serialize_and_send(
-        self,
-        client_id: bytes,
-        request_id: str,
-        response: BaseResponse,
-    ) -> None:
-        def _serialize() -> bytes:
-            return cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
-        try:
-            response_bytes = await asyncio.to_thread(_serialize)
-        except Exception as e:
-            self.logger.error(
-                f"Failed to serialize response for {request_id}: {e}",
-                exc_info=True,
-            )
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    BaseResponse(
-                        success=False,
-                        error=f"Response serialization failed: {repr(e)}",
-                    ).model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
-
-        try:
-            await self.response_socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
-            )
-        except zmq.ZMQError as e:
-            self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
-
-    # ── stats push ───────────────────────────────────────────────
-
-    async def _push_stats_loop(self, interval: float = 1.0) -> None:
+    async def stats_loop(self, interval: float = 10.0) -> None:
+        """Loop to push worker stats to the router."""
         while True:
             await asyncio.sleep(interval)
             active = len(self.active_tasks)
 
             lags = self.lag_monitor.lags
             n = len(lags)
-            lag = LagStats(n=n)
+            lag = EventLoopLagStats(n=n)
             if n > 0:
                 arr = np.array(lags)
-                lag = LagStats(
+                lag = EventLoopLagStats(
                     min=float(arr.min()),
                     mean=float(arr.mean()),
                     median=float(np.median(arr)),
@@ -280,13 +277,7 @@ class EnvWorker:
                 lag=lag,
             )
 
-            lag_str = ""
-            if lag.n > 0:
-                lag_str = (
-                    f", Lag: mean={print_time(lag.mean)} "
-                    f"p99={print_time(lag.p99)} max={print_time(lag.max)} (n={lag.n})"
-                )
-            self.logger.info(f"Active tasks: {active}{lag_str}")
+            self.logger.info(stats)
 
             try:
                 data = msgpack.packb(
@@ -298,23 +289,16 @@ class EnvWorker:
             except zmq.Again:
                 pass  # best-effort
 
-    # ── task bookkeeping ─────────────────────────────────────────
-
-    def _cleanup_task(self, frame_request_id: str, task: asyncio.Task) -> None:
-        if self.active_tasks.get(frame_request_id) is task:
-            self.active_tasks.pop(frame_request_id, None)
-
-    # ── main serve loop ──────────────────────────────────────────
-
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
-        self.logger.info(f"Worker-{self.worker_id} serving")
+        """Main worker loop."""
+        self.logger.info(f"Starting worker {self.worker_name}")
 
         gc.collect()
         gc.freeze()
         gc.set_threshold(150_000, 10, 10)
 
         lag_task = asyncio.create_task(self.lag_monitor.run())
-        stats_task = asyncio.create_task(self._push_stats_loop())
+        stats_task = asyncio.create_task(self.stats_loop())
 
         poller = zmq.asyncio.Poller()
         poller.register(self.pull_socket, zmq.POLLIN)
@@ -336,22 +320,27 @@ class EnvWorker:
                         )
                         continue
 
-                    client_id, request_id, payload_bytes = frames
+                    raw_client_id, raw_request_id, raw_payload = frames
+                    request_id = raw_request_id.decode()
 
-                    if not payload_bytes:
+                    if not raw_payload:
                         # Cancel signal
-                        task = self.active_tasks.get(request_id.decode())
+                        task = self.active_tasks.get(request_id)
                         if task is not None:
                             task.cancel()
                         continue
 
-                    frame_request_id = request_id.decode()
                     task = asyncio.create_task(
-                        self.process_request(client_id, request_id, payload_bytes)
+                        self.process_request(raw_client_id, raw_request_id, raw_payload)
                     )
-                    self.active_tasks[frame_request_id] = task
+                    self.active_tasks[request_id] = task
+
+                    def cleanup_task(task: asyncio.Task, request_id: str) -> None:
+                        if self.active_tasks.get(request_id) is task:
+                            self.active_tasks.pop(request_id, None)
+
                     task.add_done_callback(
-                        lambda t, rid=frame_request_id: self._cleanup_task(rid, t)
+                        lambda t, rid=request_id: cleanup_task(t, rid)
                     )
 
                 except asyncio.CancelledError:
@@ -384,10 +373,10 @@ class EnvWorker:
         self.stats_socket.close()
         self.ctx.term()
 
-        self.logger.info(f"Worker-{self.worker_id} shut down")
+        self.logger.info(f"Worker {self.worker_name} shut down")
 
     async def run(self) -> None:
-        _request_parent_death_signal()
+        request_parent_death_signal()
 
         from verifiers.utils.thread_utils import install_default_executor
 
@@ -411,6 +400,5 @@ class EnvWorker:
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
-        """Entry point for spawning in a subprocess."""
         worker = cls(*args, **kwargs)
         asyncio.run(worker.run())

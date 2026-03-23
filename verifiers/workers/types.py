@@ -85,7 +85,7 @@ class ServerState(str, Enum):
 class ServerError(RuntimeError): ...
 
 
-class LagStats(BaseModel):
+class EventLoopLagStats(BaseModel):
     min: float = 0.0
     mean: float = 0.0
     median: float = 0.0
@@ -99,7 +99,19 @@ class WorkerStats(BaseModel):
     worker_id: int
     timestamp: float
     active_tasks: int
-    lag: LagStats = LagStats()
+    lag: EventLoopLagStats = EventLoopLagStats()
+
+    def __str__(self) -> str:
+        from verifiers.utils.logging_utils import print_time
+
+        parts = [f"Active tasks: {self.active_tasks}"]
+        if self.lag.n > 0:
+            parts.append(
+                f"Event Loop Lag: mean={print_time(self.lag.mean)} "
+                f"p99={print_time(self.lag.p99)} max={print_time(self.lag.max)} "
+                f"(n={self.lag.n})"
+            )
+        return " | ".join(parts)
 
 
 class PendingRequest(BaseModel):
