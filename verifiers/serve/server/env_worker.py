@@ -14,7 +14,6 @@ import time
 from typing import Any, cast
 
 import msgpack
-import numpy as np
 import zmq
 import zmq.asyncio
 
@@ -256,20 +255,7 @@ class EnvWorker:
             await asyncio.sleep(interval)
             active = len(self.active_tasks)
 
-            lags = self.lag_monitor.lags
-            n = len(lags)
-            lag = EventLoopLagStats(n=n)
-            if n > 0:
-                arr = np.array(lags)
-                lag = EventLoopLagStats(
-                    min=float(arr.min()),
-                    mean=float(arr.mean()),
-                    median=float(np.median(arr)),
-                    p90=float(np.percentile(arr, 90)),
-                    p99=float(np.percentile(arr, 99)),
-                    max=float(arr.max()),
-                    n=n,
-                )
+            lag = EventLoopLagStats.from_monitor(self.lag_monitor)
 
             stats = WorkerStats(
                 worker_id=self.worker_id,

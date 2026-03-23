@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from asyncio import Future
 from enum import Enum
 from typing import Annotated, Literal, TypeVar
@@ -10,6 +12,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
+from verifiers.utils.async_utils import EventLoopLagStats
 
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
@@ -83,16 +86,6 @@ class ServerState(str, Enum):
 
 
 class ServerError(RuntimeError): ...
-
-
-class EventLoopLagStats(BaseModel):
-    min: float = 0.0
-    mean: float = 0.0
-    median: float = 0.0
-    p90: float = 0.0
-    p99: float = 0.0
-    max: float = 0.0
-    n: int = 0
 
 
 class WorkerStats(BaseModel):
