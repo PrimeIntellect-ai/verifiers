@@ -1,12 +1,12 @@
 """ZMQ-based environment server.
 
 Adds a ZMQ ROUTER frontend socket and health-check responder on top of
-:class:`EnvServer`.  The poll loop bridges client frames to/from the
-:class:`EnvRouter` worker pool.
+:class:`EnvServer`.  Client requests are forwarded to the :class:`EnvRouter`
+worker pool; the router's ``run()`` loop handles responses, stats, and
+periodic checks in the background.
 """
 
 import asyncio
-import time
 
 import msgpack
 import zmq
@@ -41,29 +41,34 @@ class ZMQEnvServer(EnvServer):
         self.health_socket.setsockopt(zmq.LINGER, 0)
         self.health_socket.bind(self.health_address)
 
+    async def send_response(
+        self, client_id: bytes, request_id: bytes, response_bytes: bytes
+    ) -> None:
+        """Forward a worker response to the client via the ROUTER socket."""
+        try:
+            await self.frontend.send_multipart([client_id, request_id, response_bytes])
+        except zmq.ZMQError as e:
+            self.logger.warning(f"Failed to forward response: {e}")
+
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"ZMQEnvServer started on {self.address}")
         self.logger.info(f"Health responder on {self.health_address}")
 
-        # Start worker pool
-        self.router.start_workers()
+        stop = stop_event or asyncio.Event()
 
-        # Register all sockets in a single poller
+        # Start router background loop (drains responses, stats, periodic checks)
+        router_task = asyncio.create_task(
+            self.router.run(on_response=self.send_response, stop_event=stop)
+        )
+
+        # This loop only handles client-facing concerns:
+        # incoming requests and health checks.
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         poller.register(self.health_socket, zmq.POLLIN)
-        poller.register(self.router.response_pull, zmq.POLLIN)
-        poller.register(self.router.stats_pull, zmq.POLLIN)
-
-        last_stats_log = time.time()
-        last_heartbeat_check = time.time()
 
         try:
-            while True:
-                if stop_event and stop_event.is_set():
-                    self.logger.info("Stop event received, shutting down")
-                    break
-
+            while not stop.is_set():
                 events = dict(await poller.poll(timeout=100))
 
                 # ── health checks ─────────────────────────────────
@@ -71,7 +76,7 @@ class ZMQEnvServer(EnvServer):
                     await self.health_socket.recv()
                     await self.health_socket.send(_HEALTH_RESPONSE)
 
-                # ── client requests ──────────────────────────────
+                # ── client requests ───────────────────────────────
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
                     if len(frames) != 3:
@@ -90,51 +95,13 @@ class ZMQEnvServer(EnvServer):
                             except zmq.ZMQError as e:
                                 self.logger.error(f"Failed to dispatch request: {e}")
 
-                # ── worker responses → client ────────────────────
-                if self.router.response_pull in events:
-                    while True:
-                        try:
-                            frames = await self.router.response_pull.recv_multipart(
-                                zmq.NOBLOCK
-                            )
-                        except zmq.Again:
-                            break
-                        if len(frames) != 3:
-                            continue
-                        client_id, request_id, response_bytes = frames
-                        try:
-                            await self.frontend.send_multipart(
-                                [client_id, request_id, response_bytes]
-                            )
-                        except zmq.ZMQError as e:
-                            self.logger.warning(f"Failed to forward response: {e}")
-                        self.router.complete_request(request_id)
-
-                # ── worker stats ─────────────────────────────────
-                if self.router.stats_pull in events:
-                    while True:
-                        try:
-                            data = await self.router.stats_pull.recv(zmq.NOBLOCK)
-                        except zmq.Again:
-                            break
-                        self.router.handle_stats_message(data)
-
-                # ── periodic checks ──────────────────────────────
-                now = time.time()
-                if now - last_stats_log >= self.router.stats_log_interval:
-                    self.router.log_stats()
-                    last_stats_log = now
-                if now - last_heartbeat_check >= 5.0:
-                    await self.router.check_workers()
-                    last_heartbeat_check = now
-
         except asyncio.CancelledError:
             pass
         finally:
             poller.unregister(self.frontend)
             poller.unregister(self.health_socket)
-            poller.unregister(self.router.response_pull)
-            poller.unregister(self.router.stats_pull)
+            router_task.cancel()
+            await asyncio.gather(router_task, return_exceptions=True)
 
     async def close(self) -> None:
         self.frontend.close()

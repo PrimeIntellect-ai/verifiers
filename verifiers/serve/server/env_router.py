@@ -16,6 +16,7 @@ import multiprocessing as mp
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any
@@ -29,6 +30,9 @@ from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.process_utils import terminate_process
 from verifiers.utils.worker_utils import make_ipc_address
+
+# Callback type: (client_id, request_id, response_bytes) -> awaitable
+OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
 
 
 @dataclass
@@ -218,6 +222,70 @@ class EnvRouter:
         self.lag_task = asyncio.create_task(self.lag_monitor.run())
         for worker_id in range(self.num_workers):
             self.workers[worker_id] = self.start_worker(worker_id)
+
+    async def run(
+        self,
+        on_response: OnResponseCallback,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """Background loop: drain worker responses/stats and run periodic checks.
+
+        Args:
+            on_response: Called for each completed response with
+                ``(client_id, request_id, response_bytes)``.
+            stop_event: Set to signal shutdown.
+        """
+        self.start_workers()
+
+        poller = zmq.asyncio.Poller()
+        poller.register(self.response_pull, zmq.POLLIN)
+        poller.register(self.stats_pull, zmq.POLLIN)
+
+        last_stats_log = time.time()
+        last_heartbeat_check = time.time()
+
+        try:
+            while not stop_event.is_set():
+                events = dict(await poller.poll(timeout=100))
+
+                # ── worker responses ───────────────────────────────
+                if self.response_pull in events:
+                    while True:
+                        try:
+                            frames = await self.response_pull.recv_multipart(
+                                zmq.NOBLOCK
+                            )
+                        except zmq.Again:
+                            break
+                        if len(frames) != 3:
+                            continue
+                        client_id, request_id, response_bytes = frames
+                        self.complete_request(request_id)
+                        await on_response(client_id, request_id, response_bytes)
+
+                # ── worker stats ───────────────────────────────────
+                if self.stats_pull in events:
+                    while True:
+                        try:
+                            data = await self.stats_pull.recv(zmq.NOBLOCK)
+                        except zmq.Again:
+                            break
+                        self.handle_stats_message(data)
+
+                # ── periodic checks ────────────────────────────────
+                now = time.time()
+                if now - last_stats_log >= self.stats_log_interval:
+                    self.log_stats()
+                    last_stats_log = now
+                if now - last_heartbeat_check >= 5.0:
+                    await self.check_workers()
+                    last_heartbeat_check = now
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            poller.unregister(self.response_pull)
+            poller.unregister(self.stats_pull)
 
     def select_worker(self) -> int:
         """Select the least-busy worker."""
