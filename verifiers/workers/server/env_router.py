@@ -28,22 +28,26 @@ from verifiers.workers.types import WorkerStats
 
 
 @dataclass
-class WorkerHandle:
-    worker_id: int
-    process: BaseProcess
-    address: str
-    push_socket: zmq.asyncio.Socket
-    active_count: int = 0
-    last_heartbeat: float = field(default_factory=time.time)
-    stats: WorkerStats | None = None
-
-
-@dataclass
 class ActiveRequestInfo:
     client_id: bytes
     request_id: bytes
     worker_id: int
     payload: bytes
+
+
+@dataclass
+class WorkerHandle:
+    worker_id: int
+    process: BaseProcess
+    address: str
+    socket: zmq.asyncio.Socket
+    active_requests: dict[bytes, ActiveRequestInfo] = field(default_factory=dict)
+    last_heartbeat: float = field(default_factory=time.time)
+    stats: WorkerStats | None = None
+
+    @property
+    def active_count(self) -> int:
+        return len(self.active_requests)
 
 
 class EnvRouter:
@@ -95,12 +99,21 @@ class EnvRouter:
 
         # setup state
         self.workers: dict[int, WorkerHandle] = {}
-        self.active_requests: dict[bytes, ActiveRequestInfo] = {}
+        self._request_worker: dict[bytes, int] = {}  # request_id → worker_id
 
         self.ipc_paths: list[str] = [
             self.response_address.replace("ipc://", ""),
             self.stats_address.replace("ipc://", ""),
         ]
+
+    @property
+    def active_requests(self) -> dict[bytes, ActiveRequestInfo]:
+        """All active requests across all workers."""
+        return {
+            rid: info
+            for handle in self.workers.values()
+            for rid, info in handle.active_requests.items()
+        }
 
     # ── worker lifecycle ─────────────────────────────────────────
 
@@ -144,10 +157,10 @@ class EnvRouter:
         )
         process.start()
 
-        push_socket = self.ctx.socket(zmq.PUSH)
-        push_socket.setsockopt(zmq.SNDHWM, 0)
-        push_socket.setsockopt(zmq.LINGER, 5000)
-        push_socket.connect(worker_addr)
+        socket = self.ctx.socket(zmq.PUSH)
+        socket.setsockopt(zmq.SNDHWM, 0)
+        socket.setsockopt(zmq.LINGER, 5000)
+        socket.connect(worker_addr)
 
         self.logger.info(
             f"Started {worker_name} (id={worker_id}, name={worker_name}, address={worker_addr}, pid={process.pid})"
@@ -156,7 +169,7 @@ class EnvRouter:
         return WorkerHandle(
             worker_id=worker_id,
             process=process,
-            push_socket=push_socket,
+            socket=socket,
             address=worker_addr,
         )
 
@@ -167,15 +180,12 @@ class EnvRouter:
 
     async def restart_worker(self, worker_id: int) -> None:
         old = self.workers.get(worker_id)
+        to_redispatch: list[ActiveRequestInfo] = []
         if old is not None:
+            to_redispatch = list(old.active_requests.values())
+            old.active_requests.clear()
             terminate_process(old.process)
-            old.push_socket.close()
-
-        to_redispatch = [
-            info
-            for info in self.active_requests.values()
-            if info.worker_id == worker_id
-        ]
+            old.socket.close()
 
         self.workers[worker_id] = self.start_worker(worker_id)
 
@@ -183,16 +193,18 @@ class EnvRouter:
             new_wid = self._select_worker()
             handle = self.workers[new_wid]
             try:
-                await handle.push_socket.send_multipart(
+                await handle.socket.send_multipart(
                     [info.client_id, info.request_id, info.payload]
                 )
-                handle.active_count += 1
                 info.worker_id = new_wid
+                handle.active_requests[info.request_id] = info
+                self._request_worker[info.request_id] = new_wid
                 self.logger.info(
                     f"Re-dispatched request {info.request_id[:7]} "
                     f"from dead worker {worker_id} to worker {new_wid}"
                 )
             except zmq.ZMQError as e:
+                self._request_worker.pop(info.request_id, None)
                 self.logger.error(f"Failed to re-dispatch request: {e}")
 
     # ── dispatch ─────────────────────────────────────────────────
@@ -206,36 +218,36 @@ class EnvRouter:
         """Send a request to the least-busy worker."""
         wid = self._select_worker()
         handle = self.workers[wid]
-        await handle.push_socket.send_multipart([client_id, request_id, payload])
-        handle.active_count += 1
-        self.active_requests[request_id] = ActiveRequestInfo(
+        await handle.socket.send_multipart([client_id, request_id, payload])
+        info = ActiveRequestInfo(
             client_id=client_id,
             request_id=request_id,
             payload=payload,
             worker_id=wid,
         )
+        handle.active_requests[request_id] = info
+        self._request_worker[request_id] = wid
 
     async def forward_cancel(self, request_id: bytes, client_id: bytes) -> None:
         """Forward a cancel signal to the worker owning this request."""
-        info = self.active_requests.get(request_id)
-        if info is not None:
-            handle = self.workers.get(info.worker_id)
+        wid = self._request_worker.get(request_id)
+        if wid is not None:
+            handle = self.workers.get(wid)
             if handle is not None:
                 try:
-                    await handle.push_socket.send_multipart(
-                        [client_id, request_id, b""]
-                    )
+                    await handle.socket.send_multipart([client_id, request_id, b""])
                 except zmq.ZMQError:
                     pass
 
     def complete_request(self, request_id: bytes) -> ActiveRequestInfo | None:
         """Update bookkeeping after a response is received. Returns the info or None."""
-        info = self.active_requests.pop(request_id, None)
-        if info is not None:
-            handle = self.workers.get(info.worker_id)
-            if handle is not None:
-                handle.active_count = max(0, handle.active_count - 1)
-        return info
+        wid = self._request_worker.pop(request_id, None)
+        if wid is None:
+            return None
+        handle = self.workers.get(wid)
+        if handle is None:
+            return None
+        return handle.active_requests.pop(request_id, None)
 
     def handle_stats_message(self, data: bytes) -> None:
         """Parse a stats message and update the worker handle."""
@@ -302,10 +314,10 @@ class EnvRouter:
     async def close(self) -> None:
         for handle in self.workers.values():
             terminate_process(handle.process)
-            handle.push_socket.close()
+            handle.socket.close()
 
         self.workers.clear()
-        self.active_requests.clear()
+        self._request_worker.clear()
 
         self.response_pull.close()
         self.stats_pull.close()
