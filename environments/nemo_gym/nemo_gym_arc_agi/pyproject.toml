@@ -1,7 +1,7 @@
 [project]
-name = "nemo-workplace-assistant-agent"
-description = "NeMo Gym workplace_assistant via the agent server (RunHelper)"
-tags = ["nemo-gym", "agent", "tools", "multi-turn"]
+name = "nemo-gym-arc-agi"
+description = "NeMo Gym arc_agi environment"
+tags = ["nemo-gym", "knowledge", "single-turn"]
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,7 +14,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["nemo_workplace_assistant.py", "pyproject.toml"]
+include = ["nemo_gym_arc_agi.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
 num_examples = 5

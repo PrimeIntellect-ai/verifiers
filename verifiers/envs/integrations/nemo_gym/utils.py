@@ -3,16 +3,23 @@ from __future__ import annotations
 import importlib.util
 import json
 import time
+import uuid
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from datasets import Dataset
 
-from verifiers.types import AssistantMessage, Messages, State, ToolMessage
-
-
-_ALLOWED_DATASET_SPLITS = {"example", "train", "validation"}
-
+from verifiers.types import (
+    AssistantMessage,
+    Messages,
+    Response,
+    ResponseMessage,
+    ResponseTokens,
+    State,
+    ToolCall,
+    ToolMessage,
+    TrajectoryStep,
+)
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
@@ -27,101 +34,6 @@ def _stringify(value: Any) -> str:
         return _json_dumps(value)
     except (TypeError, ValueError):
         return str(value)
-
-
-def _sanitize_json_schema(value: Any) -> Any:
-    if isinstance(value, dict):
-        sanitized: dict[str, Any] = {}
-        for key, raw_child in value.items():
-            if raw_child is None:
-                continue
-            child = _sanitize_json_schema(raw_child)
-            if child is None:
-                continue
-            sanitized[key] = child
-
-        properties = sanitized.get("properties")
-        if isinstance(properties, dict):
-            sanitized["properties"] = {
-                name: schema
-                for name, schema in properties.items()
-                if isinstance(schema, (dict, bool))
-            }
-            required = sanitized.get("required")
-            if isinstance(required, list):
-                allowed = set(sanitized["properties"].keys())
-                sanitized["required"] = [
-                    name
-                    for name in required
-                    if isinstance(name, str) and name in allowed
-                ]
-
-        return sanitized
-
-    if isinstance(value, list):
-        return [
-            child
-            for item in value
-            if (child := _sanitize_json_schema(item)) is not None
-        ]
-
-    return value
-
-
-def _normalize_parameters_schema(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"type": "object", "properties": {}}
-    return _sanitize_json_schema(value)
-
-
-def _nemo_tools_to_tool_defs(raw_tools: Any) -> list[dict[str, Any]]:
-    if not isinstance(raw_tools, list):
-        return []
-
-    tool_defs: list[dict[str, Any]] = []
-    for raw_tool in raw_tools:
-        if not isinstance(raw_tool, dict):
-            continue
-
-        # OpenAI Chat Completions-style tool schema.
-        if raw_tool.get("type") == "function" and isinstance(
-            raw_tool.get("function"), dict
-        ):
-            fn = cast(dict[str, Any], raw_tool["function"])
-            name = fn.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            tool_def: dict[str, Any] = {
-                "name": name,
-                "description": _stringify(fn.get("description", "")),
-                "parameters": _normalize_parameters_schema(fn.get("parameters")),
-            }
-            strict = fn.get("strict", raw_tool.get("strict"))
-            if isinstance(strict, bool):
-                tool_def["strict"] = strict
-            tool_defs.append(tool_def)
-            continue
-
-        # OpenAI Responses API function tool schema.
-        tool_type = raw_tool.get("type")
-        if tool_type not in (None, "function"):
-            continue
-
-        name = raw_tool.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-
-        tool_def = {
-            "name": name,
-            "description": _stringify(raw_tool.get("description", "")),
-            "parameters": _normalize_parameters_schema(raw_tool.get("parameters")),
-        }
-        strict = raw_tool.get("strict")
-        if isinstance(strict, bool):
-            tool_def["strict"] = strict
-        tool_defs.append(tool_def)
-
-    return tool_defs
 
 
 def _resolve_resources_servers_root() -> Path:
@@ -144,28 +56,24 @@ def _resolve_resources_servers_root() -> Path:
     )
 
 
-def _resolve_dataset_path(
-    resource_server: str,
+def _build_dataset(
+    resources_server: str,
     dataset_split: str,
-    dataset_path: str | None,
-) -> Path:
+    dataset_path: str | None = None,
+    dataset_limit: int | None = None,
+) -> tuple[Dataset, Path]:
     if dataset_path is not None:
         path = Path(dataset_path).expanduser().resolve()
         if not path.exists():
             raise FileNotFoundError(f"dataset_path does not exist: {path}")
-        return path
+    else:
+        root = _resolve_resources_servers_root()
+        path = root / resources_server / "data" / f"{dataset_split}.jsonl"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Could not find dataset for '{resources_server}' split '{dataset_split}': {path}"
+            )
 
-    resources_root = _resolve_resources_servers_root()
-    path = resources_root / resource_server / "data" / f"{dataset_split}.jsonl"
-    if not path.exists():
-        raise FileNotFoundError(
-            "Could not find dataset file for server "
-            f"'{resource_server}' split '{dataset_split}': {path}"
-        )
-    return path
-
-
-def _load_rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
@@ -175,43 +83,26 @@ def _load_rows_from_jsonl(path: Path) -> list[dict[str, Any]]:
             try:
                 row = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON in {path} line {line_no}: {exc}"
-                ) from exc
+                raise ValueError(f"Invalid JSON in {path} line {line_no}: {exc}") from exc
             if not isinstance(row, dict):
                 raise ValueError(f"Row {line_no} in {path} is not an object")
             if "responses_create_params" not in row:
                 raise ValueError(
-                    f"Row {line_no} in {path} is missing required key "
-                    "'responses_create_params'"
+                    f"Row {line_no} in {path} is missing 'responses_create_params'"
                 )
             rows.append(row)
     if not rows:
         raise ValueError(f"Dataset file {path} contains no rows")
-    return rows
-
-
-def _build_dataset(
-    resource_server: str,
-    dataset_split: str,
-    dataset_path: str | None = None,
-    dataset_limit: int | None = None,
-) -> tuple[Dataset, Path]:
-    resolved_path = _resolve_dataset_path(resource_server, dataset_split, dataset_path)
-    rows = _load_rows_from_jsonl(resolved_path)
 
     if dataset_limit is not None:
         if dataset_limit <= 0:
-            raise ValueError("dataset_limit must be > 0 when provided")
+            raise ValueError("dataset_limit must be > 0")
         rows = rows[:dataset_limit]
 
     dataset_rows: list[dict[str, Any]] = []
     for row in rows:
-        responses_create_params = row.get("responses_create_params")
-        if not isinstance(responses_create_params, dict):
-            raise ValueError("responses_create_params must be an object")
-
-        raw_input = responses_create_params.get("input", [])
+        rcp = row["responses_create_params"]
+        raw_input = rcp.get("input", [])
         if isinstance(raw_input, str):
             prompt = [{"role": "user", "content": raw_input}]
         elif isinstance(raw_input, list):
@@ -222,84 +113,186 @@ def _build_dataset(
             {
                 "prompt": prompt,
                 "answer": _stringify(row.get("answer", "")),
-                "task": resource_server,
-                "info": {
-                    "dataset_row_json": _json_dumps(row),
-                    "resource_server": resource_server,
-                },
+                "task": resources_server,
+                "info": {"dataset_row_json": _json_dumps(row)},
             }
         )
 
-    return Dataset.from_list(dataset_rows), resolved_path
+    return Dataset.from_list(dataset_rows), path
 
 
-def _completion_to_nemo_response(
-    completion: Messages,
-    model_name: str,
-    trajectory_id: str,
-    responses_create_params: dict[str, Any],
-) -> dict[str, Any]:
-    output: list[dict[str, Any]] = []
-    message_idx = 0
+def _resolve_gym_config(resources_server: str) -> str:
+    root = _resolve_resources_servers_root()
+    path = root / resources_server / "configs" / f"{resources_server}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Could not find NeMo Gym config for '{resources_server}': {path}"
+        )
+    return str(path)
 
-    for msg in completion:
-        if isinstance(msg, AssistantMessage):
-            text = msg.content or ""
-            if isinstance(text, list):
-                text = "\n".join(getattr(p, "text", str(p)) for p in text)
-            if text:
-                output.append(
-                    {
-                        "id": f"msg_{message_idx}",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [
-                            {"type": "output_text", "text": text, "annotations": []}
-                        ],
-                    }
-                )
-                message_idx += 1
+# this may silenty break things in multi-env runs if agent_ref is not set in the dataset! 
+# TODO: should discuss removing it, or at least documenting it
+def _resolve_agent_name(gym_config_path: str) -> str:
+    import yaml
+    with open(gym_config_path) as f:
+        config = yaml.safe_load(f)
+    for key, value in config.items():
+        if isinstance(value, dict) and "responses_api_agents" in value:
+            return key
+    raise RuntimeError(
+        f"Could not find a responses_api_agents entry in {gym_config_path}"
+    )
 
-            for tc in msg.tool_calls or []:
-                output.append(
-                    {
-                        "id": tc.id,
-                        "type": "function_call",
-                        "call_id": tc.id,
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                    }
-                )
-                message_idx += 1
 
-        elif isinstance(msg, ToolMessage):
-            content = msg.content
-            if isinstance(content, list):
-                content = "\n".join(getattr(p, "text", str(p)) for p in content)
-            output.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": msg.tool_call_id,
-                    "output": content or "",
-                }
-            )
+def _reward_from_nemo(state: State, **kwargs: Any) -> float:
+    return float(state.get("nemo_reward", 0.0) or 0.0)
 
-    return {
-        "id": f"verifiers-{trajectory_id}",
-        "created_at": int(time.time()),
-        "model": model_name,
-        "object": "response",
-        "output": output,
-        "parallel_tool_calls": bool(
-            responses_create_params.get("parallel_tool_calls", False)
+
+def _nemo_item_to_assistant_message(item: dict[str, Any]) -> AssistantMessage:
+    item_type = item.get("type")
+
+    if item_type == "message":
+        content_blocks = item.get("content") or []
+        text = "\n".join(
+            c.get("text", "")
+            for c in content_blocks
+            if isinstance(c, dict) and c.get("type") == "output_text"
+        )
+        return AssistantMessage(role="assistant", content=text or None)
+
+    if item_type == "function_call":
+        tool_call = ToolCall(
+            id=str(item.get("call_id") or item.get("id") or uuid.uuid4().hex[:8]),
+            name=str(item.get("name", "")),
+            arguments=str(item.get("arguments", "{}")),
+        )
+        return AssistantMessage(role="assistant", content=None, tool_calls=[tool_call])
+
+    return AssistantMessage(role="assistant", content=str(item))
+
+
+def _make_synthetic_response(
+    msg: AssistantMessage,
+    model: str,
+    gen_ids: list[int],
+    logprobs: list[float],
+    prompt_ids: list[int],
+) -> Response:
+    tokens = ResponseTokens(
+        prompt_ids=prompt_ids,
+        prompt_mask=[1] * len(prompt_ids),
+        completion_ids=gen_ids,
+        completion_mask=[1] * len(gen_ids),
+        completion_logprobs=logprobs,
+        routed_experts=None,
+    )
+    return Response(
+        id=f"nemo-{uuid.uuid4().hex[:8]}",
+        created=int(time.time()),
+        model=model,
+        usage=None,
+        message=ResponseMessage(
+            role="assistant",
+            content=msg.content,
+            tool_calls=msg.tool_calls,
+            finish_reason="tool_calls" if msg.tool_calls else "stop",
+            is_truncated=False,
+            tokens=tokens,
         ),
-        "tool_choice": responses_create_params.get("tool_choice", "none"),
-        "tools": responses_create_params.get("tools", []),
-    }
+    )
 
 
-def _reward_from_verify(state: State, **kwargs: Any) -> float:
-    verify_response = state.get("verify_response")
-    if not isinstance(verify_response, dict):
-        return 0.0
-    return float(verify_response.get("reward", 0.0) or 0.0)
+def _build_trajectory_from_nemo(
+    output_items: list[dict[str, Any]],
+    initial_prompt: Messages,
+    model: str,
+    trajectory_id: str,
+) -> tuple[list[TrajectoryStep], Messages]:
+    trajectory: list[TrajectoryStep] = []
+    completion_messages: list = []
+    all_messages: list = list(initial_prompt)
+
+    for item in output_items:
+        if item.get("type") == "function_call_output":
+            tool_msg = ToolMessage(
+                role="tool",
+                tool_call_id=str(item.get("call_id", "")),
+                content=str(item.get("output", "")),
+            )
+            all_messages.append(tool_msg)
+            completion_messages.append(tool_msg)
+            continue
+
+        if "generation_token_ids" not in item:
+            continue
+
+        prompt_ids: list[int] = list(item.get("prompt_token_ids") or [])
+        gen_ids: list[int] = list(item.get("generation_token_ids") or [])
+        logprobs: list[float] = list(
+            item.get("generation_log_probs") or [0.0] * len(gen_ids)
+        )
+
+        step_prompt: Messages = list(all_messages)
+        assistant_msg = _nemo_item_to_assistant_message(item)
+        all_messages.append(assistant_msg)
+        completion_messages.append(assistant_msg)
+
+        trajectory.append({
+            "prompt": step_prompt,
+            "completion": [assistant_msg],
+            "response": _make_synthetic_response(
+                assistant_msg, model, gen_ids, logprobs, prompt_ids
+            ),
+            "tokens": {
+                "prompt_ids": prompt_ids,
+                "prompt_mask": [1] * len(prompt_ids),
+                "completion_ids": gen_ids,
+                "completion_mask": [1] * len(gen_ids),
+                "completion_logprobs": logprobs,
+                "overlong_prompt": False,
+                "is_truncated": False,
+                "routed_experts": None,
+            },
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": trajectory_id,
+            "extras": {},
+        })
+
+    return trajectory, completion_messages
+
+
+def _map_nemo_result_to_state(state: State, nemo_result: Any, model: str) -> None:
+    import verifiers as vf
+
+    if not isinstance(nemo_result, dict) or nemo_result.get("error"):
+        error_detail = (
+            nemo_result.get("error", "unknown error")
+            if isinstance(nemo_result, dict)
+            else repr(nemo_result)
+        )
+        state["error"] = vf.InfraError(
+            f"NeMo Gym agent server rollout failed: {error_detail}"
+        )
+        state["nemo_reward"] = 0.0
+        state["completion"] = []
+        return
+
+    state["nemo_reward"] = float(nemo_result.get("reward", 0.0) or 0.0)
+    state["nemo_result"] = nemo_result
+
+    output_items: list[dict[str, Any]] = (
+        nemo_result.get("response") or {}
+    ).get("output") or []
+
+    trajectory, completion_messages = _build_trajectory_from_nemo(
+        output_items=output_items,
+        initial_prompt=state["prompt"],
+        model=model,
+        trajectory_id=state["trajectory_id"],
+    )
+
+    state["trajectory"] = trajectory
+    state["completion"] = completion_messages
+    state["is_truncated"] = False

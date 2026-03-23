@@ -1,8 +1,8 @@
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.integrations.nemo_gym_agent import (
-    NemoGymAgentEnv,
+from verifiers.envs.integrations.nemo_gym import (
+    NemoGymEnv,
     _build_dataset,
     _resolve_gym_config,
 )
@@ -17,7 +17,7 @@ def load_environment(
     **kwargs: Any,
 ) -> vf.Environment:
     dataset, _ = _build_dataset("arc_agi", dataset_split)
-    return NemoGymAgentEnv(
+    return NemoGymEnv(
         gym_configs=[_resolve_gym_config("arc_agi")],
         dataset=dataset,
         vllm_server_host=vllm_server_host,
