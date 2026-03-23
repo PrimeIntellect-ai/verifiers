@@ -80,7 +80,9 @@ class EnvWorker:
         if log_file is not None:
             from pathlib import Path
 
-            worker_log_file = Path(log_file).parent / f"{worker_name}.log"
+            worker_log_file = (
+                Path(log_file).parent / f"{worker_name.replace('-', '_')}.log"
+            )
             worker_log_file.parent.mkdir(parents=True, exist_ok=True)
             logger_kwargs["log_file"] = str(worker_log_file)
             logger_kwargs["log_file_level"] = log_file_level

@@ -755,7 +755,7 @@ async def run_evaluation(
                 num_workers = int(num_workers)
             logger.info(f"Using {num_workers=} env server worker(s)")
 
-            log_file = results_path / "eval.log"
+            log_file = results_path / "env_server.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
             if config.debug:
                 await vf_env.start_server(
@@ -778,7 +778,9 @@ async def run_evaluation(
                 # register per-worker log files
                 for wid in range(num_workers):
                     worker_name = f"{config.env_id}-{wid}"
-                    worker_log = log_file.parent / f"{worker_name}.log"
+                    worker_log = (
+                        log_file.parent / f"{worker_name.replace('-', '_')}.log"
+                    )
                     on_log_file(worker_log)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
