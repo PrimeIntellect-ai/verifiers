@@ -38,7 +38,7 @@ def msgpack_encoder(obj):
 
 def make_ipc_address(session_id: str, name: str) -> str:
     """Build an IPC address for inter-process communication."""
-    return f"ipc:///tmp/vf-{session_id}-{name}"
+    return f"ipc:///tmp/vf-{session_id}-{name.replace('/', '--')}"
 
 
 def get_free_port() -> int:
