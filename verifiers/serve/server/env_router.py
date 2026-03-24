@@ -70,12 +70,6 @@ class EnvRouterStats(BaseModel):
     def active_tasks(self) -> int:
         return sum(w.active_tasks for w in self.workers.values() if w is not None)
 
-    @staticmethod
-    def _worker_str(stats: EnvWorkerStats | None) -> str:
-        if stats is None:
-            return "no stats yet"
-        return str(stats)
-
     def __str__(self) -> str:
         worker_counts = ", ".join(
             f"W{wid}: {w.active_tasks if w is not None else '?'}"
@@ -90,13 +84,13 @@ class EnvRouterStats(BaseModel):
         lines = [header, f"  {'Server':<{pad}} | Lag: {self.lag}"]
         for wid in sorted(self.workers):
             lines.append(
-                f"  {f'W{wid}':<{pad}} | {self._worker_str(self.workers[wid])}"
+                f"  {f'W{wid}':<{pad}} | {self.workers[wid] or 'no stats yet'}"
             )
         return "\n".join(lines)
 
 
 class EnvRouter:
-    """Manages a pool of ZMQEnvWorker processes via IPC PUSH/PULL."""
+    """Manages a pool of EnvWorker processes via IPC PUSH/PULL."""
 
     def __init__(
         self,
@@ -321,7 +315,7 @@ class EnvRouter:
                 self.request_to_worker.pop(info.request_id, None)
                 self.logger.error(f"Failed to re-dispatch request: {e}")
 
-    async def dispatch(
+    async def dispatch_request(
         self, client_id: bytes, request_id: bytes, payload: bytes
     ) -> None:
         """Send a request to the least-busy worker."""

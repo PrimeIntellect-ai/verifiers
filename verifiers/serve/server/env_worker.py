@@ -1,11 +1,9 @@
-"""Environment worker subprocess.
+"""Environment worker.
 
 Owns a single environment instance, a client cache, and three ZMQ
 sockets (PULL for requests, PUSH for responses, PUSH for stats).
 Receives requests from the router, runs rollouts, and pushes
 responses + stats back.
-
-This is spawned by :class:`EnvRouter` — one per worker slot.
 """
 
 import asyncio
@@ -51,7 +49,7 @@ class EnvWorkerStats(BaseModel):
 
 
 class EnvWorker:
-    """Subprocess worker that runs rollouts against a local environment instance."""
+    """Executes environment logic."""
 
     def __init__(
         self,
@@ -253,8 +251,6 @@ class EnvWorker:
                 active_tasks=len(self.active_tasks),
                 lag=EventLoopLagStats.from_monitor(self.lag_monitor),
             )
-
-            self.logger.debug(stats)
 
             try:
                 data = msgpack.packb(

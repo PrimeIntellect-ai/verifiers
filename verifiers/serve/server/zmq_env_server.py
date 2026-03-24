@@ -89,7 +89,7 @@ class ZMQEnvServer(EnvServer):
                             await self.router.forward_cancel(request_id, client_id)
                         else:
                             try:
-                                await self.router.dispatch(
+                                await self.router.dispatch_request(
                                     client_id, request_id, payload
                                 )
                             except zmq.ZMQError as e:

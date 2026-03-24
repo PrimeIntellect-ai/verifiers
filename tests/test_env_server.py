@@ -81,7 +81,7 @@ async def run_server_and_client():
     """Start a mock ZMQ server and connected client, tearing both down on exit.
 
     The router's worker spawning is mocked out so no subprocesses are created.
-    Instead, dispatch/forward_cancel are replaced with AsyncMock so tests can
+    Instead, dispatch_request/forward_cancel are replaced with AsyncMock so tests can
     observe request routing without needing real workers.
     """
     port = get_free_port_pair()
@@ -91,7 +91,7 @@ async def run_server_and_client():
 
     # Mock out worker lifecycle — we don't want real subprocesses in unit tests
     server.router.start_workers = MagicMock()
-    server.router.dispatch = AsyncMock()
+    server.router.dispatch_request = AsyncMock()
     server.router.forward_cancel = AsyncMock()
 
     stop_event = asyncio.Event()
@@ -347,7 +347,7 @@ class TestCancelForwarding:
 
             # Wait for dispatch to be called
             await asyncio.sleep(0.3)
-            assert server.router.dispatch.call_count == 1
+            assert server.router.dispatch_request.call_count == 1
 
             # Cancel on the client side — this sends an empty-payload frame
             client_task.cancel()
@@ -378,7 +378,7 @@ class TestCancelForwarding:
             await asyncio.sleep(0.3)
 
             # Dispatch should have been called
-            assert server.router.dispatch.call_count == 1
+            assert server.router.dispatch_request.call_count == 1
 
             # The server should have forwarded the cancel to the router
             assert server.router.forward_cancel.call_count == 1
@@ -395,8 +395,8 @@ class TestCancelForwarding:
 
             await asyncio.sleep(0.3)
 
-            assert server.router.dispatch.call_count == 1
-            call_args = server.router.dispatch.call_args
+            assert server.router.dispatch_request.call_count == 1
+            call_args = server.router.dispatch_request.call_args
             client_id, request_id, payload = call_args[0]
             assert isinstance(client_id, bytes)
             assert isinstance(request_id, bytes)
