@@ -167,13 +167,8 @@ class EnvWorker:
         request_id = request_id_bytes.decode()
         response: BaseResponse
 
-        def send_error_response(error: str) -> None:
-            """Serialize and send an error response synchronously (no await).
-
-            Used in exception paths where awaiting is unsafe (e.g. after
-            CancelledError when the task's cancellation flag is still set).
-            Best-effort — failures are silently ignored.
-            """
+        async def send_error_response(error: str) -> None:
+            """Serialize and send an error response. Best-effort."""
             try:
                 response_bytes = cast(
                     bytes,
@@ -185,9 +180,8 @@ class EnvWorker:
                         use_bin_type=True,
                     ),
                 )
-                self.response_socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes],
-                    zmq.NOBLOCK,
+                await self.response_socket.send_multipart(
+                    [client_id, request_id.encode(), response_bytes]
                 )
             except Exception:
                 pass
@@ -212,16 +206,15 @@ class EnvWorker:
         except asyncio.CancelledError:
             if self.shutting_down:
                 return
-            # Send synchronously — the task's cancellation flag is still set
-            # so any await would re-raise CancelledError.
-            send_error_response("Request was cancelled")
+            # shield prevents the still-set cancellation flag from killing the await
+            await asyncio.shield(send_error_response("Request was cancelled"))
             return
 
         except Exception as e:
             self.logger.error(
                 f"Error processing request {request_id}: {e}", exc_info=True
             )
-            send_error_response(repr(e))
+            await send_error_response(repr(e))
             return
 
         try:
@@ -240,7 +233,7 @@ class EnvWorker:
                 f"Failed to serialize response for {request_id}: {e}",
                 exc_info=True,
             )
-            send_error_response(f"Response serialization failed: {repr(e)}")
+            await send_error_response(f"Response serialization failed: {repr(e)}")
             return
 
         try:
