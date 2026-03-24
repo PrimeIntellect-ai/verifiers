@@ -1,4 +1,3 @@
-import atexit
 import asyncio
 import logging
 import threading
@@ -160,24 +159,12 @@ def install_default_executor() -> None:
 
 
 def shutdown_executors() -> None:
-    """Shut down the default executor and all registered executors.
-
-    ProcessPoolExecutor workers are shut down with ``wait=True`` so that
-    child processes are fully terminated before the main process exits.
-    This prevents orphaned processes from holding inherited file descriptors
-    (e.g. captured stdout/stderr pipes) open indefinitely.
-    """
+    """Shut down the default executor and all registered executors."""
     global _default_executor, _target_concurrency
     _target_concurrency = None
     if _default_executor is not None:
         _default_executor.shutdown(wait=False)
         _default_executor = None
     for executor, _ in _executor_registry.values():
-        # ProcessPoolExecutor must wait for workers to exit so child
-        # processes don't outlive the parent and hold pipe FDs open.
-        wait = isinstance(executor, ProcessPoolExecutor)
-        executor.shutdown(wait=wait, cancel_futures=True)
+        executor.shutdown(wait=False)
     _executor_registry.clear()
-
-
-atexit.register(shutdown_executors)
