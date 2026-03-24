@@ -450,11 +450,9 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     # Simulate _finish_loading_comparison_stats setup
     screen._stats_by_path = stats
     screen._setting_keys, screen._run_settings = _varying_run_setting_keys(screen.runs)
-    (
-        screen._display_maps,
-        screen._style_maps,
-        screen._legend_rows,
-    ) = screen._build_setting_display_maps(screen._setting_keys, screen._run_settings)
+    screen._display_maps, screen._style_maps = screen._build_setting_display_maps(
+        screen._setting_keys, screen._run_settings
+    )
     from rich.console import Group
 
     rendered = _render_to_text(

@@ -1579,7 +1579,6 @@ class CompareRunsScreen(Screen):
         self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
         self._display_maps: Dict[str, Dict[str, str]] = {}
         self._style_maps: Dict[str, Dict[str, str]] = {}
-        self._legend_rows: List[Tuple[str, str, str]] = []
         self._group_mode: bool = False
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
@@ -1682,11 +1681,9 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
-        (
-            self._display_maps,
-            self._style_maps,
-            self._legend_rows,
-        ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
+        self._display_maps, self._style_maps = self._build_setting_display_maps(
+            self._setting_keys, self._run_settings
+        )
         self.query_one("#compare-header", Static).update(
             self._build_comparison_header()
         )
@@ -1842,14 +1839,14 @@ class CompareRunsScreen(Screen):
         self,
         setting_keys: List[str],
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-    ) -> Tuple[
-        Dict[str, Dict[str, str]],
-        Dict[str, Dict[str, str]],
-        List[Tuple[str, str, str]],
-    ]:
+    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
+        """Build display/style maps for the axes table header.
+
+        Values longer than 20 chars are aliased to v1, v2, etc.
+        The outcome table does its own dynamic aliasing separately.
+        """
         display_maps: Dict[str, Dict[str, str]] = {}
         style_maps: Dict[str, Dict[str, str]] = {}
-        legend_rows: List[Tuple[str, str, str]] = []
 
         for key in setting_keys:
             ordered_values: List[str] = []
@@ -1873,13 +1870,6 @@ class CompareRunsScreen(Screen):
                     alias = f"v{idx + 1}"
                     display_maps[key][value] = alias
                     style_maps[key][value] = self._alias_style(alias)
-                    legend_rows.append(
-                        (
-                            f"{self._short_setting_key(key)} {alias}",
-                            _truncate_preview(" ".join(value.split()), 120),
-                            style_maps[key][value],
-                        )
-                    )
                 continue
 
             display_maps[key] = {
@@ -1887,7 +1877,7 @@ class CompareRunsScreen(Screen):
             }
             style_maps[key] = {value: "" for value in ordered_values}
 
-        return display_maps, style_maps, legend_rows
+        return display_maps, style_maps
 
     def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
         if not values:
