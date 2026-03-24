@@ -11,6 +11,7 @@ uv.lock
 .scratch/
 .chroma_db/
 /.codex/environments/
+.python-version
 
 # artifacts
 core.* 
