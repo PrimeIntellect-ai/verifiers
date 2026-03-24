@@ -751,7 +751,7 @@ async def run_evaluation(
             # resolve num_workers
             num_workers = config.num_workers
             if num_workers == "auto":
-                num_workers = max(1, math.ceil(concurrency / 512))
+                num_workers = max(1, math.ceil(concurrency / 256))
             else:
                 num_workers = int(num_workers)
 

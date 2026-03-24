@@ -159,7 +159,7 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
 | `--independent-scoring` | `-i` | false | Score each rollout individually instead of by group |
 | `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
-| `--num-workers` | `-w` | `auto` | Number of env server worker processes (`auto` = concurrency ÷ 512, minimum 1) |
+| `--num-workers` | `-w` | `auto` | Number of env server worker processes (`auto` = concurrency ÷ 256, minimum 1) |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
 
