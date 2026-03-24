@@ -750,7 +750,7 @@ async def run_evaluation(
             num_workers = config.num_workers
             if num_workers == "auto":
                 concurrency = extra_env_kwargs.get("concurrency", config.max_concurrent)
-                num_workers = max(1, concurrency // 512)
+                num_workers = max(1, math.ceil(concurrency / 512))
             else:
                 num_workers = int(num_workers)
             logger.info(f"Using {num_workers=} env server worker(s)")
