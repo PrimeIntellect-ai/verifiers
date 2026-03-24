@@ -96,8 +96,8 @@ class EnvServer(ABC):
         try:
             await self.serve(stop_event=stop_event)
         finally:
-            await self.close()
             await self.router.close()
+            await self.close()
 
     @staticmethod
     def get_log_file(log_dir: str) -> Path:
