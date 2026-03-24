@@ -754,6 +754,8 @@ async def run_evaluation(
                 num_workers = max(1, math.ceil(concurrency / 256))
             else:
                 num_workers = int(num_workers)
+                if num_workers < 1:
+                    raise ValueError(f"num_workers must be >= 1, got {num_workers}")
 
             # per-worker concurrency
             per_worker = max(1, concurrency // num_workers)
