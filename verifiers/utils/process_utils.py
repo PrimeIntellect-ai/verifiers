@@ -37,8 +37,8 @@ def monitor_death_pipe(death_pipe: Connection) -> None:
 
 def terminate_process(
     process: BaseProcess | None,
-    timeout: float = 5.0,
-    kill_timeout: float = 5.0,
+    timeout: float = 10.0,
+    kill_timeout: float = 10.0,
 ) -> None:
     """Gracefully terminate a process, escalating to kill if needed.
 
@@ -56,8 +56,8 @@ def terminate_process(
 
 def terminate_processes(
     processes: list[BaseProcess],
-    timeout: float = 5.0,
-    kill_timeout: float = 5.0,
+    timeout: float = 10.0,
+    kill_timeout: float = 10.0,
 ) -> None:
     """Terminate multiple processes in parallel.
 
