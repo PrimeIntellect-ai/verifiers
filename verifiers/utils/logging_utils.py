@@ -71,9 +71,6 @@ def setup_logging(
         file_logging: Whether to log to a file. Defaults to False.
         json_logging: If True, output logs as JSON. Defaults to False.
     """
-    if file_logging and log_file is None:
-        raise ValueError("log_file must be specified when file_logging is True")
-
     if json_logging:
         formatter = JsonFormatter()
     else:
@@ -102,6 +99,8 @@ def setup_logging(
         logger.addHandler(console_handler)
 
     if file_logging:
+        if log_file is None:
+            raise ValueError("log_file must be specified when file_logging is True")
         file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setFormatter(formatter)
         file_handler.setLevel(log_level)
