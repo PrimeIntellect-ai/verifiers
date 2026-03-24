@@ -1650,7 +1650,6 @@ class CompareRunsScreen(Screen):
             group_by_key=self._grouped_by_key,
         )
         parts: List[str] = [
-            self._renderable_to_text(self._build_comparison_header()),
             self._renderable_to_text(outcomes_table),
         ]
         legend = self._build_argument_legend(axis_legend, value_legend)
@@ -1690,9 +1689,7 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
-        self.query_one("#compare-header", Static).update(
-            self._build_comparison_header()
-        )
+        self.query_one("#compare-header", Static).update(Text(""))
         self._refresh_outcomes()
         self._load_distinct_prompt_counts()
 
@@ -2240,14 +2237,6 @@ class CompareRunsScreen(Screen):
             items.extend([Text("Arg value legend", style="bold dim"), t])
 
         return Group(*items)
-
-    def _build_comparison_header(self) -> Group:
-        summary = Text()
-        summary.append("Ablation summary\n", style="bold dim")
-        summary.append(self.model or "all models", style="bold")
-        summary.append("\n")
-        summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
-        return Group(summary)
 
     def _build_comparison_outcomes(self) -> Group:
         highlight_col = self._group_cursor if self._group_mode else None

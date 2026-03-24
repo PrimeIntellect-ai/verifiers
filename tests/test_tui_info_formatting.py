@@ -453,14 +453,10 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     from rich.console import Group
 
     rendered = _render_to_text(
-        Group(
-            screen._build_comparison_header(),
-            screen._build_comparison_outcomes(),
-        ),
+        screen._build_comparison_outcomes(),
         width=220,
     )
 
-    assert "Ablation summary" in rendered
     assert "Outcome groups" in rendered
     assert "temperature" in rendered
     assert "max_tokens" in rendered
