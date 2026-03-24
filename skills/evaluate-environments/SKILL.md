@@ -98,7 +98,11 @@ prime eval run my-env -s -o /path/to/output
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-7. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+7. Scale worker processes to parallelize env execution:
+```bash
+prime eval run my-env -c 1024 -w 4
+```
+8. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
