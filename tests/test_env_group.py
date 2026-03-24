@@ -542,6 +542,10 @@ class TestEnvGroup:
         assert outer_group.get_env_for_task("math") == inner_group
         assert outer_group.get_env_for_task("code") == inner_group
 
+        # Stale outer name should be removed from env_map
+        with pytest.raises(ValueError, match="No environment found for task 'my_envs'"):
+            outer_group.get_env_for_task("my_envs")
+
     def test_nested_env_group_with_flat_env(self, mock_client):
         """Test EnvGroup with a mix of nested EnvGroup and flat environments."""
         env_math = SingleTurnEnv(
