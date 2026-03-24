@@ -426,6 +426,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        "num_workers",
         "disable_env_server",
         # logging
         "verbose",
