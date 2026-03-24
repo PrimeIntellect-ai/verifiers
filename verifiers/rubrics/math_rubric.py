@@ -79,8 +79,12 @@ class MathRubric(Rubric):
                 max_workers=1, mp_context=mp.get_context("forkserver")
             )
         else:
-            # ProcessPoolExecutor hangs on Python <3.13 when created inside a
-            # process spawned via multiprocessing (e.g. the env server).
+            # Python <3.13: ProcessPoolExecutor with any start method
+            # (fork/spawn/forkserver) hangs when the entry point is a
+            # console_script. The forkserver/spawn worker re-imports __main__
+            # which re-executes the entry point, causing an infinite fork bomb.
+            # fork deadlocks due to multithreaded env server (asyncio + TPE).
+            # Fixed in Python 3.13. Use ThreadPoolExecutor as fallback.
             from concurrent.futures import ThreadPoolExecutor
 
             self.executor = ThreadPoolExecutor(
