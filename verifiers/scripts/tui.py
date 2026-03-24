@@ -1587,8 +1587,6 @@ class CompareRunsScreen(Screen):
         self._stats_by_path: Dict[Path, RunOverviewStats] = {}
         self._setting_keys: List[str] = []
         self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
-        self._display_maps: Dict[str, Dict[str, str]] = {}
-        self._style_maps: Dict[str, Dict[str, str]] = {}
         self._group_mode: bool = False
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
@@ -1692,9 +1690,6 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
-        self._display_maps, self._style_maps = self._build_setting_display_maps(
-            self._setting_keys, self._run_settings
-        )
         self.query_one("#compare-header", Static).update(
             self._build_comparison_header()
         )
@@ -1846,50 +1841,6 @@ class CompareRunsScreen(Screen):
             return "bold green" if share >= 0.5 else "green"
         return "bold red" if share >= 0.5 else "red"
 
-    def _build_setting_display_maps(
-        self,
-        setting_keys: List[str],
-        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
-        """Build display/style maps for the axes table header.
-
-        Values longer than 20 chars are aliased to v1, v2, etc.
-        The outcome table does its own dynamic aliasing separately.
-        """
-        display_maps: Dict[str, Dict[str, str]] = {}
-        style_maps: Dict[str, Dict[str, str]] = {}
-
-        for key in setting_keys:
-            ordered_values: List[str] = []
-            for _, settings in run_settings:
-                value = settings.get(key, "(unset)")
-                if value not in ordered_values:
-                    ordered_values.append(value)
-
-            previews = [
-                _truncate_preview(" ".join(value.split()), 20)
-                for value in ordered_values
-            ]
-            needs_alias = len(set(previews)) != len(previews) or any(
-                len(" ".join(value.split())) > 20 for value in ordered_values
-            )
-
-            if needs_alias:
-                display_maps[key] = {}
-                style_maps[key] = {}
-                for idx, value in enumerate(ordered_values):
-                    alias = f"v{idx + 1}"
-                    display_maps[key][value] = alias
-                    style_maps[key][value] = self._alias_style(alias)
-                continue
-
-            display_maps[key] = {
-                value: preview for value, preview in zip(ordered_values, previews)
-            }
-            style_maps[key] = {value: "" for value in ordered_values}
-
-        return display_maps, style_maps
-
     def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
         if not values:
             return Text("—", style="dim")
@@ -1924,51 +1875,6 @@ class CompareRunsScreen(Screen):
         if used < width:
             out.append("░" * (width - used), style="dim")
         return out
-
-    def _build_axes_table(
-        self,
-        setting_keys: List[str],
-        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-        display_maps: Dict[str, Dict[str, str]],
-        style_maps: Dict[str, Dict[str, str]],
-    ) -> Group | Text:
-        if not setting_keys:
-            return Text("All saved settings match across these runs", style="dim")
-
-        table = Table(
-            box=box.SIMPLE_HEAD,
-            expand=True,
-            show_edge=False,
-            pad_edge=False,
-            padding=(0, 1),
-            collapse_padding=True,
-            row_styles=["none", "dim"],
-        )
-        table.add_column(
-            "Axis", style="bold", header_style="bold dim", width=18, no_wrap=True
-        )
-        table.add_column("Values", header_style="bold dim", ratio=1)
-
-        for key in setting_keys:
-            counts: Dict[str, int] = defaultdict(int)
-            ordered_values: List[str] = []
-            for _, settings in run_settings:
-                value = settings.get(key, "(unset)")
-                counts[value] += 1
-                if value not in ordered_values:
-                    ordered_values.append(value)
-
-            value_text = Text()
-            for idx, value in enumerate(ordered_values):
-                if idx:
-                    value_text.append("   ")
-                label = display_maps[key][value]
-                value_text.append(label, style=style_maps[key][value] or "")
-                value_text.append(f" ({counts[value]})", style="dim")
-            axis_label = Text(self._short_setting_key(key), style="bold")
-            table.add_row(axis_label, value_text)
-
-        return Group(Text("Ablation axes", style="bold dim"), table)
 
     def _build_grouped_outcomes_table(
         self,
@@ -2341,16 +2247,7 @@ class CompareRunsScreen(Screen):
         summary.append(self.model or "all models", style="bold")
         summary.append("\n")
         summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
-        return Group(
-            summary,
-            Text(""),
-            self._build_axes_table(
-                self._setting_keys,
-                self._run_settings,
-                self._display_maps,
-                self._style_maps,
-            ),
-        )
+        return Group(summary)
 
     def _build_comparison_outcomes(self) -> Group:
         highlight_col = self._group_cursor if self._group_mode else None
