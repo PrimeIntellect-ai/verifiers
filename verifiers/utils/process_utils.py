@@ -1,22 +1,38 @@
 """Process lifecycle utilities."""
 
+import logging
+import os
 import signal
-import sys
+import threading
+from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 
+logger = logging.getLogger(__name__)
 
-def request_parent_death_signal() -> None:
-    """Ask the Linux kernel to send SIGTERM when the parent process dies."""
-    if sys.platform != "linux":
-        return
-    try:
-        import ctypes
 
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
-    except Exception:
-        pass
+def monitor_death_pipe(death_pipe: Connection) -> None:
+    """Monitor a death pipe and send SIGTERM to this process when it closes.
+
+    The parent creates a pipe and keeps the writer end open.  When the parent
+    dies (even via SIGKILL), the OS closes the writer and ``reader.recv()``
+    raises ``EOFError``.  This function sends SIGTERM to the current process
+    so existing signal handlers can perform a clean shutdown.
+
+    Starts a daemon thread so the caller is not blocked.
+    """
+
+    def monitor_death_pipe_thread() -> None:
+        try:
+            death_pipe.recv()  # blocks until writer closes
+        except (EOFError, OSError):
+            pass
+        logger.info("Death pipe closed — parent is gone, sending SIGTERM to self")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    t = threading.Thread(
+        target=monitor_death_pipe_thread, name="death-pipe-monitor", daemon=True
+    )
+    t.start()
 
 
 def terminate_process(

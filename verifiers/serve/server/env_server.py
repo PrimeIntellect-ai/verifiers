@@ -9,12 +9,13 @@ import asyncio
 import logging
 import signal
 from abc import ABC, abstractmethod
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
-from verifiers.utils.process_utils import request_parent_death_signal
+from verifiers.utils.process_utils import monitor_death_pipe
 
 
 class EnvServer(ABC):
@@ -38,7 +39,10 @@ class EnvServer(ABC):
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
+        death_pipe: Connection | None = None,
     ):
+        self.death_pipe = death_pipe
+
         logger_kwargs: dict[str, Any] = {
             "console_logging": console_logging,
             "file_logging": file_logging and log_dir is not None,
@@ -68,6 +72,7 @@ class EnvServer(ABC):
             num_workers=num_workers,
             worker_heartbeat_timeout=worker_heartbeat_timeout,
             stats_log_interval=stats_log_interval,
+            death_pipe=death_pipe,
         )
 
     @abstractmethod
@@ -80,7 +85,8 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
-        request_parent_death_signal()
+        if self.death_pipe is not None:
+            monitor_death_pipe(self.death_pipe)
 
         stop_event = asyncio.Event()
 

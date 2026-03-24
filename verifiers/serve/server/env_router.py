@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Any
 
@@ -104,6 +105,7 @@ class EnvRouter:
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
+        death_pipe: Connection | None = None,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -118,6 +120,7 @@ class EnvRouter:
         self.num_workers = num_workers
         self.worker_heartbeat_timeout = worker_heartbeat_timeout
         self.stats_log_interval = stats_log_interval
+        self.death_pipe = death_pipe
 
         self.session_id = uuid.uuid4().hex[:12]
 
@@ -189,6 +192,7 @@ class EnvRouter:
                 request_address=worker_addr,
                 response_address=self.response_address,
                 stats_address=self.stats_address,
+                death_pipe=self.death_pipe,
             ),
             name=worker_name,
             daemon=False,

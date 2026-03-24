@@ -11,6 +11,7 @@ import gc
 import logging
 import signal
 import time
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,7 +32,7 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.process_utils import request_parent_death_signal
+from verifiers.utils.process_utils import monitor_death_pipe
 from verifiers.utils.serve_utils import msgpack_encoder
 
 
@@ -65,7 +66,9 @@ class EnvWorker:
         request_address: str,
         response_address: str,
         stats_address: str,
+        death_pipe: Connection | None = None,
     ):
+        self.death_pipe = death_pipe
         self.env_id = env_id
         self.worker_id = worker_id
         self.worker_name = worker_name
@@ -351,7 +354,8 @@ class EnvWorker:
         self.logger.info(f"Shut down worker {self.worker_name}")
 
     async def run(self) -> None:
-        request_parent_death_signal()
+        if self.death_pipe is not None:
+            monitor_death_pipe(self.death_pipe)
 
         from verifiers.utils.thread_utils import install_default_executor
 
