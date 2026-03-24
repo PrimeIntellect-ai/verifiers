@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import time
@@ -87,17 +86,6 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return dict(value)
     else:
         return str(value)
-
-
-def compute_prompt_hash(prompt: list | None) -> str | None:
-    """MD5 hash of JSON-serialized prompt for deduplication."""
-    if prompt is None:
-        return None
-    return hashlib.md5(
-        json.dumps(
-            prompt, sort_keys=True, separators=(",", ":"), default=make_serializable
-        ).encode()
-    ).hexdigest()
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:

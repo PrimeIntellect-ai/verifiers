@@ -2,6 +2,7 @@
 Textual-based TUI for viewing verifiers eval results.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -490,6 +491,15 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _compute_prompt_hash(prompt: list | None) -> str | None:
+    """MD5 hash of JSON-serialized prompt for deduplication."""
+    if prompt is None:
+        return None
+    return hashlib.md5(
+        json.dumps(prompt, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
@@ -1711,9 +1721,6 @@ class CompareRunsScreen(Screen):
     )
     def _load_distinct_prompt_counts(self) -> None:
         """Compute distinct prompt counts per group in a background thread."""
-        import hashlib
-
-        from verifiers.utils.save_utils import compute_prompt_hash
 
         group_keys = (
             [self._grouped_by_key] if self._grouped_by_key else self._setting_keys
@@ -1760,7 +1767,7 @@ class CompareRunsScreen(Screen):
                             if not isinstance(record, dict):
                                 continue
                             prompt = record.get("prompt")
-                            ph = compute_prompt_hash(prompt)
+                            ph = _compute_prompt_hash(prompt)
                             if ph is not None:
                                 hashes.add(ph)
                 except OSError:
