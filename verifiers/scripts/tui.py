@@ -1589,6 +1589,7 @@ class CompareRunsScreen(Screen):
         self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
         self._display_maps: Dict[str, Dict[str, str]] = {}
         self._style_maps: Dict[str, Dict[str, str]] = {}
+        self._axes_legend_rows: List[Tuple[str, str, str, str]] = []
         self._group_mode: bool = False
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
@@ -1649,15 +1650,14 @@ class CompareRunsScreen(Screen):
             self._stats_by_path,
             self._setting_keys,
             self._run_settings,
-            self._display_maps,
-            self._style_maps,
             group_by_key=self._grouped_by_key,
         )
         parts: List[str] = [
             self._renderable_to_text(self._build_comparison_header()),
             self._renderable_to_text(outcomes_table),
         ]
-        legend = self._build_argument_legend(axis_legend, value_legend)
+        combined_value_legend = list(self._axes_legend_rows) + list(value_legend)
+        legend = self._build_argument_legend(axis_legend, combined_value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             parts.append(self._renderable_to_text(legend))
         all_body = "\n\n".join(parts)
@@ -1694,9 +1694,11 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
-        self._display_maps, self._style_maps = self._build_setting_display_maps(
-            self._setting_keys, self._run_settings
-        )
+        (
+            self._display_maps,
+            self._style_maps,
+            self._axes_legend_rows,
+        ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
         self.query_one("#compare-header", Static).update(
             self._build_comparison_header()
         )
@@ -1852,14 +1854,24 @@ class CompareRunsScreen(Screen):
         self,
         setting_keys: List[str],
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-    ) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
+    ) -> Tuple[
+        Dict[str, Dict[str, str]],
+        Dict[str, Dict[str, str]],
+        List[Tuple[str, str, str, str]],
+    ]:
         """Build display/style maps for the axes table header.
 
         Values longer than 20 chars are aliased to v1, v2, etc.
         The outcome table does its own dynamic aliasing separately.
+
+        Returns:
+            display_maps: Mapping from values to their display strings
+            style_maps: Mapping from values to their styles
+            legend_rows: List of (alias, key_name, preview, style) tuples for aliased values
         """
         display_maps: Dict[str, Dict[str, str]] = {}
         style_maps: Dict[str, Dict[str, str]] = {}
+        legend_rows: List[Tuple[str, str, str, str]] = []
 
         for key in setting_keys:
             ordered_values: List[str] = []
@@ -1879,10 +1891,19 @@ class CompareRunsScreen(Screen):
             if needs_alias:
                 display_maps[key] = {}
                 style_maps[key] = {}
+                short_name = self._short_setting_key(key)
                 for idx, value in enumerate(ordered_values):
                     alias = f"v{idx + 1}"
                     display_maps[key][value] = alias
                     style_maps[key][value] = self._alias_style(alias)
+                    legend_rows.append(
+                        (
+                            alias,
+                            short_name,
+                            _truncate_preview(" ".join(value.split()), 120),
+                            style_maps[key][value],
+                        )
+                    )
                 continue
 
             display_maps[key] = {
@@ -1890,7 +1911,7 @@ class CompareRunsScreen(Screen):
             }
             style_maps[key] = {value: "" for value in ordered_values}
 
-        return display_maps, style_maps
+        return display_maps, style_maps, legend_rows
 
     def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
         if not values:
@@ -1977,8 +1998,6 @@ class CompareRunsScreen(Screen):
         stats_by_path: Dict[Path, RunOverviewStats],
         setting_keys: List[str],
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-        display_maps: Dict[str, Dict[str, str]],
-        style_maps: Dict[str, Dict[str, str]],
         group_by_key: str | None = None,
         highlight_col: int | None = None,
     ) -> Tuple[Table, List[Tuple[str, str, str]], List[Tuple[str, str, str, str]]]:
@@ -2362,8 +2381,6 @@ class CompareRunsScreen(Screen):
             self._stats_by_path,
             self._setting_keys,
             self._run_settings,
-            self._display_maps,
-            self._style_maps,
             group_by_key=self._grouped_by_key,
             highlight_col=highlight_col,
         )
@@ -2374,7 +2391,8 @@ class CompareRunsScreen(Screen):
                 outcomes_table,
             ),
         ]
-        legend = self._build_argument_legend(axis_legend, value_legend)
+        combined_value_legend = list(self._axes_legend_rows) + list(value_legend)
+        legend = self._build_argument_legend(axis_legend, combined_value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             items.extend([Text(""), legend])
         return Group(*items)
