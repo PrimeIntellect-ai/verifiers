@@ -1583,6 +1583,7 @@ class CompareRunsScreen(Screen):
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
         self._distinct_prompts_by_group: Dict[Tuple[str, ...], int] = {}
+        self._prompt_count_cache: Dict[str, int] = {}  # run-ID-set hash → count
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -1613,7 +1614,9 @@ class CompareRunsScreen(Screen):
     def action_back(self) -> None:
         if self._grouped_by_key is not None:
             self._grouped_by_key = None
+            self._distinct_prompts_by_group = {}
             self._refresh_outcomes()
+            self._load_distinct_prompt_counts()
             return
         if self._group_mode:
             self._group_mode = False
@@ -1708,6 +1711,8 @@ class CompareRunsScreen(Screen):
     )
     def _load_distinct_prompt_counts(self) -> None:
         """Compute distinct prompt counts per group in a background thread."""
+        import hashlib
+
         from verifiers.utils.save_utils import compute_prompt_hash
 
         group_keys = (
@@ -1724,20 +1729,25 @@ class CompareRunsScreen(Screen):
 
         # Process one group at a time; update table after each group completes
         for group_key_val, group_runs in groups.items():
-            hashes: set[str] = set()
+            if not self.is_mounted:
+                return
 
+            # Cache key: hash of sorted run IDs in this group
+            run_ids = sorted(run.run_id for run, _ in group_runs)
+            cache_key = hashlib.md5(str(run_ids).encode()).hexdigest()
+
+            cached = self._prompt_count_cache.get(cache_key)
+            if cached is not None:
+                self.app.call_from_thread(
+                    self._update_group_prompt_count, group_key_val, cached
+                )
+                continue
+
+            # Not cached — compute by streaming results.jsonl
+            hashes: set[str] = set()
             for run, _ in group_runs:
                 if not self.is_mounted:
                     return
-
-                # Fast path: metadata has prompt_hashes
-                metadata = run.load_metadata()
-                meta_hashes = metadata.get("prompt_hashes")
-                if isinstance(meta_hashes, list) and meta_hashes:
-                    hashes.update(meta_hashes)
-                    continue
-
-                # Slow path: stream results.jsonl, extract/compute hashes
                 try:
                     with (run.path / "results.jsonl").open("r", encoding="utf-8") as f:
                         for line in f:
@@ -1749,11 +1759,6 @@ class CompareRunsScreen(Screen):
                                 continue
                             if not isinstance(record, dict):
                                 continue
-                            ph = record.get("prompt_hash")
-                            if ph is not None:
-                                hashes.add(ph)
-                                continue
-                            # Fallback: hash from prompt field
                             prompt = record.get("prompt")
                             ph = compute_prompt_hash(prompt)
                             if ph is not None:
@@ -1761,9 +1766,10 @@ class CompareRunsScreen(Screen):
                 except OSError:
                     pass
 
-            # Update this group's count and refresh table
+            count = len(hashes)
+            self._prompt_count_cache[cache_key] = count
             self.app.call_from_thread(
-                self._update_group_prompt_count, group_key_val, len(hashes)
+                self._update_group_prompt_count, group_key_val, count
             )
 
     def _update_group_prompt_count(
