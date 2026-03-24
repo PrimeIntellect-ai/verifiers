@@ -1633,20 +1633,19 @@ class CompareRunsScreen(Screen):
     def action_copy(self) -> None:
         if not self._stats_by_path:
             return
+        outcomes_table, axis_legend, value_legend = self._build_grouped_outcomes_table(
+            self._stats_by_path,
+            self._setting_keys,
+            self._run_settings,
+            self._display_maps,
+            self._style_maps,
+            group_by_key=self._grouped_by_key,
+        )
         parts: List[str] = [
             self._renderable_to_text(self._build_comparison_header()),
-            self._renderable_to_text(
-                self._build_grouped_outcomes_table(
-                    self._stats_by_path,
-                    self._setting_keys,
-                    self._run_settings,
-                    self._display_maps,
-                    self._style_maps,
-                    group_by_key=self._grouped_by_key,
-                )
-            ),
+            self._renderable_to_text(outcomes_table),
         ]
-        legend = self._build_value_legend(self._legend_rows)
+        legend = self._build_argument_legend(axis_legend, value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             parts.append(self._renderable_to_text(legend))
         all_body = "\n\n".join(parts)
@@ -1826,7 +1825,7 @@ class CompareRunsScreen(Screen):
         return short
 
     def _alias_style(self, label: str) -> str:
-        match = re.fullmatch(r"v(\d+)", label)
+        match = re.fullmatch(r"v(\d+)(?:\.\d+)?", label)
         if match is None:
             return ""
         alias_idx = int(match.group(1)) - 1
@@ -1979,7 +1978,7 @@ class CompareRunsScreen(Screen):
         style_maps: Dict[str, Dict[str, str]],
         group_by_key: str | None = None,
         highlight_col: int | None = None,
-    ) -> Table:
+    ) -> Tuple[Table, List[Tuple[str, str, str]], List[Tuple[str, str, str, str]]]:
         # Determine which keys to actually group by.
         group_keys = [group_by_key] if group_by_key else setting_keys
 
@@ -2032,58 +2031,110 @@ class CompareRunsScreen(Screen):
             collapse_padding=True,
             row_styles=["none", "dim"],
         )
-        # Determine which optional columns to show.
-        # Drop order: (1) =0 & =1, (2) mix, (3) rollouts, (4) unique prompts, (5) runs
-        # "avg" and setting columns are always shown.
+        # --- Responsive aliasing and column hiding ---
+        #
+        # 1. Compute per-column budget assuming all optional columns are shown.
+        #    Alias any header or value that exceeds that budget.
+        # 2. Drop optional columns until setting columns (with min_width) fit.
         terminal_width = self.size.width if self.is_mounted else 120
-        n_setting_cols = len(setting_keys)
-        settings_need = sum(
-            max((len(display_maps[key][v]) for v in display_maps[key]), default=0)
-            for key in setting_keys
-        )
-        # avg is always shown: width=7. Padding: 2 chars per column.
-        always_width = 7  # avg
-        # Optional columns in drop order, with their width + 2 for padding each
+        n = len(setting_keys)
         optional_cols = [
-            ("=0", 7),  # width=5 + 2 padding
-            ("=1", 7),  # width=5 + 2 padding (dropped together with =0)
-            ("mix", 22),  # width=20 + 2 padding
-            ("rollouts", 10),  # width=8 + 2 padding
-            ("unique prompts", 10),  # width=8 + 2 padding
-            ("runs", 7),  # width=5 + 2 padding
+            ("=0", 7),
+            ("=1", 7),
+            ("mix", 22),
+            ("rollouts", 10),
+            ("unique prompts", 10),
+            ("runs", 7),
+        ]  # name, width (includes 2 for padding)
+        all_opt_w = sum(w for _, w in optional_cols)
+        budget = (terminal_width - 9 - all_opt_w) // n - 2 if n > 0 else 999
+
+        # -- Alias headers and values that exceed the budget --
+        col_headers: List[str] = []
+        axis_legend_rows: List[Tuple[str, str, str]] = []
+        value_legend_rows: List[Tuple[str, str, str, str]] = []
+        display_maps = {}
+        style_maps = {}
+
+        for kidx, key in enumerate(setting_keys):
+            short_name = self._short_setting_key(key)
+            axis_num = kidx + 1
+
+            # Collect unique values for this key
+            ordered: List[str] = []
+            for _, settings in run_settings:
+                v = settings.get(key, "(unset)")
+                if v not in ordered:
+                    ordered.append(v)
+
+            # Alias header if too wide
+            if budget <= 0 or len(short_name) > budget:
+                col_headers.append(f"a{axis_num}")
+                axis_legend_rows.append((f"a{axis_num}", short_name, "bold dim"))
+            else:
+                col_headers.append(short_name)
+
+            # Alias values if any are too wide
+            max_val_width = max(
+                (len(_truncate_preview(" ".join(v.split()), 20)) for v in ordered),
+                default=0,
+            )
+            if budget <= 0 or max_val_width > budget:
+                display_maps[key] = {}
+                style_maps[key] = {}
+                for vidx, value in enumerate(ordered):
+                    alias = f"v{axis_num}.{vidx + 1}"
+                    display_maps[key][value] = alias
+                    style_maps[key][value] = self._alias_style(alias)
+                    value_legend_rows.append(
+                        (
+                            alias,
+                            short_name,
+                            _truncate_preview(" ".join(value.split()), 120),
+                            style_maps[key][value],
+                        )
+                    )
+            else:
+                display_maps[key] = {
+                    v: _truncate_preview(" ".join(v.split()), 20) for v in ordered
+                }
+                style_maps[key] = {v: "" for v in ordered}
+
+        # -- Drop optional columns until setting columns fit --
+        # Use fixed width (not ratio) so Rich never truncates setting values.
+        col_widths = [
+            max(
+                len(col_headers[i]),
+                max((len(display_maps[k][v]) for v in display_maps[k]), default=0),
+            )
+            for i, k in enumerate(setting_keys)
         ]
-        # Start with all optional columns, progressively drop until settings fit
+        settings_need = sum(w + 2 for w in col_widths)
         visible: set[str] = {name for name, _ in optional_cols}
-        # =0 and =1 are always dropped together
-        drop_groups = [
+        for drop_group in [
             {"=0", "=1"},
             {"mix"},
             {"rollouts"},
             {"unique prompts"},
             {"runs"},
-        ]
-        for drop_group in drop_groups:
-            optional_width = sum(w for name, w in optional_cols if name in visible)
-            padding_for_settings = n_setting_cols * 2
-            avail = (
-                terminal_width
-                - always_width
-                - 2
-                - optional_width
-                - padding_for_settings
-            )
-            if avail >= settings_need + 4 * n_setting_cols:
+        ]:
+            opt_w = sum(w for name, w in optional_cols if name in visible)
+            if terminal_width - 9 - opt_w >= settings_need:
                 break
             visible -= drop_group
-
         show = visible.__contains__
 
-        for idx, key in enumerate(setting_keys):
+        # Distribute leftover space evenly across setting columns.
+        opt_w = sum(w for name, w in optional_cols if name in visible)
+        leftover = max(terminal_width - 9 - opt_w - settings_need, 0)
+        extra = leftover // n if n > 0 else 0
+
+        for idx, (header, cw) in enumerate(zip(col_headers, col_widths)):
             header_style = "bold reverse" if highlight_col == idx else "bold dim"
             table.add_column(
-                self._short_setting_key(key),
+                header,
                 header_style=header_style,
-                ratio=1,
+                width=cw + extra,
                 no_wrap=True,
             )
         if show("runs"):
@@ -2200,30 +2251,61 @@ class CompareRunsScreen(Screen):
                 row_cells.append(self._build_reward_mix_bar(rewards))
             table.add_row(*row_cells)
 
-        return table
+        return table, axis_legend_rows, value_legend_rows
 
-    def _build_value_legend(
-        self, legend_rows: List[Tuple[str, str, str]]
+    def _build_argument_legend(
+        self,
+        axis_rows: List[Tuple[str, str, str]],
+        value_rows: List[Tuple[str, str, str, str]],
     ) -> Group | Text:
-        if not legend_rows:
+        """Build the argument legend.
+
+        axis_rows: (alias, full_name, style)
+        value_rows: (alias, full_name, preview, style)
+        """
+        if not axis_rows and not value_rows:
             return Text()
 
-        table = Table(
-            box=box.SIMPLE_HEAD,
-            expand=True,
-            show_edge=False,
-            pad_edge=False,
-            padding=(0, 1),
-            collapse_padding=True,
-            row_styles=["none", "dim"],
-        )
-        table.add_column(
-            "Alias", style="bold", header_style="bold dim", width=18, no_wrap=True
-        )
-        table.add_column("Preview", header_style="bold dim", ratio=1)
-        for alias, preview, style in legend_rows:
-            table.add_row(Text(alias, style=style), Text(preview, style="dim"))
-        return Group(Text("Value legend", style="bold dim"), table)
+        def _make_table() -> Table:
+            t = Table(
+                box=box.SIMPLE_HEAD,
+                expand=True,
+                show_edge=False,
+                pad_edge=False,
+                padding=(0, 1),
+                collapse_padding=True,
+                show_header=False,
+            )
+            t.add_column(width=8, no_wrap=True)
+            t.add_column(ratio=1, no_wrap=True)
+            t.add_column(ratio=2)
+            return t
+
+        items: List[Any] = []
+
+        if axis_rows:
+            t = _make_table()
+            for alias, full_name, style in axis_rows:
+                t.add_row(
+                    Text(alias, style=style),
+                    Text(full_name, style="dim"),
+                    Text(""),
+                )
+            items.extend([Text("Arg name legend", style="bold dim"), t])
+
+        if value_rows:
+            t = _make_table()
+            for alias, full_name, preview, style in value_rows:
+                t.add_row(
+                    Text(alias, style=style),
+                    Text(full_name, style="dim"),
+                    Text(preview, style="dim"),
+                )
+            if items:
+                items.append(Text(""))
+            items.extend([Text("Arg value legend", style="bold dim"), t])
+
+        return Group(*items)
 
     def _build_comparison_header(self) -> Group:
         summary = Text()
@@ -2244,22 +2326,23 @@ class CompareRunsScreen(Screen):
 
     def _build_comparison_outcomes(self) -> Group:
         highlight_col = self._group_cursor if self._group_mode else None
+        outcomes_table, axis_legend, value_legend = self._build_grouped_outcomes_table(
+            self._stats_by_path,
+            self._setting_keys,
+            self._run_settings,
+            self._display_maps,
+            self._style_maps,
+            group_by_key=self._grouped_by_key,
+            highlight_col=highlight_col,
+        )
         items: List[Any] = [
             Text(""),
             Group(
                 Text("Outcome groups", style="bold dim"),
-                self._build_grouped_outcomes_table(
-                    self._stats_by_path,
-                    self._setting_keys,
-                    self._run_settings,
-                    self._display_maps,
-                    self._style_maps,
-                    group_by_key=self._grouped_by_key,
-                    highlight_col=highlight_col,
-                ),
+                outcomes_table,
             ),
         ]
-        legend = self._build_value_legend(self._legend_rows)
+        legend = self._build_argument_legend(axis_legend, value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             items.extend([Text(""), legend])
         return Group(*items)
