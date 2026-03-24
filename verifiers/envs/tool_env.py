@@ -42,9 +42,9 @@ class ToolMonitorRubric(vf.Rubric):
 
     async def total_tool_calls(self, completion: Messages) -> float:
         """Count the total number of tool calls."""
+        total = 0
         assert isinstance(completion, list)
         completion = normalize_messages(completion)
-        total = 0
         for msg in completion:
             if msg.role != "assistant" or not hasattr(msg, "tool_calls"):
                 continue
@@ -58,9 +58,9 @@ class ToolMonitorRubric(vf.Rubric):
 
         async def tool_call_count_func(completion: Messages) -> int:
             """Count calls to {tool_name} tool."""
+            count = 0
             assert isinstance(completion, list)
             completion = normalize_messages(completion)
-            count = 0
             for msg in completion:
                 if not isinstance(msg, AssistantMessage):
                     continue
