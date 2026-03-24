@@ -38,8 +38,8 @@ You can also run evaluations on Prime-managed infrastructure with `prime eval ru
 
 ```bash
 prime env push my-env
-prime eval run my-team/my-env --hosted
-prime eval run my-team/my-env --hosted --follow
+prime eval run my-env --hosted
+prime eval run my-env --hosted --follow
 ```
 
 Hosted runs also support TOML configs:
