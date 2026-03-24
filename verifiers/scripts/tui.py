@@ -2040,108 +2040,89 @@ class CompareRunsScreen(Screen):
         budget = (terminal_width - 9 - all_opt_w) // n - 2 if n > 0 else 999
 
         # -- Alias headers and values that exceed the budget --
-        col_headers: List[str] = []
-        axis_legend_rows: List[Tuple[str, str, str]] = []
-        value_legend_rows: List[Tuple[str, str, str, str]] = []
-        display_maps = {}
-        style_maps = {}
-
-        for kidx, key in enumerate(setting_keys):
-            short_name = self._short_setting_key(key)
-            axis_num = kidx + 1
-
-            # Collect unique values for this key
-            ordered: List[str] = []
-            for _, settings in run_settings:
-                v = settings.get(key, "(unset)")
-                if v not in ordered:
-                    ordered.append(v)
-
-            # Alias header if too wide
-            if budget <= 0 or len(short_name) > budget:
-                col_headers.append(f"a{axis_num}")
-                axis_legend_rows.append((f"a{axis_num}", short_name, "bold dim"))
-            else:
-                col_headers.append(short_name)
-
-            # Alias values if any are too wide
-            max_val_width = max(
-                (len(_truncate_preview(" ".join(v.split()), 20)) for v in ordered),
-                default=0,
-            )
-            if budget <= 0 or max_val_width > budget:
-                display_maps[key] = {}
-                style_maps[key] = {}
-                for vidx, value in enumerate(ordered):
-                    alias = f"v{axis_num}.{vidx + 1}"
-                    display_maps[key][value] = alias
-                    style_maps[key][value] = self._alias_style(alias)
-                    value_legend_rows.append(
-                        (
-                            alias,
-                            short_name,
-                            _truncate_preview(" ".join(value.split()), 120),
-                            style_maps[key][value],
-                        )
-                    )
-            else:
-                display_maps[key] = {
-                    v: _truncate_preview(" ".join(v.split()), 20) for v in ordered
-                }
-                style_maps[key] = {v: "" for v in ordered}
-
-        # -- If budget-based aliasing isn't enough, force-alias everything --
-        # Then drop optional columns only if fully-aliased content still doesn't fit.
-        col_widths = [
-            max(
-                len(col_headers[i]),
-                max((len(display_maps[k][v]) for v in display_maps[k]), default=0),
-            )
-            for i, k in enumerate(setting_keys)
-        ]
-        settings_need = sum(w + 2 for w in col_widths)
-
-        # Check if current content fits with all optional columns
-        if terminal_width - 9 - all_opt_w < settings_need + n * 2:
-            # Doesn't fit — force-alias ALL headers and values
-            col_headers = []
-            axis_legend_rows = []
-            value_legend_rows = []
-            display_maps = {}
-            style_maps = {}
+        def _alias_settings(
+            budget: int,
+        ) -> Tuple[
+            List[str],
+            List[Tuple[str, str, str]],
+            List[Tuple[str, str, str, str]],
+            Dict[str, Dict[str, str]],
+            Dict[str, Dict[str, str]],
+        ]:
+            """Alias headers/values exceeding budget. budget<=0 aliases everything."""
+            hdrs: List[str] = []
+            ax_legend: List[Tuple[str, str, str]] = []
+            val_legend: List[Tuple[str, str, str, str]] = []
+            d_maps: Dict[str, Dict[str, str]] = {}
+            s_maps: Dict[str, Dict[str, str]] = {}
             for kidx, key in enumerate(setting_keys):
                 short_name = self._short_setting_key(key)
                 axis_num = kidx + 1
-                col_headers.append(f"a{axis_num}")
-                axis_legend_rows.append((f"a{axis_num}", short_name, "bold dim"))
                 ordered: List[str] = []
                 for _, settings in run_settings:
                     v = settings.get(key, "(unset)")
                     if v not in ordered:
                         ordered.append(v)
-                display_maps[key] = {}
-                style_maps[key] = {}
-                for vidx, value in enumerate(ordered):
-                    alias = f"v{axis_num}.{vidx + 1}"
-                    display_maps[key][value] = alias
-                    style_maps[key][value] = self._alias_style(alias)
-                    value_legend_rows.append(
-                        (
-                            alias,
-                            short_name,
-                            _truncate_preview(" ".join(value.split()), 120),
-                            style_maps[key][value],
+                # Alias header?
+                if budget <= 0 or len(short_name) > budget:
+                    hdrs.append(f"a{axis_num}")
+                    ax_legend.append((f"a{axis_num}", short_name, "bold dim"))
+                else:
+                    hdrs.append(short_name)
+                # Alias values?
+                max_val_w = max(
+                    (len(_truncate_preview(" ".join(v.split()), 20)) for v in ordered),
+                    default=0,
+                )
+                if budget <= 0 or max_val_w > budget:
+                    d_maps[key] = {}
+                    s_maps[key] = {}
+                    for vidx, value in enumerate(ordered):
+                        alias = f"v{axis_num}.{vidx + 1}"
+                        d_maps[key][value] = alias
+                        s_maps[key][value] = self._alias_style(alias)
+                        val_legend.append(
+                            (
+                                alias,
+                                short_name,
+                                _truncate_preview(" ".join(value.split()), 120),
+                                s_maps[key][value],
+                            )
                         )
-                    )
-            # Recompute col_widths with fully-aliased content
-            col_widths = [
+                else:
+                    d_maps[key] = {
+                        v: _truncate_preview(" ".join(v.split()), 20) for v in ordered
+                    }
+                    s_maps[key] = {v: "" for v in ordered}
+            return hdrs, ax_legend, val_legend, d_maps, s_maps
+
+        def _compute_col_widths(
+            hdrs: List[str], d_maps: Dict[str, Dict[str, str]]
+        ) -> Tuple[List[int], int]:
+            widths = [
                 max(
-                    len(col_headers[i]),
-                    max((len(display_maps[k][v]) for v in display_maps[k]), default=0),
+                    len(hdrs[i]), max((len(d_maps[k][v]) for v in d_maps[k]), default=0)
                 )
                 for i, k in enumerate(setting_keys)
             ]
-            settings_need = sum(w + 2 for w in col_widths)
+            return widths, sum(w + 2 for w in widths)
+
+        # Try budget-based aliasing first
+        col_headers, axis_legend_rows, value_legend_rows, display_maps, style_maps = (
+            _alias_settings(budget)
+        )
+        col_widths, settings_need = _compute_col_widths(col_headers, display_maps)
+
+        # If it doesn't fit, force-alias everything
+        if terminal_width - 9 - all_opt_w < settings_need + n * 2:
+            (
+                col_headers,
+                axis_legend_rows,
+                value_legend_rows,
+                display_maps,
+                style_maps,
+            ) = _alias_settings(0)
+            col_widths, settings_need = _compute_col_widths(col_headers, display_maps)
 
         # Drop optional columns if even fully-aliased content doesn't fit
         visible: set[str] = {name for name, _ in optional_cols}
