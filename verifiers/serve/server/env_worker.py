@@ -167,6 +167,31 @@ class EnvWorker:
         request_id = request_id_bytes.decode()
         response: BaseResponse
 
+        def send_error_response(error: str) -> None:
+            """Serialize and send an error response synchronously (no await).
+
+            Used in exception paths where awaiting is unsafe (e.g. after
+            CancelledError when the task's cancellation flag is still set).
+            Best-effort — failures are silently ignored.
+            """
+            try:
+                response_bytes = cast(
+                    bytes,
+                    msgpack.packb(
+                        BaseResponse(success=False, error=error).model_dump(
+                            mode="python", warnings=False
+                        ),
+                        default=msgpack_encoder,
+                        use_bin_type=True,
+                    ),
+                )
+                self.response_socket.send_multipart(
+                    [client_id, request_id.encode(), response_bytes],
+                    zmq.NOBLOCK,
+                )
+            except Exception:
+                pass
+
         try:
             raw = msgpack.unpackb(payload_bytes, raw=False)
             request_type = raw.get("request_type")
@@ -187,42 +212,36 @@ class EnvWorker:
         except asyncio.CancelledError:
             if self.shutting_down:
                 return
-            response = BaseResponse(success=False, error="Request was cancelled")
+            # Send synchronously — the task's cancellation flag is still set
+            # so any await would re-raise CancelledError.
+            send_error_response("Request was cancelled")
+            return
 
         except Exception as e:
             self.logger.error(
                 f"Error processing request {request_id}: {e}", exc_info=True
             )
-            response = BaseResponse(success=False, error=repr(e))
-
-        def serialize() -> bytes:
-            return cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
+            send_error_response(repr(e))
+            return
 
         try:
-            response_bytes = await asyncio.to_thread(serialize)
+            response_bytes = await asyncio.to_thread(
+                lambda: cast(
+                    bytes,
+                    msgpack.packb(
+                        response.model_dump(mode="python", warnings=False),
+                        default=msgpack_encoder,
+                        use_bin_type=True,
+                    ),
+                )
+            )
         except Exception as e:
             self.logger.error(
                 f"Failed to serialize response for {request_id}: {e}",
                 exc_info=True,
             )
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    BaseResponse(
-                        success=False,
-                        error=f"Response serialization failed: {repr(e)}",
-                    ).model_dump(mode="python", warnings=False),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
-            )
+            send_error_response(f"Response serialization failed: {repr(e)}")
+            return
 
         try:
             await self.response_socket.send_multipart(
