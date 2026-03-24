@@ -16,15 +16,15 @@ import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
 from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.serve.client.zmq_env_client import ZMQEnvClient
-from verifiers.serve.server.zmq_env_server import ZMQEnvServer
-from verifiers.serve.types import (
+from verifiers.serve import (
     HealthRequest,
     HealthResponse,
     PendingRequest,
     RunRolloutRequest,
     RunRolloutResponse,
     ServerState,
+    ZMQEnvClient,
+    ZMQEnvServer,
 )
 
 

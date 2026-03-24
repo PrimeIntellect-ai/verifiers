@@ -37,7 +37,7 @@ from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.thread_utils import scale_executors
 from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.serve.client.zmq_env_client import ZMQEnvClient
+from verifiers.serve import ZMQEnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -83,7 +83,7 @@ from verifiers.utils.save_utils import (
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
-from verifiers.serve.client.env_client import EnvClient
+from verifiers.serve import EnvClient
 
 _MESSAGE_TYPE_UNSET = object()
 
@@ -1283,7 +1283,7 @@ class Environment(ABC):
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        from verifiers.serve.server.zmq_env_server import ZMQEnvServer
+        from verifiers.serve import ZMQEnvServer
 
         address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
         extra_env_kwargs = extra_env_kwargs or {}
