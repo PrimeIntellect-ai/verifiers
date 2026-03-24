@@ -738,23 +738,30 @@ async def run_evaluation(
     try:
         if not config.disable_env_server:
             extra_env_kwargs = dict(config.extra_env_kwargs)
+            # resolve total concurrency
             if "concurrency" not in extra_env_kwargs:
                 if config.max_concurrent <= 0:
                     concurrency = config.num_examples * config.rollouts_per_example
                 else:
                     concurrency = config.max_concurrent
-
                 logger.info(f"Automatically determined {concurrency=}")
-                extra_env_kwargs["concurrency"] = concurrency
+            else:
+                concurrency = extra_env_kwargs["concurrency"]
 
             # resolve num_workers
             num_workers = config.num_workers
             if num_workers == "auto":
-                concurrency = extra_env_kwargs.get("concurrency", config.max_concurrent)
                 num_workers = max(1, math.ceil(concurrency / 512))
             else:
                 num_workers = int(num_workers)
-            logger.info(f"Using {num_workers=} env server worker(s)")
+
+            # per-worker concurrency
+            per_worker = max(1, concurrency // num_workers)
+            extra_env_kwargs["concurrency"] = per_worker
+            logger.info(
+                f"Using {num_workers=} env server worker(s), "
+                f"per-worker concurrency: {per_worker} (total {concurrency})"
+            )
 
             log_dir = str(results_path)
             results_path.mkdir(parents=True, exist_ok=True)
