@@ -235,24 +235,25 @@ class FullBrowseMode(LocalCUAMode):
         direction = action.get("direction")
         duration = action.get("duration")
 
+        c = coord or [0, 0]
         if name in ("left_click", "click", "right_click", "middle_click"):
             btn = name.replace("_click", "").replace("click", "left")
             return (
-                f"Clicked ({coord[0]},{coord[1]})"
+                f"Clicked ({c[0]},{c[1]})"
                 if btn == "left"
-                else f"{btn}-clicked ({coord[0]},{coord[1]})"
+                else f"{btn}-clicked ({c[0]},{c[1]})"
             )
         if name == "double_click":
-            return f"Double-clicked ({coord[0]},{coord[1]})"
+            return f"Double-clicked ({c[0]},{c[1]})"
         if name == "triple_click":
-            return f"Triple-clicked ({coord[0]},{coord[1]})"
+            return f"Triple-clicked ({c[0]},{c[1]})"
         if name == "type":
             preview = (text[:30] + "...") if text and len(text) > 30 else text
             return f'Typed "{preview}"'
         if name == "key":
             return f"Pressed {key}"
         if name == "scroll":
-            return f"Scrolled {direction} at ({coord[0]},{coord[1]})"
+            return f"Scrolled {direction} at ({c[0]},{c[1]})"
         if name == "wait":
             return f"Waited {duration}s"
         if name == "screenshot":
