@@ -37,7 +37,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.serve_utils import get_free_port_pair
+from verifiers.utils.serve_utils import get_free_port
 from verifiers.utils.thread_utils import scale_executors
 
 if TYPE_CHECKING:
@@ -1287,7 +1287,7 @@ class Environment(ABC):
         """
         from verifiers.serve import ZMQEnvServer
 
-        address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
         extra_env_kwargs = extra_env_kwargs or {}
 
         # Death pipe: parent keeps writer, children monitor reader.

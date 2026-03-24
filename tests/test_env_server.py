@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
-from verifiers.utils.serve_utils import get_free_port_pair
+from verifiers.utils.serve_utils import get_free_port
 from verifiers.serve import (
     HealthRequest,
     HealthResponse,
@@ -84,7 +84,7 @@ async def run_server_and_client():
     Instead, dispatch_request/forward_cancel are replaced with AsyncMock so tests can
     observe request routing without needing real workers.
     """
-    port = get_free_port_pair()
+    port = get_free_port()
     address = f"tcp://127.0.0.1:{port}"
 
     server = make_mock_server(address)
