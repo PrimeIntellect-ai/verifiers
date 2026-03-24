@@ -15,10 +15,10 @@ kernel/
                                 HF Dataset (prompt, answer_key, entities)
                                                    │
                                                    ▼
-                                LocalBrowserEnv + Next.js app in sandbox
+                              amazon.py: LocalBrowserEnv + Next.js app in sandbox
                                                    │
                                                    ▼
-                                Agent rollout → submit_result → judge → score
+                              Agent rollout → submit_result tool → LLM judge → score
 ```
 
 **Correct-by-construction guarantee:** The kernel proves every task is solvable via BFS. The Next.js app faithfully renders the kernel's world state through `data-action` elements. Entity data is the ground truth — unique, non-guessable values (prices like $123.45, ratings like 4.3) mean the agent can only get the right answer by actually navigating the app.
@@ -40,11 +40,12 @@ amazon/
 │   ├── resample.py           ← re-run BFS → task_specs.sampled.yaml
 │   ├── verify_dom.py         ← Phase A: programmatic DOM verification
 │   ├── types.py              ← GraphContractSpec, ActionContract, BrowserActionSpec, etc.
-│   ├── semantics.py          ← apply_action, is_action_enabled, sync rules
+│   ├── semantics.py          ← apply_action, is_action_enabled
 │   ├── preflight.py          ← structural task checks
 │   ├── sampler.py            ← BFS fan-out task generator
 │   └── loaders.py            ← YAML I/O
 └── app/                   ← Next.js Amazon sim
+    ├── app/store.ts          ← file-based entity store (/tmp/amazon-sim-store.json)
     └── app/               ← routes: page.tsx, search/, product/[id]/, deals/, category/[slug]/, cart/
 ```
 
@@ -52,12 +53,66 @@ amazon/
 
 The kernel is a state machine. The world is a flat dict of `projection_fields` (e.g., `page.type`, `search.executed`, `p1.detail_read`). Actions have `requires_world` preconditions and `effects_world` postconditions. The BFS sampler explores all reachable states from each seed and records paths that reach terminal profiles.
 
-Each action also declares a `browser_action:` block mapping it to the app:
-- `page`: which route the action occurs on (home, search_results, product_detail, deals, category, cart)
-- `element`: the `data-action` attribute in the DOM (e.g., `search_submit`, `product_card_1`)
-- `interaction`: click, type, scroll, etc.
+### Action Types
 
-**This is the contract between kernel and app.** Every `browser_action.element` must exist as `data-action="X"` in the app source. Every `browser_action.page` must have a route.
+There are three kinds of actions in the contract:
+
+**Browser actions with elements** — the agent clicks/types a specific DOM element:
+```yaml
+- action_id: check_p1_reviews
+  browser_action:
+    page: product_detail
+    element: reviews_section      # data-action="reviews_section" in app
+    interaction: click            # agent clicks to expand reviews panel
+```
+
+**Browser observation actions** — the agent just needs the page to render content (no element, no click). These include `read_*` actions (agent extracts info from the page) and `compile_results` (agent organizes findings before submitting — a kernel bookkeeping step with no browser interaction):
+```yaml
+- action_id: read_p1_detail
+  browser_action:
+    page: product_detail          # no element — agent reads from page/screenshot
+```
+
+**Tool call actions** — the agent calls a verifiers tool, not a browser element:
+```yaml
+- action_id: submit_results
+  tool_call:
+    tool_name: submit_result      # called via the submit_result tool, ends rollout
+```
+
+`submit_results` is the only tool_call action. It maps to the `_submit_result` tool in `amazon.py` which stores data in `state["submitted_result"]` and triggers the `@vf.stop` decorator to end the rollout.
+
+## How amazon.py Works
+
+`amazon.py` wires the kernel output to the verifiers framework:
+
+**`_build_dataset()`** loads `task_specs.sampled.yaml`, runs each task through `entity_sampler.sample_entities()` and `task_spec.generate_task_spec()`, and produces an HF Dataset with fields: `prompt` (task description), `answer` (answer key JSON), `task_id`, and `info` (entities dict, start_world, etc.).
+
+**`LocalBrowserEnv`** extends `vf.StatefulToolEnv`. On setup, it creates a sandbox with the Next.js app via `FullBrowseMode`, then seeds the app by POSTing entities to `http://localhost:3000/api/init` inside the sandbox. The app stores entities in `/tmp/amazon-sim-store.json` (file-based, one task per sandbox — not concurrent-safe).
+
+**Agent tools** match production CUA traces:
+- `computer(actions)` — batched browser actions (click, type, scroll, etc.), returns screenshot
+- `get_page_text()` — full page text
+- `read_page(filter)` — accessibility tree with `[ref=ref_42]` refs
+- `find(query)` — element search returning `[ref_42]` format
+- `form_input(ref, value)` — fill form field by ref
+- `submit_result(data)` — submit findings as JSON string, ends rollout
+
+**Judge scoring:** `judge_reward_func` reads `state["submitted_result"]`, sends it with the answer key to an LLM judge (Claude Sonnet via Prime Inference). The judge compares field by field and responds with `yes` (1.0), `partial` (0.5), or `no` (0.0).
+
+## start_world Config Flags
+
+The `start_world` dict in each sampled task controls what entities get generated and what the task asks the agent to do. These flags are set by the seed schemas in `sampling_request.yaml` and read by `entity_sampler.py`:
+
+| Flag | Values | Effect |
+|------|--------|--------|
+| `task.entry_point` | `"search"`, `"category"`, `"deals"` | Where the agent starts navigating |
+| `task.num_products` | 1-3 | How many products the entity sampler generates |
+| `task.requires_reviews` | `true`/`false` | Whether products get review data |
+| `task.requires_qa` | `true`/`false` | Whether products get Q&A pairs |
+| `task.requires_variants` | `true`/`false` | Whether products get variant options (size, color) |
+
+When adding new entity types, add a corresponding `task.requires_*` flag and read it in `entity_sampler.py`.
 
 ## How to Add a New Action
 
@@ -92,6 +147,7 @@ Key rules:
 - `requires_world` must be satisfiable — actions are only enabled when all predicates hold
 - `effects_world` must change the world (otherwise BFS prunes it as a stutter)
 - `browser_action.element` becomes the `data-action` attribute you add to the app
+- For tool_call actions (rare — only `submit_results` uses this), use `tool_call:` instead of `browser_action:`
 
 ### 2. Add the element to the Next.js app
 
@@ -133,6 +189,7 @@ Add the new action's world effects to relevant terminal profiles and seed schema
 
 ```bash
 python -m kernel.resample
+python -m kernel.resample --max-per-schema 5  # faster iteration
 python -m kernel.verify_dom
 ```
 
@@ -179,23 +236,6 @@ python -m kernel.resample
 
 Check the output — you should see tasks with `profile=submitted_with_wishlist`.
 
-## Sync Rules
-
-Sync rules fire automatically after every action to derive computed state:
-
-```yaml
-sync_rules:
-  - rule_id: product_detail_implies_search
-    requires_world:
-      - path: p1.detail_read
-        value: true
-    effects_world:
-      - path: search.has_results
-        set: true
-```
-
-Use sync rules for: page type derivation, computed flags, state that follows from other state. Avoid cycles — the engine caps at 32 iterations.
-
 ## Entity Field Name Contract
 
 Entity Pydantic models are serialized to JSON and sent to the Next.js app via `POST /api/init`. The app's TypeScript reads these fields by name.
@@ -212,54 +252,34 @@ After changing entity models, check every field name against the app's TypeScrip
 
 ## Verification
 
-Run verification after any change. There are four phases — A is automated, B and C use Chrome MCP, D is a code check.
+There are two levels: an automated source check, and browser dry-runs of real tasks.
 
 | Changed | Run |
 |---------|-----|
-| `kernel/graph_contract.yaml` | `python -m kernel.resample` then Phase A |
-| `app/` components | Phase A, then Phase B |
-| `entity_sampler.py` or `task_spec.py` | Phase C |
-| `entities.py` | Phase D |
+| `kernel/graph_contract.yaml` | `python -m kernel.resample` then `python -m kernel.verify_dom` |
+| `app/` components | `python -m kernel.verify_dom` then browser verification |
+| `entity_sampler.py` or `task_spec.py` | Browser verification |
+| `entities.py` | Check field names match app TypeScript (see Entity Field Name Contract above) |
 | Any of the above | `prime eval run amazon -m anthropic/claude-sonnet-4.6 -a '{"max_tasks": 3}'` |
 
-### Phase A: Programmatic DOM Check
+### Automated: `verify_dom.py`
 
 ```bash
 python -m kernel.verify_dom           # source checks only
-python -m kernel.verify_dom --runtime # source + live app checks
+python -m kernel.verify_dom --runtime # also starts app, fetches rendered pages, checks data-action attrs in live HTML
 ```
 
-Verifies every `browser_action.element` from the contract exists as `data-action` in app source and every `browser_action.page` has a route file.
+Verifies every `browser_action.element` from the contract exists as `data-action` in app source and every `browser_action.page` has a route file. Fast, catches typos and missing elements. Run after any contract or app change.
 
-### Phase B: Element-by-Element Browser Verification
+### Browser Verification
 
-**Prerequisites:** Start the Next.js app (`cd app && npm run dev`), seed entities via `POST /api/init`, open Chrome MCP.
+Walk through real sampled tasks end-to-end in the browser using Chrome MCP. This is the most important check — most bugs only surface when real entity data flows through the full pipeline.
 
-For EVERY interactive element in the contract, verify in the live browser:
+**Setup:**
+1. Start the Next.js app: `cd app && npm run dev`
+2. In Claude Code with Chrome MCP enabled, navigate to `http://localhost:3000`
 
-1. Navigate to the element's page
-2. Find the element via `[data-action="element_name"]`
-3. Confirm: exists, correct tag type (button/input/link), visible, responds to interaction
-4. Record PASS/FAIL with evidence
-
-**Page-by-page checklist** (derive specifics from `kernel/graph_contract.yaml`):
-
-- **HOME** (`/`): `search_input` (input/type), `search_submit` (button/click), `category_menu` (link/click → `/category/`), `deals_link` (link/click → `/deals`)
-- **SEARCH RESULTS** (`/search?q=...`): `product_card_1/2/3` (link/click → `/product/N`), `filter_condition_new`, `filter_price_range`, `filter_prime_only` (click → URL params), `sort_price_asc`, `sort_avg_review` (click → reorder), `cart_icon` (link → `/cart`)
-- **PRODUCT DETAIL** (`/product/N`): `shipping_zip_input` (input/type), `reviews_section` (click → expand reviews), `seller_link` (click → expand seller info), `qa_section` (click → expand Q&A), `add_to_cart_button` (button/click), `variant_option_a/b` (click → select), `back_to_results` (link → `/search`), `back_to_deals` (link → `/deals`)
-- **DEALS** (`/deals`): `deal_card_1` (link/click → `/product/N`)
-- **CATEGORY** (`/category/[slug]`): observation only (products render from entities)
-- **CART** (`/cart`): observation only (items render after add-to-cart)
-
-**Do not skip any element. One element = one explicit check.**
-
-### Phase C: End-to-End Task Walks
-
-This is the most important phase. Most bugs are only caught here because they require real entity data flowing through the full pipeline.
-
-**Protocol:**
-
-1. **Select tasks.** Use the minimum covering set algorithm to pick the fewest tasks that exercise all kernel actions:
+**Select tasks** using the minimum covering set — the fewest tasks that exercise all kernel actions:
 
 ```python
 from kernel.loaders import load_graph_contract, load_sampling_request
@@ -289,47 +309,18 @@ for t in selected:
     print(f"  {t.task_id}: {t.required_actions}")
 ```
 
-Also select one task per terminal profile: `submitted_surface`, `submitted_with_detail`, `submitted_comparison`, `submitted_from_category`, `submitted_from_deals`, `submitted_with_cart`.
+Also pick one task per terminal profile (`submitted_surface`, `submitted_with_detail`, `submitted_comparison`, `submitted_from_category`, `submitted_from_deals`, `submitted_with_cart`).
 
-2. **For each task**, execute in order:
-   - Generate entities: `sample_entities(task_id, start_world)`
-   - Seed the app: `POST /api/init` with `{entities, start_world}`
-   - Walk through `required_actions` one by one in the browser
-   - For each action: execute it, verify entity data renders correctly, record PASS/FAIL
+**For each task:**
+1. Generate entities: `sample_entities(task_id, start_world)`
+2. Seed the app: `POST /api/init` with `{entities, start_world}`
+3. Walk through `required_actions` one by one in the browser, verifying each:
+   - **Element actions** (anything with `browser_action.element`): find `[data-action="X"]`, confirm it exists, is visible, and responds correctly to the interaction (click expands a panel, type fills an input, etc.)
+   - **Observation actions** (`read_results_text`, `read_p1_detail`, `compile_results`, etc.): no element to click — just verify entity-specific values are visible on the page (product name, price, rating, features from the generated entities)
+   - **`submit_results`**: tool_call, not browser — skip
+4. After all actions: confirm the task description is answerable from the rendered entity data
 
-3. **Action-type verification rules:**
-   - **Navigation** (navigate_to_amazon, navigate_to_category, navigate_to_deals): page loads with entity content
-   - **Search** (enter_search_query, submit_search): entity products appear in results
-   - **Click-to-navigate** (click_product_1/2/3, click_deal_product): correct product detail page loads
-   - **Observation** (read_results_text, read_p1_detail, etc.): entity-specific values visible (name, price, rating, features)
-   - **Interaction** (check_p*_shipping, check_p*_reviews, check_p*_seller, check_p*_qa, variants, add-to-cart): element exists, interaction works, entity data appears
-   - **Filter/sort** (filter_*, sort_*): URL params change, results update
-
-4. **After all actions**, confirm: all actions executable, task description answerable from rendered data, entity values correct.
-
-**If any step fails:** record the failure with evidence, determine root cause (app bug / entity sampler issue / kernel contract issue), fix, and re-run the entire task from step 1.
-
-### Phase D: Entity Schema Validation
-
-Check Pydantic field names match TypeScript:
-
-```python
-from entity_sampler import sample_entities
-entities = sample_entities("test_task", {"task.entry_point": "search"})
-product = entities.model_dump()["products"][0]
-# Compare product.keys() against app's TypeScript interface
-```
-
-## Chrome MCP for Dry Runs
-
-To manually test the app with Chrome MCP tools:
-
-1. Start the Next.js app: `cd app && npm run dev`
-2. In Claude Code with Chrome MCP enabled, navigate to `http://localhost:3000`
-3. Seed entities: POST to `http://localhost:3000/api/init` with entity JSON
-4. Walk through actions using `mcp__claude-in-chrome__*` tools
-
-This is how Phase B and Phase C verification work — the agent uses Chrome MCP to interact with the live app and verify each action.
+**If any step fails:** record the failure, determine root cause (app bug / entity sampler / contract issue), fix, re-run the full task.
 
 ## Running Evals
 
@@ -352,6 +343,8 @@ prime eval run amazon -m anthropic/claude-sonnet-4.6
 
 **Missing products in listing answer keys:** Agent correctly reports products from category page, judge scores "no". Cause: answer key only has category metadata, not the products displayed. Prevention: when `category.read=true` in goal_world, include product listings in answer key.
 
-**React controlled component:** CUA agent typing doesn't trigger React `onChange`. The app reads `input.value` directly from DOM for shipping ZIP input as a workaround.
+**React controlled component:** CUA agent typing doesn't trigger React `onChange`. The app reads `input.value` directly from DOM for shipping ZIP input as a workaround. Note: the `form_input` tool (which sets values by ref) has the same issue — the app's shipping check button reads the DOM value directly rather than relying on React state.
+
+**Stateful app store:** The Next.js app persists entities in `/tmp/amazon-sim-store.json`. This means one sandbox = one task. The app is not safe for concurrent tasks in the same sandbox (each `POST /api/init` overwrites the store).
 
 **BFS state explosion:** Full resampling with 64 seeds takes a couple minutes. For quick iteration, use `python -m kernel.resample --max-per-schema 5` or reduce seeds in sampling_request.yaml temporarily.
