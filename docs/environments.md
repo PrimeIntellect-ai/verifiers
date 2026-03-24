@@ -620,6 +620,16 @@ class MyGameEnv(vf.MultiTurnEnv):
         return await super().setup_state(state)
 ```
 
+If you need custom JSON-serializable state fields to be preserved in `RolloutOutput`, declare them with `state_columns` when constructing the environment:
+
+```python
+env = MyGameEnv(
+    dataset=dataset,
+    rubric=rubric,
+    state_columns=["score", "board"],
+)
+```
+
 ### Cleanup and Teardown
 
 For resource management, use `@vf.cleanup` (per-rollout) and `@vf.teardown` (at environment shutdown):
