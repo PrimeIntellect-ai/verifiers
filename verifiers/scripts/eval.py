@@ -367,7 +367,7 @@ def main():
         "--num-workers",
         "-w",
         default="auto",
-        help='Number of env server worker processes ("auto" = concurrency // 512, or an integer)',
+        help='Number of env server worker processes ("auto" = concurrency // 256, or an integer)',
     )
     parser.add_argument(
         "--abbreviated-summary",

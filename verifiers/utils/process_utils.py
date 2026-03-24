@@ -61,14 +61,14 @@ def terminate_processes(
 ) -> None:
     """Terminate multiple processes in parallel.
 
-    Sends SIGTERM to all live processes first, then joins all with a shared
-    timeout, escalating to SIGKILL for any that don't exit in time.
+    Runs :func:`terminate_process` for each process in its own thread so the
+    total wait is bounded by a single timeout window, not N × timeout.
     """
-    alive = [p for p in processes if p.is_alive()]
-    for p in alive:
-        p.terminate()
-    for p in alive:
-        p.join(timeout=timeout)
-        if p.is_alive():
-            p.kill()
-            p.join(timeout=kill_timeout)
+    threads = [
+        threading.Thread(target=terminate_process, args=(p, timeout, kill_timeout))
+        for p in processes
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
