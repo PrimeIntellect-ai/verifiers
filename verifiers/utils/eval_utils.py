@@ -757,22 +757,13 @@ async def run_evaluation(
 
             log_dir = str(results_path)
             results_path.mkdir(parents=True, exist_ok=True)
-            if config.debug:
-                await vf_env.start_server(
-                    extra_env_kwargs=extra_env_kwargs,
-                    num_workers=num_workers,
-                    log_level=get_log_level(config.verbose),
-                    log_dir=log_dir,
-                    log_file_level=get_log_level(config.verbose),
-                )
-            else:
-                await vf_env.start_server(
-                    extra_env_kwargs=extra_env_kwargs,
-                    num_workers=num_workers,
-                    log_level="CRITICAL",  # disable console logging
-                    log_dir=log_dir,
-                    log_file_level=get_log_level(config.verbose),
-                )
+            await vf_env.start_server(
+                extra_env_kwargs=extra_env_kwargs,
+                num_workers=num_workers,
+                log_level=get_log_level(config.verbose),
+                log_dir=log_dir,
+                console_logging=config.debug,
+            )
             if on_log_file is not None:
                 from verifiers.serve import EnvServer
 

@@ -105,7 +105,7 @@ class EnvRouter:
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
         log_dir: str | None = None,
-        log_file_level: str | None = None,
+        console_logging: bool = True,
         *,
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
@@ -119,7 +119,7 @@ class EnvRouter:
         self.extra_env_kwargs = extra_env_kwargs or {}
         self.log_level = log_level
         self.log_dir = log_dir
-        self.log_file_level = log_file_level
+        self.console_logging = console_logging
 
         self.num_workers = num_workers
         self.worker_heartbeat_timeout = worker_heartbeat_timeout
@@ -187,7 +187,7 @@ class EnvRouter:
                 self.extra_env_kwargs,
                 self.log_level,
                 self.log_dir,
-                self.log_file_level,
+                self.console_logging,
             ),
             kwargs=dict(
                 worker_id=worker_id,

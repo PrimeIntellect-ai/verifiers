@@ -1268,7 +1268,7 @@ class Environment(ABC):
         # logging configs
         log_level: str | None = None,
         log_dir: str | None = None,
-        log_file_level: str | None = None,
+        console_logging: bool = True,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10m
@@ -1299,7 +1299,7 @@ class Environment(ABC):
                 extra_env_kwargs,
                 log_level,
                 log_dir,
-                log_file_level,
+                console_logging,
             ),
             kwargs=dict(address=address, num_workers=num_workers),
             daemon=False,

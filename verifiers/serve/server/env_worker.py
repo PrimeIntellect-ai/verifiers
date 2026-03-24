@@ -53,11 +53,6 @@ class EnvWorkerStats(BaseModel):
 class EnvWorker:
     """Subprocess worker that runs rollouts against a local environment instance."""
 
-    @staticmethod
-    def get_log_file(log_dir: str, worker_id: int) -> Path:
-        """Return the log file path for a given worker."""
-        return Path(log_dir) / f"env_worker_{worker_id}.log"
-
     def __init__(
         self,
         env_id: str,
@@ -65,7 +60,7 @@ class EnvWorker:
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
         log_dir: str | None = None,
-        log_file_level: str | None = None,
+        console_logging: bool = True,
         *,
         worker_id: int,
         worker_name: str,
@@ -78,14 +73,16 @@ class EnvWorker:
         self.worker_name = worker_name
 
         # setup logging — each worker gets its own log file
-        logger_kwargs: dict[str, Any] = {}
+        logger_kwargs: dict[str, Any] = {
+            "console_logging": console_logging,
+            "file_logging": log_dir is not None,
+        }
         if log_level is not None:
             logger_kwargs["level"] = log_level
         if log_dir is not None:
             worker_log_file = EnvWorker.get_log_file(log_dir, worker_id)
             worker_log_file.parent.mkdir(parents=True, exist_ok=True)
             logger_kwargs["log_file"] = str(worker_log_file)
-            logger_kwargs["log_file_level"] = log_file_level
         vf.setup_logging(**logger_kwargs)
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -379,6 +376,11 @@ class EnvWorker:
             await self.serve(stop_event=stop_event)
         finally:
             await self.close()
+
+    @staticmethod
+    def get_log_file(log_dir: str, worker_id: int) -> Path:
+        """Return the log file path for a given worker."""
+        return Path(log_dir) / f"env_worker_{worker_id}.log"
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:

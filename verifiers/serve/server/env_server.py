@@ -31,21 +31,25 @@ class EnvServer(ABC):
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
         log_dir: str | None = None,
-        log_file_level: str | None = None,
+        console_logging: bool = True,
+        file_logging: bool = True,
         json_logging: bool = False,
         *,
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
     ):
-        logger_kwargs: dict[str, Any] = {"json_logging": json_logging}
+        logger_kwargs: dict[str, Any] = {
+            "console_logging": console_logging,
+            "file_logging": file_logging and log_dir is not None,
+            "json_logging": json_logging,
+        }
         if log_level is not None:
             logger_kwargs["level"] = log_level
         if log_dir is not None:
             server_log = EnvServer.get_log_file(log_dir)
             server_log.parent.mkdir(parents=True, exist_ok=True)
             logger_kwargs["log_file"] = str(server_log)
-            logger_kwargs["log_file_level"] = log_file_level
         vf.setup_logging(**logger_kwargs)
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -60,27 +64,11 @@ class EnvServer(ABC):
             extra_env_kwargs=extra_env_kwargs,
             log_level=log_level,
             log_dir=log_dir,
-            log_file_level=log_file_level,
+            console_logging=console_logging,
             num_workers=num_workers,
             worker_heartbeat_timeout=worker_heartbeat_timeout,
             stats_log_interval=stats_log_interval,
         )
-
-    @staticmethod
-    def get_log_file(log_dir: str) -> Path:
-        """Return the server log file path for a given log directory."""
-        return Path(log_dir) / "env_server.log"
-
-    @staticmethod
-    def get_all_log_files(log_dir: str, num_workers: int) -> list[Path]:
-        """Return all log file paths: the server log followed by each worker log."""
-        from verifiers.serve.server.env_worker import EnvWorker
-
-        server_log = EnvServer.get_log_file(log_dir)
-        worker_logs = [
-            EnvWorker.get_log_file(log_dir, wid) for wid in range(num_workers)
-        ]
-        return [server_log, *worker_logs]
 
     @abstractmethod
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
@@ -110,6 +98,22 @@ class EnvServer(ABC):
         finally:
             await self.close()
             await self.router.close()
+
+    @staticmethod
+    def get_log_file(log_dir: str) -> Path:
+        """Return the server log file path for a given log directory."""
+        return Path(log_dir) / "env_server.log"
+
+    @staticmethod
+    def get_all_log_files(log_dir: str, num_workers: int) -> list[Path]:
+        """Return all log file paths: the server log followed by each worker log."""
+        from verifiers.serve.server.env_worker import EnvWorker
+
+        server_log = EnvServer.get_log_file(log_dir)
+        worker_logs = [
+            EnvWorker.get_log_file(log_dir, wid) for wid in range(num_workers)
+        ]
+        return [server_log, *worker_logs]
 
     @classmethod
     def run_server(cls, *args, **kwargs):
