@@ -2,7 +2,7 @@ import json
 from typing import Callable, cast
 
 import verifiers as vf
-from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
+from verifiers.types import Messages, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import (
     convert_func_to_tool_def,
@@ -44,10 +44,16 @@ class ToolMonitorRubric(vf.Rubric):
         total = 0
         assert isinstance(completion, list)
         for msg in completion:
-            role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+            role = (
+                msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+            )
             if role != "assistant":
                 continue
-            tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            tool_calls = (
+                msg.get("tool_calls")
+                if isinstance(msg, dict)
+                else getattr(msg, "tool_calls", None)
+            )
             if isinstance(tool_calls, list):
                 total += len(tool_calls)
         return float(total)
@@ -60,14 +66,26 @@ class ToolMonitorRubric(vf.Rubric):
             count = 0
             assert isinstance(completion, list)
             for msg in completion:
-                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+                role = (
+                    msg.get("role")
+                    if isinstance(msg, dict)
+                    else getattr(msg, "role", None)
+                )
                 if role != "assistant":
                     continue
-                tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+                tool_calls = (
+                    msg.get("tool_calls")
+                    if isinstance(msg, dict)
+                    else getattr(msg, "tool_calls", None)
+                )
                 if not isinstance(tool_calls, list):
                     continue
                 for tool_call in tool_calls:
-                    name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", None)
+                    name = (
+                        tool_call.get("name")
+                        if isinstance(tool_call, dict)
+                        else getattr(tool_call, "name", None)
+                    )
                     if name == tool_name:
                         count += 1
 
