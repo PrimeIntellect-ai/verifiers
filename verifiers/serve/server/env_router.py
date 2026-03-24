@@ -51,7 +51,7 @@ class WorkerHandle:
     address: str
     socket: zmq.asyncio.Socket
     active_requests: dict[bytes, ActiveRequestInfo] = field(default_factory=dict)
-    last_heartbeat: float = field(default_factory=time.time)
+    last_heartbeat: float = 0.0
     stats: EnvWorkerStats | None = None
 
     @property
