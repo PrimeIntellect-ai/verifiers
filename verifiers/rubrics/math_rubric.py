@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import multiprocessing as mp
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -72,24 +71,7 @@ class MathRubric(Rubric):
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
 
-        import sys
-
-        if sys.version_info >= (3, 13):
-            self.executor = ProcessPoolExecutor(
-                max_workers=1, mp_context=mp.get_context("forkserver")
-            )
-        else:
-            # Python <3.13: ProcessPoolExecutor with any start method
-            # (fork/spawn/forkserver) hangs when the entry point is a
-            # console_script. The forkserver/spawn worker re-imports __main__
-            # which re-executes the entry point, causing an infinite fork bomb.
-            # fork deadlocks due to multithreaded env server (asyncio + TPE).
-            # Fixed in Python 3.13. Use ThreadPoolExecutor as fallback.
-            from concurrent.futures import ThreadPoolExecutor
-
-            self.executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="math-verify"
-            )
+        self.executor = ProcessPoolExecutor(max_workers=1)
         self.executor_name = f"math-verify-{id(self)}"
         register_executor(
             self.executor_name,
