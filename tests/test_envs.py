@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 import tomllib
 
+# Timeout in seconds for each subprocess step
+INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
+IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
+LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
+EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
+
 SKIPPED_ENVS = [
     # Requires EXA_API_KEY environment variable
     "mcp_search_env",
@@ -99,9 +105,17 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
         f"uv pip install {repo_root.as_posix()} && "
         f"uv pip install {env_dir.absolute().as_posix()}"
     )
-    process = subprocess.run(
-        cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
-    )
+    try:
+        process = subprocess.run(
+            cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=INSTALL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {INSTALL_TIMEOUT}s installing {env_dir.name}")
     assert process.returncode == 0, (
         f"Failed to create virtual environment: {process.stderr}"
     )
@@ -114,25 +128,49 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
 def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be imported as a package."""
     import_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import {env_dir.name}'"
-    process = subprocess.run(
-        import_cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
-    )
+    try:
+        process = subprocess.run(
+            import_cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=IMPORT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {IMPORT_TIMEOUT}s importing {env_dir.name}")
     assert process.returncode == 0, "Failed to import environment"
 
 
 def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be loaded."""
     load_cmd = f"""cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
-    process = subprocess.run(
-        load_cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
-    )
+    try:
+        process = subprocess.run(
+            load_cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=LOAD_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {LOAD_TIMEOUT}s loading {env_dir.name}")
     assert process.returncode == 0, "Failed to load environment"
 
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
     eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 512"
-    process = subprocess.run(
-        eval_cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
-    )
+    try:
+        process = subprocess.run(
+            eval_cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=EVAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {env_dir.name}")
     assert process.returncode == 0, "Failed to evaluate environment"

@@ -46,6 +46,7 @@ jobs:
   test-envs:
     name: Environments
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
