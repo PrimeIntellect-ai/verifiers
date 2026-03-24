@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
-from verifiers.utils.worker_utils import get_free_port_pair
+from verifiers.utils.serve_utils import get_free_port_pair
 from verifiers.serve import (
     HealthRequest,
     HealthResponse,

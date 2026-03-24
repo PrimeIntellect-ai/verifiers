@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.process_utils import terminate_process
-from verifiers.utils.worker_utils import make_ipc_address
+from verifiers.utils.serve_utils import make_ipc_address
 
 # Callback type: (client_id, request_id, response_bytes) -> awaitable
 OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]

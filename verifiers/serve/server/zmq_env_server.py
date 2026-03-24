@@ -13,7 +13,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.serve.server.env_server import EnvServer
-from verifiers.utils.worker_utils import derive_health_address
+from verifiers.utils.serve_utils import derive_health_address
 
 # Pre-serialized health response — avoids repeated packing on every ping.
 _HEALTH_RESPONSE = msgpack.packb({"success": True, "error": None}, use_bin_type=True)

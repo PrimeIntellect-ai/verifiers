@@ -33,7 +33,7 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.worker_utils import msgpack_encoder
+from verifiers.utils.serve_utils import msgpack_encoder
 
 
 def request_parent_death_signal() -> None:

@@ -34,7 +34,7 @@ from verifiers.utils.interception_utils import (
 )
 from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.serve_utils import get_free_port
 
 logger = logging.getLogger(__name__)
 

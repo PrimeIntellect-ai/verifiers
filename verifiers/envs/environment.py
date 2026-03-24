@@ -36,7 +36,7 @@ from verifiers.utils.client_utils import (
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.thread_utils import scale_executors
-from verifiers.utils.worker_utils import get_free_port_pair
+from verifiers.utils.serve_utils import get_free_port_pair
 from verifiers.serve import ZMQEnvClient
 
 if TYPE_CHECKING:
