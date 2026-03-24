@@ -2294,7 +2294,7 @@ class CompareRunsScreen(Screen):
         if not axis_rows and not value_rows:
             return Text()
 
-        def _make_table() -> Table:
+        def _make_table(*columns: Tuple[str, dict]) -> Table:
             t = Table(
                 box=box.SIMPLE_HEAD,
                 expand=True,
@@ -2302,27 +2302,31 @@ class CompareRunsScreen(Screen):
                 pad_edge=False,
                 padding=(0, 1),
                 collapse_padding=True,
-                show_header=False,
             )
-            t.add_column(width=8, no_wrap=True)
-            t.add_column(ratio=1, no_wrap=True)
-            t.add_column(ratio=2)
+            for name, kwargs in columns:
+                t.add_column(name, header_style="bold dim", **kwargs)
             return t
 
         items: List[Any] = []
 
         if axis_rows:
-            t = _make_table()
+            t = _make_table(
+                ("Alias", {"width": 8, "no_wrap": True}),
+                ("Full Name", {"ratio": 1, "no_wrap": True}),
+            )
             for alias, full_name, style in axis_rows:
                 t.add_row(
                     Text(alias, style=style),
                     Text(full_name, style="dim"),
-                    Text(""),
                 )
             items.extend([Text("Arg name legend", style="bold dim"), t])
 
         if value_rows:
-            t = _make_table()
+            t = _make_table(
+                ("Alias", {"width": 8, "no_wrap": True}),
+                ("Full Name", {"ratio": 1, "no_wrap": True}),
+                ("Value", {"ratio": 2}),
+            )
             for alias, full_name, preview, style in value_rows:
                 t.add_row(
                     Text(alias, style=style),
