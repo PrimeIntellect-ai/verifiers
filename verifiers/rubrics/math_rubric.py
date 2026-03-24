@@ -72,9 +72,20 @@ class MathRubric(Rubric):
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
 
-        self.executor = ProcessPoolExecutor(
-            max_workers=1, mp_context=mp.get_context("forkserver")
-        )
+        import sys
+
+        if sys.version_info >= (3, 13):
+            self.executor = ProcessPoolExecutor(
+                max_workers=1, mp_context=mp.get_context("forkserver")
+            )
+        else:
+            # ProcessPoolExecutor hangs on Python <3.13 when created inside a
+            # process spawned via multiprocessing (e.g. the env server).
+            from concurrent.futures import ThreadPoolExecutor
+
+            self.executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="math-verify"
+            )
         self.executor_name = f"math-verify-{id(self)}"
         register_executor(
             self.executor_name,
