@@ -296,7 +296,7 @@ class EnvRouter:
         if old_worker is not None:
             to_redispatch = list(old_worker.active_requests.values())
             old_worker.active_requests.clear()
-            terminate_process(old_worker.process)
+            await asyncio.to_thread(terminate_process, old_worker.process)
             old_worker.socket.close()
 
         self.workers[worker_id] = self.start_worker(worker_id)
