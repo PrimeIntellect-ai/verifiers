@@ -1649,8 +1649,6 @@ class CompareRunsScreen(Screen):
             self._stats_by_path,
             self._setting_keys,
             self._run_settings,
-            self._display_maps,
-            self._style_maps,
             group_by_key=self._grouped_by_key,
         )
         parts: List[str] = [
@@ -1977,8 +1975,6 @@ class CompareRunsScreen(Screen):
         stats_by_path: Dict[Path, RunOverviewStats],
         setting_keys: List[str],
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-        display_maps: Dict[str, Dict[str, str]],
-        style_maps: Dict[str, Dict[str, str]],
         group_by_key: str | None = None,
         highlight_col: int | None = None,
     ) -> Tuple[Table, List[Tuple[str, str, str]], List[Tuple[str, str, str, str]]]:
@@ -2362,8 +2358,6 @@ class CompareRunsScreen(Screen):
             self._stats_by_path,
             self._setting_keys,
             self._run_settings,
-            self._display_maps,
-            self._style_maps,
             group_by_key=self._grouped_by_key,
             highlight_col=highlight_col,
         )
