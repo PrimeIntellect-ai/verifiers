@@ -108,7 +108,7 @@ class Environment(ABC):
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
-        map_kwargs: dict = {},
+        map_kwargs: dict | None = None,
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
         pass_threshold: float = 0.5,
@@ -144,7 +144,7 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
-        self.map_kwargs = map_kwargs
+        self.map_kwargs = map_kwargs or {}
 
         self.set_score_rollouts(score_rollouts)
         self.pass_threshold = pass_threshold
@@ -283,9 +283,10 @@ class Environment(ABC):
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
-        map_kwargs: dict = {},
+        map_kwargs: dict | None = None,
     ) -> Dataset:
         """Ensure prompt column exists."""
+        map_kwargs = map_kwargs or {}
         if "prompt" not in dataset.column_names:
 
             def format_prompt_fn(prompt_str: str) -> Messages:
@@ -343,8 +344,9 @@ class Environment(ABC):
                 )
         return dataset
 
-    def _ensure_task(self, dataset: Dataset, map_kwargs: dict = {}) -> Dataset:
+    def _ensure_task(self, dataset: Dataset, map_kwargs: dict | None = None) -> Dataset:
         """Ensure task column exists, set to env_id."""
+        map_kwargs = map_kwargs or {}
         if "task" not in dataset.column_names:
             task_value = self.env_id or "default"
 
@@ -362,7 +364,7 @@ class Environment(ABC):
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
-        map_kwargs: dict = {},
+        map_kwargs: dict | None = None,
     ) -> Dataset:
         """
         Format dataset by creating example_id and prompt columns, and setting task column.
@@ -375,7 +377,7 @@ class Environment(ABC):
         return dataset
 
     def _format_completion_dataset(
-        self, dataset: Dataset, map_kwargs: dict = {}
+        self, dataset: Dataset, map_kwargs: dict | None = None
     ) -> Dataset:
         """
         Format dataset by creating example_id and prompt columns, and setting task column.
