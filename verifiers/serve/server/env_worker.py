@@ -13,6 +13,7 @@ import gc
 import logging
 import signal
 import time
+from pathlib import Path
 from typing import Any, cast
 
 import msgpack
@@ -52,13 +53,18 @@ class EnvWorkerStats(BaseModel):
 class EnvWorker:
     """Subprocess worker that runs rollouts against a local environment instance."""
 
+    @staticmethod
+    def get_log_file(log_dir: str, worker_id: int) -> Path:
+        """Return the log file path for a given worker."""
+        return Path(log_dir) / f"env_worker_{worker_id}.log"
+
     def __init__(
         self,
         env_id: str,
         env_args: dict[str, Any] | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
-        log_file: str | None = None,
+        log_dir: str | None = None,
         log_file_level: str | None = None,
         *,
         worker_id: int,
@@ -75,12 +81,8 @@ class EnvWorker:
         logger_kwargs: dict[str, Any] = {}
         if log_level is not None:
             logger_kwargs["level"] = log_level
-        if log_file is not None:
-            from pathlib import Path
-
-            worker_log_file = (
-                Path(log_file).parent / f"{worker_name.replace('-', '_')}.log"
-            )
+        if log_dir is not None:
+            worker_log_file = EnvWorker.get_log_file(log_dir, worker_id)
             worker_log_file.parent.mkdir(parents=True, exist_ok=True)
             logger_kwargs["log_file"] = str(worker_log_file)
             logger_kwargs["log_file_level"] = log_file_level

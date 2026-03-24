@@ -104,7 +104,7 @@ class EnvRouter:
         env_args: dict[str, Any] | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
-        log_file: str | None = None,
+        log_dir: str | None = None,
         log_file_level: str | None = None,
         *,
         num_workers: int = 1,
@@ -118,7 +118,7 @@ class EnvRouter:
         self.env_args = env_args or {}
         self.extra_env_kwargs = extra_env_kwargs or {}
         self.log_level = log_level
-        self.log_file = log_file
+        self.log_dir = log_dir
         self.log_file_level = log_file_level
 
         self.num_workers = num_workers
@@ -186,7 +186,7 @@ class EnvRouter:
                 self.env_args,
                 self.extra_env_kwargs,
                 self.log_level,
-                self.log_file,
+                self.log_dir,
                 self.log_file_level,
             ),
             kwargs=dict(

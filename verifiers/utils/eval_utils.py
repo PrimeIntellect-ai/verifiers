@@ -755,14 +755,14 @@ async def run_evaluation(
                 num_workers = int(num_workers)
             logger.info(f"Using {num_workers=} env server worker(s)")
 
-            log_file = results_path / "env_server.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_dir = str(results_path)
+            results_path.mkdir(parents=True, exist_ok=True)
             if config.debug:
                 await vf_env.start_server(
                     extra_env_kwargs=extra_env_kwargs,
                     num_workers=num_workers,
                     log_level=get_log_level(config.verbose),
-                    log_file=str(log_file),
+                    log_dir=log_dir,
                     log_file_level=get_log_level(config.verbose),
                 )
             else:
@@ -770,18 +770,14 @@ async def run_evaluation(
                     extra_env_kwargs=extra_env_kwargs,
                     num_workers=num_workers,
                     log_level="CRITICAL",  # disable console logging
-                    log_file=str(log_file),
+                    log_dir=log_dir,
                     log_file_level=get_log_level(config.verbose),
                 )
             if on_log_file is not None:
-                on_log_file(log_file)
-                # register per-worker log files
-                for wid in range(num_workers):
-                    worker_name = f"{config.env_id}-{wid}"
-                    worker_log = (
-                        log_file.parent / f"{worker_name.replace('-', '_')}.log"
-                    )
-                    on_log_file(worker_log)
+                from verifiers.serve import EnvServer
+
+                for path in EnvServer.get_all_log_files(log_dir, num_workers):
+                    on_log_file(path)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(

@@ -166,7 +166,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         num_workers: int = 1,
         # logging configs
         log_level: str | None = None,
-        log_file: str | None = None,
+        log_dir: str | None = None,
         log_file_level: str | None = None,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
@@ -178,7 +178,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             extra_env_kwargs=extra_env_kwargs or {},
             num_workers=num_workers,
             log_level=log_level,
-            log_file=log_file,
+            log_dir=log_dir,
             log_file_level=log_file_level,
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
