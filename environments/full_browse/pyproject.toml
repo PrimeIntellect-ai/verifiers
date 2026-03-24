@@ -1,0 +1,21 @@
+[project]
+name = "full-browse"
+version = "0.1.0"
+description = "Browser automation environment with Full Browse toolset (computer, read_page, find, form_input, etc.)"
+tags = ["browser", "local", "cua", "vision", "full-browse"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+    "prime-sandboxes>=0.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["full_browse.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

@@ -12,7 +12,8 @@ import {
 
 /**
  * Create and configure the Fastify server with CUA primitive routes.
- * This version is for local app mode - no goto action, browser starts at startUrl.
+ * Supports both basic CUA primitives and extended inspection actions
+ * (get_page_text, read_page, find, form_input).
  */
 export function createServer(): FastifyInstance {
   // Use simple JSON logging to avoid pino-pretty transport issues in SEA binaries
@@ -118,15 +119,17 @@ export function createServer(): FastifyInstance {
       `Executing action: ${action.type}`
     );
 
-    const page = await sessionManager.getPage(id);
-    if (!page) {
+    const session = sessionManager.getSession(id);
+    const page = session ? await session.stagehand.context.awaitActivePage() : undefined;
+    if (!session || !page) {
       reply.status(404);
       return { error: `Session ${id} not found`, code: "SESSION_NOT_FOUND" };
     }
 
     try {
       // Execute the action with logger for detailed timing
-      const result = await executeAction(page, action, request.log);
+      // Pass browserContext for CDP access (used by read_page)
+      const result = await executeAction(page, action, request.log, session.stagehand.context);
 
       // Add delay after action execution (render time)
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -138,6 +141,7 @@ export function createServer(): FastifyInstance {
         success: result.success,
         error: result.error,
         state,
+        ...(result.data !== undefined ? { data: result.data } : {}),
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

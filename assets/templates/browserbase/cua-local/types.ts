@@ -2,8 +2,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import type { Page } from "@browserbasehq/stagehand";
 
 /**
- * CUA Action Types - Browser primitives for local app interaction.
- * Note: 'goto' is omitted as this mode is for localhost apps without internet access.
+ * CUA Action Types - Browser primitives and extended capabilities.
  */
 export type ActionType =
   | "click"
@@ -18,7 +17,11 @@ export type ActionType =
   | "back"
   | "forward"
   | "wait"
-  | "screenshot";
+  | "screenshot"
+  | "get_page_text"
+  | "read_page"
+  | "find"
+  | "form_input";
 
 /**
  * Action Request - Sent by external agent to execute a browser primitive
@@ -40,6 +43,15 @@ export interface ActionRequest {
   timeMs?: number;
   // Drag params
   path?: Array<{ x: number; y: number }>;
+  // Page inspection params (read_page)
+  filter?: "interactive" | "all";
+  depth?: number;
+  ref_id?: string;
+  // Element search params (find)
+  query?: string;
+  // Form input params (form_input)
+  ref?: string;
+  value?: string;
 }
 
 /**
@@ -65,6 +77,8 @@ export interface BrowserState {
 export interface ActionExecutionResult {
   success: boolean;
   error?: string;
+  /** Text output for inspection actions (get_page_text, read_page, find, etc.) */
+  data?: string;
 }
 
 /**
@@ -74,6 +88,8 @@ export interface ActionResponse {
   success: boolean;
   error?: string;
   state: BrowserState;
+  /** Text output for inspection actions */
+  data?: string;
 }
 
 /**

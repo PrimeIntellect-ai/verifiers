@@ -1,0 +1,2117 @@
+[
+  {
+    "action_id": "navigate_to_amazon",
+    "type": "observation",
+    "page": "home",
+    "page_url": "/",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "home"
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestElectronics",
+        "TestProduct Alpha X900"
+      ],
+      "note": "Page 'home' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "enter_search_query",
+    "type": "interaction",
+    "page": "home",
+    "page_url": "/",
+    "element": "search_input",
+    "interaction": "type",
+    "input_value": "{entities.search_query}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "home"
+      },
+      {
+        "path": "task.entry_point",
+        "op": "eq",
+        "value": "search"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "search.query_entered",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"search_input\"]",
+      "type_text": "test alpha product",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "search.query_entered",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "submit_search",
+    "type": "interaction",
+    "page": "home",
+    "page_url": "/",
+    "element": "search_submit",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "search.query_entered",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "search.executed",
+        "set": true
+      },
+      {
+        "path": "page.type",
+        "set": "search_results"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"search_submit\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "search.executed",
+          "value": true
+        },
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        }
+      ]
+    },
+    "setup": [
+      "Must type a search query first"
+    ]
+  },
+  {
+    "action_id": "navigate_to_category",
+    "type": "interaction",
+    "page": "home",
+    "page_url": "/",
+    "element": "category_menu",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "home"
+      },
+      {
+        "path": "task.entry_point",
+        "op": "eq",
+        "value": "category"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "category"
+      },
+      {
+        "path": "category.navigated",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"category_menu\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "category"
+        },
+        {
+          "check": "state_change",
+          "path": "category.navigated",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "read_category_listings",
+    "type": "observation",
+    "page": "category",
+    "page_url": "/category/test-electronics",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "category"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "category.read",
+        "set": true
+      },
+      {
+        "path": "extract.results_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestElectronics",
+        "TestHeadphones"
+      ],
+      "note": "Page 'category' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "search_within_category",
+    "type": "interaction",
+    "page": "category",
+    "page_url": "/category/test-electronics",
+    "element": "search_input",
+    "interaction": "type",
+    "input_value": "{entities.search_query}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "category"
+      },
+      {
+        "path": "category.read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "search.query_entered",
+        "set": true
+      },
+      {
+        "path": "search.executed",
+        "set": true
+      },
+      {
+        "path": "page.type",
+        "set": "search_results"
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"search_input\"]",
+      "type_text": "test alpha product",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "search.query_entered",
+          "value": true
+        },
+        {
+          "check": "state_change",
+          "path": "search.executed",
+          "value": true
+        },
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    },
+    "setup": [
+      "Must read category page first"
+    ]
+  },
+  {
+    "action_id": "navigate_to_deals",
+    "type": "interaction",
+    "page": "home",
+    "page_url": "/",
+    "element": "deals_link",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "home"
+      },
+      {
+        "path": "task.entry_point",
+        "op": "eq",
+        "value": "deals"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "deals"
+      },
+      {
+        "path": "deals.navigated",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"deals_link\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "deals"
+        },
+        {
+          "check": "state_change",
+          "path": "deals.navigated",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "read_deal_listings",
+    "type": "observation",
+    "page": "deals",
+    "page_url": "/deals",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "deals"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "deals.read",
+        "set": true
+      },
+      {
+        "path": "extract.results_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Alpha X900"
+      ],
+      "note": "Page 'deals' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "click_deal_product",
+    "type": "interaction",
+    "page": "deals",
+    "page_url": "/deals",
+    "element": "deal_card_1",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "deals"
+      },
+      {
+        "path": "deals.read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_detail",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "set": "1"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"deal_card_1\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "product_detail"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "1"
+        }
+      ]
+    },
+    "setup": [
+      "Must read deals page first"
+    ]
+  },
+  {
+    "action_id": "refine_search",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "search_input",
+    "interaction": "type",
+    "input_value": "{entities.refined_query}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "search.refined",
+        "op": "eq",
+        "value": false
+      },
+      {
+        "path": "extract.results_read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "search.refined",
+        "set": true
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      },
+      {
+        "path": "page.type",
+        "set": "search_results"
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"search_input\"]",
+      "type_text": "refined test query",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "search.refined",
+          "value": true
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        },
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        }
+      ]
+    },
+    "setup": [
+      "Must read/screenshot the results page first"
+    ]
+  },
+  {
+    "action_id": "read_results_text",
+    "type": "observation",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "extract.results_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Alpha X900",
+        "TestProduct Beta Z500",
+        "TestProduct Gamma K100"
+      ],
+      "note": "Page 'search_results' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "compile_results",
+    "type": "observation",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "extract.results_read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "results.compiled",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Alpha X900",
+        "TestProduct Beta Z500",
+        "TestProduct Gamma K100"
+      ],
+      "note": "Page 'search_results' must render entity content visible to agent."
+    },
+    "setup": [
+      "Must read/screenshot the results page first"
+    ]
+  },
+  {
+    "action_id": "submit_results",
+    "type": "tool_call",
+    "tool_name": "submit_result",
+    "skip_browser": true,
+    "note": "Tool call action \u2014 tested via verifiers environment, not browser."
+  },
+  {
+    "action_id": "open_cart",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "cart_icon",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "task.requires_cart",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "cart.opened",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "cart.opened",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"cart_icon\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "cart.opened",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "read_cart",
+    "type": "observation",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "cart.opened",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "cart.read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "cart.read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Alpha X900",
+        "TestProduct Beta Z500",
+        "TestProduct Gamma K100"
+      ],
+      "note": "Page 'search_results' must render entity content visible to agent."
+    },
+    "setup": [
+      "Must open cart first"
+    ]
+  },
+  {
+    "action_id": "filter_condition_new",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "filter_condition_new",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "task.requires_filters",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "filter.condition",
+        "op": "eq",
+        "value": "none"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "filter.condition",
+        "set": "new"
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"filter_condition_new\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "filter.condition",
+          "value": "new"
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "filter_price_range",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "filter_price_range",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "task.requires_filters",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "filter.price_range",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "filter.price_range",
+        "set": true
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"filter_price_range\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "filter.price_range",
+          "value": true
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "filter_prime_only",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "filter_prime_only",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "task.requires_filters",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "filter.prime_only",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "filter.prime_only",
+        "set": true
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"filter_prime_only\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "filter.prime_only",
+          "value": true
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "sort_price_asc",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "sort_price_asc",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "task.requires_filters",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "sort.applied",
+        "op": "neq",
+        "value": "price_asc"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "sort.applied",
+        "set": "price_asc"
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"sort_price_asc\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "sort.applied",
+          "value": "price_asc"
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "sort_avg_review",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "sort_avg_review",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "task.requires_filters",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "sort.applied",
+        "op": "neq",
+        "value": "avg_review"
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "sort.applied",
+        "set": "avg_review"
+      },
+      {
+        "path": "extract.results_read",
+        "set": false
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"sort_avg_review\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "sort.applied",
+          "value": "avg_review"
+        },
+        {
+          "check": "state_change",
+          "path": "extract.results_read",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "action_id": "click_product_1",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "product_card_1",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "extract.results_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_detail",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "set": "1"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"product_card_1\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "product_detail"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "1"
+        }
+      ]
+    },
+    "setup": [
+      "Must read/screenshot the results page first"
+    ]
+  },
+  {
+    "action_id": "click_product_2",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "product_card_2",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "extract.results_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_detail",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "set": "2"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"product_card_2\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "product_detail"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "2"
+        }
+      ]
+    },
+    "setup": [
+      "Must read/screenshot the results page first",
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "click_product_3",
+    "type": "interaction",
+    "page": "search_results",
+    "page_url": "/search?q=test+alpha+product",
+    "element": "product_card_3",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "search_results"
+      },
+      {
+        "path": "extract.results_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_detail",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p3.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "set": "3"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"product_card_3\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "product_detail"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "3"
+        }
+      ]
+    },
+    "setup": [
+      "Must read/screenshot the results page first",
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "read_p1_detail",
+    "type": "observation",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.detail_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Alpha X900",
+        "AlphaBrand",
+        "B0ALPHA01"
+      ],
+      "note": "Page 'product_detail' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "read_p2_detail",
+    "type": "observation",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.detail_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Beta Z500",
+        "BetaBrand",
+        "B0BETA002"
+      ],
+      "note": "Page 'product_detail' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "read_p3_detail",
+    "type": "observation",
+    "page": "product_detail",
+    "page_url": "/product/2",
+    "element": null,
+    "interaction": null,
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "3"
+      },
+      {
+        "path": "p3.detail_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p3.detail_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "content_visible",
+      "checks": [
+        "TestProduct Gamma K100",
+        "GammaBrand",
+        "B0GAMMA03"
+      ],
+      "note": "Page 'product_detail' must render entity content visible to agent."
+    }
+  },
+  {
+    "action_id": "check_p1_shipping",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "shipping_zip_input",
+    "interaction": "type",
+    "input_value": "{entities.zip_code}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_shipping",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.shipping_checked",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.shipping_checked",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"shipping_zip_input\"]",
+      "type_text": "90210",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.shipping_checked",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p2_shipping",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "shipping_zip_input",
+    "interaction": "type",
+    "input_value": "{entities.zip_code}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_shipping",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.shipping_checked",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.shipping_checked",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"shipping_zip_input\"]",
+      "type_text": "90210",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p2.shipping_checked",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p3_shipping",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/2",
+    "element": "shipping_zip_input",
+    "interaction": "type",
+    "input_value": "{entities.zip_code}",
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_shipping",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "3"
+      },
+      {
+        "path": "p3.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p3.shipping_checked",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p3.shipping_checked",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "type_and_check",
+      "find": "[data-action=\"shipping_zip_input\"]",
+      "type_text": "90210",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p3.shipping_checked",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p3.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p1_reviews",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "reviews_section",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_reviews",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.reviews_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.reviews_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"reviews_section\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.reviews_read",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p2_reviews",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "reviews_section",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_reviews",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.reviews_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.reviews_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"reviews_section\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p2.reviews_read",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p3_reviews",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/2",
+    "element": "reviews_section",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_reviews",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "3"
+      },
+      {
+        "path": "p3.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p3.reviews_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p3.reviews_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"reviews_section\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p3.reviews_read",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p3.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p1_seller",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "seller_link",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.seller_checked",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.seller_checked",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"seller_link\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.seller_checked",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p2_seller",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "seller_link",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.seller_checked",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.seller_checked",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"seller_link\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p2.seller_checked",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "back_to_results_from_p1",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "back_to_results",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "search_results"
+      },
+      {
+        "path": "page.current_product",
+        "set": "none"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"back_to_results\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "none"
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "back_to_results_from_p2",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "back_to_results",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "search_results"
+      },
+      {
+        "path": "page.current_product",
+        "set": "none"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"back_to_results\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "none"
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "back_to_results_from_p3",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/2",
+    "element": "back_to_results",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "3"
+      },
+      {
+        "path": "p3.detail_read",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "page.type",
+        "set": "search_results"
+      },
+      {
+        "path": "page.current_product",
+        "set": "none"
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"back_to_results\"]",
+      "after": [
+        {
+          "check": "page_changed",
+          "expected_page": "search_results"
+        },
+        {
+          "check": "product_changed",
+          "expected_product": "none"
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p3.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p1_qa",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "qa_section",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_qa",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.qa_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.qa_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"qa_section\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.qa_read",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "check_p2_qa",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "qa_section",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_qa",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.qa_read",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.qa_read",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"qa_section\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p2.qa_read",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "add_p1_to_cart",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "add_to_cart_button",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_cart",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.added_to_cart",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.added_to_cart",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"add_to_cart_button\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.added_to_cart",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "add_p2_to_cart",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/1",
+    "element": "add_to_cart_button",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "task.requires_cart",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "2"
+      },
+      {
+        "path": "p2.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p2.added_to_cart",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p2.added_to_cart",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"add_to_cart_button\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p2.added_to_cart",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p2.detail_read)"
+    ]
+  },
+  {
+    "action_id": "select_p1_variant_a",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "variant_option_a",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_variants",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.variant_a_viewed",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.variant_a_viewed",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"variant_option_a\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.variant_a_viewed",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  },
+  {
+    "action_id": "select_p1_variant_b",
+    "type": "interaction",
+    "page": "product_detail",
+    "page_url": "/product/0",
+    "element": "variant_option_b",
+    "interaction": "click",
+    "input_value": null,
+    "requires_world": [
+      {
+        "path": "page.type",
+        "op": "eq",
+        "value": "product_detail"
+      },
+      {
+        "path": "page.current_product",
+        "op": "eq",
+        "value": "1"
+      },
+      {
+        "path": "p1.detail_read",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "task.requires_variants",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.variant_a_viewed",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "p1.variant_b_viewed",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "effects_world": [
+      {
+        "path": "p1.variant_b_viewed",
+        "set": true
+      }
+    ],
+    "verify": {
+      "type": "click_and_check",
+      "find": "[data-action=\"variant_option_b\"]",
+      "after": [
+        {
+          "check": "state_change",
+          "path": "p1.variant_b_viewed",
+          "value": true
+        }
+      ]
+    },
+    "setup": [
+      "Must visit product detail page first (p1.detail_read)"
+    ]
+  }
+]

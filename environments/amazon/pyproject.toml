@@ -1,0 +1,27 @@
+[project]
+name = "amazon"
+version = "0.1.0"
+description = "Amazon Shopping browser environment with kernel-sampled CUA tasks"
+tags = ["browser", "cua", "vision", "shopping", "amazon"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+    "prime-sandboxes>=0.2.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "amazon.py", "entities.py", "entity_sampler.py", "task_spec.py",
+    "task_specs.sampled.yaml", "pyproject.toml",
+    "kernel/*.py", "kernel/*.yaml",
+]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 1

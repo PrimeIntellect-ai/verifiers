@@ -1,0 +1,795 @@
+version: 2
+
+# Amazon Shopping — Graph Contract
+#
+# Models browser-based product search, filtering, comparison, and
+# data extraction on Amazon. Designed for browser adapter: the agent
+# interacts with a Next.js browser simulation via CUA tools (click,
+# type, screenshot, etc.).
+#
+# browser_action contract:
+#   page    — which route/page this action occurs on (must exist in app)
+#   element — data-action attribute of the interactive DOM element (must exist on that page)
+#   interaction — browser primitive type (click, type, etc.)
+#   input_value — dynamic data for type/select, references {entities.*}
+#
+# Actions without element are observation/navigation — no DOM target needed,
+# the agent just needs the page to render the right content.
+
+# ---------------------------------------------------------------------------
+# Projection Fields
+# ---------------------------------------------------------------------------
+
+projection_fields:
+  # Page state
+  - page.type                  # home | search_results | product_detail | deals | category
+  - page.current_product       # none | 1 | 2 | 3
+
+  # Search state
+  - search.query_entered       # bool
+  - search.executed            # bool
+  - search.refined             # bool
+
+  # Filter / sort state
+  - filter.condition           # none | new | used
+  - filter.price_range         # bool
+  - filter.prime_only          # bool
+  - sort.applied               # none | price_asc | price_desc | avg_review
+
+  # Extraction state
+  - extract.results_read       # bool
+
+  # Product 1 state
+  - p1.detail_read
+  - p1.shipping_checked
+  - p1.reviews_read
+  - p1.seller_checked
+  - p1.variant_a_viewed
+  - p1.variant_b_viewed
+  - p1.qa_read
+  - p1.added_to_cart
+
+  # Product 2 state
+  - p2.detail_read
+  - p2.shipping_checked
+  - p2.reviews_read
+  - p2.seller_checked
+  - p2.qa_read
+  - p2.added_to_cart
+
+  # Product 3 state
+  - p3.detail_read
+  - p3.shipping_checked
+  - p3.reviews_read
+
+  # Category / deals browsing state
+  - category.navigated
+  - category.read
+  - deals.navigated
+  - deals.read
+
+  # Cart state
+  - cart.opened
+  - cart.read
+
+  # Results state
+  - results.compiled
+  - results.submitted
+
+  # Task config (set by seed, gates which actions are reachable)
+  - task.requires_detail
+  - task.requires_shipping
+  - task.requires_reviews
+  - task.requires_variants
+  - task.requires_filters
+  - task.requires_qa
+  - task.requires_cart
+  - task.entry_point           # search | category | deals
+  - task.num_products          # 0 | 1 | 3
+
+
+bindings: []
+
+
+# ===========================================================================
+# Actions
+# ===========================================================================
+
+actions:
+
+  # ── Navigation: load home page ──
+  - action_id: navigate_to_amazon
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: home
+    requires_world: []
+    effects_world:
+      - {path: page.type, set: home}
+
+  # ── Type search query ──
+  - action_id: enter_search_query
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: home
+      element: search_input
+      interaction: type
+      input_value: "{entities.search_query}"
+    requires_world:
+      - {path: page.type, op: eq, value: home}
+      - {path: task.entry_point, op: eq, value: search}
+    effects_world:
+      - {path: search.query_entered, set: true}
+
+  # ── Submit search ──
+  - action_id: submit_search
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: home
+      element: search_submit
+      interaction: click
+    requires_world:
+      - {path: search.query_entered, op: eq, value: true}
+    effects_world:
+      - {path: search.executed, set: true}
+      - {path: page.type, set: search_results}
+
+  # ── Navigate to category page ──
+  - action_id: navigate_to_category
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: home
+      element: category_menu
+      interaction: click
+    requires_world:
+      - {path: page.type, op: eq, value: home}
+      - {path: task.entry_point, op: eq, value: category}
+    effects_world:
+      - {path: page.type, set: category}
+      - {path: category.navigated, set: true}
+
+  # ── Read category listings (observation) ──
+  - action_id: read_category_listings
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: category
+    requires_world:
+      - {path: page.type, op: eq, value: category}
+    effects_world:
+      - {path: category.read, set: true}
+      - {path: extract.results_read, set: true}
+
+  # ── Search from category page ──
+  - action_id: search_within_category
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: category
+      element: search_input
+      interaction: type
+      input_value: "{entities.search_query}"
+    requires_world:
+      - {path: page.type, op: eq, value: category}
+      - {path: category.read, op: eq, value: true}
+    effects_world:
+      - {path: search.query_entered, set: true}
+      - {path: search.executed, set: true}
+      - {path: page.type, set: search_results}
+      - {path: extract.results_read, set: false}
+
+  # ── Navigate to deals page ──
+  - action_id: navigate_to_deals
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: home
+      element: deals_link
+      interaction: click
+    requires_world:
+      - {path: page.type, op: eq, value: home}
+      - {path: task.entry_point, op: eq, value: deals}
+    effects_world:
+      - {path: page.type, set: deals}
+      - {path: deals.navigated, set: true}
+
+  # ── Read deal listings (observation) ──
+  - action_id: read_deal_listings
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: deals
+    requires_world:
+      - {path: page.type, op: eq, value: deals}
+    effects_world:
+      - {path: deals.read, set: true}
+      - {path: extract.results_read, set: true}
+
+  # ── Click a deal to go to product detail ──
+  - action_id: click_deal_product
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: deals
+      element: deal_card_1
+      interaction: click
+    requires_world:
+      - {path: page.type, op: eq, value: deals}
+      - {path: deals.read, op: eq, value: true}
+      - {path: task.requires_detail, op: eq, value: true}
+      - {path: p1.detail_read, op: eq, value: false}
+    effects_world:
+      - {path: page.type, set: product_detail}
+      - {path: page.current_product, set: "1"}
+
+  # ── Refine search ──
+  - action_id: refine_search
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: search_results
+      element: search_input
+      interaction: type
+      input_value: "{entities.refined_query}"
+    requires_world:
+      - {path: page.type, op: eq, value: search_results}
+      - {path: search.refined, op: eq, value: false}
+      - {path: extract.results_read, op: eq, value: true}
+    effects_world:
+      - {path: search.refined, set: true}
+      - {path: extract.results_read, set: false}
+      - {path: page.type, set: search_results}
+
+  # ── Read search results (observation) ──
+  - action_id: read_results_text
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: search_results
+    requires_world:
+      - {path: page.type, op: eq, value: search_results}
+    effects_world:
+      - {path: extract.results_read, set: true}
+
+  # ── Compile results (observation) ──
+  - action_id: compile_results
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: search_results
+    requires_world:
+      - {path: extract.results_read, op: eq, value: true}
+    effects_world:
+      - {path: results.compiled, set: true}
+
+  # ── Submit final results (tool call, not browser interaction) ──
+  - action_id: submit_results
+    requestor: assistant
+    classification: causal
+    tool_call:
+      tool_name: submit_result
+    requires_world:
+      - {path: results.compiled, op: eq, value: true}
+    effects_world:
+      - {path: results.submitted, set: true}
+
+  # ── Open cart ──
+  - action_id: open_cart
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: search_results
+      element: cart_icon
+      interaction: click
+    requires_world:
+      - {path: task.requires_cart, op: eq, value: true}
+      - {path: cart.opened, op: eq, value: false}
+    effects_world:
+      - {path: cart.opened, set: true}
+
+  # ── Read cart contents (observation — cart is an overlay, not a page change) ──
+  - action_id: read_cart
+    requestor: assistant
+    classification: causal
+    browser_action:
+      page: search_results
+    requires_world:
+      - {path: cart.opened, op: eq, value: true}
+      - {path: cart.read, op: eq, value: false}
+    effects_world:
+      - {path: cart.read, set: true}
+
+
+# ===========================================================================
+# Action Schemas — Filters and sort
+# ===========================================================================
+
+action_schemas:
+
+  - schema_id: apply_filter
+    action_id_template: "filter_{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: search_results}
+      - {path: task.requires_filters, op: eq, value: true}
+    variants:
+      - variant_id: condition_new
+        browser_action:
+          page: search_results
+          element: filter_condition_new
+          interaction: click
+        requires_world:
+          - {path: filter.condition, op: eq, value: none}
+        effects_world:
+          - {path: filter.condition, set: new}
+          - {path: extract.results_read, set: false}
+      - variant_id: price_range
+        browser_action:
+          page: search_results
+          element: filter_price_range
+          interaction: click
+        requires_world:
+          - {path: filter.price_range, op: eq, value: false}
+        effects_world:
+          - {path: filter.price_range, set: true}
+          - {path: extract.results_read, set: false}
+      - variant_id: prime_only
+        browser_action:
+          page: search_results
+          element: filter_prime_only
+          interaction: click
+        requires_world:
+          - {path: filter.prime_only, op: eq, value: false}
+        effects_world:
+          - {path: filter.prime_only, set: true}
+          - {path: extract.results_read, set: false}
+
+  - schema_id: apply_sort
+    action_id_template: "sort_{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: search_results}
+      - {path: task.requires_filters, op: eq, value: true}
+    variants:
+      - variant_id: price_asc
+        browser_action:
+          page: search_results
+          element: sort_price_asc
+          interaction: click
+        requires_world:
+          - {path: sort.applied, op: neq, value: price_asc}
+        effects_world:
+          - {path: sort.applied, set: price_asc}
+          - {path: extract.results_read, set: false}
+      - variant_id: avg_review
+        browser_action:
+          page: search_results
+          element: sort_avg_review
+          interaction: click
+        requires_world:
+          - {path: sort.applied, op: neq, value: avg_review}
+        effects_world:
+          - {path: sort.applied, set: avg_review}
+          - {path: extract.results_read, set: false}
+
+
+  # -----------------------------------------------------------------------
+  # Product navigation (click into product detail)
+  # -----------------------------------------------------------------------
+
+  - schema_id: click_product
+    action_id_template: "click_product_{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: search_results}
+      - {path: extract.results_read, op: eq, value: true}
+      - {path: task.requires_detail, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: search_results
+          element: product_card_1
+          interaction: click
+        requires_world:
+          - {path: p1.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: page.type, set: product_detail}
+          - {path: page.current_product, set: "1"}
+      - variant_id: "2"
+        browser_action:
+          page: search_results
+          element: product_card_2
+          interaction: click
+        requires_world:
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p2.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: page.type, set: product_detail}
+          - {path: page.current_product, set: "2"}
+      - variant_id: "3"
+        browser_action:
+          page: search_results
+          element: product_card_3
+          interaction: click
+        requires_world:
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p3.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: page.type, set: product_detail}
+          - {path: page.current_product, set: "3"}
+
+
+  # -----------------------------------------------------------------------
+  # Read product detail (observation, per-product)
+  # -----------------------------------------------------------------------
+
+  - schema_id: read_product_detail
+    action_id_template: "read_p{variant_id}_detail"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: p1.detail_read, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: p2.detail_read, set: true}
+      - variant_id: "3"
+        browser_action:
+          page: product_detail
+        requires_world:
+          - {path: page.current_product, op: eq, value: "3"}
+          - {path: p3.detail_read, op: eq, value: false}
+        effects_world:
+          - {path: p3.detail_read, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Check shipping (per-product)
+  # -----------------------------------------------------------------------
+
+  - schema_id: check_product_shipping
+    action_id_template: "check_p{variant_id}_shipping"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: task.requires_shipping, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: shipping_zip_input
+          interaction: type
+          input_value: "{entities.zip_code}"
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p1.shipping_checked, op: eq, value: false}
+        effects_world:
+          - {path: p1.shipping_checked, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: shipping_zip_input
+          interaction: type
+          input_value: "{entities.zip_code}"
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p2.shipping_checked, op: eq, value: false}
+        effects_world:
+          - {path: p2.shipping_checked, set: true}
+      - variant_id: "3"
+        browser_action:
+          page: product_detail
+          element: shipping_zip_input
+          interaction: type
+          input_value: "{entities.zip_code}"
+        requires_world:
+          - {path: page.current_product, op: eq, value: "3"}
+          - {path: p3.detail_read, op: eq, value: true}
+          - {path: p3.shipping_checked, op: eq, value: false}
+        effects_world:
+          - {path: p3.shipping_checked, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Read reviews (per-product)
+  # -----------------------------------------------------------------------
+
+  - schema_id: check_product_reviews
+    action_id_template: "check_p{variant_id}_reviews"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: task.requires_reviews, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: reviews_section
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p1.reviews_read, op: eq, value: false}
+        effects_world:
+          - {path: p1.reviews_read, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: reviews_section
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p2.reviews_read, op: eq, value: false}
+        effects_world:
+          - {path: p2.reviews_read, set: true}
+      - variant_id: "3"
+        browser_action:
+          page: product_detail
+          element: reviews_section
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "3"}
+          - {path: p3.detail_read, op: eq, value: true}
+          - {path: p3.reviews_read, op: eq, value: false}
+        effects_world:
+          - {path: p3.reviews_read, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Check seller info (products 1 and 2)
+  # -----------------------------------------------------------------------
+
+  - schema_id: check_product_seller
+    action_id_template: "check_p{variant_id}_seller"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: seller_link
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p1.seller_checked, op: eq, value: false}
+        effects_world:
+          - {path: p1.seller_checked, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: seller_link
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p2.seller_checked, op: eq, value: false}
+        effects_world:
+          - {path: p2.seller_checked, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Back to search results (when agent came via search)
+  # -----------------------------------------------------------------------
+
+  - schema_id: back_to_results
+    action_id_template: "back_to_results_from_p{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: search.executed, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: back_to_results
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: search_results}
+          - {path: page.current_product, set: none}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: back_to_results
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: search_results}
+          - {path: page.current_product, set: none}
+      - variant_id: "3"
+        browser_action:
+          page: product_detail
+          element: back_to_results
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "3"}
+          - {path: p3.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: search_results}
+          - {path: page.current_product, set: none}
+
+  # -----------------------------------------------------------------------
+  # Back to deals (when agent came via deals, never searched)
+  # -----------------------------------------------------------------------
+
+  - schema_id: back_to_deals
+    action_id_template: "back_to_deals_from_p{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: deals.read, op: eq, value: true}
+      - {path: search.executed, op: eq, value: false}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: back_to_deals
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: deals}
+          - {path: page.current_product, set: none}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: back_to_deals
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: deals}
+          - {path: page.current_product, set: none}
+      - variant_id: "3"
+        browser_action:
+          page: product_detail
+          element: back_to_deals
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "3"}
+          - {path: p3.detail_read, op: eq, value: true}
+        effects_world:
+          - {path: page.type, set: deals}
+          - {path: page.current_product, set: none}
+
+
+  # -----------------------------------------------------------------------
+  # Read Q&A section (products 1 and 2)
+  # -----------------------------------------------------------------------
+
+  - schema_id: check_product_qa
+    action_id_template: "check_p{variant_id}_qa"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: task.requires_qa, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: qa_section
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p1.qa_read, op: eq, value: false}
+        effects_world:
+          - {path: p1.qa_read, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: qa_section
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p2.qa_read, op: eq, value: false}
+        effects_world:
+          - {path: p2.qa_read, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Add to cart (products 1 and 2)
+  # -----------------------------------------------------------------------
+
+  - schema_id: add_product_to_cart
+    action_id_template: "add_p{variant_id}_to_cart"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: task.requires_cart, op: eq, value: true}
+    variants:
+      - variant_id: "1"
+        browser_action:
+          page: product_detail
+          element: add_to_cart_button
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "1"}
+          - {path: p1.detail_read, op: eq, value: true}
+          - {path: p1.added_to_cart, op: eq, value: false}
+        effects_world:
+          - {path: p1.added_to_cart, set: true}
+      - variant_id: "2"
+        browser_action:
+          page: product_detail
+          element: add_to_cart_button
+          interaction: click
+        requires_world:
+          - {path: page.current_product, op: eq, value: "2"}
+          - {path: p2.detail_read, op: eq, value: true}
+          - {path: p2.added_to_cart, op: eq, value: false}
+        effects_world:
+          - {path: p2.added_to_cart, set: true}
+
+
+  # -----------------------------------------------------------------------
+  # Navigate product variants (product 1 only)
+  # -----------------------------------------------------------------------
+
+  - schema_id: select_product_variant
+    action_id_template: "select_p1_variant_{variant_id}"
+    requestor: assistant
+    classification: causal
+    requires_world:
+      - {path: page.type, op: eq, value: product_detail}
+      - {path: page.current_product, op: eq, value: "1"}
+      - {path: p1.detail_read, op: eq, value: true}
+      - {path: task.requires_variants, op: eq, value: true}
+    variants:
+      - variant_id: a
+        browser_action:
+          page: product_detail
+          element: variant_option_a
+          interaction: click
+        requires_world:
+          - {path: p1.variant_a_viewed, op: eq, value: false}
+        effects_world:
+          - {path: p1.variant_a_viewed, set: true}
+      - variant_id: b
+        browser_action:
+          page: product_detail
+          element: variant_option_b
+          interaction: click
+        requires_world:
+          - {path: p1.variant_a_viewed, op: eq, value: true}
+          - {path: p1.variant_b_viewed, op: eq, value: false}
+        effects_world:
+          - {path: p1.variant_b_viewed, set: true}

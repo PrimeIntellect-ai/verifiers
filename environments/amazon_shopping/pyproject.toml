@@ -1,0 +1,21 @@
+[project]
+name = "amazon-shopping"
+version = "0.1.0"
+description = "Amazon Shopping browser environment with kernel-sampled tasks from depgraph"
+tags = ["browser", "cua", "vision", "shopping", "amazon", "full-browse"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+    "prime-sandboxes>=0.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["amazon_shopping.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 2

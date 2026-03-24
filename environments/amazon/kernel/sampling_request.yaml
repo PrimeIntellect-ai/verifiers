@@ -1,0 +1,818 @@
+version: 1
+max_tasks: 2000
+
+# ---------------------------------------------------------------------------
+# Terminal Profiles
+#
+# Each profile defines what "done" means. goal_world is populated directly
+# from the matched profile's requires_world predicates. Dedup by
+# (seed_id, terminal_profile_id).
+# ---------------------------------------------------------------------------
+
+terminal_profiles:
+
+  - profile_id: submitted_surface
+    description: >
+      Agent searched, read results page, and submitted findings without
+      visiting any product detail pages. Suitable for quick price scans
+      or availability checks from search results alone.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: extract.results_read, op: eq, value: true}
+
+  - profile_id: submitted_with_detail
+    description: >
+      Agent searched, visited at least one product detail page, and
+      submitted findings. Covers single-product deep dives and
+      availability/shipping checks.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: p1.detail_read, op: eq, value: true}
+
+  - profile_id: submitted_comparison
+    description: >
+      Agent searched, visited at least two product detail pages for
+      comparison, and submitted findings. Covers multi-product price
+      comparisons, review-based rankings, etc.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: p1.detail_read, op: eq, value: true}
+      - {path: p2.detail_read, op: eq, value: true}
+
+  - profile_id: submitted_from_category
+    description: >
+      Agent entered via category browsing, read category listings,
+      and submitted findings. May or may not have visited product
+      detail pages.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: category.navigated, op: eq, value: true}
+      - {path: category.read, op: eq, value: true}
+
+  - profile_id: submitted_from_deals
+    description: >
+      Agent entered via deals page, read deal listings, and submitted
+      findings. May have visited a deal product for detail.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: deals.navigated, op: eq, value: true}
+      - {path: deals.read, op: eq, value: true}
+
+  - profile_id: submitted_with_cart
+    description: >
+      Agent added at least one product to cart, opened the cart,
+      read cart contents, and submitted findings. Covers price
+      verification and cart-total checking tasks.
+    requires_world:
+      - {path: results.submitted, op: eq, value: true}
+      - {path: p1.added_to_cart, op: eq, value: true}
+      - {path: cart.opened, op: eq, value: true}
+      - {path: cart.read, op: eq, value: true}
+
+
+# ---------------------------------------------------------------------------
+# Seed Schemas
+#
+# Three schemas for three complexity tiers. Each schema has its own
+# allowed_terminal_profiles to control task depth. Dimensions within
+# each schema create structural diversity via Cartesian product.
+#
+# BFS performance note: max_depth is kept tight (min_depth + 2–3) to
+# prevent combinatorial explosion from independent optional actions.
+# ---------------------------------------------------------------------------
+
+seed_schemas:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Surface tasks — search + read results + submit (no product detail)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: surface_tasks
+    seed_id_template: "surface_{search_method}"
+    allowed_terminal_profiles:
+      - submitted_surface
+    min_depth: 4
+    max_depth: 10
+
+    # Base start_world: all state at defaults
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      # Surface tasks: no detail, no shipping, no reviews, no variants
+      - {path: task.requires_detail, set: false}
+      - {path: task.requires_shipping, set: false}
+      - {path: task.requires_reviews, set: false}
+      - {path: task.requires_variants, set: false}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_cart, set: false}
+      - {path: task.entry_point, set: search}
+      - {path: task.num_products, set: 0}
+
+    dimensions:
+      - dimension_id: search_method
+        variants:
+          - variant_id: plain
+            start_world:
+              - {path: task.requires_filters, set: false}
+
+          - variant_id: filtered
+            start_world:
+              - {path: task.requires_filters, set: true}
+            min_depth_delta: 2
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Single-product tasks — search + visit 1 product + optional sub-actions
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: single_product_tasks
+    seed_id_template: "single_{sub_actions}_{search_method}"
+    allowed_terminal_profiles:
+      - submitted_with_detail
+    min_depth: 7
+    max_depth: 10
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.requires_detail, set: true}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_cart, set: false}
+      - {path: task.entry_point, set: search}
+      - {path: task.num_products, set: 1}
+
+    dimensions:
+      - dimension_id: sub_actions
+        variants:
+          - variant_id: minimal
+            description: Just read product detail, no sub-actions.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.requires_variants, set: false}
+
+          - variant_id: shipping
+            description: Check delivery to a ZIP code.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 1
+
+          - variant_id: reviews
+            description: Read product reviews.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 1
+
+          - variant_id: shipping_and_reviews
+            description: Check shipping and read reviews.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+          - variant_id: deep_dive
+            description: Full product deep-dive with shipping, reviews, and variant checking.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: true}
+            min_depth_delta: 3
+            max_depth_delta: 3
+
+      - dimension_id: search_method
+        variants:
+          - variant_id: plain
+            start_world:
+              - {path: task.requires_filters, set: false}
+
+          - variant_id: filtered
+            start_world:
+              - {path: task.requires_filters, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Comparison tasks — search + visit 2-3 products + compare
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: comparison_tasks
+    seed_id_template: "compare_{sub_actions}_{search_method}"
+    allowed_terminal_profiles:
+      - submitted_comparison
+    min_depth: 12
+    max_depth: 16
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.requires_detail, set: true}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_cart, set: false}
+      - {path: task.entry_point, set: search}
+      - {path: task.num_products, set: 3}
+
+    dimensions:
+      - dimension_id: sub_actions
+        variants:
+          - variant_id: minimal
+            description: Compare products by detail page info only.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.requires_variants, set: false}
+
+          - variant_id: shipping
+            description: Compare products with shipping checks.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 2
+            max_depth_delta: 1
+
+          - variant_id: reviews
+            description: Compare products with review reading.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 2
+            max_depth_delta: 1
+
+          - variant_id: full
+            description: Full comparison with shipping and reviews.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 4
+            max_depth_delta: 3
+
+          - variant_id: full_with_variants
+            description: Full comparison with shipping, reviews, and variant checking.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: true}
+            min_depth_delta: 5
+            max_depth_delta: 4
+
+      - dimension_id: search_method
+        variants:
+          - variant_id: plain
+            start_world:
+              - {path: task.requires_filters, set: false}
+
+          - variant_id: filtered
+            start_world:
+              - {path: task.requires_filters, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 1
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Category browse tasks — enter via category menu instead of search
+  #
+  # Storyline: home → category → read listings → (optional: search within
+  # category) → optional product detail → compile → submit
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: category_browse_tasks
+    seed_id_template: "category_{depth_tier}_{sub_actions}"
+    allowed_terminal_profiles:
+      - submitted_from_category
+    min_depth: 5
+    max_depth: 10
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.entry_point, set: category}
+      - {path: task.requires_filters, set: false}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_cart, set: false}
+      - {path: task.requires_variants, set: false}
+
+    dimensions:
+      - dimension_id: depth_tier
+        variants:
+          - variant_id: surface
+            description: Browse category listings only, no product detail.
+            start_world:
+              - {path: task.requires_detail, set: false}
+              - {path: task.num_products, set: 0}
+
+          - variant_id: with_detail
+            description: Browse category, then visit one product detail page.
+            start_world:
+              - {path: task.requires_detail, set: true}
+              - {path: task.num_products, set: 1}
+            min_depth_delta: 3
+            max_depth_delta: 2
+
+          - variant_id: with_search
+            description: Browse category, search within it, then visit product detail.
+            start_world:
+              - {path: task.requires_detail, set: true}
+              - {path: task.num_products, set: 1}
+            min_depth_delta: 5
+            max_depth_delta: 5
+
+          - variant_id: with_compare
+            description: Browse category, search, then compare two products.
+            start_world:
+              - {path: task.requires_detail, set: true}
+              - {path: task.num_products, set: 3}
+            min_depth_delta: 7
+            max_depth_delta: 7
+
+      - dimension_id: sub_actions
+        variants:
+          - variant_id: minimal
+            description: No extra sub-actions.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+
+          - variant_id: with_reviews
+            description: Read product reviews.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: true}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: with_shipping
+            description: Check shipping info.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: false}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: full
+            description: Reviews and shipping.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Deal hunting tasks — enter via deals page
+  #
+  # Storyline: home → deals → read deals → click deal product →
+  # read detail → optional sub-actions → compile → submit
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: deal_hunt_tasks
+    seed_id_template: "deals_{depth_tier}_{sub_actions}"
+    allowed_terminal_profiles:
+      - submitted_from_deals
+    min_depth: 5
+    max_depth: 10
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.entry_point, set: deals}
+      - {path: task.requires_filters, set: false}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_cart, set: false}
+      - {path: task.requires_variants, set: false}
+
+    dimensions:
+      - dimension_id: depth_tier
+        variants:
+          - variant_id: surface
+            description: Read deal listings only, no product detail.
+            start_world:
+              - {path: task.requires_detail, set: false}
+              - {path: task.num_products, set: 0}
+
+          - variant_id: with_detail
+            description: Click into a deal product and read detail.
+            start_world:
+              - {path: task.requires_detail, set: true}
+              - {path: task.num_products, set: 1}
+            min_depth_delta: 3
+            max_depth_delta: 2
+
+          - variant_id: with_compare
+            description: Browse deals, then compare two deal products.
+            start_world:
+              - {path: task.requires_detail, set: true}
+              - {path: task.num_products, set: 3}
+            min_depth_delta: 6
+            max_depth_delta: 5
+
+      - dimension_id: sub_actions
+        variants:
+          - variant_id: minimal
+            description: No extra sub-actions.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+
+          - variant_id: with_reviews
+            description: Read product reviews.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: true}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: with_shipping
+            description: Check shipping info.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: false}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: full
+            description: Reviews and shipping.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Q&A investigation tasks — search + visit product + read Q&A
+  #
+  # Storyline: home → search → results → click product → read detail →
+  # read Q&A → optional reviews → compile → submit
+  # Uses existing submitted_with_detail terminal profile.
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: qa_investigation_tasks
+    seed_id_template: "qa_{sub_actions}_{search_method}"
+    allowed_terminal_profiles:
+      - submitted_with_detail
+    min_depth: 8
+    max_depth: 12
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.entry_point, set: search}
+      - {path: task.requires_detail, set: true}
+      - {path: task.requires_qa, set: true}
+      - {path: task.requires_cart, set: false}
+      - {path: task.num_products, set: 1}
+
+    dimensions:
+      - dimension_id: sub_actions
+        variants:
+          - variant_id: qa_only
+            description: Just Q&A, no reviews or shipping.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.requires_variants, set: false}
+
+          - variant_id: qa_and_reviews
+            description: Q&A plus reviews for thorough product investigation.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: full_investigation
+            description: Q&A, reviews, and shipping — complete product investigation.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: false}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+          - variant_id: full_with_variants
+            description: Q&A, reviews, shipping, and variant checking.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: true}
+              - {path: task.requires_variants, set: true}
+            min_depth_delta: 3
+            max_depth_delta: 3
+
+      - dimension_id: search_method
+        variants:
+          - variant_id: plain
+            start_world:
+              - {path: task.requires_filters, set: false}
+
+          - variant_id: filtered
+            start_world:
+              - {path: task.requires_filters, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 2
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Cart verification tasks — search + visit product(s) + add to cart +
+  # open cart + read cart contents
+  #
+  # Storyline: search → results → click product → read detail → add to
+  # cart → (optional: second product) → open cart → read cart → compile
+  # → submit
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - schema_id: cart_verification_tasks
+    seed_id_template: "cart_{cart_depth}_{search_method}"
+    allowed_terminal_profiles:
+      - submitted_with_cart
+    min_depth: 10
+    max_depth: 17
+
+    start_world:
+      - {path: page.type, set: none}
+      - {path: page.current_product, set: none}
+      - {path: search.query_entered, set: false}
+      - {path: search.executed, set: false}
+      - {path: search.refined, set: false}
+      - {path: filter.condition, set: none}
+      - {path: filter.price_range, set: false}
+      - {path: filter.prime_only, set: false}
+      - {path: sort.applied, set: none}
+      - {path: extract.results_read, set: false}
+      - {path: p1.detail_read, set: false}
+      - {path: p1.shipping_checked, set: false}
+      - {path: p1.reviews_read, set: false}
+      - {path: p1.seller_checked, set: false}
+      - {path: p1.variant_a_viewed, set: false}
+      - {path: p1.variant_b_viewed, set: false}
+      - {path: p1.qa_read, set: false}
+      - {path: p1.added_to_cart, set: false}
+      - {path: p2.detail_read, set: false}
+      - {path: p2.shipping_checked, set: false}
+      - {path: p2.reviews_read, set: false}
+      - {path: p2.seller_checked, set: false}
+      - {path: p2.qa_read, set: false}
+      - {path: p2.added_to_cart, set: false}
+      - {path: p3.detail_read, set: false}
+      - {path: p3.shipping_checked, set: false}
+      - {path: p3.reviews_read, set: false}
+      - {path: category.navigated, set: false}
+      - {path: category.read, set: false}
+      - {path: deals.navigated, set: false}
+      - {path: deals.read, set: false}
+      - {path: cart.opened, set: false}
+      - {path: cart.read, set: false}
+      - {path: results.compiled, set: false}
+      - {path: results.submitted, set: false}
+      - {path: task.entry_point, set: search}
+      - {path: task.requires_detail, set: true}
+      - {path: task.requires_cart, set: true}
+      - {path: task.requires_qa, set: false}
+      - {path: task.requires_variants, set: false}
+
+    dimensions:
+      - dimension_id: cart_depth
+        variants:
+          - variant_id: single_item
+            description: Add one product to cart and verify.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.num_products, set: 1}
+
+          - variant_id: single_with_shipping
+            description: Add one product, check shipping, verify cart.
+            start_world:
+              - {path: task.requires_shipping, set: true}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.num_products, set: 1}
+            min_depth_delta: 1
+            max_depth_delta: 1
+
+          - variant_id: multi_item
+            description: Add two products to cart, compare in cart.
+            start_world:
+              - {path: task.requires_shipping, set: false}
+              - {path: task.requires_reviews, set: false}
+              - {path: task.num_products, set: 3}
+            min_depth_delta: 3
+            max_depth_delta: 2
+
+      - dimension_id: search_method
+        variants:
+          - variant_id: plain
+            start_world:
+              - {path: task.requires_filters, set: false}
+
+          - variant_id: filtered
+            start_world:
+              - {path: task.requires_filters, set: true}
+            min_depth_delta: 2
+            max_depth_delta: 1

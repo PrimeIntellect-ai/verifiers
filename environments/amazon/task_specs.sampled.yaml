@@ -1,0 +1,6683 @@
+version: 1
+tasks:
+- task_id: surface_plain_d6_000
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 0
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: extract.results_read
+    value: true
+  terminal_profile_id: submitted_surface
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: surface_filtered_d6_001
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 0
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: extract.results_read
+    value: true
+  terminal_profile_id: submitted_surface
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: single_minimal_plain_d8_002
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 8
+  runtime: null
+- task_id: single_minimal_filtered_d9_003
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 9
+  runtime: null
+- task_id: single_shipping_plain_d8_004
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 8
+  runtime: null
+- task_id: single_shipping_filtered_d10_005
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 10
+  runtime: null
+- task_id: single_reviews_plain_d8_006
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 8
+  runtime: null
+- task_id: single_reviews_filtered_d10_007
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 10
+  runtime: null
+- task_id: single_shipping_and_reviews_plain_d9_008
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 9
+  runtime: null
+- task_id: single_shipping_and_reviews_filtered_d11_009
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 11
+  runtime: null
+- task_id: single_deep_dive_plain_d10_010
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 10
+  runtime: null
+- task_id: single_deep_dive_filtered_d12_011
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  min_plan_length: 12
+  runtime: null
+- task_id: compare_minimal_plain_d12_012
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  min_plan_length: 12
+  runtime: null
+- task_id: compare_minimal_filtered_d14_013
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  min_plan_length: 14
+  runtime: null
+- task_id: compare_shipping_plain_d14_014
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  min_plan_length: 14
+  runtime: null
+- task_id: compare_shipping_filtered_d16_015
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  min_plan_length: 16
+  runtime: null
+- task_id: compare_reviews_plain_d14_016
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  min_plan_length: 14
+  runtime: null
+- task_id: compare_reviews_filtered_d16_017
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  min_plan_length: 16
+  runtime: null
+- task_id: compare_full_plain_d16_018
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  min_plan_length: 16
+  runtime: null
+- task_id: compare_full_filtered_d18_019
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  - read_p3_detail
+  - check_p3_shipping
+  min_plan_length: 18
+  runtime: null
+- task_id: compare_full_with_variants_plain_d17_020
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  - read_p3_detail
+  min_plan_length: 17
+  runtime: null
+- task_id: compare_full_with_variants_filtered_d19_021
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  - op: eq
+    path: p2.detail_read
+    value: true
+  terminal_profile_id: submitted_comparison
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  - read_p2_detail
+  - click_product_3
+  - read_p3_detail
+  - check_p3_shipping
+  - check_p3_reviews
+  min_plan_length: 19
+  runtime: null
+- task_id: category_surface_minimal_d5_022
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 5
+  runtime: null
+- task_id: category_surface_with_reviews_d6_023
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: category_surface_with_shipping_d6_024
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: category_surface_full_d7_025
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - compile_results
+  - submit_results
+  min_plan_length: 7
+  runtime: null
+- task_id: category_with_detail_minimal_d8_026
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - compile_results
+  - submit_results
+  min_plan_length: 8
+  runtime: null
+- task_id: category_with_detail_with_reviews_d9_027
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - compile_results
+  - submit_results
+  min_plan_length: 9
+  runtime: null
+- task_id: category_with_detail_with_shipping_d9_028
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - compile_results
+  - submit_results
+  min_plan_length: 9
+  runtime: null
+- task_id: category_with_detail_full_d10_029
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  min_plan_length: 10
+  runtime: null
+- task_id: category_with_search_minimal_d10_030
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  min_plan_length: 10
+  runtime: null
+- task_id: category_with_search_with_reviews_d11_031
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  min_plan_length: 11
+  runtime: null
+- task_id: category_with_search_with_shipping_d11_032
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  min_plan_length: 11
+  runtime: null
+- task_id: category_with_search_full_d12_033
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  min_plan_length: 12
+  runtime: null
+- task_id: category_with_compare_minimal_d12_034
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  min_plan_length: 12
+  runtime: null
+- task_id: category_with_compare_with_reviews_d13_035
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 13
+  runtime: null
+- task_id: category_with_compare_with_shipping_d13_036
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 13
+  runtime: null
+- task_id: category_with_compare_full_d14_037
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: category
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 3
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: category.navigated
+    value: true
+  - op: eq
+    path: category.read
+    value: true
+  terminal_profile_id: submitted_from_category
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_category
+  - read_category_listings
+  - search_within_category
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - submit_search
+  - click_product_2
+  min_plan_length: 14
+  runtime: null
+- task_id: deals_surface_minimal_d5_038
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 5
+  runtime: null
+- task_id: deals_surface_with_reviews_d6_039
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: deals_surface_with_shipping_d6_040
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: false
+  - path: task.num_products
+    set: 0
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - compile_results
+  - submit_results
+  min_plan_length: 6
+  runtime: null
+- task_id: deals_with_detail_minimal_d8_041
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - click_deal_product
+  - compile_results
+  - submit_results
+  min_plan_length: 8
+  runtime: null
+- task_id: deals_with_detail_with_reviews_d9_042
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - click_deal_product
+  - compile_results
+  - submit_results
+  - read_p1_detail
+  min_plan_length: 9
+  runtime: null
+- task_id: deals_with_detail_with_shipping_d9_043
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - click_deal_product
+  - compile_results
+  - submit_results
+  - read_p1_detail
+  min_plan_length: 9
+  runtime: null
+- task_id: deals_with_detail_full_d10_044
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: deals
+  - path: task.requires_filters
+    set: false
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_cart
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_detail
+    set: true
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: deals.navigated
+    value: true
+  - op: eq
+    path: deals.read
+    value: true
+  terminal_profile_id: submitted_from_deals
+  required_actions:
+  - navigate_to_amazon
+  - navigate_to_deals
+  - read_deal_listings
+  - click_deal_product
+  - compile_results
+  - submit_results
+  - read_p1_detail
+  - check_p1_shipping
+  min_plan_length: 10
+  runtime: null
+- task_id: qa_qa_only_plain_d8_045
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 8
+  runtime: null
+- task_id: qa_qa_only_filtered_d10_046
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 10
+  runtime: null
+- task_id: qa_qa_and_reviews_plain_d9_047
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 9
+  runtime: null
+- task_id: qa_qa_and_reviews_filtered_d11_048
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 11
+  runtime: null
+- task_id: qa_full_investigation_plain_d10_049
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 10
+  runtime: null
+- task_id: qa_full_investigation_filtered_d12_050
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  min_plan_length: 12
+  runtime: null
+- task_id: qa_full_with_variants_plain_d11_051
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  min_plan_length: 11
+  runtime: null
+- task_id: qa_full_with_variants_filtered_d13_052
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_qa
+    set: true
+  - path: task.requires_cart
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: true
+  - path: task.requires_variants
+    set: true
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.detail_read
+    value: true
+  terminal_profile_id: submitted_with_detail
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - click_product_1
+  - read_p1_detail
+  - click_product_2
+  min_plan_length: 13
+  runtime: null
+- task_id: cart_single_item_plain_d11_053
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - add_p1_to_cart
+  min_plan_length: 11
+  runtime: null
+- task_id: cart_single_item_filtered_d12_054
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - check_p1_seller
+  - add_p1_to_cart
+  min_plan_length: 12
+  runtime: null
+- task_id: cart_single_with_shipping_plain_d11_055
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - add_p1_to_cart
+  min_plan_length: 11
+  runtime: null
+- task_id: cart_single_with_shipping_filtered_d13_056
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: true
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 1
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - add_p1_to_cart
+  min_plan_length: 13
+  runtime: null
+- task_id: cart_multi_item_plain_d13_057
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 3
+  - path: task.requires_filters
+    set: false
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - add_p1_to_cart
+  min_plan_length: 13
+  runtime: null
+- task_id: cart_multi_item_filtered_d15_058
+  start_world:
+  - path: page.type
+    set: none
+  - path: page.current_product
+    set: none
+  - path: search.query_entered
+    set: false
+  - path: search.executed
+    set: false
+  - path: search.refined
+    set: false
+  - path: filter.condition
+    set: none
+  - path: filter.price_range
+    set: false
+  - path: filter.prime_only
+    set: false
+  - path: sort.applied
+    set: none
+  - path: extract.results_read
+    set: false
+  - path: p1.detail_read
+    set: false
+  - path: p1.shipping_checked
+    set: false
+  - path: p1.reviews_read
+    set: false
+  - path: p1.seller_checked
+    set: false
+  - path: p1.variant_a_viewed
+    set: false
+  - path: p1.variant_b_viewed
+    set: false
+  - path: p1.qa_read
+    set: false
+  - path: p1.added_to_cart
+    set: false
+  - path: p2.detail_read
+    set: false
+  - path: p2.shipping_checked
+    set: false
+  - path: p2.reviews_read
+    set: false
+  - path: p2.seller_checked
+    set: false
+  - path: p2.qa_read
+    set: false
+  - path: p2.added_to_cart
+    set: false
+  - path: p3.detail_read
+    set: false
+  - path: p3.shipping_checked
+    set: false
+  - path: p3.reviews_read
+    set: false
+  - path: category.navigated
+    set: false
+  - path: category.read
+    set: false
+  - path: deals.navigated
+    set: false
+  - path: deals.read
+    set: false
+  - path: cart.opened
+    set: false
+  - path: cart.read
+    set: false
+  - path: results.compiled
+    set: false
+  - path: results.submitted
+    set: false
+  - path: task.entry_point
+    set: search
+  - path: task.requires_detail
+    set: true
+  - path: task.requires_cart
+    set: true
+  - path: task.requires_qa
+    set: false
+  - path: task.requires_variants
+    set: false
+  - path: task.requires_shipping
+    set: false
+  - path: task.requires_reviews
+    set: false
+  - path: task.num_products
+    set: 3
+  - path: task.requires_filters
+    set: true
+  start_bindings: []
+  goal_world:
+  - op: eq
+    path: results.submitted
+    value: true
+  - op: eq
+    path: p1.added_to_cart
+    value: true
+  - op: eq
+    path: cart.opened
+    value: true
+  - op: eq
+    path: cart.read
+    value: true
+  terminal_profile_id: submitted_with_cart
+  required_actions:
+  - navigate_to_amazon
+  - enter_search_query
+  - submit_search
+  - read_results_text
+  - refine_search
+  - compile_results
+  - submit_results
+  - open_cart
+  - read_cart
+  - click_product_1
+  - read_p1_detail
+  - check_p1_seller
+  - add_p1_to_cart
+  min_plan_length: 15
+  runtime: null
