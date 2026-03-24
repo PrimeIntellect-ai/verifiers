@@ -174,23 +174,33 @@ class EnvGroup(vf.Environment):
             return add_task
 
         for env, name in zip(self.envs, self.env_names):
-            add_task = make_add_task_fn(name)
+            is_nested = isinstance(env, EnvGroup)
 
             # Build dataset if using DatasetBuilder, returns None if not available
             env_dataset = env.build_dataset()
             if env_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_dataset.column_names:
-                    env_dataset = env_dataset.remove_columns(["task"])
-                env_dataset = env_dataset.map(add_task, **map_kwargs)
+                if is_nested and "task" in env_dataset.column_names:
+                    # Preserve inner EnvGroup's task names for correct routing
+                    for inner_name in env.env_names:
+                        self.env_map[inner_name] = env
+                else:
+                    add_task = make_add_task_fn(name)
+                    if "task" in env_dataset.column_names:
+                        env_dataset = env_dataset.remove_columns(["task"])
+                    env_dataset = env_dataset.map(add_task, **map_kwargs)
                 datasets.append(env_dataset)
+
             # Build eval_dataset if using DatasetBuilder, returns None if not available
             env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_eval_dataset.column_names:
-                    env_eval_dataset = env_eval_dataset.remove_columns(["task"])
-                env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
+                if is_nested and "task" in env_eval_dataset.column_names:
+                    # Inner task names already registered above
+                    pass
+                else:
+                    add_task = make_add_task_fn(name)
+                    if "task" in env_eval_dataset.column_names:
+                        env_eval_dataset = env_eval_dataset.remove_columns(["task"])
+                    env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
@@ -320,7 +330,13 @@ class EnvGroup(vf.Environment):
         return await env.rollout(input, client, model, sampling_args)
 
     def get_env_for_task(self, task: str) -> vf.Environment:
-        return self.env_map.get(task, self.envs[0])
+        env = self.env_map.get(task)
+        if env is None:
+            available = sorted(self.env_map.keys())
+            raise ValueError(
+                f"No environment found for task '{task}'. Available tasks: {available}"
+            )
+        return env
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the max_seq_len value for this environment group and all sub-environments."""
