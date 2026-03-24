@@ -78,9 +78,12 @@ class ZMQEnvServer(EnvServer):
                         client_id, request_id, payload = frames
                         if payload == _HEALTH_PING:
                             # Health check — respond immediately
-                            await self.frontend.send_multipart(
-                                [client_id, request_id, _HEALTH_RESPONSE]
-                            )
+                            try:
+                                await self.frontend.send_multipart(
+                                    [client_id, request_id, _HEALTH_RESPONSE]
+                                )
+                            except zmq.ZMQError:
+                                pass  # peer disconnected between ping and pong
                         elif not payload:
                             await self.router.forward_cancel(request_id, client_id)
                         else:
