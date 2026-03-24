@@ -12,7 +12,6 @@ import asyncio
 import gc
 import logging
 import signal
-import sys
 import time
 from typing import Any, cast
 
@@ -33,20 +32,8 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.process_utils import request_parent_death_signal
 from verifiers.utils.serve_utils import msgpack_encoder
-
-
-def request_parent_death_signal() -> None:
-    """Ask Linux to SIGTERM us when the parent dies."""
-    if sys.platform != "linux":
-        return
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        libc.prctl(1, signal.SIGTERM)
-    except Exception:
-        pass
 
 
 class EnvWorkerStats(BaseModel):

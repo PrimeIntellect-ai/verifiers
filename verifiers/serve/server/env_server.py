@@ -8,27 +8,13 @@ client-facing transport in ``serve()`` and ``close()``.
 import asyncio
 import logging
 import signal
-import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
-
-
-def request_parent_death_signal() -> None:
-    """Ask the Linux kernel to send SIGTERM when the parent process dies."""
-    if sys.platform != "linux":
-        return
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
-    except Exception:
-        pass
+from verifiers.utils.process_utils import request_parent_death_signal
 
 
 class EnvServer(ABC):
