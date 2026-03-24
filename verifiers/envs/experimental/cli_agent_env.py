@@ -636,10 +636,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         If the rollout was not completed (e.g. cancelled during shutdown),
         the sandbox is always deleted since scoring will not happen.
         """
-        await self.post_rollout(state)
+        completed = state.get("is_completed", False)
+        if completed:
+            await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            completed = state.get("is_completed", False)
             if self.keep_sandbox_for_scoring and completed:
                 self.deregister_sandbox(sandbox_id)
             else:
