@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import multiprocessing as mp
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from typing import cast
 
 from math_verify import parse, verify
@@ -71,8 +72,8 @@ class MathRubric(Rubric):
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
 
-        self.executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="math-verify"
+        self.executor = ProcessPoolExecutor(
+            max_workers=1, mp_context=mp.get_context("forkserver")
         )
         self.executor_name = f"math-verify-{id(self)}"
         register_executor(
