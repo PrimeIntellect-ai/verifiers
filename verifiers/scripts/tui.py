@@ -2032,7 +2032,7 @@ class CompareRunsScreen(Screen):
             ("=0", 7),
             ("=1", 7),
             ("mix", 22),
-            ("rollouts", 10),
+            ("rollouts", 11),
             ("unique prompts", 10),
             ("runs", 7),
         ]  # name, width (includes 2 for padding)
@@ -2090,8 +2090,8 @@ class CompareRunsScreen(Screen):
                 }
                 style_maps[key] = {v: "" for v in ordered}
 
-        # -- Drop optional columns until setting columns fit --
-        # Use fixed width (not ratio) so Rich never truncates setting values.
+        # -- If budget-based aliasing isn't enough, force-alias everything --
+        # Then drop optional columns only if fully-aliased content still doesn't fit.
         col_widths = [
             max(
                 len(col_headers[i]),
@@ -2100,6 +2100,50 @@ class CompareRunsScreen(Screen):
             for i, k in enumerate(setting_keys)
         ]
         settings_need = sum(w + 2 for w in col_widths)
+
+        # Check if current content fits with all optional columns
+        if terminal_width - 9 - all_opt_w < settings_need + n * 2:
+            # Doesn't fit — force-alias ALL headers and values
+            col_headers = []
+            axis_legend_rows = []
+            value_legend_rows = []
+            display_maps = {}
+            style_maps = {}
+            for kidx, key in enumerate(setting_keys):
+                short_name = self._short_setting_key(key)
+                axis_num = kidx + 1
+                col_headers.append(f"a{axis_num}")
+                axis_legend_rows.append((f"a{axis_num}", short_name, "bold dim"))
+                ordered: List[str] = []
+                for _, settings in run_settings:
+                    v = settings.get(key, "(unset)")
+                    if v not in ordered:
+                        ordered.append(v)
+                display_maps[key] = {}
+                style_maps[key] = {}
+                for vidx, value in enumerate(ordered):
+                    alias = f"v{axis_num}.{vidx + 1}"
+                    display_maps[key][value] = alias
+                    style_maps[key][value] = self._alias_style(alias)
+                    value_legend_rows.append(
+                        (
+                            alias,
+                            short_name,
+                            _truncate_preview(" ".join(value.split()), 120),
+                            style_maps[key][value],
+                        )
+                    )
+            # Recompute col_widths with fully-aliased content
+            col_widths = [
+                max(
+                    len(col_headers[i]),
+                    max((len(display_maps[k][v]) for v in display_maps[k]), default=0),
+                )
+                for i, k in enumerate(setting_keys)
+            ]
+            settings_need = sum(w + 2 for w in col_widths)
+
+        # Drop optional columns if even fully-aliased content doesn't fit
         visible: set[str] = {name for name, _ in optional_cols}
         for drop_group in [
             {"=0", "=1"},
@@ -2109,7 +2153,7 @@ class CompareRunsScreen(Screen):
             {"runs"},
         ]:
             opt_w = sum(w for name, w in optional_cols if name in visible)
-            if terminal_width - 9 - opt_w >= settings_need:
+            if terminal_width - 9 - opt_w >= settings_need + n * 2:
                 break
             visible -= drop_group
         show = visible.__contains__
@@ -2131,7 +2175,7 @@ class CompareRunsScreen(Screen):
             table.add_column("runs", justify="right", width=5, header_style="bold dim")
         if show("rollouts"):
             table.add_column(
-                "rollouts", justify="right", width=8, header_style="bold dim"
+                "rollouts", justify="right", width=9, header_style="bold dim"
             )
         if show("unique prompts"):
             table.add_column(
