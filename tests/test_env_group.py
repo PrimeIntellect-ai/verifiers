@@ -651,3 +651,28 @@ class TestEnvGroup:
         # Routing goes to the correct intermediate group
         assert outer_group.get_env_for_task("a") == mid_group
         assert outer_group.get_env_for_task("b") == mid_group
+
+    def test_nested_env_group_outer_name_matches_inner_task(self, mock_client):
+        """Test that outer name matching an inner task name is not removed from env_map."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        # Outer name "math" intentionally matches an inner task name
+        outer_group = EnvGroup(envs=[inner_group], env_names=["math"])
+
+        # "math" should still be routable since it's a valid inner task
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group

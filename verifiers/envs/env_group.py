@@ -175,11 +175,13 @@ class EnvGroup(vf.Environment):
 
         def _register_inner_tasks(env: EnvGroup, name: str, dataset: Dataset) -> None:
             """Register task names from a nested EnvGroup's dataset in the outer env_map."""
-            for inner_task in set(dataset["task"]):
+            inner_tasks = set(dataset["task"])
+            for inner_task in inner_tasks:
                 self.env_map[inner_task] = env
-            # Remove the stale outer name that was set in the initial env_map
-            # construction — it doesn't correspond to any real task in the dataset.
-            self.env_map.pop(name, None)
+            # Remove the stale outer name only if it isn't also a legitimate
+            # inner task name (e.g. outer name "math" matching inner task "math").
+            if name not in inner_tasks:
+                self.env_map.pop(name, None)
 
         for env, name in zip(self.envs, self.env_names):
             is_nested = isinstance(env, EnvGroup)
