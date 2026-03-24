@@ -471,8 +471,10 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     assert "temperature" in rendered
     assert "max_tokens" in rendered
     assert "split" in rendered
-    assert "run-1" in rendered
-    assert "run-2" in rendered
+    assert "rollouts" in rendered
+    assert (
+        "unique" in rendered
+    )  # "unique prompts" header (may be truncated at narrow widths)
     assert "=0" in rendered
     assert "=1" in rendered
     assert "█" in rendered

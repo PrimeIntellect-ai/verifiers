@@ -1694,6 +1694,9 @@ class CompareRunsScreen(Screen):
         self._refresh_outcomes()
         self._load_distinct_prompt_counts()
 
+    def on_resize(self, event: events.Resize) -> None:
+        self._refresh_outcomes()
+
     def _refresh_outcomes(self) -> None:
         if not self._stats_by_path:
             return
@@ -2029,6 +2032,52 @@ class CompareRunsScreen(Screen):
             collapse_padding=True,
             row_styles=["none", "dim"],
         )
+        # Determine which optional columns to show.
+        # Drop order: (1) =0 & =1, (2) mix, (3) rollouts, (4) unique prompts, (5) runs
+        # "avg" and setting columns are always shown.
+        terminal_width = self.size.width if self.is_mounted else 120
+        n_setting_cols = len(setting_keys)
+        settings_need = sum(
+            max((len(display_maps[key][v]) for v in display_maps[key]), default=0)
+            for key in setting_keys
+        )
+        # avg is always shown: width=7. Padding: 2 chars per column.
+        always_width = 7  # avg
+        # Optional columns in drop order, with their width + 2 for padding each
+        optional_cols = [
+            ("=0", 7),  # width=5 + 2 padding
+            ("=1", 7),  # width=5 + 2 padding (dropped together with =0)
+            ("mix", 22),  # width=20 + 2 padding
+            ("rollouts", 10),  # width=8 + 2 padding
+            ("unique prompts", 10),  # width=8 + 2 padding
+            ("runs", 7),  # width=5 + 2 padding
+        ]
+        # Start with all optional columns, progressively drop until settings fit
+        visible: set[str] = {name for name, _ in optional_cols}
+        # =0 and =1 are always dropped together
+        drop_groups = [
+            {"=0", "=1"},
+            {"mix"},
+            {"rollouts"},
+            {"unique prompts"},
+            {"runs"},
+        ]
+        for drop_group in drop_groups:
+            optional_width = sum(w for name, w in optional_cols if name in visible)
+            padding_for_settings = n_setting_cols * 2
+            avail = (
+                terminal_width
+                - always_width
+                - 2
+                - optional_width
+                - padding_for_settings
+            )
+            if avail >= settings_need + 4 * n_setting_cols:
+                break
+            visible -= drop_group
+
+        show = visible.__contains__
+
         for idx, key in enumerate(setting_keys):
             header_style = "bold reverse" if highlight_col == idx else "bold dim"
             table.add_column(
@@ -2037,15 +2086,23 @@ class CompareRunsScreen(Screen):
                 ratio=1,
                 no_wrap=True,
             )
-        table.add_column("runs", justify="right", width=5, header_style="bold dim")
-        table.add_column("rollouts", justify="right", width=8, header_style="bold dim")
-        table.add_column(
-            "unique prompts", justify="right", width=8, header_style="bold dim"
-        )
+        if show("runs"):
+            table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        if show("rollouts"):
+            table.add_column(
+                "rollouts", justify="right", width=8, header_style="bold dim"
+            )
+        if show("unique prompts"):
+            table.add_column(
+                "unique prompts", justify="right", width=8, header_style="bold dim"
+            )
         table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
-        table.add_column("=0", justify="right", width=5, header_style="bold red")
-        table.add_column("=1", justify="right", width=5, header_style="bold green")
-        table.add_column("mix", width=20, header_style="bold dim")
+        if show("=0"):
+            table.add_column("=0", justify="right", width=5, header_style="bold red")
+        if show("=1"):
+            table.add_column("=1", justify="right", width=5, header_style="bold green")
+        if show("mix"):
+            table.add_column("mix", width=20, header_style="bold dim")
 
         for _group_key_val, group in rows:
             rewards = cast(List[float], group["rewards"])
@@ -2101,33 +2158,47 @@ class CompareRunsScreen(Screen):
                         )
 
             prompt_count = self._distinct_prompts_by_group.get(_group_key_val)
-            table.add_row(
-                *setting_cells,
-                str(len(cast(List[RunInfo], group["runs"]))),
-                str(len(rewards)) if rewards else "—",
-                Text(
-                    str(prompt_count) if prompt_count is not None else "?", style="dim"
-                ),
+            row_cells: list[Any] = list(setting_cells)
+            if show("runs"):
+                row_cells.append(str(len(cast(List[RunInfo], group["runs"]))))
+            if show("rollouts"):
+                row_cells.append(str(len(rewards)) if rewards else "—")
+            if show("unique prompts"):
+                row_cells.append(
+                    Text(
+                        str(prompt_count) if prompt_count is not None else "?",
+                        style="dim",
+                    )
+                )
+            row_cells.append(
                 Text(
                     _format_reward_value(avg_reward) if avg_reward is not None else "—",
                     style=_reward_style(avg_reward)
                     if avg_reward is not None
                     else "dim",
-                ),
-                Text(
-                    f"{(zero_count / total):.0%}" if total else "—",
-                    style=self._share_style(
-                        (zero_count / total) if total else 0.0, False
-                    ),
-                ),
-                Text(
-                    f"{(one_count / total):.0%}" if total else "—",
-                    style=self._share_style(
-                        (one_count / total) if total else 0.0, True
-                    ),
-                ),
-                self._build_reward_mix_bar(rewards),
+                )
             )
+            if show("=0"):
+                row_cells.append(
+                    Text(
+                        f"{(zero_count / total):.0%}" if total else "—",
+                        style=self._share_style(
+                            (zero_count / total) if total else 0.0, False
+                        ),
+                    )
+                )
+            if show("=1"):
+                row_cells.append(
+                    Text(
+                        f"{(one_count / total):.0%}" if total else "—",
+                        style=self._share_style(
+                            (one_count / total) if total else 0.0, True
+                        ),
+                    )
+                )
+            if show("mix"):
+                row_cells.append(self._build_reward_mix_bar(rewards))
+            table.add_row(*row_cells)
 
         return table
 
