@@ -173,6 +173,11 @@ class EnvGroup(vf.Environment):
 
             return add_task
 
+        def _register_inner_tasks(env: EnvGroup, dataset: Dataset) -> None:
+            """Register task names from a nested EnvGroup's dataset in the outer env_map."""
+            for inner_task in set(dataset["task"]):
+                self.env_map[inner_task] = env
+
         for env, name in zip(self.envs, self.env_names):
             is_nested = isinstance(env, EnvGroup)
 
@@ -180,9 +185,10 @@ class EnvGroup(vf.Environment):
             env_dataset = env.build_dataset()
             if env_dataset is not None:
                 if is_nested and "task" in env_dataset.column_names:
-                    # Preserve inner EnvGroup's task names for correct routing
-                    for inner_name in env.env_names:
-                        self.env_map[inner_name] = env
+                    # Preserve inner EnvGroup's task names for correct routing.
+                    # Uses dataset["task"] values (not env.env_names) to handle
+                    # arbitrary nesting depth correctly.
+                    _register_inner_tasks(env, env_dataset)
                 else:
                     add_task = make_add_task_fn(name)
                     if "task" in env_dataset.column_names:
@@ -194,8 +200,9 @@ class EnvGroup(vf.Environment):
             env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
                 if is_nested and "task" in env_eval_dataset.column_names:
-                    # Inner task names already registered above
-                    pass
+                    # Register inner task names from eval dataset too, in case
+                    # the nested EnvGroup has eval-only datasets.
+                    _register_inner_tasks(env, env_eval_dataset)
                 else:
                     add_task = make_add_task_fn(name)
                     if "task" in env_eval_dataset.column_names:

@@ -584,3 +584,66 @@ class TestEnvGroup:
         assert outer_group.get_env_for_task("math") == inner_group
         assert outer_group.get_env_for_task("code") == inner_group
         assert outer_group.get_env_for_task("writing") == env_writing
+
+    def test_nested_env_group_eval_only(self, mock_client):
+        """Test nested EnvGroup with eval-only datasets registers inner task names."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        outer_group = EnvGroup(envs=[inner_group], env_names=["my_envs"])
+
+        # Inner task names should be registered even though there's no train dataset
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group
+
+        # Eval dataset should preserve inner task names
+        eval_dataset = outer_group.get_eval_dataset()
+        assert eval_dataset is not None
+        tasks = eval_dataset["task"]
+        assert "math" in tasks
+        assert "code" in tasks
+
+    def test_deeply_nested_env_group(self, mock_client):
+        """Test 3+ levels of nesting routes to the correct intermediate EnvGroup."""
+        env_a = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_b = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_a, env_b], env_names=["a", "b"])
+        mid_group = EnvGroup(envs=[inner_group], env_names=["inner"])
+        outer_group = EnvGroup(envs=[mid_group], env_names=["mid"])
+
+        # Task names from the leaf level should propagate through all nesting levels
+        dataset = outer_group.get_dataset()
+        tasks = dataset["task"]
+        assert "a" in tasks
+        assert "b" in tasks
+        assert "inner" not in tasks
+        assert "mid" not in tasks
+
+        # Routing goes to the correct intermediate group
+        assert outer_group.get_env_for_task("a") == mid_group
+        assert outer_group.get_env_for_task("b") == mid_group
