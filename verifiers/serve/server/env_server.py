@@ -92,9 +92,6 @@ class EnvServer(ABC):
 
         def signal_handler(sig, frame):
             stop_event.set()
-            if sig == signal.SIGTERM:
-                raise SystemExit(143)
-            raise KeyboardInterrupt()
 
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
@@ -102,6 +99,9 @@ class EnvServer(ABC):
         try:
             await self.serve(stop_event=stop_event)
         finally:
+            # Ignore signals during cleanup to avoid interrupting teardown.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             await self.router.close()
             await self.close()
 

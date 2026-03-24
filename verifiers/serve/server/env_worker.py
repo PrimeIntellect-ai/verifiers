@@ -117,6 +117,7 @@ class EnvWorker:
         # state tracking
         self.clients: dict[str, Client] = {}
         self.active_tasks: dict[str, asyncio.Task] = {}
+        self.shutting_down: bool = False
 
         # stats
         self.lag_monitor = EventLoopLagMonitor()
@@ -184,6 +185,8 @@ class EnvWorker:
                 )
 
         except asyncio.CancelledError:
+            if self.shutting_down:
+                return
             response = BaseResponse(success=False, error="Request was cancelled")
 
         except Exception as e:
@@ -192,56 +195,41 @@ class EnvWorker:
             )
             response = BaseResponse(success=False, error=repr(e))
 
-        async def serialize_and_send(
-            client_id: bytes,
-            request_id: str,
-            response: BaseResponse,
-        ) -> None:
-            """Helper to serialize and send the response."""
-
-            def serialize() -> bytes:
-                """Serialize the response."""
-                return cast(
-                    bytes,
-                    msgpack.packb(
-                        response.model_dump(mode="python", warnings=False),
-                        default=msgpack_encoder,
-                        use_bin_type=True,
-                    ),
-                )
-
-            try:
-                response_bytes = await asyncio.to_thread(serialize)
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to serialize response for {request_id}: {e}",
-                    exc_info=True,
-                )
-                response_bytes = cast(
-                    bytes,
-                    msgpack.packb(
-                        BaseResponse(
-                            success=False,
-                            error=f"Response serialization failed: {repr(e)}",
-                        ).model_dump(mode="python", warnings=False),
-                        default=msgpack_encoder,
-                        use_bin_type=True,
-                    ),
-                )
-
-            try:
-                await self.response_socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes]
-                )
-            except zmq.ZMQError as e:
-                self.logger.warning(
-                    f"Failed to send response for {request_id[:7]}: {e}"
-                )
+        def serialize() -> bytes:
+            return cast(
+                bytes,
+                msgpack.packb(
+                    response.model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
 
         try:
-            await asyncio.shield(serialize_and_send(client_id, request_id, response))
-        except asyncio.CancelledError:
-            pass
+            response_bytes = await asyncio.to_thread(serialize)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to serialize response for {request_id}: {e}",
+                exc_info=True,
+            )
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    BaseResponse(
+                        success=False,
+                        error=f"Response serialization failed: {repr(e)}",
+                    ).model_dump(mode="python", warnings=False),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
+
+        try:
+            await self.response_socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
+        except zmq.ZMQError as e:
+            self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
 
     async def stats_loop(self, interval: float = 10.0) -> None:
         """Loop to push worker stats to the router."""
@@ -285,7 +273,7 @@ class EnvWorker:
                     break
 
                 try:
-                    events = dict(await poller.poll(timeout=1000))
+                    events = dict(await poller.poll(timeout=100))
                     if self.pull_socket not in events:
                         continue
 
@@ -330,6 +318,7 @@ class EnvWorker:
             await asyncio.gather(stats_task, lag_task, return_exceptions=True)
 
     async def close(self) -> None:
+        self.shutting_down = True
         if self.active_tasks:
             tasks = list(self.active_tasks.values())
             self.logger.info(
@@ -365,9 +354,6 @@ class EnvWorker:
 
         def signal_handler(sig, _frame):
             stop_event.set()
-            if sig == signal.SIGTERM:
-                raise SystemExit(143)
-            raise KeyboardInterrupt()
 
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
@@ -375,6 +361,8 @@ class EnvWorker:
         try:
             await self.serve(stop_event=stop_event)
         finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             await self.close()
 
     @staticmethod

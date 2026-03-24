@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-from verifiers.utils.process_utils import terminate_process
+from verifiers.utils.process_utils import terminate_process, terminate_processes
 from verifiers.utils.serve_utils import make_ipc_address
 
 # Callback type: (client_id, request_id, response_bytes) -> awaitable
@@ -401,8 +401,8 @@ class EnvRouter:
             self.lag_task.cancel()
             await asyncio.gather(self.lag_task, return_exceptions=True)
 
+        terminate_processes([w.process for w in self.workers.values()])
         for worker in self.workers.values():
-            terminate_process(worker.process)
             worker.socket.close()
 
         self.workers.clear()

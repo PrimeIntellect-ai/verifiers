@@ -52,3 +52,23 @@ def terminate_process(
     if process.is_alive():
         process.kill()
         process.join(timeout=kill_timeout)
+
+
+def terminate_processes(
+    processes: list[BaseProcess],
+    timeout: float = 5.0,
+    kill_timeout: float = 5.0,
+) -> None:
+    """Terminate multiple processes in parallel.
+
+    Sends SIGTERM to all live processes first, then joins all with a shared
+    timeout, escalating to SIGKILL for any that don't exit in time.
+    """
+    alive = [p for p in processes if p.is_alive()]
+    for p in alive:
+        p.terminate()
+    for p in alive:
+        p.join(timeout=timeout)
+        if p.is_alive():
+            p.kill()
+            p.join(timeout=kill_timeout)

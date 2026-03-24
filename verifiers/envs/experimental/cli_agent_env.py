@@ -632,11 +632,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         (e.g. when the rubric needs sandbox access during scoring).
         The sandbox is still deregistered from active tracking so the
         environment teardown does not attempt a redundant bulk-delete.
+
+        If the rollout was not completed (e.g. cancelled during shutdown),
+        the sandbox is always deleted since scoring will not happen.
         """
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            if self.keep_sandbox_for_scoring:
+            completed = state.get("is_completed", False)
+            if self.keep_sandbox_for_scoring and completed:
                 self.deregister_sandbox(sandbox_id)
             else:
                 await self.delete_sandbox(sandbox_id)
