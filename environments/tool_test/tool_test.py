@@ -82,7 +82,7 @@ def load_environment(
     Loads tool-test environment.
     """
 
-    def _build_rows(count, seed_offset=0):
+    def build_dataset(count, seed_offset=0):
         rng = random.Random(42 + seed_offset)
         rows = []
         for _ in range(count):
@@ -98,10 +98,10 @@ def load_environment(
         return Dataset.from_list(rows)
 
     def build_train_dataset():
-        return _build_rows(num_train_examples, seed_offset=0)
+        return build_dataset(num_train_examples, seed_offset=0)
 
     def build_eval_dataset():
-        return _build_rows(num_eval_examples, seed_offset=1)
+        return build_dataset(num_eval_examples, seed_offset=1)
 
     rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
