@@ -161,7 +161,7 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
-    eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 512 --disable-env-server"
+    eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 512"
     try:
         process = subprocess.run(
             eval_cmd,
