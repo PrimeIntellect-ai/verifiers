@@ -12,7 +12,6 @@ Unique characteristics:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -20,7 +19,9 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from renderers.base import ParsedResponse, RenderedTokens
 from renderers.parsing import parse_minimax
 
-_DEFAULT_SYSTEM = "You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax."
+_DEFAULT_SYSTEM = (
+    "You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax."
+)
 
 _TOOLS_HEADER = (
     "\n\n# Tools\n"
@@ -124,14 +125,18 @@ class MiniMaxM2Renderer:
         emit_special(self._bos, sys_idx)
         emit_special(self._role, sys_idx)
 
-        sys_content = self._visible_text(messages[0].get("content")) if first_is_system else ""
+        sys_content = (
+            self._visible_text(messages[0].get("content")) if first_is_system else ""
+        )
         system_text = "system\n" + (sys_content or self._default_system)
 
         if tools:
             system_text += _TOOLS_HEADER
             for tool in tools:
                 func = tool.get("function", tool)
-                system_text += "<tool>" + json.dumps(func, ensure_ascii=False) + "</tool>\n"
+                system_text += (
+                    "<tool>" + json.dumps(func, ensure_ascii=False) + "</tool>\n"
+                )
             system_text += _TOOLS_FOOTER_PREFIX
             system_text += _TOOLS_INSTRUCTIONS
 
@@ -158,10 +163,24 @@ class MiniMaxM2Renderer:
                 emit_text("\n", orig_idx)
 
             elif role == "assistant":
-                self._render_assistant(msg, orig_idx, ci, last_ui, emit_special=emit_special, emit_text=emit_text)
+                self._render_assistant(
+                    msg,
+                    orig_idx,
+                    ci,
+                    last_ui,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
+                )
 
             elif role == "tool":
-                self._render_tool(conversation, ci, orig_idx, msg, emit_special=emit_special, emit_text=emit_text)
+                self._render_tool(
+                    conversation,
+                    ci,
+                    orig_idx,
+                    msg,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
+                )
 
         # ── Generation prompt ───────────────────────────────────────
         if add_generation_prompt:
@@ -173,11 +192,14 @@ class MiniMaxM2Renderer:
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
     def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
-        return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
+        return self.render(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         return parse_minimax(
-            self._tokenizer, token_ids,
+            self._tokenizer,
+            token_ids,
             stop_ids={self._eos},
             think_id=self._think,
             think_end_id=self._think_end,
@@ -188,7 +210,9 @@ class MiniMaxM2Renderer:
     def get_stop_token_ids(self) -> list[int]:
         return [self._eos]
 
-    def _render_assistant(self, msg, orig_idx, conv_idx, last_user_index, *, emit_special, emit_text):
+    def _render_assistant(
+        self, msg, orig_idx, conv_idx, last_user_index, *, emit_special, emit_text
+    ):
         content = self._visible_text(msg.get("content"))
 
         reasoning_content = ""
@@ -232,8 +256,18 @@ class MiniMaxM2Renderer:
                 invoke_block += '<invoke name="' + name + '">\n'
                 if isinstance(arguments, dict):
                     for arg_name, arg_value in arguments.items():
-                        val_str = arg_value if isinstance(arg_value, str) else json.dumps(arg_value, ensure_ascii=False)
-                        invoke_block += '<parameter name="' + arg_name + '">' + val_str + "</parameter>\n"
+                        val_str = (
+                            arg_value
+                            if isinstance(arg_value, str)
+                            else json.dumps(arg_value, ensure_ascii=False)
+                        )
+                        invoke_block += (
+                            '<parameter name="'
+                            + arg_name
+                            + '">'
+                            + val_str
+                            + "</parameter>\n"
+                        )
                 invoke_block += "</invoke>\n"
 
             emit_text(invoke_block, orig_idx)
@@ -244,9 +278,14 @@ class MiniMaxM2Renderer:
         emit_special(self._eos, orig_idx)
         emit_text("\n", orig_idx)
 
-    def _render_tool(self, conversation, conv_idx, orig_idx, msg, *, emit_special, emit_text):
+    def _render_tool(
+        self, conversation, conv_idx, orig_idx, msg, *, emit_special, emit_text
+    ):
         prev_is_tool = conv_idx > 0 and conversation[conv_idx - 1].get("role") == "tool"
-        next_is_tool = conv_idx + 1 < len(conversation) and conversation[conv_idx + 1].get("role") == "tool"
+        next_is_tool = (
+            conv_idx + 1 < len(conversation)
+            and conversation[conv_idx + 1].get("role") == "tool"
+        )
 
         if not prev_is_tool:
             emit_special(self._role, orig_idx)

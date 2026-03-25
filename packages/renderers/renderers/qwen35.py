@@ -7,7 +7,6 @@ also tracking which message produced each token (for per-token loss masks).
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -96,7 +95,11 @@ class Qwen35Renderer:
                 if isinstance(item, str):
                     parts.append(item)
                 elif isinstance(item, dict):
-                    if item.get("type") == "image" or "image" in item or "image_url" in item:
+                    if (
+                        item.get("type") == "image"
+                        or "image" in item
+                        or "image_url" in item
+                    ):
                         parts.append("<|vision_start|><|image_pad|><|vision_end|>")
                     elif item.get("type") == "video" or "video" in item:
                         parts.append("<|vision_start|><|video_pad|><|vision_end|>")
@@ -119,7 +122,10 @@ class Qwen35Renderer:
             if msg.get("role") != "user":
                 continue
             content = Qwen35Renderer._render_content(msg.get("content")).strip()
-            if not (content.startswith("<tool_response>") and content.endswith("</tool_response>")):
+            if not (
+                content.startswith("<tool_response>")
+                and content.endswith("</tool_response>")
+            ):
                 return i
         raise ValueError("No user query found in messages.")
 
@@ -248,11 +254,14 @@ class Qwen35Renderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
-        return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
+        return self.render(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         return parse_qwen35(
-            self._tokenizer, token_ids,
+            self._tokenizer,
+            token_ids,
             stop_ids={self._im_end, self._endoftext},
             think_id=self._think,
             think_end_id=self._think_end,
@@ -334,7 +343,11 @@ class Qwen35Renderer:
                         else:
                             value_str = str(arg_value)
                         emit_text(
-                            "<parameter=" + arg_name + ">\n" + value_str + "\n</parameter>\n",
+                            "<parameter="
+                            + arg_name
+                            + ">\n"
+                            + value_str
+                            + "\n</parameter>\n",
                             msg_idx,
                         )
 
@@ -359,7 +372,9 @@ class Qwen35Renderer:
     ) -> None:
         # Consecutive tool messages are grouped under a single <|im_start|>user block
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1].get("role") == "tool"
-        next_is_tool = msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+        next_is_tool = (
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+        )
 
         if not prev_is_tool:
             emit_special(self._im_start, msg_idx)

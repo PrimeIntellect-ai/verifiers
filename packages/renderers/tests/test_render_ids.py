@@ -4,11 +4,12 @@ Every test case runs against every (model, renderer) pair from conftest.
 If a test passes, the renderer is token-for-token correct for that case.
 """
 
-import pytest
 
 
 def _expected(tokenizer, messages, **kwargs):
-    result = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False, **kwargs)
+    result = tokenizer.apply_chat_template(
+        messages, tokenize=True, return_dict=False, **kwargs
+    )
     if isinstance(result, dict):
         return list(result["input_ids"])
     if isinstance(result, str):
@@ -122,12 +123,16 @@ def test_tools_with_system(model_name, tokenizer, renderer):
         {"role": "system", "content": "You are a weather assistant."},
         {"role": "user", "content": "Weather?"},
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 def test_tools_without_system(model_name, tokenizer, renderer):
     msgs = [{"role": "user", "content": "Weather?"}]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 # ── Tool calls ───────────────────────────────────────────────────────
@@ -139,10 +144,14 @@ def test_tool_call_with_content(model_name, tokenizer, renderer):
         {
             "role": "assistant",
             "content": "Let me check.",
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
         },
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 def test_tool_call_no_content(model_name, tokenizer, renderer):
@@ -151,10 +160,14 @@ def test_tool_call_no_content(model_name, tokenizer, renderer):
         {
             "role": "assistant",
             "content": None,
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
         },
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 def test_multiple_tool_calls(model_name, tokenizer, renderer):
@@ -169,7 +182,9 @@ def test_multiple_tool_calls(model_name, tokenizer, renderer):
             ],
         },
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 # ── Tool responses ───────────────────────────────────────────────────
@@ -181,12 +196,16 @@ def test_single_tool_response(model_name, tokenizer, renderer):
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
         },
         {"role": "tool", "content": '{"temp": 20}'},
         {"role": "assistant", "content": "It's 20 degrees."},
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 def test_consecutive_tool_responses(model_name, tokenizer, renderer):
@@ -204,7 +223,9 @@ def test_consecutive_tool_responses(model_name, tokenizer, renderer):
         {"role": "tool", "content": '{"temp": 15}'},
         {"role": "assistant", "content": "Paris: 20, London: 15."},
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 # ── Full tool cycle ──────────────────────────────────────────────────
@@ -217,12 +238,16 @@ def test_full_tool_cycle(model_name, tokenizer, renderer):
         {
             "role": "assistant",
             "content": "Let me check.",
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
         },
         {"role": "tool", "content": '{"temp": 20, "condition": "sunny"}'},
         {"role": "assistant", "content": "It is 20 degrees and sunny."},
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
 
 
 def test_multi_step_tool_cycle(model_name, tokenizer, renderer):
@@ -232,15 +257,21 @@ def test_multi_step_tool_cycle(model_name, tokenizer, renderer):
         {
             "role": "assistant",
             "content": "Let me check Paris.",
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
         },
         {"role": "tool", "content": '{"temp": 20}'},
         {
             "role": "assistant",
             "content": "Now London.",
-            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "London"}}}],
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "London"}}}
+            ],
         },
         {"role": "tool", "content": '{"temp": 15}'},
         {"role": "assistant", "content": "Paris: 20, London: 15."},
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(tokenizer, msgs, tools=TOOLS)
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )

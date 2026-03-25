@@ -4,7 +4,6 @@ These test that parse_response never crashes and returns sensible results
 even with adversarial or truncated model output.
 """
 
-import pytest
 
 from renderers.base import ParsedResponse
 
@@ -32,7 +31,7 @@ def test_truncated_after_think_tag(model_name, tokenizer, renderer):
 
 def test_truncated_mid_tool_call(model_name, tokenizer, renderer):
     """Model started a tool call but was cut off."""
-    text = "Checking the weather.\n<tool_call>\n{\"name\": \"get"
+    text = 'Checking the weather.\n<tool_call>\n{"name": "get'
     ids = tokenizer.encode(text, add_special_tokens=False)
     parsed = renderer.parse_response(ids)
     assert isinstance(parsed, ParsedResponse)
@@ -135,4 +134,6 @@ def test_tool_calls_is_list_or_none(model_name, tokenizer, renderer):
     text = "Hello!"
     ids = tokenizer.encode(text, add_special_tokens=False)
     parsed = renderer.parse_response(ids)
-    assert parsed.tool_calls is None or (isinstance(parsed.tool_calls, list) and len(parsed.tool_calls) > 0)
+    assert parsed.tool_calls is None or (
+        isinstance(parsed.tool_calls, list) and len(parsed.tool_calls) > 0
+    )

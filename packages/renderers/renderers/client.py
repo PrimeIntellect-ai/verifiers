@@ -12,15 +12,13 @@ Response that verifiers can work with.
 from __future__ import annotations
 
 import base64
-import json
-from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import numpy as np
 from openai import AsyncOpenAI
 
-from renderers.base import ParsedResponse, Renderer
+from renderers.base import Renderer
 
 
 async def completions_request(
@@ -54,7 +52,9 @@ async def completions_request(
         if key in sampling_args:
             body[key] = sampling_args[key]
 
-    max_tokens = sampling_args.get("max_completion_tokens") or sampling_args.get("max_tokens")
+    max_tokens = sampling_args.get("max_completion_tokens") or sampling_args.get(
+        "max_tokens"
+    )
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 

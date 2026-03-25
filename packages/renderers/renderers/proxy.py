@@ -26,7 +26,9 @@ from renderers.base import Renderer
 
 
 class RenderingProxy:
-    def __init__(self, renderer: Renderer, vllm_base_url: str = "http://localhost:8000"):
+    def __init__(
+        self, renderer: Renderer, vllm_base_url: str = "http://localhost:8000"
+    ):
         self._renderer = renderer
         self._vllm_base_url = vllm_base_url.rstrip("/")
         # Strip trailing /v1 — we add the full path ourselves
@@ -36,7 +38,11 @@ class RenderingProxy:
         self._client = httpx.AsyncClient(base_url=base, timeout=600.0)
         self._app = Starlette(
             routes=[
-                Route("/v1/chat/completions", self._handle_chat_completions, methods=["POST"]),
+                Route(
+                    "/v1/chat/completions",
+                    self._handle_chat_completions,
+                    methods=["POST"],
+                ),
                 Route("/v1/models", self._proxy_passthrough, methods=["GET"]),
                 Route("/health", self._health, methods=["GET"]),
             ]
@@ -78,7 +84,8 @@ class RenderingProxy:
         completions_body: dict[str, Any] = {
             "model": model,
             "prompt": prompt_ids,
-            "max_tokens": body.get("max_completion_tokens") or body.get("max_tokens", 4096),
+            "max_tokens": body.get("max_completion_tokens")
+            or body.get("max_tokens", 4096),
             "temperature": body.get("temperature", 1.0),
             "top_p": body.get("top_p", 1.0),
             "logprobs": 1,
@@ -117,7 +124,9 @@ class RenderingProxy:
         chat_resp = self._completions_to_chat(completions_resp, prompt_ids)
         return JSONResponse(chat_resp)
 
-    def _completions_to_chat(self, completions_resp: dict, prompt_ids: list[int]) -> dict:
+    def _completions_to_chat(
+        self, completions_resp: dict, prompt_ids: list[int]
+    ) -> dict:
         """Convert /v1/completions response to /v1/chat/completions format."""
         choice = completions_resp.get("choices", [{}])[0]
         completion_ids = choice.get("token_ids", [])
@@ -146,9 +155,16 @@ class RenderingProxy:
 
         # Build logprobs in chat format
         logprobs_data = choice.get("logprobs", {})
-        token_logprobs = logprobs_data.get("token_logprobs", []) if logprobs_data else []
+        token_logprobs = (
+            logprobs_data.get("token_logprobs", []) if logprobs_data else []
+        )
         chat_logprobs = (
-            {"content": [{"token": "", "logprob": lp if lp is not None else 0.0} for lp in token_logprobs]}
+            {
+                "content": [
+                    {"token": "", "logprob": lp if lp is not None else 0.0}
+                    for lp in token_logprobs
+                ]
+            }
             if token_logprobs
             else None
         )

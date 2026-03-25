@@ -3,13 +3,14 @@
 Runs against every (model, renderer) pair.
 """
 
-import pytest
 
 from renderers import build_supervised_sample, build_trajectory_step
 
 
 def _expected(tokenizer, messages, **kwargs):
-    result = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False, **kwargs)
+    result = tokenizer.apply_chat_template(
+        messages, tokenize=True, return_dict=False, **kwargs
+    )
     if isinstance(result, dict):
         return list(result["input_ids"])
     if isinstance(result, str):

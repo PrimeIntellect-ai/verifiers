@@ -4,9 +4,7 @@ content, reasoning_content, and tool_calls from completion tokens.
 Runs against every (model, renderer) pair.
 """
 
-import pytest
 
-from renderers.base import Renderer
 
 
 def test_parse_simple_content(model_name, tokenizer, renderer):
@@ -23,7 +21,11 @@ def test_parse_thinking_and_content(model_name, tokenizer, renderer):
     ids = tokenizer.encode(text, add_special_tokens=False)
     parsed = renderer.parse_response(ids)
     # Should extract reasoning or at least not crash
-    assert "42" in parsed.content or "think" in (parsed.reasoning_content or "").lower() or parsed.content
+    assert (
+        "42" in parsed.content
+        or "think" in (parsed.reasoning_content or "").lower()
+        or parsed.content
+    )
 
 
 def test_parse_empty_completion(model_name, tokenizer, renderer):

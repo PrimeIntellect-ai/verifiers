@@ -8,7 +8,6 @@ from content that happens to look like special tokens.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from renderers.base import ParsedResponse
 
@@ -44,8 +43,14 @@ def _decode(tokenizer, ids: list[int]) -> str:
 # ── Qwen3: <tool_call> JSON </tool_call> ────────────────────────────
 
 
-def parse_qwen3(tokenizer, token_ids: list[int], *, stop_ids: set[int],
-                tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+def parse_qwen3(
+    tokenizer,
+    token_ids: list[int],
+    *,
+    stop_ids: set[int],
+    tool_call_id: int,
+    tool_call_end_id: int,
+) -> ParsedResponse:
     """Parse Qwen3 completion tokens. Hermes-style JSON tool calls."""
     ids = _strip_stop_tokens(token_ids, stop_ids)
 
@@ -66,15 +71,17 @@ def parse_qwen3(tokenizer, token_ids: list[int], *, stop_ids: set[int],
                 end = _find(ids, tool_call_end_id, i + 1)
                 if end == -1:
                     end = len(ids)
-                tc_text = _decode(tokenizer, ids[i + 1:end]).strip()
+                tc_text = _decode(tokenizer, ids[i + 1 : end]).strip()
                 try:
                     parsed = json.loads(tc_text)
-                    tool_calls.append({
-                        "function": {
-                            "name": parsed.get("name", ""),
-                            "arguments": parsed.get("arguments", {}),
+                    tool_calls.append(
+                        {
+                            "function": {
+                                "name": parsed.get("name", ""),
+                                "arguments": parsed.get("arguments", {}),
+                            }
                         }
-                    })
+                    )
                 except json.JSONDecodeError:
                     pass
                 i = end + 1
@@ -102,9 +109,16 @@ def parse_qwen3(tokenizer, token_ids: list[int], *, stop_ids: set[int],
 # ── Qwen3.5: <tool_call> <function=name> <parameter=name> v </parameter> </function> </tool_call>
 
 
-def parse_qwen35(tokenizer, token_ids: list[int], *, stop_ids: set[int],
-                 think_id: int, think_end_id: int,
-                 tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+def parse_qwen35(
+    tokenizer,
+    token_ids: list[int],
+    *,
+    stop_ids: set[int],
+    think_id: int,
+    think_end_id: int,
+    tool_call_id: int,
+    tool_call_end_id: int,
+) -> ParsedResponse:
     """Parse Qwen3.5 completion tokens. XML-style tool calls, token-level thinking."""
     ids = _strip_stop_tokens(token_ids, stop_ids)
 
@@ -117,18 +131,22 @@ def parse_qwen35(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         # Strip <think> if present at start
         reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
-        ids = ids[think_end + 1:]
+        ids = ids[think_end + 1 :]
     elif think_id in set(ids):
         # <think> present but no </think> — truncated reasoning
         think_start = _find(ids, think_id)
-        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
-        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+        reasoning = _decode(tokenizer, ids[think_start + 1 :]).strip()
+        return ParsedResponse(
+            content="", reasoning_content=reasoning or None, tool_calls=None
+        )
 
     # Tool calls by token ID
     tc_start = _find(ids, tool_call_id)
     if tc_start != -1:
         content_text = _decode(tokenizer, ids[:tc_start]).strip()
-        tool_calls = _parse_xml_tool_calls(tokenizer, ids[tc_start:], tool_call_id, tool_call_end_id)
+        tool_calls = _parse_xml_tool_calls(
+            tokenizer, ids[tc_start:], tool_call_id, tool_call_end_id
+        )
     else:
         content_text = _decode(tokenizer, ids).strip()
         tool_calls = None
@@ -140,9 +158,12 @@ def parse_qwen35(tokenizer, token_ids: list[int], *, stop_ids: set[int],
     )
 
 
-def _parse_xml_tool_calls(tokenizer, ids: list[int], tc_id: int, tc_end_id: int) -> list[dict]:
+def _parse_xml_tool_calls(
+    tokenizer, ids: list[int], tc_id: int, tc_end_id: int
+) -> list[dict]:
     """Parse Qwen3.5-style XML tool calls from token IDs."""
     import re
+
     tool_calls = []
     i = 0
     while i < len(ids):
@@ -150,12 +171,14 @@ def _parse_xml_tool_calls(tokenizer, ids: list[int], tc_id: int, tc_end_id: int)
             end = _find(ids, tc_end_id, i + 1)
             if end == -1:
                 break
-            block_text = _decode(tokenizer, ids[i + 1:end])
+            block_text = _decode(tokenizer, ids[i + 1 : end])
             name_match = re.search(r"<function=([^>]+)>", block_text)
             if name_match:
                 name = name_match.group(1)
                 arguments = {}
-                for pm in re.finditer(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", block_text, re.DOTALL):
+                for pm in re.finditer(
+                    r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", block_text, re.DOTALL
+                ):
                     arg_name = pm.group(1)
                     arg_value = pm.group(2).strip()
                     try:
@@ -172,11 +195,20 @@ def _parse_xml_tool_calls(tokenizer, ids: list[int], tc_id: int, tc_end_id: int)
 # ── GLM-5/4.7/4.5: <tool_call> name <arg_key>k</arg_key> <arg_value>v</arg_value> </tool_call>
 
 
-def parse_glm(tokenizer, token_ids: list[int], *, stop_ids: set[int],
-              think_id: int, think_end_id: int,
-              tool_call_id: int, tool_call_end_id: int,
-              arg_key_id: int, arg_key_end_id: int,
-              arg_value_id: int, arg_value_end_id: int) -> ParsedResponse:
+def parse_glm(
+    tokenizer,
+    token_ids: list[int],
+    *,
+    stop_ids: set[int],
+    think_id: int,
+    think_end_id: int,
+    tool_call_id: int,
+    tool_call_end_id: int,
+    arg_key_id: int,
+    arg_key_end_id: int,
+    arg_value_id: int,
+    arg_value_end_id: int,
+) -> ParsedResponse:
     """Parse GLM completion tokens. Token-level thinking + arg_key/arg_value tool calls."""
     ids = _strip_stop_tokens(token_ids, stop_ids)
 
@@ -187,21 +219,27 @@ def parse_glm(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         reasoning_ids = ids[:think_end]
         reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
-        ids = ids[think_end + 1:]
+        ids = ids[think_end + 1 :]
     elif think_id in set(ids):
         think_start = _find(ids, think_id)
-        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
-        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+        reasoning = _decode(tokenizer, ids[think_start + 1 :]).strip()
+        return ParsedResponse(
+            content="", reasoning_content=reasoning or None, tool_calls=None
+        )
 
     # Tool calls by token ID
     tc_start = _find(ids, tool_call_id)
     if tc_start != -1:
         content_text = _decode(tokenizer, ids[:tc_start]).strip()
         tool_calls = _parse_glm_tool_calls(
-            tokenizer, ids[tc_start:],
-            tool_call_id, tool_call_end_id,
-            arg_key_id, arg_key_end_id,
-            arg_value_id, arg_value_end_id,
+            tokenizer,
+            ids[tc_start:],
+            tool_call_id,
+            tool_call_end_id,
+            arg_key_id,
+            arg_key_end_id,
+            arg_value_id,
+            arg_value_end_id,
         )
     else:
         content_text = _decode(tokenizer, ids).strip()
@@ -214,7 +252,9 @@ def parse_glm(tokenizer, token_ids: list[int], *, stop_ids: set[int],
     )
 
 
-def _parse_glm_tool_calls(tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id, ave_id) -> list[dict]:
+def _parse_glm_tool_calls(
+    tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id, ave_id
+) -> list[dict]:
     """Parse GLM-style tool calls: name + arg_key/arg_value pairs, all by token ID."""
     tool_calls = []
     i = 0
@@ -223,7 +263,7 @@ def _parse_glm_tool_calls(tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id
             end = _find(ids, tc_end_id, i + 1)
             if end == -1:
                 break
-            block = ids[i + 1:end]
+            block = ids[i + 1 : end]
             # Name is everything before first <arg_key>
             first_ak = _find(block, ak_id)
             if first_ak == -1:
@@ -238,14 +278,14 @@ def _parse_glm_tool_calls(tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id
                         ake = _find(block, ake_id, j + 1)
                         if ake == -1:
                             break
-                        key = _decode(tokenizer, block[j + 1:ake]).strip()
+                        key = _decode(tokenizer, block[j + 1 : ake]).strip()
                         av = _find(block, av_id, ake + 1)
                         if av == -1:
                             break
                         ave = _find(block, ave_id, av + 1)
                         if ave == -1:
                             break
-                        val_text = _decode(tokenizer, block[av + 1:ave]).strip()
+                        val_text = _decode(tokenizer, block[av + 1 : ave]).strip()
                         try:
                             arguments[key] = json.loads(val_text)
                         except (json.JSONDecodeError, ValueError):
@@ -263,9 +303,16 @@ def _parse_glm_tool_calls(tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id
 # ── MiniMax: <minimax:tool_call> ... </minimax:tool_call> ────────────
 
 
-def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
-                  think_id: int, think_end_id: int,
-                  tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+def parse_minimax(
+    tokenizer,
+    token_ids: list[int],
+    *,
+    stop_ids: set[int],
+    think_id: int,
+    think_end_id: int,
+    tool_call_id: int,
+    tool_call_end_id: int,
+) -> ParsedResponse:
     """Parse MiniMax M2 completion tokens."""
     ids = _strip_stop_tokens(token_ids, stop_ids)
 
@@ -276,11 +323,13 @@ def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         reasoning_ids = ids[:think_end]
         reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
-        ids = ids[think_end + 1:]
+        ids = ids[think_end + 1 :]
     elif think_id in set(ids):
         think_start = _find(ids, think_id)
-        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
-        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+        reasoning = _decode(tokenizer, ids[think_start + 1 :]).strip()
+        return ParsedResponse(
+            content="", reasoning_content=reasoning or None, tool_calls=None
+        )
 
     # Tool calls by token ID
     tc_start = _find(ids, tool_call_id)
@@ -294,20 +343,27 @@ def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
                 end = _find(ids, tool_call_end_id, i + 1)
                 if end == -1:
                     break
-                block_text = _decode(tokenizer, ids[i + 1:end])
+                block_text = _decode(tokenizer, ids[i + 1 : end])
                 import re
-                for invoke_match in re.finditer(r'<invoke name="([^"]+)">(.*?)</invoke>', block_text, re.DOTALL):
+
+                for invoke_match in re.finditer(
+                    r'<invoke name="([^"]+)">(.*?)</invoke>', block_text, re.DOTALL
+                ):
                     name = invoke_match.group(1)
                     body = invoke_match.group(2)
                     arguments = {}
-                    for pm in re.finditer(r'<parameter name="([^"]+)">(.*?)</parameter>', body, re.DOTALL):
+                    for pm in re.finditer(
+                        r'<parameter name="([^"]+)">(.*?)</parameter>', body, re.DOTALL
+                    ):
                         pname = pm.group(1)
                         pval = pm.group(2).strip()
                         try:
                             arguments[pname] = json.loads(pval)
                         except (json.JSONDecodeError, ValueError):
                             arguments[pname] = pval
-                    tool_calls.append({"function": {"name": name, "arguments": arguments}})
+                    tool_calls.append(
+                        {"function": {"name": name, "arguments": arguments}}
+                    )
                 i = end + 1
             else:
                 i += 1
@@ -325,11 +381,19 @@ def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
 # ── Kimi: <|tool_calls_section_begin|> <|tool_call_begin|> name:0 <|tool_call_argument_begin|> args <|tool_call_end|>
 
 
-def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
-               think_id: int, think_end_id: int,
-               tc_section_begin_id: int, tc_section_end_id: int,
-               tc_begin_id: int, tc_end_id: int,
-               tc_arg_begin_id: int) -> ParsedResponse:
+def parse_kimi(
+    tokenizer,
+    token_ids: list[int],
+    *,
+    stop_ids: set[int],
+    think_id: int,
+    think_end_id: int,
+    tc_section_begin_id: int,
+    tc_section_end_id: int,
+    tc_begin_id: int,
+    tc_end_id: int,
+    tc_arg_begin_id: int,
+) -> ParsedResponse:
     """Parse Kimi K2.5 completion tokens. All boundaries are special token IDs."""
     ids = _strip_stop_tokens(token_ids, stop_ids)
 
@@ -352,13 +416,15 @@ def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
         if reasoning_end == think_end:
-            ids = ids[think_end + 1:]
+            ids = ids[think_end + 1 :]
         else:
             ids = ids[reasoning_end:]
     elif think_id in set(ids):
         think_start = _find(ids, think_id)
-        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
-        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+        reasoning = _decode(tokenizer, ids[think_start + 1 :]).strip()
+        return ParsedResponse(
+            content="", reasoning_content=reasoning or None, tool_calls=None
+        )
 
     # Tool calls: section delimited by token IDs
     tc_section_start = _find(ids, tc_section_begin_id)
@@ -367,7 +433,7 @@ def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         tc_section_end_idx = _find(ids, tc_section_end_id, tc_section_start + 1)
         if tc_section_end_idx == -1:
             tc_section_end_idx = len(ids)
-        section_ids = ids[tc_section_start + 1:tc_section_end_idx]
+        section_ids = ids[tc_section_start + 1 : tc_section_end_idx]
 
         tool_calls = []
         i = 0
@@ -376,18 +442,20 @@ def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
                 end = _find(section_ids, tc_end_id, i + 1)
                 if end == -1:
                     break
-                block = section_ids[i + 1:end]
+                block = section_ids[i + 1 : end]
                 # Find <|tool_call_argument_begin|> in block
                 arg_start = _find(block, tc_arg_begin_id)
                 if arg_start != -1:
                     name_text = _decode(tokenizer, block[:arg_start]).strip()
-                    args_text = _decode(tokenizer, block[arg_start + 1:]).strip()
+                    args_text = _decode(tokenizer, block[arg_start + 1 :]).strip()
                 else:
                     name_text = _decode(tokenizer, block).strip()
                     args_text = ""
                 # name_text is "function_name:0" or "functions.name:0"
                 func_name = name_text.split(":")[0].split(".")[-1] if name_text else ""
-                tool_calls.append({"function": {"name": func_name, "arguments": args_text}})
+                tool_calls.append(
+                    {"function": {"name": func_name, "arguments": args_text}}
+                )
                 i = end + 1
             else:
                 i += 1

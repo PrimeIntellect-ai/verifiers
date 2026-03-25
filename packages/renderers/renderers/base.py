@@ -138,7 +138,9 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
     if renderer != "auto":
         cls = RENDERER_REGISTRY.get(renderer)
         if cls is None:
-            raise ValueError(f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}")
+            raise ValueError(
+                f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}"
+            )
         return cls(tokenizer)
 
     # Auto-detect from model name
@@ -201,7 +203,9 @@ def build_trajectory_step(
     ``\\n\\n`` when thinking content is empty in Qwen3.5).
     """
     has_completion = len(completion_messages) > 0
-    prompt_ids = renderer.render_ids(prompt_messages, tools=tools, add_generation_prompt=has_completion)
+    prompt_ids = renderer.render_ids(
+        prompt_messages, tools=tools, add_generation_prompt=has_completion
+    )
     full_ids = renderer.render_ids(prompt_messages + completion_messages, tools=tools)
 
     split_idx = _common_prefix_len(prompt_ids, full_ids)

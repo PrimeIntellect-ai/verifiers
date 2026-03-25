@@ -12,7 +12,6 @@ Key differences from Qwen family:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -157,10 +156,19 @@ class GLM5Renderer:
                 emit_text(content, i)
 
             elif role == "assistant":
-                self._render_assistant(msg, i, content, last_ui, emit_special=emit_special, emit_text=emit_text)
+                self._render_assistant(
+                    msg,
+                    i,
+                    content,
+                    last_ui,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
+                )
 
             elif role == "tool":
-                self._render_tool(messages, i, content, emit_special=emit_special, emit_text=emit_text)
+                self._render_tool(
+                    messages, i, content, emit_special=emit_special, emit_text=emit_text
+                )
 
         # ── Generation prompt ───────────────────────────────────────
         if add_generation_prompt:
@@ -173,11 +181,14 @@ class GLM5Renderer:
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
     def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
-        return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
+        return self.render(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         return parse_glm(
-            self._tokenizer, token_ids,
+            self._tokenizer,
+            token_ids,
             stop_ids={self._endoftext, self._user, self._observation},
             think_id=self._think,
             think_end_id=self._think_end,
@@ -192,7 +203,9 @@ class GLM5Renderer:
     def get_stop_token_ids(self) -> list[int]:
         return [self._endoftext, self._user, self._observation]
 
-    def _render_assistant(self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text):
+    def _render_assistant(
+        self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text
+    ):
         reasoning_content = ""
         if isinstance(msg.get("reasoning_content"), str):
             reasoning_content = msg["reasoning_content"]
@@ -207,7 +220,9 @@ class GLM5Renderer:
 
         emit_special(self._assistant, msg_idx)
 
-        include_thinking = (not self._clear_thinking or msg_idx > last_user_index) and reasoning_content
+        include_thinking = (
+            not self._clear_thinking or msg_idx > last_user_index
+        ) and reasoning_content
 
         if include_thinking:
             emit_special(self._think, msg_idx)
