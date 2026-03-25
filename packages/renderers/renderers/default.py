@@ -7,8 +7,6 @@ rendering) and parse_response is basic text extraction.
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -71,7 +69,9 @@ class DefaultRenderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
-        return self._apply(messages, tools=tools, add_generation_prompt=add_generation_prompt)
+        return self._apply(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        )
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         text = self._tokenizer.decode(token_ids, skip_special_tokens=True)

@@ -12,7 +12,6 @@ Unique format:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -124,7 +123,9 @@ class KimiRenderer:
                 emit_special(self._im_end, i)
 
             elif role == "assistant":
-                self._render_assistant(msg, i, emit_special=emit_special, emit_text=emit_text)
+                self._render_assistant(
+                    msg, i, emit_special=emit_special, emit_text=emit_text
+                )
 
             elif role == "tool":
                 emit_special(self._im_system, i)
@@ -142,11 +143,14 @@ class KimiRenderer:
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
     def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
-        return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
+        return self.render(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         return parse_kimi(
-            self._tokenizer, token_ids,
+            self._tokenizer,
+            token_ids,
             stop_ids={self._im_end},
             think_id=self._think,
             think_end_id=self._think_end,
@@ -180,7 +184,11 @@ class KimiRenderer:
                 arguments = func.get("arguments", {})
                 emit_special(self._tc_begin, msg_idx)
                 emit_special(self._tc_arg_begin, msg_idx)
-                args_str = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
+                args_str = (
+                    json.dumps(arguments, ensure_ascii=False)
+                    if isinstance(arguments, dict)
+                    else str(arguments)
+                )
                 emit_text(args_str, msg_idx)
                 emit_special(self._tc_end, msg_idx)
             emit_special(self._tc_section_end, msg_idx)

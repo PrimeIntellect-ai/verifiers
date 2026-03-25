@@ -75,7 +75,10 @@ class Qwen3Renderer:
             content = msg.get("content")
             if not isinstance(content, str):
                 continue
-            if not (content.startswith("<tool_response>") and content.endswith("</tool_response>")):
+            if not (
+                content.startswith("<tool_response>")
+                and content.endswith("</tool_response>")
+            ):
                 return i
         return len(messages) - 1
 
@@ -150,11 +153,19 @@ class Qwen3Renderer:
 
             elif role == "assistant":
                 self._render_assistant(
-                    msg, i, content, last_qi, i == num_messages - 1, emit_special=emit_special, emit_text=emit_text
+                    msg,
+                    i,
+                    content,
+                    last_qi,
+                    i == num_messages - 1,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
                 )
 
             elif role == "tool":
-                self._render_tool(messages, i, content, emit_special=emit_special, emit_text=emit_text)
+                self._render_tool(
+                    messages, i, content, emit_special=emit_special, emit_text=emit_text
+                )
 
         # ── 4. Generation prompt ────────────────────────────────────
         if add_generation_prompt:
@@ -166,11 +177,14 @@ class Qwen3Renderer:
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
     def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
-        return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
+        return self.render(
+            messages, tools=tools, add_generation_prompt=add_generation_prompt
+        ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         return parse_qwen3(
-            self._tokenizer, token_ids,
+            self._tokenizer,
+            token_ids,
             stop_ids={self._im_end, self._endoftext},
             tool_call_id=self._tool_call,
             tool_call_end_id=self._tool_call_end,
@@ -179,7 +193,17 @@ class Qwen3Renderer:
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end, self._endoftext]
 
-    def _render_assistant(self, msg, msg_idx, content, last_query_index, is_last, *, emit_special, emit_text):
+    def _render_assistant(
+        self,
+        msg,
+        msg_idx,
+        content,
+        last_query_index,
+        is_last,
+        *,
+        emit_special,
+        emit_text,
+    ):
         reasoning_content = ""
         if isinstance(msg.get("reasoning_content"), str):
             reasoning_content = msg["reasoning_content"]
@@ -200,7 +224,12 @@ class Qwen3Renderer:
         tool_calls = msg.get("tool_calls") or []
 
         if msg_idx > last_query_index and (is_last or reasoning_content):
-            prefix = "assistant\n<think>\n" + reasoning_content.strip("\n") + "\n</think>\n\n" + content.lstrip("\n")
+            prefix = (
+                "assistant\n<think>\n"
+                + reasoning_content.strip("\n")
+                + "\n</think>\n\n"
+                + content.lstrip("\n")
+            )
         else:
             prefix = "assistant\n" + content
 
@@ -211,7 +240,11 @@ class Qwen3Renderer:
                 func = tc.get("function") or tc
                 name = func.get("name", "")
                 arguments = func.get("arguments", {})
-                args_str = json.dumps(arguments, ensure_ascii=False) if not isinstance(arguments, str) else arguments
+                args_str = (
+                    json.dumps(arguments, ensure_ascii=False)
+                    if not isinstance(arguments, str)
+                    else arguments
+                )
 
                 # Text before this tool_call (includes separator)
                 if tc_idx == 0:
@@ -221,7 +254,10 @@ class Qwen3Renderer:
                     emit_text("\n", msg_idx)
 
                 emit_special(self._tool_call, msg_idx)
-                emit_text('\n{"name": "' + name + '", "arguments": ' + args_str + "}\n", msg_idx)
+                emit_text(
+                    '\n{"name": "' + name + '", "arguments": ' + args_str + "}\n",
+                    msg_idx,
+                )
                 emit_special(self._tool_call_end, msg_idx)
 
         emit_special(self._im_end, msg_idx)
@@ -229,7 +265,9 @@ class Qwen3Renderer:
 
     def _render_tool(self, messages, msg_idx, content, *, emit_special, emit_text):
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1].get("role") == "tool"
-        next_is_tool = msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+        next_is_tool = (
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+        )
 
         if not prev_is_tool:
             emit_special(self._im_start, msg_idx)

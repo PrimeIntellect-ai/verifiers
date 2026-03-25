@@ -6,7 +6,7 @@ No prefix matching, no /tokenize calls, no suffix stitching.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from renderers import Renderer, create_renderer
 from renderers.client import completions_request
@@ -14,7 +14,6 @@ from renderers.client import completions_request
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessages,
-    OpenAIChatResponse,
     OpenAITool,
     handle_openai_overlong_prompt,
 )
@@ -24,7 +23,6 @@ from verifiers.types import (
     ResponseMessage,
     ResponseTokens,
     SamplingArgs,
-    State,
     ToolCall,
     Usage,
 )
@@ -117,7 +115,9 @@ class RendererClient(OpenAIChatCompletionsClient):
             prompt_tokens=usage_data.get("prompt_tokens", len(prompt_ids)),
             reasoning_tokens=0,
             completion_tokens=usage_data.get("completion_tokens", len(completion_ids)),
-            total_tokens=usage_data.get("total_tokens", len(prompt_ids) + len(completion_ids)),
+            total_tokens=usage_data.get(
+                "total_tokens", len(prompt_ids) + len(completion_ids)
+            ),
         )
 
         return Response(
