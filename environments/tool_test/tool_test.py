@@ -62,17 +62,14 @@ tool_list = [tool_A, tool_B, tool_C, tool_D]
 tool_name_list = [tool.__name__ for tool in tool_list]
 
 
-def tool_call_reward_func(completion, info):
+def tool_call_reward_func(completion: vf.Messages, info: dict) -> float:
     # check if completion tool calls exactly matches info tool calls
-    tool_calls = completion[-1].get("tool_calls", [])
-    called_tool_names = sorted(
-        [call.get("function", {}).get("name", "") for call in tool_calls]
+    tool_calls = (
+        (completion[-1].tool_calls or []) if completion[-1].role == "assistant" else []
     )
+    called_tool_names = sorted([call.name for call in tool_calls])
     expected_tool_names = sorted(info["tool_names"])
-    if called_tool_names == expected_tool_names:
-        return 1.0
-    else:
-        return 0.0
+    return 1.0 if called_tool_names == expected_tool_names else 0.0
 
 
 def load_environment(
@@ -82,30 +79,31 @@ def load_environment(
     Loads tool-test environment.
     """
 
-    train_rows = []
-    eval_rows = []
-    for i in range(num_train_examples + num_eval_examples):
-        tool_names = random.sample(
-            tool_name_list, random.randint(1, len(tool_name_list))
-        )
-        prompt = [
-            {
-                "role": "user",
-                "content": f"Call the following tools with arguments of your choice: {tool_names}",
-            }
-        ]
-        info = {"tool_names": tool_names}
-        if i < num_train_examples:
-            train_rows.append({"prompt": prompt, "info": info})
-        else:
-            eval_rows.append({"prompt": prompt, "info": info})
+    def build_dataset(count, seed_offset=0):
+        rng = random.Random(42 + seed_offset)
+        rows = []
+        for _ in range(count):
+            tool_names = rng.sample(tool_name_list, rng.randint(1, len(tool_name_list)))
+            prompt = [
+                {
+                    "role": "user",
+                    "content": f"Call the following tools with arguments of your choice: {tool_names}",
+                }
+            ]
+            info = {"tool_names": tool_names}
+            rows.append({"prompt": prompt, "info": info})
+        return Dataset.from_list(rows)
 
-    dataset = Dataset.from_list(train_rows)
-    eval_dataset = Dataset.from_list(eval_rows)
+    def build_train_dataset():
+        return build_dataset(num_train_examples, seed_offset=0)
+
+    def build_eval_dataset():
+        return build_dataset(num_eval_examples, seed_offset=1)
+
     rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
-        dataset=dataset,
-        eval_dataset=eval_dataset,
+        dataset=build_train_dataset,
+        eval_dataset=build_eval_dataset,
         rubric=rubric,
         tools=tool_list,
         max_turns=1,

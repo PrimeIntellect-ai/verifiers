@@ -346,5 +346,4 @@ def load_environment(
         dataset_split=dataset_split,
         seed=seed,
     )
-    dataset = dataset_builder()
-    return SortingEnv(dataset=dataset, rubric=rubric, max_turns=max_turns)
+    return SortingEnv(dataset=dataset_builder, rubric=rubric, max_turns=max_turns)

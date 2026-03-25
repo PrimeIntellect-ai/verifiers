@@ -92,19 +92,20 @@ def load_environment(
     else:
         tasks.append(subset)
 
-    task_datasets = []
-    for task in tasks:
-        # load MMMU dataset
-        task_dataset = load_dataset("MMMU/MMMU", task, split=split).map(
-            lambda x: {"prompt": format_prompt(x), "answer": x["answer"]}
-        )
-        assert isinstance(task_dataset, Dataset)
-        cols = task_dataset.column_names
-        cols_to_remove = [col for col in cols if col not in ["prompt", "answer"]]
-        task_dataset = task_dataset.remove_columns(cols_to_remove)
-        task_datasets.append(task_dataset)
+    def build_dataset():
+        task_datasets = []
+        for task in tasks:
+            # load MMMU dataset
+            task_dataset = load_dataset("MMMU/MMMU", task, split=split).map(
+                lambda x: {"prompt": format_prompt(x), "answer": x["answer"]}
+            )
+            assert isinstance(task_dataset, Dataset)
+            cols = task_dataset.column_names
+            cols_to_remove = [col for col in cols if col not in ["prompt", "answer"]]
+            task_dataset = task_dataset.remove_columns(cols_to_remove)
+            task_datasets.append(task_dataset)
 
-    dataset = concatenate_datasets(task_datasets)
+        return concatenate_datasets(task_datasets)
 
     parser = vf.Parser(extract_fn=extract_boxed_answer)
 
@@ -115,7 +116,7 @@ def load_environment(
     rubric = vf.Rubric(funcs=[correct_answer], parser=parser)
 
     vf_env = vf.SingleTurnEnv(
-        dataset=dataset,
+        dataset=build_dataset,
         parser=parser,
         rubric=rubric,
     )
