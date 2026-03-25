@@ -8,13 +8,9 @@ __all__ = [
     "MergedTaskSet",
     "Agent",
     "ReActAgent",
-    "LLMAgent",  # alias for ReActAgent
+    "LLMAgent",
     "SingleTurnAgent",
-    "BinaryAgent",
     "ComposableEnv",
-    "SweTaskAdapter",
-    "HarborTaskSet",
-    "HarborTask",
 ]
 
 
@@ -28,11 +24,7 @@ def __getattr__(name: str):
         "ReActAgent": "verifiers.envs.experimental.agent:ReActAgent",
         "LLMAgent": "verifiers.envs.experimental.agent:LLMAgent",
         "SingleTurnAgent": "verifiers.envs.experimental.agent:SingleTurnAgent",
-        "BinaryAgent": "verifiers.envs.experimental.binary_agent:BinaryAgent",
         "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
-        "SweTaskAdapter": "verifiers.envs.experimental.swe_task_adapter:SweTaskAdapter",
-        "HarborTaskSet": "verifiers.envs.experimental.harbor_task_adapter:HarborTaskSet",
-        "HarborTask": "verifiers.envs.experimental.harbor_task_adapter:HarborTask",
     }
     if name in _lazy:
         import importlib

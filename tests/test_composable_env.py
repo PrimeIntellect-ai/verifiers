@@ -1,4 +1,4 @@
-"""Tests for the composable architecture: Task, Agent, ComposableEnv, SweTaskAdapter, UserSimEnv."""
+"""Tests for the composable architecture: Task, Agent, ComposableEnv."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from verifiers.envs.experimental.agent import LLMAgent, ReActAgent, SingleTurnAgent, _filter_signature
-from verifiers.envs.experimental.swe_task_adapter import SweTaskAdapter
 from verifiers.envs.experimental.task import Task
 from verifiers.types import (
     AssistantMessage,
@@ -50,37 +49,6 @@ class MockTask:
 
     def get_extra_tools(self):
         return []
-
-    async def apply_gold_patch(self, sandbox_client, sandbox_id, state):
-        pass
-
-
-class MockSweTask:
-    """Minimal SweTask protocol implementation for testing."""
-
-    def get_dataset(self):
-        return [{"question": "fix it", "info": {"id": 1}, "answer": ""}]
-
-    def get_instruction(self, info):
-        return "Please fix the bug in utils.py"
-
-    def get_docker_image(self, info):
-        return "registry/image:v1"
-
-    def get_agent_workdir(self, info):
-        return "/workspace"
-
-    def get_env_vars(self):
-        return {"PATH": "/usr/bin"}
-
-    async def setup_sandbox(self, sandbox_client, sandbox_id, state):
-        state["swe_setup_done"] = True
-
-    async def run_tests(self, sandbox_client, sandbox_id, state, run_bg, timeout):
-        return "All tests passed"
-
-    def calculate_reward(self, test_output, info):
-        return 1.0 if "passed" in test_output else 0.0
 
     async def apply_gold_patch(self, sandbox_client, sandbox_id, state):
         pass
@@ -270,68 +238,3 @@ async def test_single_turn_agent():
     steps = await agent.run([{"role": "user", "content": "What's wrong?"}], state)
     assert len(steps) == 1
     assert steps[0]["extras"]["agent_id"] == "single_turn"
-
-
-# ── SweTaskAdapter ──────────────────────────────────────────────────────
-
-
-def test_swe_task_adapter_get_prompt():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task)
-    prompt = adapter.get_prompt({"id": 1})
-    assert len(prompt) == 1
-    assert prompt[0]["role"] == "user"
-    assert "fix the bug" in prompt[0]["content"]
-
-
-def test_swe_task_adapter_get_prompt_with_system():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task, system_prompt="You are a developer.")
-    prompt = adapter.get_prompt({"id": 1})
-    assert len(prompt) == 2
-    assert prompt[0]["role"] == "system"
-    assert prompt[1]["role"] == "user"
-
-
-def test_swe_task_adapter_get_image():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task)
-    assert adapter.get_image({"id": 1}) == "registry/image:v1"
-
-
-def test_swe_task_adapter_get_workdir():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task)
-    assert adapter.get_workdir({"id": 1}) == "/workspace"
-
-
-@pytest.mark.asyncio
-async def test_swe_task_adapter_setup():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task)
-    state = _make_state()
-    await adapter.setup(MagicMock(), "sb-1", state)
-    assert state.get("swe_setup_done") is True
-
-
-@pytest.mark.asyncio
-async def test_swe_task_adapter_evaluate():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task, test_timeout=60)
-    state = _make_state()
-    state["info"] = {"id": 1}
-    state["_run_background_job"] = AsyncMock()
-
-    reward = await adapter.evaluate(MagicMock(), "sb-1", state)
-    assert reward == 1.0
-    assert state["test_output"] == "All tests passed"
-
-
-@pytest.mark.asyncio
-async def test_swe_task_adapter_evaluate_missing_run_bg():
-    swe_task = MockSweTask()
-    adapter = SweTaskAdapter(swe_task)
-    state = _make_state()
-    # Don't set _run_background_job
-    with pytest.raises(RuntimeError, match="_run_background_job"):
-        await adapter.evaluate(MagicMock(), "sb-1", state)
