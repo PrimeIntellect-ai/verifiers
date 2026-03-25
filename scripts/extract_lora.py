@@ -49,7 +49,7 @@ def extract_lora_from_checkpoint(ckpt_dir: str, output_dir: str, base_model: str
             # Ensure PEFT format: base_model.model.<path>
             if not clean.startswith("base_model.model."):
                 clean = f"base_model.model.{clean}"
-            lora_state[clean] = value.clone()
+            lora_state[clean] = torch.empty_like(value).copy_(value)
             print(f"  {key} -> {clean} {list(value.shape)}")
 
     if not lora_state:
