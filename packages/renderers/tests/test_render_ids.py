@@ -5,7 +5,6 @@ If a test passes, the renderer is token-for-token correct for that case.
 """
 
 
-
 def _expected(tokenizer, messages, **kwargs):
     result = tokenizer.apply_chat_template(
         messages, tokenize=True, return_dict=False, **kwargs

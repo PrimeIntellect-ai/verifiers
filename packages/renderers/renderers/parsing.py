@@ -376,4 +376,3 @@ def parse_minimax(
         reasoning_content=reasoning or None,
         tool_calls=tool_calls or None,
     )
-
