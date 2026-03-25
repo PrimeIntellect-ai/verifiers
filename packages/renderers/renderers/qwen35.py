@@ -13,6 +13,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
+from renderers.parsing import extract_reasoning_qwen, extract_tool_calls_qwen35xml, build_parsed_response
 
 # ---------------------------------------------------------------------------
 # Tool system prompt constants (must match the Jinja template exactly)
@@ -250,49 +251,12 @@ class Qwen35Renderer:
         return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        """Parse completion tokens (after generation prompt) back into a message.
-
-        Handles: <think>reasoning</think> blocks and
-        <tool_call><function=name><parameter=k>v</parameter></function></tool_call> blocks.
-        """
         text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-
-        # Strip trailing special tokens
-        for marker in ["<|im_end|>", "<|endoftext|>"]:
+        for marker in ['<|im_end|>', '<|endoftext|>']:
             text = text.split(marker)[0]
-
-        reasoning_content = None
-        if "</think>" in text:
-            before, after = text.split("</think>", 1)
-            reasoning_content = before.lstrip("<think>").strip("\n").strip()
-            text = after.strip("\n")
-
-        tool_calls = None
-        if "<tool_call>" in text:
-            tool_calls = []
-            parts = text.split("<tool_call>")
-            text = parts[0].strip()
-            for tc_block in parts[1:]:
-                tc_text = tc_block.split("</tool_call>")[0]
-                name_match = re.search(r"<function=([^>]+)>", tc_text)
-                if not name_match:
-                    continue
-                name = name_match.group(1)
-                arguments = {}
-                for param_match in re.finditer(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", tc_text, re.DOTALL):
-                    arg_name = param_match.group(1)
-                    arg_value = param_match.group(2).strip()
-                    try:
-                        arguments[arg_name] = json.loads(arg_value)
-                    except (json.JSONDecodeError, ValueError):
-                        arguments[arg_name] = arg_value
-                tool_calls.append({"function": {"name": name, "arguments": arguments}})
-
-        return ParsedResponse(
-            content=text.strip(),
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls or None,
-        )
+        reasoning, text = extract_reasoning_qwen(text)
+        tool_calls, text = extract_tool_calls_qwen35xml(text)
+        return build_parsed_response(reasoning, text, tool_calls)
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end, self._endoftext]

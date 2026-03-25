@@ -18,6 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
+from renderers.parsing import extract_reasoning_glm, extract_tool_calls_glm, build_parsed_response
 
 _TOOLS_HEADER = (
     "\n# Tools\n\n"
@@ -176,46 +177,11 @@ class GLM5Renderer:
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ["<|endoftext|>", "<|user|>", "<|observation|>"]:
+        for marker in ['<|endoftext|>', '<|user|>', '<|observation|>']:
             text = text.split(marker)[0]
-
-        # GLM-5: gen prompt ends with <think>, so completion may start with
-        # reasoning content directly (no <think> prefix in the generated text)
-        reasoning_content = None
-        if "</think>" in text:
-            before, after = text.split("</think>", 1)
-            # Strip <think> if model echoed it back
-            if "<think>" in before:
-                before = before.split("<think>")[-1]
-            reasoning = before.strip()
-            if reasoning:
-                reasoning_content = reasoning
-            text = after
-
-        tool_calls = None
-        if "<tool_call>" in text:
-            tool_calls = []
-            parts = text.split("<tool_call>")
-            text = parts[0].strip()
-            for tc_block in parts[1:]:
-                tc_text = tc_block.split("</tool_call>")[0]
-                # Format: name<arg_key>k</arg_key><arg_value>v</arg_value>
-                name = tc_text.split("<arg_key>")[0].strip()
-                arguments = {}
-                for m in re.finditer(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", tc_text, re.DOTALL):
-                    arg_name = m.group(1).strip()
-                    arg_value = m.group(2).strip()
-                    try:
-                        arguments[arg_name] = json.loads(arg_value)
-                    except (json.JSONDecodeError, ValueError):
-                        arguments[arg_name] = arg_value
-                tool_calls.append({"function": {"name": name, "arguments": arguments}})
-
-        return ParsedResponse(
-            content=text.strip(),
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls or None,
-        )
+        reasoning, text = extract_reasoning_glm(text)
+        tool_calls, text = extract_tool_calls_glm(text)
+        return build_parsed_response(reasoning, text, tool_calls)
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._endoftext, self._user, self._observation]

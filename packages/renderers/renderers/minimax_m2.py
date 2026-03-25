@@ -18,6 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
+from renderers.parsing import extract_reasoning_minimax, extract_tool_calls_minimax, build_parsed_response
 
 _DEFAULT_SYSTEM = "You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax."
 
@@ -176,45 +177,11 @@ class MiniMaxM2Renderer:
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ["[e~["]:
+        for marker in ['[e~[']:
             text = text.split(marker)[0]
-
-        reasoning_content = None
-        if "</think>" in text:
-            before, after = text.split("</think>", 1)
-            if "<think>" in before:
-                reasoning_content = before.split("<think>")[-1].strip("\n").strip()
-            else:
-                reasoning_content = before.strip("\n").strip()
-            text = after.strip("\n")
-
-        tool_calls = None
-        if "<minimax:tool_call>" in text:
-            tool_calls = []
-            parts = text.split("<minimax:tool_call>")
-            text = parts[0].strip()
-            for tc_block in parts[1:]:
-                tc_text = tc_block.split("</minimax:tool_call>")[0]
-                for invoke_match in re.finditer(r'<invoke name="([^"]+)">(.*?)</invoke>', tc_text, re.DOTALL):
-                    name = invoke_match.group(1)
-                    invoke_body = invoke_match.group(2)
-                    arguments = {}
-                    for param_match in re.finditer(
-                        r'<parameter name="([^"]+)">(.*?)</parameter>', invoke_body, re.DOTALL
-                    ):
-                        arg_name = param_match.group(1)
-                        arg_value = param_match.group(2).strip()
-                        try:
-                            arguments[arg_name] = json.loads(arg_value)
-                        except (json.JSONDecodeError, ValueError):
-                            arguments[arg_name] = arg_value
-                    tool_calls.append({"function": {"name": name, "arguments": arguments}})
-
-        return ParsedResponse(
-            content=text.strip(),
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls or None,
-        )
+        reasoning, text = extract_reasoning_minimax(text)
+        tool_calls, text = extract_tool_calls_minimax(text)
+        return build_parsed_response(reasoning, text, tool_calls)
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._eos]
