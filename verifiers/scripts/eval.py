@@ -13,7 +13,6 @@ import asyncio
 import importlib.util
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -696,11 +695,6 @@ def main():
                 compact=args.abbreviated_summary,
             )
         )
-    # os._exit skips interpreter finalization which hangs on Python <3.13
-    # when ProcessPoolExecutor module has been imported
-    # Fixed in CPython 3.13, GH-104826).
-    if sys.version_info < (3, 13):
-        os._exit(0)
 
 
 if __name__ == "__main__":

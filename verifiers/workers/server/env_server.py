@@ -128,19 +128,11 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
-        import os
-
         server = cls(*args, **kwargs)
         try:
             asyncio.run(server.run())
         except (SystemExit, KeyboardInterrupt):
             pass
-        finally:
-            # os._exit skips atexit where ProcessPoolExecutor._python_exit
-            # deadlocks joining workers forked from this threaded process.
-            # Fixed in Python 3.13 (GH-104826).
-            if sys.version_info < (3, 13):
-                os._exit(0)
 
     async def handle_health(self, _request: HealthRequest) -> HealthResponse:
         return HealthResponse()
