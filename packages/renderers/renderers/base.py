@@ -97,7 +97,6 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "zai-org/GLM-4.7": "glm5",
     "THUDM/GLM-4.5": "glm4.5",
     "MiniMaxAI/MiniMax-M2": "minimax-m2",
-    "moonshotai/Kimi-K2": "kimi",
 }
 
 
@@ -107,7 +106,6 @@ def _populate_registry():
     from renderers.default import DefaultRenderer
     from renderers.glm45 import GLM45Renderer
     from renderers.glm5 import GLM5Renderer
-    from renderers.kimi import KimiRenderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen35 import Qwen35Renderer
@@ -120,7 +118,6 @@ def _populate_registry():
             "glm5": GLM5Renderer,
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
-            "kimi": KimiRenderer,
         }
     )
 
@@ -131,7 +128,7 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
     Args:
         tokenizer: HuggingFace tokenizer instance.
         renderer: Renderer name ('qwen3', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2',
-                  'kimi', 'intellect', 'default') or 'auto' to detect from model name.
+                  'intellect', 'default') or 'auto' to detect from model name.
     """
     _populate_registry()
 
