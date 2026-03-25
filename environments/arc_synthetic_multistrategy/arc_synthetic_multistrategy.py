@@ -633,10 +633,11 @@ class ArcSyntheticMultistrategyEnv(MultiAgentEnv):
     Multi-strategy pipeline: codegen_v1b (parent) + codegen_v4 (child).
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, v4_model: str | None = None, **kwargs):
         self._actor_id = "codegen_v1b"
         self.actors = ["codegen_v1b", "codegen_v4"]
         self.name = "arc_synthetic_multistrategy"
+        self.v4_model = v4_model
         super().__init__(max_turns=1, **kwargs)
 
     def get_initial_actor(self, state: State) -> str:
@@ -710,7 +711,8 @@ class ArcSyntheticMultistrategyEnv(MultiAgentEnv):
 
         child_states = await self.registry.spawn(
             inputs=child_inputs, client=state["client"],
-            model=state["model"], sampling_args=state.get("sampling_args"),
+            model=self.v4_model or state["model"],
+            sampling_args=state.get("sampling_args"),
             score=False,
         )
         collect_candidates(candidates, reasoning_store, child_states)
@@ -858,6 +860,7 @@ def load_environment(
     levels: list[int] | None = None,
     task_types: list[str] | None = None,
     actor_endpoints: dict[str, str] | None = None,
+    v4_model: str | None = None,
     **kwargs,
 ) -> ArcSyntheticMultistrategyEnv:
     """Entry point for vf-eval / prime-rl."""
@@ -887,7 +890,7 @@ def load_environment(
         from openai import AsyncOpenAI
         codegen_v4_agent.client = AsyncOpenAI(base_url=codegen_v4_url, api_key="EMPTY")
 
-    pipeline_env = ArcSyntheticMultistrategyEnv(rubric=rubric, dataset=dataset)
+    pipeline_env = ArcSyntheticMultistrategyEnv(rubric=rubric, dataset=dataset, v4_model=v4_model)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
 
     Registry(
