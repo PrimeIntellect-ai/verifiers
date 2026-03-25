@@ -18,6 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
+from renderers.parsing import extract_reasoning_kimi, extract_tool_calls_kimi, build_parsed_response
 
 
 class KimiRenderer:
@@ -145,38 +146,11 @@ class KimiRenderer:
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-
-        # Strip trailing special tokens
-        for marker in ["<|im_end|>", "<|im_assistant|>"]:
+        for marker in ['<|im_end|>', '<|im_assistant|>']:
             text = text.split(marker)[0]
-
-        reasoning_content = None
-        if "</think>" in text:
-            before, after = text.split("</think>", 1)
-            reasoning = before.replace("<think>", "").strip()
-            if reasoning:
-                reasoning_content = reasoning
-            text = after
-
-        tool_calls = None
-        if "<|tool_calls_section_begin|>" in text:
-            tc_section = text.split("<|tool_calls_section_begin|>")[1].split("<|tool_calls_section_end|>")[0]
-            text = text.split("<|tool_calls_section_begin|>")[0].strip()
-            tool_calls = []
-            for tc_block in tc_section.split("<|tool_call_begin|>")[1:]:
-                arg_text = tc_block.split("<|tool_call_argument_begin|>")[-1].split("<|tool_call_end|>")[0].strip()
-                if arg_text:
-                    try:
-                        args = json.loads(arg_text)
-                        tool_calls.append({"function": {"name": "", "arguments": args}})
-                    except json.JSONDecodeError:
-                        pass
-
-        return ParsedResponse(
-            content=text.strip(),
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls or None,
-        )
+        reasoning, text = extract_reasoning_kimi(text)
+        tool_calls, text = extract_tool_calls_kimi(text)
+        return build_parsed_response(reasoning, text, tool_calls)
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end]
