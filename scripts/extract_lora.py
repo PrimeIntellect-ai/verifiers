@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
 
 
 def extract_lora_from_checkpoint(ckpt_dir: str, output_dir: str, base_model: str, rank: int):
@@ -59,9 +58,9 @@ def extract_lora_from_checkpoint(ckpt_dir: str, output_dir: str, base_model: str
 
     print(f"\nFound {len(lora_state)} LoRA tensors")
 
-    # Save as safetensors
-    save_file(lora_state, out_path / "adapter_model.safetensors")
-    print(f"Saved adapter_model.safetensors")
+    # Save as pytorch bin
+    torch.save(lora_state, out_path / "adapter_model.bin")
+    print(f"Saved adapter_model.bin")
 
     # Detect target modules from keys
     target_modules = set()
