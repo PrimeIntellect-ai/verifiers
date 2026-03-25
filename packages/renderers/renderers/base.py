@@ -88,6 +88,19 @@ class RendererPool:
 
 RENDERER_REGISTRY: dict[str, type] = {}
 
+# Maps model name prefixes to renderer names. Checked in order.
+MODEL_RENDERER_MAP: dict[str, str] = {
+    "Qwen/Qwen3.5": "qwen3.5",
+    "Qwen/Qwen3": "qwen3",
+    "PrimeIntellect/Qwen3": "qwen3",
+    "zai-org/GLM-5": "glm5",
+    "zai-org/GLM-4.7": "glm5",
+    "THUDM/GLM-4.5": "glm4.5",
+    "MiniMaxAI/MiniMax-M2": "minimax-m2",
+    "PrimeIntellect/INTELLECT": "default",
+    "moonshotai/Kimi-K2": "kimi",
+}
+
 
 def _populate_registry():
     if RENDERER_REGISTRY:
@@ -96,6 +109,7 @@ def _populate_registry():
     from renderers.glm45 import GLM45Renderer
     from renderers.glm5 import GLM5Renderer
     from renderers.intellect import IntellectRenderer
+    from renderers.kimi import KimiRenderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen35 import Qwen35Renderer
@@ -109,57 +123,35 @@ def _populate_registry():
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
             "intellect": IntellectRenderer,
+            "kimi": KimiRenderer,
         }
     )
 
 
-def _auto_detect_renderer_cls(tokenizer) -> type:
-    _populate_registry()
-
-    def has_token(name: str) -> bool:
-        return tokenizer.convert_tokens_to_ids(name) != tokenizer.unk_token_id
-
-    if has_token("]~!b["):
-        return RENDERER_REGISTRY["minimax-m2"]
-    if has_token("[gMASK]"):
-        # INTELLECT has both [gMASK] and <|im_start|> — use default (Jinja) for now
-        # because the tokenizer has aggressive BPE merges that break piece-by-piece encoding
-        if has_token("<|im_start|>"):
-            return RENDERER_REGISTRY["default"]
-        if tokenizer.vocab_size >= 154000:
-            return RENDERER_REGISTRY["glm5"]
-        return RENDERER_REGISTRY["glm4.5"]
-    if has_token("<|im_start|>"):
-        if tokenizer.vocab_size >= 200000:
-            return RENDERER_REGISTRY["qwen3.5"]
-        return RENDERER_REGISTRY["qwen3"]
-
-    # Fallback to default (apply_chat_template)
-    return RENDERER_REGISTRY["default"]
-
-
 def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
-    """Create a Renderer, either by name or auto-detection from tokenizer.
+    """Create a Renderer by name, or auto-detect from the tokenizer's model name.
 
     Args:
         tokenizer: HuggingFace tokenizer instance.
-        renderer: Renderer name ('qwen3', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2', 'default')
-                  or 'auto' to detect from tokenizer special tokens.
+        renderer: Renderer name ('qwen3', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2',
+                  'kimi', 'intellect', 'default') or 'auto' to detect from model name.
     """
     _populate_registry()
 
-    if renderer == "auto":
-        cls = _auto_detect_renderer_cls(tokenizer)
-        try:
-            return cls(tokenizer)
-        except (AssertionError, KeyError):
-            # Model has similar tokens but isn't the detected family — fall back
-            return RENDERER_REGISTRY["default"](tokenizer)
+    if renderer != "auto":
+        cls = RENDERER_REGISTRY.get(renderer)
+        if cls is None:
+            raise ValueError(f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}")
+        return cls(tokenizer)
 
-    cls = RENDERER_REGISTRY.get(renderer)
-    if cls is None:
-        raise ValueError(f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}")
-    return cls(tokenizer)
+    # Auto-detect from model name
+    model_name = getattr(tokenizer, "name_or_path", "")
+    for prefix, renderer_name in MODEL_RENDERER_MAP.items():
+        if model_name.startswith(prefix):
+            return RENDERER_REGISTRY[renderer_name](tokenizer)
+
+    # No match — fall back to default (apply_chat_template)
+    return RENDERER_REGISTRY["default"](tokenizer)
 
 
 # ---------------------------------------------------------------------------

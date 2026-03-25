@@ -18,7 +18,7 @@ RENDERER_MODELS = [
     ("THUDM/GLM-4.5-Air", "auto"),
     ("MiniMaxAI/MiniMax-M2.5", "auto"),
     ("PrimeIntellect/INTELLECT-3.1", "auto"),  # auto → DefaultRenderer (BPE merges)
-    # ("moonshotai/Kimi-K2.5", "default"),  # TODO: needs custom KimiRenderer
+    ("moonshotai/Kimi-K2.5", "auto"),
     ("Qwen/Qwen2.5-0.5B-Instruct", "default"),
 ]
 
