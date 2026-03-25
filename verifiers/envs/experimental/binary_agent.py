@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 class BinaryAgent:
     """Agent that runs a binary *inside* the sandbox.
 
+    Always requires a sandbox (``needs_sandbox = True``).
+
     The binary's API calls (to ``OPENAI_BASE_URL``) are intercepted via
     an HTTP proxy, forwarded to the real LLM, and recorded as trajectory
     steps.
@@ -85,6 +87,7 @@ class BinaryAgent:
         self,
         install_script: str | None = None,
         run_command: str = "echo 'No run_command specified'",
+        default_image: str = "python:3.11-slim",
         prompt_file_path: str = "/tmp/prompt.md",
         timeout_seconds: float = 3600.0,
         poll_interval: float = 1.0,
@@ -93,6 +96,8 @@ class BinaryAgent:
         extra_env_vars: dict[str, str] | None = None,
         agent_id: str = "binary_agent",
     ):
+        self.needs_sandbox = True
+        self.default_image = default_image
         self.install_script = install_script
         self.run_command = run_command
         self.prompt_file_path = prompt_file_path

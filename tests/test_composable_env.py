@@ -25,6 +25,8 @@ from verifiers.types import (
 class MockTask:
     """Minimal Task implementation for testing."""
 
+    needs_sandbox = False
+
     def get_dataset(self):
         return [{"question": "fix the bug", "info": {"id": 1}, "answer": ""}]
 
@@ -45,6 +47,9 @@ class MockTask:
 
     async def evaluate(self, sandbox_client, sandbox_id, state):
         return 1.0
+
+    def get_extra_tools(self):
+        return []
 
     async def apply_gold_patch(self, sandbox_client, sandbox_id, state):
         pass
