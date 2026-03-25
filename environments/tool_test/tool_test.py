@@ -82,30 +82,36 @@ def load_environment(
     Loads tool-test environment.
     """
 
-    train_rows = []
-    eval_rows = []
-    for i in range(num_train_examples + num_eval_examples):
-        tool_names = random.sample(
-            tool_name_list, random.randint(1, len(tool_name_list))
-        )
-        prompt = [
-            {
-                "role": "user",
-                "content": f"Call the following tools with arguments of your choice: {tool_names}",
-            }
-        ]
-        info = {"tool_names": tool_names}
-        if i < num_train_examples:
-            train_rows.append({"prompt": prompt, "info": info})
-        else:
-            eval_rows.append({"prompt": prompt, "info": info})
+    def build_datasets():
+        train_rows = []
+        eval_rows = []
+        for i in range(num_train_examples + num_eval_examples):
+            tool_names = random.sample(
+                tool_name_list, random.randint(1, len(tool_name_list))
+            )
+            prompt = [
+                {
+                    "role": "user",
+                    "content": f"Call the following tools with arguments of your choice: {tool_names}",
+                }
+            ]
+            info = {"tool_names": tool_names}
+            if i < num_train_examples:
+                train_rows.append({"prompt": prompt, "info": info})
+            else:
+                eval_rows.append({"prompt": prompt, "info": info})
+        return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
 
-    dataset = Dataset.from_list(train_rows)
-    eval_dataset = Dataset.from_list(eval_rows)
+    def build_train_dataset():
+        return build_datasets()[0]
+
+    def build_eval_dataset():
+        return build_datasets()[1]
+
     rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
-        dataset=dataset,
-        eval_dataset=eval_dataset,
+        dataset=build_train_dataset,
+        eval_dataset=build_eval_dataset,
         rubric=rubric,
         tools=tool_list,
         max_turns=1,

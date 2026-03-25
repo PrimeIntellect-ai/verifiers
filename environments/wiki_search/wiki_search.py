@@ -34,22 +34,28 @@ def load_environment(
     corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
 ) -> vf.Environment:
-    # load corpus into memory and build page_id -> row index
-    corpus = load_dataset(corpus_dataset, split=corpus_split)
-    page_id_to_title: dict[str, str] = {}
-    page_id_to_content: dict[str, str] = {}
-    for row in corpus:
-        row = cast(dict, row)
-        pid = row["id"]
-        title = row["title"]
-        content = row["content"]
-        page_id_to_title[pid] = title
-        page_id_to_content[pid] = content
+    # lazy corpus loading and chroma initialization
+    _corpus_state: dict = {
+        "loaded": False,
+        "page_id_to_title": {},
+        "page_id_to_content": {},
+    }
 
-    # lazy chroma initialization (once across all env instances)
+    def _load_corpus():
+        if _corpus_state["loaded"]:
+            return
+        corpus = load_dataset(corpus_dataset, split=corpus_split)
+        for row in corpus:
+            row = cast(dict, row)
+            pid = row["id"]
+            _corpus_state["page_id_to_title"][pid] = row["title"]
+            _corpus_state["page_id_to_content"][pid] = row["content"]
+        _corpus_state["loaded"] = True
+
     _chroma_state: dict = {"collection": None}
 
     def _get_collection():
+        _load_corpus()
         if _chroma_state["collection"] is None:
             openai_ef = embedding_functions.OpenAIEmbeddingFunction(
                 model_name=embed_model,
@@ -66,6 +72,7 @@ def load_environment(
 
     def _init_chroma(collection) -> None:
         # upsert missing pages
+        page_id_to_title = _corpus_state["page_id_to_title"]
         all_ids = list(page_id_to_title.keys())
         existing: set[str] = set()
         for i in range(0, len(all_ids), 500):
@@ -77,7 +84,7 @@ def load_environment(
             documents = []
             metadatas = []
             for pid in missing:
-                title = str(page_id_to_title[pid]).strip()
+                title = str(_corpus_state["page_id_to_title"][pid]).strip()
                 if not title:
                     raise ValueError(f"Empty title for page_id {pid}")
                 documents.append(title)
@@ -143,7 +150,8 @@ def load_environment(
         example:
             "basketball" -> [{"section_id": "basketball:history", "section_name": "History"}, ...]
         """
-        content = page_id_to_content[page_id]
+        _load_corpus()
+        content = _corpus_state["page_id_to_content"][page_id]
         sections = []
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -192,7 +200,8 @@ def load_environment(
         page_id, section_name_id = section_id.split(":", 1)
 
         # get Markdown content
-        content = page_id_to_content[page_id]
+        _load_corpus()
+        content = _corpus_state["page_id_to_content"][page_id]
         lines = content.split("\n")
 
         # special case for "full" section
@@ -225,7 +234,9 @@ def load_environment(
         read_section,
     ]
     parser = vf.Parser()
-    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+
+    def build_dataset():
+        return load_dataset("willcb/wiki-trivia-questions-v4", split="train")
 
     JUDGE_PROMPT = """Given a ground truth answer \
     and a response, determine if the response is both correct and coherent.
@@ -250,7 +261,7 @@ def load_environment(
     If a response contains incoherent text, respond with "no" even if the correct answer is also present.
     """
     judge_client = AsyncOpenAI(
-        base_url=judge_base_url, api_key=os.environ[judge_api_key_var]
+        base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, "")
     )
     judge_rubric = JudgeRubric(
         judge_client=judge_client,
@@ -269,7 +280,7 @@ def load_environment(
     system_prompt = "Use the provided Wikipedia search tools to help answer questions."
     judge_rubric.add_reward_func(judge_reward_func, weight=1.0)
     vf_env = vf.ToolEnv(
-        dataset=dataset,
+        dataset=build_dataset,
         system_prompt=system_prompt,
         parser=parser,
         rubric=judge_rubric,

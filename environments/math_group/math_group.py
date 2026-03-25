@@ -19,9 +19,12 @@ def load_environment(**kwargs):
         funcs=[gsm8k_answer_reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.0],
     )
-    dataset1 = load_example_dataset("gsm8k", split="train").select(range(1000))
+
+    def build_gsm8k_dataset():
+        return load_example_dataset("gsm8k", split="train").select(range(1000))
+
     env1 = vf.SingleTurnEnv(
-        dataset=dataset1,
+        dataset=build_gsm8k_dataset,
         system_prompt=BOXED_SYSTEM_PROMPT,
         parser=parser,
         rubric=rubric1,
@@ -37,9 +40,12 @@ def load_environment(**kwargs):
         funcs=[math_answer_reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.2],
     )
-    dataset2 = load_example_dataset("math", split="train").select(range(1000))
+
+    def build_math_dataset():
+        return load_example_dataset("math", split="train").select(range(1000))
+
     env2 = vf.SingleTurnEnv(
-        dataset=dataset2,
+        dataset=build_math_dataset,
         system_prompt=BOXED_SYSTEM_PROMPT,
         parser=parser,
         rubric=rubric2,

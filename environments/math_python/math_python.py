@@ -18,7 +18,9 @@ def load_environment(
     sandbox_client_max_workers: int = 50,
     **kwargs,
 ):
-    dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
+    def build_dataset():
+        return load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
+
     pip_install_prompt = (
         f"In addition to the Python standard library, you have access to: {pip_install_packages}."
         if pip_install_packages.strip()
@@ -32,7 +34,7 @@ def load_environment(
     parser = vf.Parser(extract_fn=extract_boxed_answer)
     math_rubric = vf.MathRubric(parser=parser)
     return vf.PythonEnv(
-        dataset=dataset,
+        dataset=build_dataset,
         system_prompt=system_prompt,
         parser=parser,
         rubric=math_rubric,

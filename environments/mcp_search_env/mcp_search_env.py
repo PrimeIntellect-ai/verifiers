@@ -11,13 +11,12 @@ def load_environment(
 ) -> vf.Environment:
     """Load an MCPEnv environment with fetch server for testing."""
     if mcp_servers is None:
-        vf.ensure_keys(["EXA_API_KEY"])
         mcp_servers = [
             {
                 "name": "exa",
                 "command": "npx",
                 "args": ["-y", "exa-mcp-server"],
-                "env": {"EXA_API_KEY": os.environ["EXA_API_KEY"]},
+                "env": {"EXA_API_KEY": os.getenv("EXA_API_KEY", "")},
                 "description": "Exa MCP server",
             },
             {

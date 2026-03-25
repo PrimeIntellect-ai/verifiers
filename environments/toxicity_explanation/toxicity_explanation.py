@@ -26,42 +26,45 @@ def load_environment(
     Args:
         max_examples: Maximum number of examples to load (-1 for all examples)
     """
-    vf.ensure_keys([judge_api_key_var])
 
-    dataset = load_dataset("google/civil_comments", split="train")
+    def build_dataset():
+        dataset = load_dataset("google/civil_comments", split="train[:10%]")
 
-    if max_examples > 0:
-        dataset = dataset.select(range(max_examples))  # type: ignore
+        if max_examples > 0:
+            dataset = dataset.select(range(max_examples))  # type: ignore
 
-    def transform_example(example):
-        is_toxic = example["toxicity"] >= 0.5
+        def transform_example(example):
+            is_toxic = example["toxicity"] >= 0.5
 
-        toxicity_details = []
-        threshold = 0.5
+            toxicity_details = []
+            threshold = 0.5
 
-        if example.get("severe_toxicity", 0) >= threshold:
-            toxicity_details.append("severely toxic")
-        if example.get("obscene", 0) >= threshold:
-            toxicity_details.append("obscene")
-        if example.get("threat", 0) >= threshold:
-            toxicity_details.append("threatening")
-        if example.get("insult", 0) >= threshold:
-            toxicity_details.append("insulting")
-        if example.get("identity_attack", 0) >= threshold:
-            toxicity_details.append("identity attack")
+            if example.get("severe_toxicity", 0) >= threshold:
+                toxicity_details.append("severely toxic")
+            if example.get("obscene", 0) >= threshold:
+                toxicity_details.append("obscene")
+            if example.get("threat", 0) >= threshold:
+                toxicity_details.append("threatening")
+            if example.get("insult", 0) >= threshold:
+                toxicity_details.append("insulting")
+            if example.get("identity_attack", 0) >= threshold:
+                toxicity_details.append("identity attack")
 
-        return {
-            "question": f"Analyze the following text for toxicity and explain your reasoning:\n\n{example['text']}",
-            "answer": "toxic" if is_toxic else "non-toxic",  # For JudgeRubric
-            "info": {
-                "is_toxic": is_toxic,
-                "categories": toxicity_details if toxicity_details else ["non-toxic"],
-                "text": example["text"],
-                "label": "toxic" if is_toxic else "non-toxic",
-            },
-        }
+            return {
+                "question": f"Analyze the following text for toxicity and explain your reasoning:\n\n{example['text']}",
+                "answer": "toxic" if is_toxic else "non-toxic",  # For JudgeRubric
+                "info": {
+                    "is_toxic": is_toxic,
+                    "categories": toxicity_details
+                    if toxicity_details
+                    else ["non-toxic"],
+                    "text": example["text"],
+                    "label": "toxic" if is_toxic else "non-toxic",
+                },
+            }
 
-    dataset = dataset.map(transform_example, remove_columns=dataset.column_names)  # type: ignore
+        dataset = dataset.map(transform_example, remove_columns=dataset.column_names)  # type: ignore
+        return dataset
 
     system_prompt = """You are a content moderation assistant. For each text, you must:
 
@@ -75,7 +78,7 @@ Respond in the following format:
 
     parser = vf.Parser()
     judge_client = AsyncOpenAI(
-        api_key=os.environ[judge_api_key_var], base_url=judge_base_url
+        api_key=os.getenv(judge_api_key_var, ""), base_url=judge_base_url
     )
 
     judge_prompt = """Evaluate this toxicity classification task.
@@ -121,7 +124,7 @@ Respond with ONLY a single number from 0 to 10."""
     rubric.add_reward_func(comprehensive_evaluation, weight=1.0)
 
     env = vf.SingleTurnEnv(
-        dataset=dataset,
+        dataset=build_dataset,
         system_prompt=system_prompt,
         parser=parser,
         rubric=rubric,
