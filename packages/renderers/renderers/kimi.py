@@ -18,7 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
-from renderers.parsing import extract_reasoning_kimi, extract_tool_calls_kimi, build_parsed_response
+from renderers.parsing import parse_kimi
 
 
 class KimiRenderer:
@@ -145,12 +145,17 @@ class KimiRenderer:
         return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ['<|im_end|>', '<|im_assistant|>']:
-            text = text.split(marker)[0]
-        reasoning, text = extract_reasoning_kimi(text)
-        tool_calls, text = extract_tool_calls_kimi(text)
-        return build_parsed_response(reasoning, text, tool_calls)
+        return parse_kimi(
+            self._tokenizer, token_ids,
+            stop_ids={self._im_end},
+            think_id=self._think,
+            think_end_id=self._think_end,
+            tc_section_begin_id=self._tc_section_begin,
+            tc_section_end_id=self._tc_section_end,
+            tc_begin_id=self._tc_begin,
+            tc_end_id=self._tc_end,
+            tc_arg_begin_id=self._tc_arg_begin,
+        )
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end]
