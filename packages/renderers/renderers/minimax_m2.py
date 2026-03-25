@@ -18,7 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
-from renderers.parsing import extract_reasoning_minimax, extract_tool_calls_minimax, build_parsed_response
+from renderers.parsing import parse_minimax
 
 _DEFAULT_SYSTEM = "You are a helpful assistant. Your name is MiniMax-M2.5 and is built by MiniMax."
 
@@ -176,12 +176,14 @@ class MiniMaxM2Renderer:
         return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ['[e~[']:
-            text = text.split(marker)[0]
-        reasoning, text = extract_reasoning_minimax(text)
-        tool_calls, text = extract_tool_calls_minimax(text)
-        return build_parsed_response(reasoning, text, tool_calls)
+        return parse_minimax(
+            self._tokenizer, token_ids,
+            stop_ids={self._eos},
+            think_id=self._think,
+            think_end_id=self._think_end,
+            tool_call_id=self._tool_call_tok,
+            tool_call_end_id=self._tool_call_end_tok,
+        )
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._eos]

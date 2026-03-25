@@ -1,266 +1,407 @@
-"""Shared parsing logic — mirrors vLLM's non-streaming tool call and reasoning parsers.
+"""Token-level parsing — Tinker-style, operates on token IDs directly.
 
-Each function takes decoded text and returns structured results,
-matching vLLM's extract_tool_calls / extract_reasoning behavior exactly.
+Finds special token boundaries by scanning token IDs, then decodes only
+the text segments between them. No regex on decoded text, no false positives
+from content that happens to look like special tokens.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from renderers.base import ParsedResponse
 
-# ── Reasoning extraction (mirrors vLLM reasoning parsers) ────────────
+
+def _find(ids: list[int], target: int, start: int = 0) -> int:
+    """Find index of target in ids, or -1."""
+    for i in range(start, len(ids)):
+        if ids[i] == target:
+            return i
+    return -1
 
 
-def extract_reasoning_qwen(text: str) -> tuple[str | None, str]:
-    """Qwen3/Qwen3.5 reasoning: split on </think>. Mirrors qwen3_reasoning_parser."""
-    # Strip <think> if present in generated output
-    has_think_tag = "<think>" in text
-    parts = text.partition("<think>")
-    text = parts[2] if parts[1] else parts[0]
-
-    if "</think>" not in text:
-        if has_think_tag:
-            # Had <think> but no </think> — truncated reasoning
-            return text.strip() or None, ""
-        # No thinking markers at all — plain content
-        return None, text
-
-    reasoning, _, content = text.partition("</think>")
-    return reasoning.strip() or None, content.strip("\n")
+def _find_all(ids: list[int], target: int) -> list[int]:
+    """Find all indices of target in ids."""
+    return [i for i, t in enumerate(ids) if t == target]
 
 
-def extract_reasoning_glm(text: str) -> tuple[str | None, str]:
-    """GLM-5/4.5/4.7 reasoning: split on </think>. Gen prompt starts with <think>."""
-    if "</think>" in text:
-        before, after = text.split("</think>", 1)
-        if "<think>" in before:
-            before = before.split("<think>")[-1]
-        reasoning = before.strip()
-        return reasoning or None, after
-    # No </think> — check if <think> present (truncated thinking)
-    if "<think>" in text:
-        clean = text.replace("<think>", "").strip()
-        return clean or None, ""
-    return None, text
+def _strip_stop_tokens(ids: list[int], stop_ids: set[int]) -> list[int]:
+    """Remove trailing stop tokens."""
+    while ids and ids[-1] in stop_ids:
+        ids = ids[:-1]
+    # Also strip any stop token that appears anywhere (e.g. mid-sequence <|im_end|>)
+    # Only strip from the END — stop tokens mid-sequence are part of content
+    return ids
 
 
-def extract_reasoning_minimax(text: str) -> tuple[str | None, str]:
-    """MiniMax M2: all content before </think> is reasoning (no <think> start token generated)."""
-    if "</think>" in text:
-        before, after = text.split("</think>", 1)
-        if "<think>" in before:
-            before = before.split("<think>")[-1]
-        reasoning = before.strip("\n").strip()
-        return reasoning or None, after.strip("\n")
-    # No </think> — if <think> present, truncated
-    if "<think>" in text:
-        clean = text.replace("<think>", "").strip()
-        return clean or None, ""
-    return None, text
+def _decode(tokenizer, ids: list[int]) -> str:
+    """Decode token IDs to text, skipping special tokens."""
+    if not ids:
+        return ""
+    return tokenizer.decode(ids, skip_special_tokens=False)
 
 
-def extract_reasoning_kimi(text: str) -> tuple[str | None, str]:
-    """Kimi K2: reasoning ends at </think> OR <|tool_calls_section_begin|>. Mirrors kimi_k2_reasoning_parser."""
-    has_think_tag = "<think>" in text
-    # Strip <think> if present
-    start = 0
-    if has_think_tag:
-        start = text.find("<think>") + len("<think>")
-
-    end = text.find("</think>")
-    if end != -1:
-        reasoning = text[start:end].strip()
-        content = text[end + len("</think>"):]
-        return reasoning or None, content
-
-    # Implicit end at tool section
-    tool_idx = text.find("<|tool_calls_section_begin|>")
-    if tool_idx != -1:
-        reasoning = text[start:tool_idx].strip()
-        return reasoning or None, text[tool_idx:]
-
-    if has_think_tag:
-        # Had <think> but no end marker — truncated reasoning
-        reasoning = text[start:].strip()
-        return reasoning or None, ""
-
-    # No thinking markers — plain content
-    return None, text
+# ── Qwen3: <tool_call> JSON </tool_call> ────────────────────────────
 
 
-# ── Tool call extraction (mirrors vLLM tool parsers) ─────────────────
+def parse_qwen3(tokenizer, token_ids: list[int], *, stop_ids: set[int],
+                tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+    """Parse Qwen3 completion tokens. Hermes-style JSON tool calls."""
+    ids = _strip_stop_tokens(token_ids, stop_ids)
 
-# Hermes (Qwen3): <tool_call>JSON</tool_call>
-_HERMES_REGEX = re.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)", re.DOTALL)
+    # No thinking tokens in Qwen3 gen prompt — model may or may not think
+    # Parse from decoded text since <think>/<tool_call> may be multi-token in Qwen3
+    # Actually in Qwen3, <tool_call> IS a special token (151657)
+    # So we can find it by token ID
 
-
-def extract_tool_calls_hermes(text: str) -> tuple[list[dict] | None, str]:
-    """Hermes tool parser (Qwen3). Mirrors hermes_tool_parser."""
-    if "<tool_call>" not in text:
-        return None, text
-
-    content = text[:text.find("<tool_call>")].strip()
-    tool_calls = []
-    for match in _HERMES_REGEX.findall(text):
-        raw = match[0] if match[0] else match[1]
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            parsed = json.loads(raw)
-            tool_calls.append({
-                "function": {
-                    "name": parsed.get("name", ""),
-                    "arguments": parsed.get("arguments", {}),
-                }
-            })
-        except json.JSONDecodeError:
-            pass
-
-    return tool_calls or None, content
-
-
-# Qwen3.5 XML: <tool_call><function=name><parameter=name>val</parameter></function></tool_call>
-_QWEN35_FUNC_REGEX = re.compile(r"<function=([^>]+)>", re.DOTALL)
-_QWEN35_PARAM_REGEX = re.compile(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
-
-
-def extract_tool_calls_qwen35xml(text: str) -> tuple[list[dict] | None, str]:
-    """Qwen3.5 XML tool parser. Mirrors qwen3xml_tool_parser."""
-    if "<tool_call>" not in text:
-        return None, text
-
-    content = text[:text.find("<tool_call>")].strip()
-    tool_calls = []
-    for tc_block in text.split("<tool_call>")[1:]:
-        if "</tool_call>" in tc_block:
-            tc_block = tc_block.split("</tool_call>")[0]
-        name_match = _QWEN35_FUNC_REGEX.search(tc_block)
-        if not name_match:
-            continue
-        name = name_match.group(1)
-        arguments = {}
-        for param_match in _QWEN35_PARAM_REGEX.finditer(tc_block):
-            arg_name = param_match.group(1)
-            arg_value = param_match.group(2).strip()
-            try:
-                arguments[arg_name] = json.loads(arg_value)
-            except (json.JSONDecodeError, ValueError):
-                arguments[arg_name] = arg_value
-        tool_calls.append({"function": {"name": name, "arguments": arguments}})
-
-    return tool_calls or None, content
-
-
-# GLM: <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
-_GLM_FUNC_CALL_REGEX = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
-_GLM47_FUNC_DETAIL_REGEX = re.compile(r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL)
-_GLM47_FUNC_ARG_REGEX = re.compile(r"<arg_key>(.*?)</arg_key>(?:\n|\s)*<arg_value>(.*?)</arg_value>", re.DOTALL)
-
-
-def extract_tool_calls_glm(text: str) -> tuple[list[dict] | None, str]:
-    """GLM-4.5/GLM-5/GLM-4.7 tool parser. Mirrors glm4_moe/glm47_moe_tool_parser."""
-    if "<tool_call>" not in text:
-        return None, text
-
-    content = text[:text.find("<tool_call>")].strip()
-    tool_calls = []
-    for match in _GLM_FUNC_CALL_REGEX.findall(text):
-        detail = _GLM47_FUNC_DETAIL_REGEX.search(match)
-        if not detail:
-            continue
-        tc_name = detail.group(1).strip()
-        tc_args_text = detail.group(2) or ""
-        pairs = _GLM47_FUNC_ARG_REGEX.findall(tc_args_text)
-        arg_dict: dict[str, Any] = {}
-        for key, value in pairs:
-            key = key.strip()
-            value = value.strip()
-            try:
-                arg_dict[key] = json.loads(value)
-            except (json.JSONDecodeError, ValueError):
-                arg_dict[key] = value
-        tool_calls.append({"function": {"name": tc_name, "arguments": arg_dict}})
-
-    return tool_calls or None, content
-
-
-# MiniMax: <minimax:tool_call><invoke name="n"><parameter name="k">v</parameter></invoke></minimax:tool_call>
-_MINIMAX_TC_REGEX = re.compile(r"<minimax:tool_call>(.*?)</minimax:tool_call>", re.DOTALL)
-_MINIMAX_INVOKE_REGEX = re.compile(r'<invoke name=(.*?)</invoke>', re.DOTALL)
-_MINIMAX_PARAM_REGEX = re.compile(r'<parameter name=(.*?)</parameter>', re.DOTALL)
-
-
-def extract_tool_calls_minimax(text: str) -> tuple[list[dict] | None, str]:
-    """MiniMax M2 tool parser. Mirrors minimax_m2_tool_parser."""
-    if "<minimax:tool_call>" not in text:
-        return None, text
-
-    content = text[:text.find("<minimax:tool_call>")].strip()
-    tool_calls = []
-    for tc_match in _MINIMAX_TC_REGEX.findall(text):
-        for invoke_match in _MINIMAX_INVOKE_REGEX.findall(tc_match):
-            # Extract name (strip quotes)
-            parts = invoke_match.split(">", 1)
-            name = parts[0].strip().strip("\"'")
-            body = parts[1] if len(parts) > 1 else ""
-            arguments = {}
-            for param_match in _MINIMAX_PARAM_REGEX.findall(body):
-                pparts = param_match.split(">", 1)
-                pname = pparts[0].strip().strip("\"'")
-                pval = pparts[1].strip() if len(pparts) > 1 else ""
+    # Find tool calls by token ID
+    tc_start = _find(ids, tool_call_id)
+    if tc_start != -1:
+        content_ids = ids[:tc_start]
+        # Extract all tool call blocks
+        tool_calls = []
+        i = tc_start
+        while i < len(ids):
+            if ids[i] == tool_call_id:
+                end = _find(ids, tool_call_end_id, i + 1)
+                if end == -1:
+                    end = len(ids)
+                tc_text = _decode(tokenizer, ids[i + 1:end]).strip()
                 try:
-                    arguments[pname] = json.loads(pval)
-                except (json.JSONDecodeError, ValueError):
-                    arguments[pname] = pval
-            tool_calls.append({"function": {"name": name, "arguments": arguments}})
+                    parsed = json.loads(tc_text)
+                    tool_calls.append({
+                        "function": {
+                            "name": parsed.get("name", ""),
+                            "arguments": parsed.get("arguments", {}),
+                        }
+                    })
+                except json.JSONDecodeError:
+                    pass
+                i = end + 1
+            else:
+                i += 1
+    else:
+        content_ids = ids
+        tool_calls = None
 
-    return tool_calls or None, content
+    text = _decode(tokenizer, content_ids)
+    # Extract reasoning from text (Qwen3 doesn't have <think> as special token)
+    reasoning = None
+    if "</think>" in text:
+        before, _, after = text.partition("</think>")
+        reasoning = before.replace("<think>", "").strip("\n").strip()
+        text = after.strip("\n")
 
-
-# Kimi: <|tool_call_begin|>name:0<|tool_call_argument_begin|>args<|tool_call_end|>
-_KIMI_TC_REGEX = re.compile(
-    r"<\|tool_call_begin\|>\s*(?P<tool_call_id>[^<]+:\d+)\s*<\|tool_call_argument_begin\|>\s*(?P<function_arguments>(?:(?!<\|tool_call_begin\|>).)*?)\s*<\|tool_call_end\|>",
-    re.DOTALL,
-)
-
-
-def extract_tool_calls_kimi(text: str) -> tuple[list[dict] | None, str]:
-    """Kimi K2 tool parser. Mirrors kimi_k2_tool_parser."""
-    if "<|tool_calls_section_begin|>" not in text:
-        return None, text
-
-    content = text[:text.find("<|tool_calls_section_begin|>")].strip()
-    tool_calls = []
-    for match in _KIMI_TC_REGEX.finditer(text):
-        function_id = match.group("tool_call_id").strip()
-        function_args = match.group("function_arguments").strip()
-        # function_id: functions.get_weather:0 or get_weather:0
-        function_name = function_id.split(":")[0].split(".")[-1]
-        tool_calls.append({
-            "function": {
-                "name": function_name,
-                "arguments": function_args,
-            }
-        })
-
-    return tool_calls or None, content
-
-
-# ── Unified parse_response builders ──────────────────────────────────
-
-
-def build_parsed_response(
-    reasoning: str | None,
-    content: str,
-    tool_calls: list[dict] | None,
-) -> ParsedResponse:
     return ParsedResponse(
-        content=content.strip() if content else "",
-        reasoning_content=reasoning.strip() if reasoning else None,
-        tool_calls=tool_calls,
+        content=text.strip(),
+        reasoning_content=reasoning or None,
+        tool_calls=tool_calls or None,
+    )
+
+
+# ── Qwen3.5: <tool_call> <function=name> <parameter=name> v </parameter> </function> </tool_call>
+
+
+def parse_qwen35(tokenizer, token_ids: list[int], *, stop_ids: set[int],
+                 think_id: int, think_end_id: int,
+                 tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+    """Parse Qwen3.5 completion tokens. XML-style tool calls, token-level thinking."""
+    ids = _strip_stop_tokens(token_ids, stop_ids)
+
+    # Thinking: find </think> by token ID
+    reasoning = None
+    think_end = _find(ids, think_end_id)
+    if think_end != -1:
+        # Everything before </think> is reasoning
+        reasoning_ids = ids[:think_end]
+        # Strip <think> if present at start
+        if reasoning_ids and reasoning_ids[0] == think_id:
+            reasoning_ids = reasoning_ids[1:]
+        reasoning = _decode(tokenizer, reasoning_ids).strip()
+        ids = ids[think_end + 1:]
+    elif think_id in set(ids):
+        # <think> present but no </think> — truncated reasoning
+        think_start = _find(ids, think_id)
+        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
+        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+
+    # Tool calls by token ID
+    tc_start = _find(ids, tool_call_id)
+    if tc_start != -1:
+        content_text = _decode(tokenizer, ids[:tc_start]).strip()
+        tool_calls = _parse_xml_tool_calls(tokenizer, ids[tc_start:], tool_call_id, tool_call_end_id)
+    else:
+        content_text = _decode(tokenizer, ids).strip()
+        tool_calls = None
+
+    return ParsedResponse(
+        content=content_text,
+        reasoning_content=reasoning or None,
+        tool_calls=tool_calls or None,
+    )
+
+
+def _parse_xml_tool_calls(tokenizer, ids: list[int], tc_id: int, tc_end_id: int) -> list[dict]:
+    """Parse Qwen3.5-style XML tool calls from token IDs."""
+    import re
+    tool_calls = []
+    i = 0
+    while i < len(ids):
+        if ids[i] == tc_id:
+            end = _find(ids, tc_end_id, i + 1)
+            if end == -1:
+                break
+            block_text = _decode(tokenizer, ids[i + 1:end])
+            name_match = re.search(r"<function=([^>]+)>", block_text)
+            if name_match:
+                name = name_match.group(1)
+                arguments = {}
+                for pm in re.finditer(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", block_text, re.DOTALL):
+                    arg_name = pm.group(1)
+                    arg_value = pm.group(2).strip()
+                    try:
+                        arguments[arg_name] = json.loads(arg_value)
+                    except (json.JSONDecodeError, ValueError):
+                        arguments[arg_name] = arg_value
+                tool_calls.append({"function": {"name": name, "arguments": arguments}})
+            i = end + 1
+        else:
+            i += 1
+    return tool_calls
+
+
+# ── GLM-5/4.7/4.5: <tool_call> name <arg_key>k</arg_key> <arg_value>v</arg_value> </tool_call>
+
+
+def parse_glm(tokenizer, token_ids: list[int], *, stop_ids: set[int],
+              think_id: int, think_end_id: int,
+              tool_call_id: int, tool_call_end_id: int,
+              arg_key_id: int, arg_key_end_id: int,
+              arg_value_id: int, arg_value_end_id: int) -> ParsedResponse:
+    """Parse GLM completion tokens. Token-level thinking + arg_key/arg_value tool calls."""
+    ids = _strip_stop_tokens(token_ids, stop_ids)
+
+    # Thinking by token ID
+    reasoning = None
+    think_end = _find(ids, think_end_id)
+    if think_end != -1:
+        reasoning_ids = ids[:think_end]
+        if reasoning_ids and reasoning_ids[0] == think_id:
+            reasoning_ids = reasoning_ids[1:]
+        reasoning = _decode(tokenizer, reasoning_ids).strip()
+        ids = ids[think_end + 1:]
+    elif think_id in set(ids):
+        think_start = _find(ids, think_id)
+        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
+        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+
+    # Tool calls by token ID
+    tc_start = _find(ids, tool_call_id)
+    if tc_start != -1:
+        content_text = _decode(tokenizer, ids[:tc_start]).strip()
+        tool_calls = _parse_glm_tool_calls(
+            tokenizer, ids[tc_start:],
+            tool_call_id, tool_call_end_id,
+            arg_key_id, arg_key_end_id,
+            arg_value_id, arg_value_end_id,
+        )
+    else:
+        content_text = _decode(tokenizer, ids).strip()
+        tool_calls = None
+
+    return ParsedResponse(
+        content=content_text,
+        reasoning_content=reasoning or None,
+        tool_calls=tool_calls or None,
+    )
+
+
+def _parse_glm_tool_calls(tokenizer, ids, tc_id, tc_end_id, ak_id, ake_id, av_id, ave_id) -> list[dict]:
+    """Parse GLM-style tool calls: name + arg_key/arg_value pairs, all by token ID."""
+    tool_calls = []
+    i = 0
+    while i < len(ids):
+        if ids[i] == tc_id:
+            end = _find(ids, tc_end_id, i + 1)
+            if end == -1:
+                break
+            block = ids[i + 1:end]
+            # Name is everything before first <arg_key>
+            first_ak = _find(block, ak_id)
+            if first_ak == -1:
+                name = _decode(tokenizer, block).strip()
+                arguments = {}
+            else:
+                name = _decode(tokenizer, block[:first_ak]).strip()
+                arguments = {}
+                j = first_ak
+                while j < len(block):
+                    if block[j] == ak_id:
+                        ake = _find(block, ake_id, j + 1)
+                        if ake == -1:
+                            break
+                        key = _decode(tokenizer, block[j + 1:ake]).strip()
+                        av = _find(block, av_id, ake + 1)
+                        if av == -1:
+                            break
+                        ave = _find(block, ave_id, av + 1)
+                        if ave == -1:
+                            break
+                        val_text = _decode(tokenizer, block[av + 1:ave]).strip()
+                        try:
+                            arguments[key] = json.loads(val_text)
+                        except (json.JSONDecodeError, ValueError):
+                            arguments[key] = val_text
+                        j = ave + 1
+                    else:
+                        j += 1
+            tool_calls.append({"function": {"name": name, "arguments": arguments}})
+            i = end + 1
+        else:
+            i += 1
+    return tool_calls
+
+
+# ── MiniMax: <minimax:tool_call> ... </minimax:tool_call> ────────────
+
+
+def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
+                  think_id: int, think_end_id: int,
+                  tool_call_id: int, tool_call_end_id: int) -> ParsedResponse:
+    """Parse MiniMax M2 completion tokens."""
+    ids = _strip_stop_tokens(token_ids, stop_ids)
+
+    # Thinking: </think> by token ID. MiniMax doesn't generate <think> start.
+    reasoning = None
+    think_end = _find(ids, think_end_id)
+    if think_end != -1:
+        reasoning_ids = ids[:think_end]
+        if reasoning_ids and reasoning_ids[0] == think_id:
+            reasoning_ids = reasoning_ids[1:]
+        reasoning = _decode(tokenizer, reasoning_ids).strip()
+        ids = ids[think_end + 1:]
+    elif think_id in set(ids):
+        think_start = _find(ids, think_id)
+        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
+        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+
+    # Tool calls by token ID
+    tc_start = _find(ids, tool_call_id)
+    if tc_start != -1:
+        content_text = _decode(tokenizer, ids[:tc_start]).strip()
+        # Decode the tool call blocks and parse with regex (invoke/parameter are text, not tokens)
+        tool_calls = []
+        i = tc_start
+        while i < len(ids):
+            if ids[i] == tool_call_id:
+                end = _find(ids, tool_call_end_id, i + 1)
+                if end == -1:
+                    break
+                block_text = _decode(tokenizer, ids[i + 1:end])
+                import re
+                for invoke_match in re.finditer(r'<invoke name="([^"]+)">(.*?)</invoke>', block_text, re.DOTALL):
+                    name = invoke_match.group(1)
+                    body = invoke_match.group(2)
+                    arguments = {}
+                    for pm in re.finditer(r'<parameter name="([^"]+)">(.*?)</parameter>', body, re.DOTALL):
+                        pname = pm.group(1)
+                        pval = pm.group(2).strip()
+                        try:
+                            arguments[pname] = json.loads(pval)
+                        except (json.JSONDecodeError, ValueError):
+                            arguments[pname] = pval
+                    tool_calls.append({"function": {"name": name, "arguments": arguments}})
+                i = end + 1
+            else:
+                i += 1
+    else:
+        content_text = _decode(tokenizer, ids).strip()
+        tool_calls = None
+
+    return ParsedResponse(
+        content=content_text,
+        reasoning_content=reasoning or None,
+        tool_calls=tool_calls or None,
+    )
+
+
+# ── Kimi: <|tool_calls_section_begin|> <|tool_call_begin|> name:0 <|tool_call_argument_begin|> args <|tool_call_end|>
+
+
+def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
+               think_id: int, think_end_id: int,
+               tc_section_begin_id: int, tc_section_end_id: int,
+               tc_begin_id: int, tc_end_id: int,
+               tc_arg_begin_id: int) -> ParsedResponse:
+    """Parse Kimi K2.5 completion tokens. All boundaries are special token IDs."""
+    ids = _strip_stop_tokens(token_ids, stop_ids)
+
+    # Thinking: ends at </think> OR <|tool_calls_section_begin|>
+    reasoning = None
+    think_end = _find(ids, think_end_id)
+    tc_section = _find(ids, tc_section_begin_id)
+
+    # Reasoning end is whichever comes first
+    reasoning_end = -1
+    if think_end != -1 and tc_section != -1:
+        reasoning_end = min(think_end, tc_section)
+    elif think_end != -1:
+        reasoning_end = think_end
+    elif tc_section != -1:
+        reasoning_end = tc_section
+
+    if reasoning_end != -1:
+        reasoning_ids = ids[:reasoning_end]
+        if reasoning_ids and reasoning_ids[0] == think_id:
+            reasoning_ids = reasoning_ids[1:]
+        reasoning = _decode(tokenizer, reasoning_ids).strip()
+        if reasoning_end == think_end:
+            ids = ids[think_end + 1:]
+        else:
+            ids = ids[reasoning_end:]
+    elif think_id in set(ids):
+        think_start = _find(ids, think_id)
+        reasoning = _decode(tokenizer, ids[think_start + 1:]).strip()
+        return ParsedResponse(content="", reasoning_content=reasoning or None, tool_calls=None)
+
+    # Tool calls: section delimited by token IDs
+    tc_section_start = _find(ids, tc_section_begin_id)
+    if tc_section_start != -1:
+        content_text = _decode(tokenizer, ids[:tc_section_start]).strip()
+        tc_section_end_idx = _find(ids, tc_section_end_id, tc_section_start + 1)
+        if tc_section_end_idx == -1:
+            tc_section_end_idx = len(ids)
+        section_ids = ids[tc_section_start + 1:tc_section_end_idx]
+
+        tool_calls = []
+        i = 0
+        while i < len(section_ids):
+            if section_ids[i] == tc_begin_id:
+                end = _find(section_ids, tc_end_id, i + 1)
+                if end == -1:
+                    break
+                block = section_ids[i + 1:end]
+                # Find <|tool_call_argument_begin|> in block
+                arg_start = _find(block, tc_arg_begin_id)
+                if arg_start != -1:
+                    name_text = _decode(tokenizer, block[:arg_start]).strip()
+                    args_text = _decode(tokenizer, block[arg_start + 1:]).strip()
+                else:
+                    name_text = _decode(tokenizer, block).strip()
+                    args_text = ""
+                # name_text is "function_name:0" or "functions.name:0"
+                func_name = name_text.split(":")[0].split(".")[-1] if name_text else ""
+                tool_calls.append({"function": {"name": func_name, "arguments": args_text}})
+                i = end + 1
+            else:
+                i += 1
+    else:
+        content_text = _decode(tokenizer, ids).strip()
+        tool_calls = None
+
+    return ParsedResponse(
+        content=content_text,
+        reasoning_content=reasoning or None,
+        tool_calls=tool_calls or None,
     )

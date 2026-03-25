@@ -18,7 +18,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
-from renderers.parsing import extract_reasoning_glm, extract_tool_calls_glm, build_parsed_response
+from renderers.parsing import parse_glm
 
 _TOOLS_HEADER = (
     "\n# Tools\n\n"
@@ -176,12 +176,18 @@ class GLM5Renderer:
         return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ['<|endoftext|>', '<|user|>', '<|observation|>']:
-            text = text.split(marker)[0]
-        reasoning, text = extract_reasoning_glm(text)
-        tool_calls, text = extract_tool_calls_glm(text)
-        return build_parsed_response(reasoning, text, tool_calls)
+        return parse_glm(
+            self._tokenizer, token_ids,
+            stop_ids={self._endoftext, self._user, self._observation},
+            think_id=self._think,
+            think_end_id=self._think_end,
+            tool_call_id=self._tool_call_tok,
+            tool_call_end_id=self._tool_call_end_tok,
+            arg_key_id=self._arg_key,
+            arg_key_end_id=self._arg_key_end,
+            arg_value_id=self._arg_value,
+            arg_value_end_id=self._arg_value_end,
+        )
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._endoftext, self._user, self._observation]

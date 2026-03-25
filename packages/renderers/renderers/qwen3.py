@@ -15,7 +15,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
-from renderers.parsing import extract_reasoning_qwen, extract_tool_calls_hermes, build_parsed_response
+from renderers.parsing import parse_qwen3
 
 _TOOLS_HEADER = (
     "# Tools\n\n"
@@ -169,12 +169,12 @@ class Qwen3Renderer:
         return self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        text = self._tokenizer.decode(token_ids, skip_special_tokens=False)
-        for marker in ['<|im_end|>', '<|endoftext|>']:
-            text = text.split(marker)[0]
-        reasoning, text = extract_reasoning_qwen(text)
-        tool_calls, text = extract_tool_calls_hermes(text)
-        return build_parsed_response(reasoning, text, tool_calls)
+        return parse_qwen3(
+            self._tokenizer, token_ids,
+            stop_ids={self._im_end, self._endoftext},
+            tool_call_id=self._tool_call,
+            tool_call_end_id=self._tool_call_end,
+        )
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end, self._endoftext]
