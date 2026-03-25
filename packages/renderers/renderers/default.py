@@ -34,14 +34,33 @@ class DefaultRenderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
-        token_ids = self.render_ids(
-            messages, tools=tools, add_generation_prompt=add_generation_prompt
-        )
-        # No per-token message attribution — assign all tokens to -1
-        return RenderedTokens(
-            token_ids=token_ids,
-            message_indices=[-1] * len(token_ids),
-        )
+        # Incremental rendering to get per-token message attribution
+        token_ids: list[int] = []
+        message_indices: list[int] = []
+        prev_len = 0
+
+        for idx, message in enumerate(messages):
+            cur_ids = self._apply(messages[: idx + 1], tools=tools)
+            new_tokens = cur_ids[prev_len:]
+            token_ids = cur_ids
+            message_indices.extend([idx] * len(new_tokens))
+            prev_len = len(cur_ids)
+
+        if add_generation_prompt:
+            full_ids = self._apply(messages, tools=tools, add_generation_prompt=True)
+            gen_tokens = full_ids[prev_len:]
+            token_ids = full_ids
+            message_indices.extend([-1] * len(gen_tokens))
+
+        return RenderedTokens(token_ids=token_ids, message_indices=message_indices)
+
+    def _apply(self, messages, *, tools=None, add_generation_prompt=False) -> list[int]:
+        kwargs = dict(self._chat_template_kwargs)
+        kwargs["add_generation_prompt"] = add_generation_prompt
+        if tools is not None:
+            kwargs["tools"] = tools
+        kwargs["return_dict"] = False
+        return list(self._tokenizer.apply_chat_template(messages, **kwargs))
 
     def render_ids(
         self,
@@ -50,12 +69,7 @@ class DefaultRenderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
-        kwargs = dict(self._chat_template_kwargs)
-        kwargs["add_generation_prompt"] = add_generation_prompt
-        if tools is not None:
-            kwargs["tools"] = tools
-        kwargs["return_dict"] = False
-        return list(self._tokenizer.apply_chat_template(messages, **kwargs))
+        return self._apply(messages, tools=tools, add_generation_prompt=add_generation_prompt)
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
         text = self._tokenizer.decode(token_ids, skip_special_tokens=True)
