@@ -36,10 +36,11 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=true
 
 # ── CUA local server ─────────────────────────────────────────────────────────
-WORKDIR /app/cua-local-server
+# Path must match local_cua_mode.py: /app/cua-server/cua-server-linux-x64
+WORKDIR /app/cua-server
 
-COPY dist/sea/cua-local-server-linux-x64 ./cua-local-server-linux-x64
-RUN chmod +x ./cua-local-server-linux-x64
+COPY dist/sea/cua-local-server-linux-x64 ./cua-server-linux-x64
+RUN chmod +x ./cua-server-linux-x64
 
 # CUA server runs on 3001 so it doesn't collide with the app on 3000
 ENV CUA_SERVER_PORT=3001
