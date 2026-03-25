@@ -26,6 +26,18 @@ from verifiers.utils.path_utils import get_gepa_results_path
 
 logger = logging.getLogger(__name__)
 
+
+def _gepa_extra_headers_from_group(endpoint_group: list, alias: str) -> dict[str, str]:
+    maps = [dict(entry.get("extra_headers", {})) for entry in endpoint_group]
+    unique = {tuple(sorted(m.items())) for m in maps}
+    if len(unique) > 1:
+        raise ValueError(
+            f"Endpoint alias {alias!r} has different headers across endpoint variants; "
+            "GEPA requires a single consistent header set."
+        )
+    return maps[0] if maps else {}
+
+
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
@@ -290,9 +302,11 @@ def main():
     api_key_override = args.api_key_var is not None
     api_base_url_override = args.api_base_url is not None
 
+    main_extra_headers: dict[str, str] = {}
     if args.model in endpoints:
         endpoint_group = endpoints[args.model]
         endpoint = endpoint_group[0]
+        main_extra_headers = _gepa_extra_headers_from_group(endpoint_group, args.model)
 
         if api_key_override:
             api_key_var = args.api_key_var
@@ -329,10 +343,14 @@ def main():
         )
         model = args.model
 
+    reflection_extra_headers: dict[str, str] = main_extra_headers
     # Resolve reflection model and its client config
     if args.reflection_model and args.reflection_model in endpoints:
         reflection_endpoint_group = endpoints[args.reflection_model]
         reflection_endpoint = reflection_endpoint_group[0]
+        reflection_extra_headers = _gepa_extra_headers_from_group(
+            reflection_endpoint_group, args.reflection_model
+        )
 
         reflection_endpoint_models = {
             entry["model"] for entry in reflection_endpoint_group
@@ -362,11 +380,13 @@ def main():
         reflection_model = args.reflection_model
         reflection_api_key_var = api_key_var
         reflection_api_base_url = api_base_url
+        reflection_extra_headers = main_extra_headers
     else:
         # No reflection model specified - use main model config
         reflection_model = model
         reflection_api_key_var = api_key_var
         reflection_api_base_url = api_base_url
+        reflection_extra_headers = main_extra_headers
 
     # Generate run_dir (save to environment folder like vf-eval)
     save_results = not args.no_save
@@ -378,10 +398,15 @@ def main():
         run_dir = None
 
     # Run optimization
-    client_config = ClientConfig(api_key_var=api_key_var, api_base_url=api_base_url)
+    client_config = ClientConfig(
+        api_key_var=api_key_var,
+        api_base_url=api_base_url,
+        extra_headers=main_extra_headers,
+    )
     reflection_client_config = ClientConfig(
         api_key_var=reflection_api_key_var,
         api_base_url=reflection_api_base_url,
+        extra_headers=reflection_extra_headers,
     )
 
     run_gepa_optimization(

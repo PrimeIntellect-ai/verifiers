@@ -17,6 +17,15 @@ Current GEPA path is for system prompt optimization. If user asks for unsupporte
 3. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
 4. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
 5. For benchmark reporting, keep model family fixed between baseline and optimized comparisons unless the user requests a cross-family study.
+6. Endpoint entries support optional `headers` (or `extra_headers`) for custom HTTP headers. GEPA inherits these from the registry for both the main model and the reflection model:
+```toml
+[[endpoint]]
+endpoint_id = "my-proxy"
+model = "gpt-4.1-mini"
+url = "https://api.example/v1"
+key = "OPENAI_API_KEY"
+headers = { "X-Custom-Header" = "value" }
+```
 
 ## Core Workflow
 1. Verify baseline first with `prime eval run`. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:

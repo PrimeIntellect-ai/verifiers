@@ -399,9 +399,23 @@ Endpoint = TypedDict(
         "url": str,
         "model": str,
         "api_client_type": NotRequired[ClientType],
+        "extra_headers": NotRequired[dict[str, str]],
     },
 )
 Endpoints = dict[str, list[Endpoint]]
+
+
+def _validate_extra_headers_value(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("extra_headers must be a dict")
+    out: dict[str, str] = {}
+    for k, v in value.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError("extra_headers keys must be non-empty strings")
+        if not isinstance(v, str):
+            raise ValueError("extra_headers values must be strings")
+        out[k] = v
+    return out
 
 
 class ClientConfig(BaseModel):
@@ -425,6 +439,11 @@ class ClientConfig(BaseModel):
         'e.g. {"X-Session-ID": "example_id"} adds a X-Session-ID header '
         "with the value of state['example_id'].",
     )
+
+    @field_validator("extra_headers", mode="before")
+    @classmethod
+    def validate_extra_headers(cls, value: object) -> dict[str, str]:
+        return _validate_extra_headers_value(value)
 
     @field_validator("endpoint_configs", mode="before")
     @classmethod
@@ -480,6 +499,11 @@ class EndpointClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("extra_headers", mode="before")
+    @classmethod
+    def validate_extra_headers(cls, value: object) -> dict[str, str]:
+        return _validate_extra_headers_value(value)
 
 
 ClientConfig.model_rebuild()
