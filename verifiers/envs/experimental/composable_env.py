@@ -82,6 +82,7 @@ class ComposableEnv(CliAgentEnv):
         run_command: str,
         *,
         install_script: str | None = None,
+        system_prompt_path: str | None = None,
         test_timeout: int = 900,
         **kwargs: Any,
     ):
@@ -95,6 +96,7 @@ class ComposableEnv(CliAgentEnv):
 
         self.task = task
         self.install_script = install_script
+        self.system_prompt_path = system_prompt_path
         self.test_timeout = test_timeout
 
         self.add_rubric(CliAgentMonitorRubric())
@@ -113,16 +115,48 @@ class ComposableEnv(CliAgentEnv):
         """Merge base env vars with Task-provided env vars."""
         env_vars = await super().build_env_vars(state)
         env_vars.update(self.task.get_env_vars())
+        # Set AGENT_WORKDIR from task if available
+        info = state.get("info") or {}
+        try:
+            env_vars.setdefault("AGENT_WORKDIR", self.task.get_workdir(info))
+        except Exception:
+            pass
         return env_vars
 
     async def post_sandbox_setup(self, state: State) -> None:
-        """Run Task setup, then install agent binary if configured."""
+        """Run Task setup, upload instruction, then install agent binary."""
         sandbox_id = state["sandbox_id"]
 
-        # Task setup (repo checkout, venv links, proof file, etc.)
+        # 1. Task setup (repo checkout, venv links, proof file, etc.)
         await self.task.setup(self.sandbox_client, sandbox_id, state)
 
-        # Agent install (optional)
+        # 2. Upload task instruction for the agent to read
+        info = state.get("info") or {}
+        try:
+            prompt = self.task.get_prompt(info)
+            instruction = ""
+            for msg in prompt:
+                content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
+                if content and getattr(msg, "role", msg.get("role") if isinstance(msg, dict) else "") == "user":
+                    instruction += str(content)
+            if instruction:
+                await self.sandbox_client.execute_command(sandbox_id, "mkdir -p /task", timeout=10)
+                await self.sandbox_client.execute_command(
+                    sandbox_id,
+                    f"cat > /task/instruction.md << 'INSTRUCTION_EOF'\n{instruction}\nINSTRUCTION_EOF",
+                    timeout=30,
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to upload instruction: {e}")
+
+        # 3. Upload system prompt if provided
+        if self.system_prompt_path:
+            await self.sandbox_client.execute_command(sandbox_id, "mkdir -p /opencode", timeout=10)
+            await self.sandbox_client.upload_file(
+                sandbox_id, "/opencode/system.txt", str(self.system_prompt_path),
+            )
+
+        # 4. Agent install (optional)
         if self.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
             result = await self.sandbox_client.execute_command(
