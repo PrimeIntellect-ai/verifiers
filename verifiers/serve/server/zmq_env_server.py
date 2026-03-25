@@ -66,6 +66,11 @@ class ZMQEnvServer(EnvServer):
 
         try:
             while not stop.is_set():
+                if router_task.done():
+                    exc = router_task.exception()
+                    self.logger.error(f"Router task died: {exc}")
+                    raise RuntimeError("Router task failed unexpectedly") from exc
+
                 events = dict(await poller.poll(timeout=100))
 
                 if self.frontend in events:
