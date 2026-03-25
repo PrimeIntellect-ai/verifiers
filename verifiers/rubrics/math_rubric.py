@@ -150,9 +150,12 @@ class MathRubric(Rubric):
             unregister_executor(self.executor_name)
         if hasattr(self, "executor"):
             if sys.version_info < (3, 13):
-                for p in (getattr(self.executor, "_processes", None) or {}).values():
+                procs = list(
+                    (getattr(self.executor, "_processes", None) or {}).values()
+                )
+                for p in procs:
                     p.kill()
-                for p in (getattr(self.executor, "_processes", None) or {}).values():
+                for p in procs:
                     p.join(timeout=5)
             self.executor.shutdown(wait=True, cancel_futures=True)
 
