@@ -168,6 +168,8 @@ class OpenAICompletionsClient(
             completion_logprobs = getattr(
                 response.choices[0].logprobs, "token_logprobs"
             )
+            if completion_logprobs is None:
+                return None
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
