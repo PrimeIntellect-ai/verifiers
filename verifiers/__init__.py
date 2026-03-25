@@ -16,6 +16,15 @@ from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 
+# Multi-agent support
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
+from .envs.registry import Registry  # noqa # isort: skip
+from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
+
+# Core abstractions
+from .envs.taskset import TaskSet  # noqa # isort: skip
+from .envs.agent import Agent  # noqa # isort: skip
+
 # main imports
 from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
@@ -47,6 +56,13 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "MultiAgentRubric",
+    # Multi-agent support
+    "MultiAgentEnv",
+    "Registry",
+    # Core abstractions
+    "TaskSet",
+    "Agent",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",

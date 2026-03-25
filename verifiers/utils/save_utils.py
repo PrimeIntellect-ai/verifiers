@@ -177,7 +177,12 @@ def state_to_output(
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
+        advantage=state.get("advantage"),
     )
+    actor_id = state.get("extras", {}).get("current_actor_id")
+    if actor_id is not None:
+        output["actor_id"] = actor_id
+
     usage = _extract_state_token_usage(state)
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.

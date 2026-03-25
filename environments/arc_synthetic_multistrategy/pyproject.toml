@@ -1,0 +1,17 @@
+[project]
+name = "arc-synthetic-multistrategy"
+description = "Multi-strategy solver for synthetic ARC-AGI-2 tasks with level/type filtering"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers>=0.1.9", "datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["arc_synthetic_multistrategy.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 10
+rollouts_per_example = 2

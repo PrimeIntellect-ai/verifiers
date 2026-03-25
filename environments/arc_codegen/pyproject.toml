@@ -1,0 +1,17 @@
+[project]
+name = "arc-codegen"
+description = "ARC-AGI codegen solver for RL training"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers>=0.1.9", "datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["arc_codegen.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 4
