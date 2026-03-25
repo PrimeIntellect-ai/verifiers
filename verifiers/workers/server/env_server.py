@@ -129,10 +129,7 @@ class EnvServer(ABC):
     @classmethod
     def run_server(cls, *args, **kwargs):
         server = cls(*args, **kwargs)
-        try:
-            asyncio.run(server.run())
-        except (SystemExit, KeyboardInterrupt):
-            pass
+        return asyncio.run(server.run())
 
     async def handle_health(self, _request: HealthRequest) -> HealthResponse:
         return HealthResponse()
