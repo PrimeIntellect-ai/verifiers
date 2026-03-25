@@ -410,7 +410,11 @@ async def evaluate_codegen_response(
     if code is None:
         return extras
 
-    compile(code, "<solver>", "exec")
+    try:
+        compile(code, "<solver>", "exec")
+    except SyntaxError:
+        extras["code_compiles"] = False
+        return extras
     extras["code_compiles"] = True
 
     train_total = len(train_pairs)
