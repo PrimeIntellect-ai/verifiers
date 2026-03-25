@@ -27,11 +27,10 @@ def _find_all(ids: list[int], target: int) -> list[int]:
 
 
 def _strip_stop_tokens(ids: list[int], stop_ids: set[int]) -> list[int]:
-    """Remove trailing stop tokens."""
-    while ids and ids[-1] in stop_ids:
-        ids = ids[:-1]
-    # Also strip any stop token that appears anywhere (e.g. mid-sequence <|im_end|>)
-    # Only strip from the END — stop tokens mid-sequence are part of content
+    """Truncate at first stop token (model shouldn't generate past it)."""
+    for i, t in enumerate(ids):
+        if t in stop_ids:
+            return ids[:i]
     return ids
 
 
@@ -116,8 +115,7 @@ def parse_qwen35(tokenizer, token_ids: list[int], *, stop_ids: set[int],
         # Everything before </think> is reasoning
         reasoning_ids = ids[:think_end]
         # Strip <think> if present at start
-        if reasoning_ids and reasoning_ids[0] == think_id:
-            reasoning_ids = reasoning_ids[1:]
+        reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
         ids = ids[think_end + 1:]
     elif think_id in set(ids):
@@ -187,8 +185,7 @@ def parse_glm(tokenizer, token_ids: list[int], *, stop_ids: set[int],
     think_end = _find(ids, think_end_id)
     if think_end != -1:
         reasoning_ids = ids[:think_end]
-        if reasoning_ids and reasoning_ids[0] == think_id:
-            reasoning_ids = reasoning_ids[1:]
+        reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
         ids = ids[think_end + 1:]
     elif think_id in set(ids):
@@ -277,8 +274,7 @@ def parse_minimax(tokenizer, token_ids: list[int], *, stop_ids: set[int],
     think_end = _find(ids, think_end_id)
     if think_end != -1:
         reasoning_ids = ids[:think_end]
-        if reasoning_ids and reasoning_ids[0] == think_id:
-            reasoning_ids = reasoning_ids[1:]
+        reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
         ids = ids[think_end + 1:]
     elif think_id in set(ids):
@@ -353,8 +349,7 @@ def parse_kimi(tokenizer, token_ids: list[int], *, stop_ids: set[int],
 
     if reasoning_end != -1:
         reasoning_ids = ids[:reasoning_end]
-        if reasoning_ids and reasoning_ids[0] == think_id:
-            reasoning_ids = reasoning_ids[1:]
+        reasoning_ids = [t for t in reasoning_ids if t != think_id]
         reasoning = _decode(tokenizer, reasoning_ids).strip()
         if reasoning_end == think_end:
             ids = ids[think_end + 1:]
