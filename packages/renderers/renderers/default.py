@@ -57,10 +57,12 @@ class DefaultRenderer:
     def _apply(self, messages, *, tools=None, add_generation_prompt=False) -> list[int]:
         kwargs = dict(self._chat_template_kwargs)
         kwargs["add_generation_prompt"] = add_generation_prompt
+        kwargs["tokenize"] = True
         if tools is not None:
             kwargs["tools"] = tools
         kwargs["return_dict"] = False
-        return list(self._tokenizer.apply_chat_template(messages, **kwargs))
+        result = self._tokenizer.apply_chat_template(messages, **kwargs)
+        return list(result)
 
     def render_ids(
         self,

@@ -9,9 +9,11 @@ from renderers import build_supervised_sample, build_trajectory_step
 
 
 def _expected(tokenizer, messages, **kwargs):
-    result = tokenizer.apply_chat_template(messages, return_dict=False, **kwargs)
+    result = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False, **kwargs)
     if isinstance(result, dict):
         return list(result["input_ids"])
+    if isinstance(result, str):
+        return list(tokenizer.encode(result, add_special_tokens=False))
     return list(result)
 
 

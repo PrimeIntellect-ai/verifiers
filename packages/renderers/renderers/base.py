@@ -95,6 +95,7 @@ def _populate_registry():
     from renderers.default import DefaultRenderer
     from renderers.glm45 import GLM45Renderer
     from renderers.glm5 import GLM5Renderer
+    from renderers.intellect import IntellectRenderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen35 import Qwen35Renderer
@@ -107,6 +108,7 @@ def _populate_registry():
             "glm5": GLM5Renderer,
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
+            "intellect": IntellectRenderer,
         }
     )
 
@@ -120,6 +122,10 @@ def _auto_detect_renderer_cls(tokenizer) -> type:
     if has_token("]~!b["):
         return RENDERER_REGISTRY["minimax-m2"]
     if has_token("[gMASK]"):
+        # INTELLECT has both [gMASK] and <|im_start|> — use default (Jinja) for now
+        # because the tokenizer has aggressive BPE merges that break piece-by-piece encoding
+        if has_token("<|im_start|>"):
+            return RENDERER_REGISTRY["default"]
         if tokenizer.vocab_size >= 154000:
             return RENDERER_REGISTRY["glm5"]
         return RENDERER_REGISTRY["glm4.5"]
