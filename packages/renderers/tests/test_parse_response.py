@@ -5,8 +5,6 @@ Runs against every (model, renderer) pair.
 """
 
 
-
-
 def test_parse_simple_content(model_name, tokenizer, renderer):
     """Plain content, no thinking."""
     text = "Hello there!"
