@@ -82,13 +82,11 @@ def load_environment(
     Loads tool-test environment.
     """
 
-    def build_datasets():
-        train_rows = []
-        eval_rows = []
-        for i in range(num_train_examples + num_eval_examples):
-            tool_names = random.sample(
-                tool_name_list, random.randint(1, len(tool_name_list))
-            )
+    def _build_rows(count, seed_offset=0):
+        rng = random.Random(42 + seed_offset)
+        rows = []
+        for _ in range(count):
+            tool_names = rng.sample(tool_name_list, rng.randint(1, len(tool_name_list)))
             prompt = [
                 {
                     "role": "user",
@@ -96,17 +94,14 @@ def load_environment(
                 }
             ]
             info = {"tool_names": tool_names}
-            if i < num_train_examples:
-                train_rows.append({"prompt": prompt, "info": info})
-            else:
-                eval_rows.append({"prompt": prompt, "info": info})
-        return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
+            rows.append({"prompt": prompt, "info": info})
+        return Dataset.from_list(rows)
 
     def build_train_dataset():
-        return build_datasets()[0]
+        return _build_rows(num_train_examples, seed_offset=0)
 
     def build_eval_dataset():
-        return build_datasets()[1]
+        return _build_rows(num_eval_examples, seed_offset=1)
 
     rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
