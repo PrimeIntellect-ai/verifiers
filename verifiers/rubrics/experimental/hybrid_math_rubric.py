@@ -141,6 +141,10 @@ class HybridMathRubric(vf.JudgeRubric):
         self.math_rubric.funcs.clear()
         self.math_rubric.weights.clear()
 
+    async def teardown(self):
+        await self.math_rubric.teardown()
+        await super().teardown()
+
     async def math_verify_score(
         self, completion: vf.Messages, answer: str, state: vf.State, **kwargs
     ) -> float:
