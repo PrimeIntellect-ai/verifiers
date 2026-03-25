@@ -48,17 +48,6 @@ def _read_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _tar_directory(src_dir: Path, prefix: str = "") -> bytes:
-    """Create a tar.gz archive of a directory in memory."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for p in src_dir.rglob("*"):
-            if p.is_file():
-                arcname = f"{prefix}/{p.relative_to(src_dir)}" if prefix else str(p.relative_to(src_dir))
-                tar.add(str(p), arcname=arcname)
-    return buf.getvalue()
-
-
 class HarborTask:
     """Task implementation for a single Harbor task directory.
 

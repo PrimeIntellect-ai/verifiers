@@ -24,6 +24,7 @@ The rollout flow is:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -123,6 +124,7 @@ class ComposableEnv(SandboxMixin, vf.Environment):
         self.test_timeout = test_timeout
         self.environment_vars = environment_vars or {}
         self.labels = labels or []
+        self._agent_run_lock = asyncio.Lock()
 
         self.init_sandbox_client(
             max_retries=max_retries,
@@ -163,8 +165,9 @@ class ComposableEnv(SandboxMixin, vf.Environment):
         state["rollout_id"] = rollout_id
 
         try:
-            prompt = self._get_agent_prompt(state)
-            steps = await self.agent.run(prompt, state)
+            async with self._agent_run_lock:
+                prompt = self._get_agent_prompt(state)
+                steps = await self.agent.run(prompt, state)
 
             state["trajectory"] = steps
             self._render_completion(state)
@@ -244,26 +247,47 @@ class ComposableEnv(SandboxMixin, vf.Environment):
             )
 
             await self.task.setup(self.sandbox_client, sandbox_id, state)
-            await self.agent.setup(self.sandbox_client, sandbox_id, state)
 
-            if hasattr(self.agent, "inject_tool_args"):
-                self.agent.inject_tool_args(
-                    state=state,
-                    sandbox_client=self.sandbox_client,
-                    sandbox_id=sandbox_id,
-                )
+            async with self._agent_run_lock:
+                await self.agent.setup(self.sandbox_client, sandbox_id, state)
 
-            # Inject task-provided extra tools into ReActAgent
-            if hasattr(self.agent, "add_tool") and hasattr(self.task, "get_extra_tools"):
-                for tool_entry in self.task.get_extra_tools() or []:
-                    if isinstance(tool_entry, tuple):
-                        func, skip = tool_entry
-                        self.agent.add_tool(func, args_to_skip=skip)
-                    else:
-                        self.agent.add_tool(tool_entry)
+                if hasattr(self.agent, "inject_tool_args"):
+                    self.agent.inject_tool_args(
+                        state=state,
+                        sandbox_client=self.sandbox_client,
+                        sandbox_id=sandbox_id,
+                    )
 
-            prompt = self._get_agent_prompt(state)
-            steps = await self.agent.run(prompt, state)
+                added_tool_names: set[str] = set()
+                try:
+                    # Inject task-provided extra tools into ReActAgent.
+                    if hasattr(self.agent, "add_tool") and hasattr(self.task, "get_extra_tools"):
+                        existing_tool_names = set()
+                        for tool_def in getattr(self.agent, "tool_defs", None) or []:
+                            existing_tool_names.add(tool_def.name)
+
+                        for tool_entry in self.task.get_extra_tools() or []:
+                            if isinstance(tool_entry, tuple):
+                                func, skip = tool_entry
+                                tool_name = getattr(func, "__name__", func.__class__.__name__)
+                                if tool_name in existing_tool_names:
+                                    continue
+                                self.agent.add_tool(func, args_to_skip=skip)
+                            else:
+                                tool_name = getattr(tool_entry, "__name__", tool_entry.__class__.__name__)
+                                if tool_name in existing_tool_names:
+                                    continue
+                                self.agent.add_tool(tool_entry)
+
+                            existing_tool_names.add(tool_name)
+                            added_tool_names.add(tool_name)
+
+                    prompt = self._get_agent_prompt(state)
+                    steps = await self.agent.run(prompt, state)
+                finally:
+                    if added_tool_names and hasattr(self.agent, "remove_tool"):
+                        for tool_name in added_tool_names:
+                            self.agent.remove_tool(tool_name)
 
             state["trajectory"] = steps
             self._render_completion(state)
