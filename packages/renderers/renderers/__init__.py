@@ -10,7 +10,6 @@ from renderers.base import (
 from renderers.default import DefaultRenderer
 from renderers.glm45 import GLM45Renderer
 from renderers.glm5 import GLM5Renderer
-from renderers.intellect import IntellectRenderer
 from renderers.kimi import KimiRenderer
 from renderers.minimax_m2 import MiniMaxM2Renderer
 from renderers.qwen3 import Qwen3Renderer
@@ -20,7 +19,6 @@ __all__ = [
     "DefaultRenderer",
     "GLM45Renderer",
     "GLM5Renderer",
-    "IntellectRenderer",
     "KimiRenderer",
     "MiniMaxM2Renderer",
     "ParsedResponse",

@@ -97,7 +97,6 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "zai-org/GLM-4.7": "glm5",
     "THUDM/GLM-4.5": "glm4.5",
     "MiniMaxAI/MiniMax-M2": "minimax-m2",
-    "PrimeIntellect/INTELLECT": "default",
     "moonshotai/Kimi-K2": "kimi",
 }
 
@@ -108,7 +107,6 @@ def _populate_registry():
     from renderers.default import DefaultRenderer
     from renderers.glm45 import GLM45Renderer
     from renderers.glm5 import GLM5Renderer
-    from renderers.intellect import IntellectRenderer
     from renderers.kimi import KimiRenderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.qwen3 import Qwen3Renderer
@@ -122,7 +120,6 @@ def _populate_registry():
             "glm5": GLM5Renderer,
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
-            "intellect": IntellectRenderer,
             "kimi": KimiRenderer,
         }
     )
