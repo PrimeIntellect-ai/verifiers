@@ -48,12 +48,16 @@ class Task(Protocol):
     The Task never drives execution — that is the Agent's job.
     """
 
+    needs_sandbox: bool
+    """Whether this task requires a sandbox (docker image, setup, etc.)."""
+
     def get_prompt(self, info: dict) -> Messages:
         """Build the prompt messages the agent will see."""
         ...
 
     def get_image(self, info: dict) -> str:
-        """Return the fully-qualified Docker image for this instance."""
+        """Return the fully-qualified Docker image for this instance.
+        Only called when ``needs_sandbox`` is True."""
         ...
 
     def get_workdir(self, info: dict) -> str:
@@ -74,6 +78,14 @@ class Task(Protocol):
         self, sandbox_client: Any, sandbox_id: str, state: State,
     ) -> float | dict[str, float]:
         """Score the result.  Returns scalar or per-role dict."""
+        ...
+
+    def get_extra_tools(self) -> list:
+        """Return domain-specific tools the agent may use.
+
+        Each tool is a ``(callable, args_to_skip)`` tuple or a plain callable.
+        ComposableEnv injects these into ReActAgent automatically.
+        """
         ...
 
     async def apply_gold_patch(
@@ -109,6 +121,10 @@ class TaskSet:
         self._dataset = dataset
         self.name = name
 
+    @property
+    def needs_sandbox(self) -> bool:
+        return getattr(self.task, "needs_sandbox", True)
+
     # -- Dataset access -----------------------------------------------------
 
     def get_dataset(self) -> Any:
@@ -132,6 +148,11 @@ class TaskSet:
 
     def get_env_vars(self) -> dict[str, str]:
         return self.task.get_env_vars()
+
+    def get_extra_tools(self) -> list:
+        if hasattr(self.task, "get_extra_tools"):
+            return self.task.get_extra_tools() or []
+        return []
 
     async def setup(
         self, sandbox_client: Any, sandbox_id: str, state: State,
@@ -191,6 +212,10 @@ class MergedTaskSet:
         self._dataset: Any = None
         self._build()
 
+    @property
+    def needs_sandbox(self) -> bool:
+        return any(ts.needs_sandbox for ts in self._tasksets)
+
     def _build(self) -> None:
         from datasets import concatenate_datasets
 
@@ -233,6 +258,10 @@ class MergedTaskSet:
     def get_env_vars(self) -> dict[str, str]:
         # Merged tasksets don't have a single set of env vars
         return {}
+
+    def get_extra_tools(self) -> list:
+        # Can't resolve statically for merged sets — tools vary per instance
+        return []
 
     async def setup(
         self, sandbox_client: Any, sandbox_id: str, state: State,

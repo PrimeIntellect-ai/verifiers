@@ -131,6 +131,13 @@ class ComposableEnv(SandboxMixin, vf.Environment):
 
     # -- rollout ------------------------------------------------------------
 
+    @property
+    def _needs_sandbox(self) -> bool:
+        """Whether this rollout requires a sandbox."""
+        task_needs = getattr(self.task, "needs_sandbox", True)
+        agent_needs = getattr(self.agent, "needs_sandbox", True)
+        return task_needs or agent_needs
+
     async def rollout(
         self,
         input: RolloutInput,
@@ -138,24 +145,86 @@ class ComposableEnv(SandboxMixin, vf.Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
+        if self._needs_sandbox:
+            return await self._rollout_with_sandbox(input, client, model, sampling_args)
+        else:
+            return await self._rollout_without_sandbox(input, client, model, sampling_args)
+
+    async def _rollout_without_sandbox(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ) -> State:
+        """Lightweight rollout: prompt → agent → evaluate.  No sandbox."""
         state = await self.init_state(input, client, model, sampling_args)
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
-        # Store helper so SweTaskAdapter.evaluate() can call run_background_job
+
+        try:
+            prompt = self._get_agent_prompt(state)
+            steps = await self.agent.run(prompt, state)
+
+            state["trajectory"] = steps
+            self._render_completion(state)
+
+            try:
+                reward = await self.task.evaluate(None, "", state)
+                if isinstance(reward, dict):
+                    state["role_rewards"] = reward
+                    state["reward"] = sum(reward.values()) / len(reward) if reward else 0.0
+                else:
+                    state["reward"] = reward
+            except Exception as e:
+                self.logger.warning(f"Evaluation failed for {rollout_id}: {e}")
+                state["reward"] = 0.0
+
+        except vf.Error as e:
+            state["error"] = e
+        except Exception as e:
+            state["error"] = vf.InfraError(str(e))
+            self.logger.error(f"Rollout {rollout_id} failed: {e}")
+        finally:
+            duration_s = time.time() - state["timing"]["start_time"]
+            num_turns = len(state.get("trajectory", []))
+            self.logger.info(
+                f"Finished rollout_id={rollout_id} | "
+                f"example_id={state.get('example_id')} | "
+                f"turns={num_turns} | "
+                f"reward={state.get('reward')} | "
+                f"duration={duration_s:.1f}s"
+            )
+            state["is_completed"] = True
+            end_time = time.time()
+            start_time = state["timing"]["start_time"]
+            state["timing"]["generation_ms"] = (end_time - start_time) * 1000
+            state["timing"]["total_ms"] = (end_time - start_time) * 1000
+
+        return state
+
+    async def _rollout_with_sandbox(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ) -> State:
+        """Full rollout with sandbox lifecycle."""
+        state = await self.init_state(input, client, model, sampling_args)
+        rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
+        state["rollout_id"] = rollout_id
         state["_run_background_job"] = self.run_background_job
 
         try:
-            # 1. Determine docker image
             info = state.get("info") or {}
-            image = self.docker_image_override or self.task.get_image(info)
+            image = self.docker_image_override or self._resolve_image(info)
 
-            # 2. Build env vars (environment + task + agent)
             env_vars = dict(self.environment_vars)
             env_vars.update(self.task.get_env_vars())
             if hasattr(self.agent, "get_env_vars"):
                 env_vars.update(self.agent.get_env_vars(state))
 
-            # 3. Create sandbox
             request = CreateSandboxRequest(
                 name=rollout_id,
                 docker_image=image,
@@ -174,13 +243,9 @@ class ComposableEnv(SandboxMixin, vf.Environment):
                 f"Started rollout_id={rollout_id} | example_id={state.get('example_id')} | image={image}"
             )
 
-            # 4. Task setup (repo checkout, venv, file uploads, etc.)
             await self.task.setup(self.sandbox_client, sandbox_id, state)
-
-            # 5. Agent setup (upload scripts, bind tools to sandbox, etc.)
             await self.agent.setup(self.sandbox_client, sandbox_id, state)
 
-            # 6. Inject state/sandbox into agent tools (for args_to_skip)
             if hasattr(self.agent, "inject_tool_args"):
                 self.agent.inject_tool_args(
                     state=state,
@@ -188,17 +253,21 @@ class ComposableEnv(SandboxMixin, vf.Environment):
                     sandbox_id=sandbox_id,
                 )
 
-            # 7. Build prompt and run agent
+            # Inject task-provided extra tools into ReActAgent
+            if hasattr(self.agent, "add_tool") and hasattr(self.task, "get_extra_tools"):
+                for tool_entry in self.task.get_extra_tools() or []:
+                    if isinstance(tool_entry, tuple):
+                        func, skip = tool_entry
+                        self.agent.add_tool(func, args_to_skip=skip)
+                    else:
+                        self.agent.add_tool(tool_entry)
+
             prompt = self._get_agent_prompt(state)
             steps = await self.agent.run(prompt, state)
 
-            # 8. Store trajectory
             state["trajectory"] = steps
-
-            # 9. Render completion from trajectory
             self._render_completion(state)
 
-            # 10. Evaluate (run tests, compute reward)
             try:
                 reward = await self.task.evaluate(
                     self.sandbox_client, sandbox_id, state
@@ -241,6 +310,20 @@ class ComposableEnv(SandboxMixin, vf.Environment):
         return state
 
     # -- helpers ------------------------------------------------------------
+
+    def _resolve_image(self, info: dict) -> str:
+        """Resolve the Docker image: task → agent default → fallback."""
+        task_needs = getattr(self.task, "needs_sandbox", True)
+        if task_needs:
+            try:
+                return self.task.get_image(info)
+            except Exception:
+                pass
+        # Agent's default image (e.g. BinaryAgent.default_image)
+        agent_image = getattr(self.agent, "default_image", None)
+        if agent_image:
+            return agent_image
+        return "python:3.11-slim"
 
     def _get_agent_prompt(self, state: State) -> Messages:
         """Build the prompt the agent will see.

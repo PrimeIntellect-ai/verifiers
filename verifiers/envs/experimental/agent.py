@@ -55,6 +55,9 @@ class Agent(Protocol):
     back-reference to the environment.
     """
 
+    needs_sandbox: bool
+    """Whether this agent requires a sandbox to operate."""
+
     async def setup(
         self,
         sandbox_client: Any,
@@ -163,6 +166,8 @@ class SingleTurnAgent:
     Accepts an optional *system_prompt* that is prepended to every call.
     """
 
+    needs_sandbox = False
+
     def __init__(
         self,
         system_prompt: str | None = None,
@@ -219,6 +224,9 @@ class ReActAgent:
     JSON-schema tool definitions (same as ``ToolEnv``).  Tools that need
     sandbox access should accept ``sandbox_client``/``sandbox_id``/``state``
     params and use ``args_to_skip`` to hide them from the schema.
+
+    Set ``needs_sandbox=False`` if all tools are sandbox-independent
+    (e.g. pure Python functions, web APIs).
     """
 
     def __init__(
@@ -227,11 +235,13 @@ class ReActAgent:
         max_turns: int = 200,
         system_prompt: str | None = None,
         agent_id: str = "react_agent",
+        needs_sandbox: bool = True,
         error_formatter: Callable[[Exception], str] = lambda e: str(e),
     ):
         self.max_turns = max_turns
         self.system_prompt = system_prompt
         self.agent_id = agent_id
+        self.needs_sandbox = needs_sandbox
         self.error_formatter = error_formatter
 
         self._tools: list[Callable] = []

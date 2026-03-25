@@ -49,6 +49,7 @@ class SweTaskAdapter:
         test_timeout: int = 900,
         system_prompt: str | None = None,
     ):
+        self.needs_sandbox = True
         self._swe_task = swe_task
         self._test_timeout = test_timeout
         self._system_prompt = system_prompt

@@ -66,6 +66,7 @@ class HarborTask:
     """
 
     def __init__(self, task_dir: str | Path, default_image: str = "python:3.11-slim"):
+        self.needs_sandbox = True
         self.task_dir = Path(task_dir)
         self.default_image = default_image
 
