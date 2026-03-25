@@ -82,7 +82,7 @@ class GLM45Renderer:
     @staticmethod
     def _visible_text(content: Any) -> str:
         if content is None:
-            return ""
+            return "None"
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -242,17 +242,20 @@ class GLM45Renderer:
             emit_special(self._think, msg_idx)
             emit_special(self._think_end, msg_idx)
 
-        if content.strip():
+        # Tool calls — keep content + \n contiguous to preserve BPE merges
+        tool_calls = msg.get("tool_calls") or []
+        if content.strip() and tool_calls:
+            emit_text("\n" + content.strip() + "\n", msg_idx)
+        elif content.strip():
             emit_text("\n" + content.strip(), msg_idx)
 
-        # Tool calls
-        tool_calls = msg.get("tool_calls") or []
         for tc in tool_calls:
             func = tc.get("function") or tc
             name = func.get("name", "")
             arguments = func.get("arguments", {})
 
-            emit_text("\n", msg_idx)
+            if not content.strip():
+                emit_text("\n", msg_idx)
             emit_special(self._tool_call_tok, msg_idx)
             emit_text(name + "\n", msg_idx)
             if isinstance(arguments, dict):
