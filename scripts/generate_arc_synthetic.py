@@ -1291,15 +1291,21 @@ def format_grid_preview(grid: Grid) -> str:
     return "\n".join(",".join(str(c) for c in row) for row in grid)
 
 
-def main():
+TASKS_PER_CATEGORY_TEST = 5
+TEST_SEED_OFFSET = 90000
+
+
+def generate_split(split: str) -> list[dict]:
     records = []
     cat_names = list(GENERATORS.keys())
+    tasks_per = TASKS_PER_CATEGORY if split == "train" else TASKS_PER_CATEGORY_TEST
+    seed_base = 0 if split == "train" else TEST_SEED_OFFSET
 
     for cat_idx, cat_name in enumerate(cat_names):
         gen_fn, levels = GENERATORS[cat_name]
         for level in levels:
-            for task_idx in range(TASKS_PER_CATEGORY):
-                task_seed = 10000 * level + cat_idx * 1000 + task_idx
+            for task_idx in range(tasks_per):
+                task_seed = seed_base + 10000 * level + cat_idx * 1000 + task_idx
                 task = gen_fn(task_seed, level)
                 records.append({
                     "train_pairs": json.dumps(task["train_pairs"]),
@@ -1309,25 +1315,35 @@ def main():
                     "task_type": cat_name,
                     "level": level,
                 })
+    return records
 
-    print(f"Generated {len(records)} tasks across {len(cat_names)} categories")
 
-    # Spot-check a few tasks
-    for i in range(0, len(records), len(records) // 5):
-        rec = records[i]
-        test_in = json.loads(rec["test_input"])
-        test_out = json.loads(rec["test_output"])
-        print(f"\n--- {rec['task_id']} (type={rec['task_type']}, level={rec['level']}) ---")
-        print(f"Input ({len(test_in)}x{len(test_in[0])}):")
-        print(format_grid_preview(test_in))
-        print(f"Output ({len(test_out)}x{len(test_out[0])}):")
-        print(format_grid_preview(test_out))
+def main():
+    train_records = generate_split("train")
+    test_records = generate_split("test")
 
-    ds = Dataset.from_list(records)
-    print(f"\nDataset: {ds}")
+    print(f"Generated {len(train_records)} train tasks, {len(test_records)} test tasks")
+
+    # Spot-check
+    for records, name in [(train_records, "train"), (test_records, "test")]:
+        for i in range(0, len(records), max(1, len(records) // 3)):
+            rec = records[i]
+            test_in = json.loads(rec["test_input"])
+            test_out = json.loads(rec["test_output"])
+            print(f"\n--- [{name}] {rec['task_id']} (type={rec['task_type']}, level={rec['level']}) ---")
+            print(f"Input ({len(test_in)}x{len(test_in[0])}):")
+            print(format_grid_preview(test_in))
+            print(f"Output ({len(test_out)}x{len(test_out[0])}):")
+            print(format_grid_preview(test_out))
+
+    train_ds = Dataset.from_list(train_records)
+    test_ds = Dataset.from_list(test_records)
+    print(f"\nTrain: {train_ds}")
+    print(f"Test: {test_ds}")
 
     print(f"\nPushing to {HF_REPO}...")
-    ds.push_to_hub(HF_REPO, split="train")
+    train_ds.push_to_hub(HF_REPO, split="train")
+    test_ds.push_to_hub(HF_REPO, split="test")
     print("Done!")
 
 
