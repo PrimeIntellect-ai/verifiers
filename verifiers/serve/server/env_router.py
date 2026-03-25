@@ -291,17 +291,21 @@ class EnvRouter:
 
     async def restart_worker(self, worker_id: int) -> None:
         """Restart a dead or unresponsive worker. Re-dispatches all pending requests."""
-        old_worker = self.workers.pop(worker_id, None)
+        old_worker = self.workers.get(worker_id)
         to_redispatch: list[ActiveRequestInfo] = []
         if old_worker is not None:
             to_redispatch = list(old_worker.active_requests.values())
             old_worker.active_requests.clear()
             for info in to_redispatch:
                 self.request_to_worker.pop(info.request_id, None)
+
+        # Start the replacement *before* terminating the old process so that
+        # self.workers is never empty
+        self.workers[worker_id] = self.start_worker(worker_id)
+
+        if old_worker is not None:
             await asyncio.to_thread(terminate_process, old_worker.process)
             old_worker.socket.close()
-
-        self.workers[worker_id] = self.start_worker(worker_id)
 
         for info in to_redispatch:
             new_worker_id = self.select_worker()
