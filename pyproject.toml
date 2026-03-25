@@ -51,6 +51,8 @@ dependencies = [
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
+    "renderers",
+    "httpx>=0.27.0",
 ]
 
 [dependency-groups]
@@ -104,6 +106,9 @@ rl = [
 
 [tool.uv]
 preview = true
+
+[tool.uv.sources]
+renderers = { path = "packages/renderers", editable = true }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
