@@ -39,42 +39,37 @@ class TestBrowserEnvValidation:
                     ),
                 )
 
-    def test_conflicting_project_id_aliases_raise(self):
-        """Test that conflicting project ID aliases fail fast."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        with pytest.raises(ValueError, match="conflicting Browserbase project IDs"):
-            BrowserEnv(
-                mode="dom",
-                project_id="project-a",
-                browserbase_project_id="project-b",
-                dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
-            )
-
-    def test_direct_browserbase_credentials_are_forwarded(self):
-        """Test that direct credential overrides are passed to DOM mode."""
+    def test_browser_env_reads_credentials_from_configured_env_vars(self):
+        """Test that BrowserEnv resolves credentials through the configured env vars."""
         from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
 
         mock_dom_mode = MagicMock()
         mock_dom_mode.register_tools = MagicMock()
         mock_dom_mode.teardown = AsyncMock()
 
-        with patch(
-            "verifiers.envs.integrations.browser_env.browser_env.DOMMode",
-            return_value=mock_dom_mode,
-        ) as mock_dom_mode_cls:
-            BrowserEnv(
-                mode="dom",
-                browserbase_api_key="direct-api-key",
-                browserbase_project_id="project-id",
-                model_api_key="direct-model-key",
-                dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
-            )
+        with patch.dict(
+            os.environ,
+            {"BB_API_KEY": "env-api-key", "MODEL_KEY": "env-model-key"},
+            clear=True,
+        ):
+            with patch(
+                "verifiers.envs.integrations.browser_env.browser_env.DOMMode",
+                return_value=mock_dom_mode,
+            ) as mock_dom_mode_cls:
+                BrowserEnv(
+                    mode="dom",
+                    project_id="project-id",
+                    browserbase_api_key_var="BB_API_KEY",
+                    model_api_key_var="MODEL_KEY",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
 
         mock_dom_mode_cls.assert_called_once_with(
-            browserbase_api_key="direct-api-key",
+            browserbase_api_key="env-api-key",
             project_id="project-id",
-            model_api_key="direct-model-key",
+            model_api_key="env-model-key",
             stagehand_model="openai/gpt-4o-mini",
             proxy_model_to_stagehand=False,
             proxies=False,

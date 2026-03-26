@@ -122,9 +122,6 @@ def load_environment(
     # CUA mode configuration
     use_sandbox: bool = True,
     server_url: str = "http://localhost:3000",
-    # Shared configuration
-    browserbase_api_key: str | None = None,
-    browserbase_project_id: str | None = None,
     env: Literal["LOCAL", "BROWSERBASE"] = "BROWSERBASE",
     viewport_width: int = 1024,
     viewport_height: int = 768,
@@ -172,9 +169,6 @@ def load_environment(
         judge_model: Model for judging task completion
         use_sandbox: Auto-deploy CUA server to sandbox (default: True)
         server_url: CUA server URL for manual mode (default: http://localhost:3000)
-        browserbase_api_key: Browserbase API key (or set BROWSERBASE_API_KEY env var)
-        browserbase_project_id: Optional Browserbase project ID (or set
-            BROWSERBASE_PROJECT_ID env var)
         env: Browser environment - "LOCAL" or "BROWSERBASE" (default: BROWSERBASE)
         viewport_width: Browser viewport width (default: 1024)
         viewport_height: Browser viewport height (default: 768)
@@ -223,8 +217,6 @@ def load_environment(
         use_sandbox=use_sandbox,
         server_url=server_url,
         env=env,
-        browserbase_api_key=browserbase_api_key,
-        browserbase_project_id=browserbase_project_id,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
         save_screenshots=save_screenshots,
