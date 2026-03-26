@@ -23,7 +23,7 @@ import logging
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.experimental.cli_agent_env import CliAgentEnv, CliAgentMonitorRubric
+from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.sandbox_mixin import SandboxMonitorRubric
 from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.types import State
@@ -94,7 +94,7 @@ class ComposableEnv(CliAgentEnv):
         self.system_prompt_path = system_prompt_path
         self.test_timeout = test_timeout
 
-        self.add_rubric(CliAgentMonitorRubric())
+        # Note: CliAgentMonitorRubric is already added by CliAgentEnv.__init__
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
