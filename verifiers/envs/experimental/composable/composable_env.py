@@ -23,14 +23,16 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
-from verifiers.envs.experimental.sandbox_mixin import SandboxMonitorRubric
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
 
 
-class ComposableRubric(SandboxMonitorRubric):
-    """Rubric that reads the reward pre-computed by TaskSpec.evaluate()."""
+class ComposableRubric(vf.Rubric):
+    """Rubric that reads the reward pre-computed by TaskSpec.evaluate().
+
+    Does NOT extend SandboxMonitorRubric — CliAgentEnv already adds one.
+    """
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
