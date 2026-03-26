@@ -1,16 +1,17 @@
-"""Task and TaskSet — WHAT to solve.
+"""TaskSpec and TaskSet — WHAT to solve.
 
-A **Task** is pure data + hooks for a single problem type: docker image,
-sandbox setup, prompt construction, and evaluation.
+A **TaskSpec** defines the shared behavior for a problem type: docker image,
+sandbox setup, prompt construction, and evaluation logic.  You write one
+TaskSpec per domain (SWE, Lean, Math, Harbor, etc.).
 
-A **TaskSet** is a collection of problem instances backed by a Task.  It
-produces an HF ``Dataset`` and delegates per-instance methods (image,
-setup, evaluate) to the underlying Task.
+A **TaskSet** is a collection of Tasks backed by a TaskSpec.  This is what
+you hand to ``ComposableEnv`` or a training loop — it looks like an HF
+Dataset but also knows how to setup sandboxes and evaluate results.
 
 ::
 
-    from tasksets.swe import R2ETaskSet
-    from tasksets.lean import LeanTaskSet
+    from tasksets.swe import R2ETaskSet     # 4578 tasks
+    from tasksets.lean import LeanTaskSet   # 244 tasks
 
     r2e = R2ETaskSet()
     lean = LeanTaskSet("minif2f")
@@ -25,64 +26,29 @@ from verifiers.types import Messages, State
 
 
 # ---------------------------------------------------------------------------
-# Task protocol — one problem *type*
+# TaskSpec — shared behavior for a problem type
 # ---------------------------------------------------------------------------
 
 
 @runtime_checkable
-class Task(Protocol):
-    """Protocol describing WHAT to solve.
+class TaskSpec(Protocol):
+    """Protocol defining HOW to handle a problem type.
 
     Implementations provide the per-instance docker image, sandbox
     preparation, prompt construction, and evaluation logic.
-    The Task never drives execution — that is the agent's job.
+    One TaskSpec per domain (R2EGymTaskSpec, LeanTaskSpec, etc.).
     """
 
     needs_sandbox: bool
-    """Whether this task requires a sandbox (docker image, setup, etc.)."""
 
-    def get_prompt(self, info: dict) -> Messages:
-        """Build the prompt messages the agent will see."""
-        ...
-
-    def get_image(self, info: dict) -> str:
-        """Return the fully-qualified Docker image for this instance.
-        Only called when ``needs_sandbox`` is True."""
-        ...
-
-    def get_workdir(self, info: dict) -> str:
-        """Return the working directory inside the sandbox."""
-        ...
-
-    def get_env_vars(self) -> dict[str, str]:
-        """Return task-specific environment variables."""
-        ...
-
-    async def setup(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> None:
-        """Prepare the sandbox after creation."""
-        ...
-
-    async def evaluate(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> float | dict[str, float]:
-        """Score the result.  Returns scalar or per-role dict."""
-        ...
-
-    def get_extra_tools(self) -> list:
-        """Return domain-specific tools the agent may use.
-
-        Each tool is a ``(callable, args_to_skip)`` tuple or a plain callable.
-        ComposableEnv injects these into the agent automatically.
-        """
-        ...
-
-    async def apply_gold_patch(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> None:
-        """Apply the known-correct solution.  Optional."""
-        ...
+    def get_prompt(self, info: dict) -> Messages: ...
+    def get_image(self, info: dict) -> str: ...
+    def get_workdir(self, info: dict) -> str: ...
+    def get_env_vars(self) -> dict[str, str]: ...
+    async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None: ...
+    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]: ...
+    def get_extra_tools(self) -> list: ...
+    async def apply_gold_patch(self, sandbox_client: Any, sandbox_id: str, state: State) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -91,75 +57,64 @@ class Task(Protocol):
 
 
 class TaskSet:
-    """A collection of problem instances backed by a ``Task``.
+    """A collection of Tasks backed by a ``TaskSpec``.
 
-    Wraps an HF ``Dataset`` and a ``Task`` that knows how to handle each
-    instance.  ``ComposableEnv`` accepts a ``TaskSet`` directly.
+    Each row in the dataset is one Task (one problem instance).
+    The TaskSpec provides the shared behavior (image, setup, evaluate).
     """
 
-    def __init__(self, task: Task, dataset: Any, name: str = ""):
-        self.task = task
+    def __init__(self, spec: TaskSpec, dataset: Any, name: str = ""):
+        self.spec = spec
         self._dataset = dataset
         self.name = name
 
     @property
     def needs_sandbox(self) -> bool:
-        return getattr(self.task, "needs_sandbox", True)
-
-    # -- Dataset access -----------------------------------------------------
+        return getattr(self.spec, "needs_sandbox", True)
 
     def get_dataset(self) -> Any:
-        """Return the HF Dataset."""
         return self._dataset
 
     def __len__(self) -> int:
         return len(self._dataset)
 
-    # -- Task protocol delegation -------------------------------------------
+    # -- TaskSpec delegation ------------------------------------------------
 
     def get_prompt(self, info: dict) -> Messages:
-        return self.task.get_prompt(info)
+        return self.spec.get_prompt(info)
 
     def get_image(self, info: dict) -> str:
-        return self.task.get_image(info)
+        return self.spec.get_image(info)
 
     def get_workdir(self, info: dict) -> str:
-        return self.task.get_workdir(info)
+        return self.spec.get_workdir(info)
 
     def get_env_vars(self) -> dict[str, str]:
-        return self.task.get_env_vars()
+        return self.spec.get_env_vars()
 
     def get_extra_tools(self) -> list:
-        if hasattr(self.task, "get_extra_tools"):
-            return self.task.get_extra_tools() or []
+        if hasattr(self.spec, "get_extra_tools"):
+            return self.spec.get_extra_tools() or []
         return []
 
-    async def setup(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> None:
-        return await self.task.setup(sandbox_client, sandbox_id, state)
+    async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
+        return await self.spec.setup(sandbox_client, sandbox_id, state)
 
-    async def evaluate(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> float | dict[str, float]:
-        return await self.task.evaluate(sandbox_client, sandbox_id, state)
+    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]:
+        return await self.spec.evaluate(sandbox_client, sandbox_id, state)
 
-    async def apply_gold_patch(
-        self, sandbox_client: Any, sandbox_id: str, state: State,
-    ) -> None:
-        return await self.task.apply_gold_patch(sandbox_client, sandbox_id, state)
+    async def apply_gold_patch(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
+        return await self.spec.apply_gold_patch(sandbox_client, sandbox_id, state)
 
     # -- Combinators --------------------------------------------------------
 
     def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
-        """Return a new TaskSet with only examples matching *predicate*."""
         filtered = self._dataset.filter(predicate)
-        return TaskSet(task=self.task, dataset=filtered, name=self.name)
+        return TaskSet(spec=self.spec, dataset=filtered, name=self.name)
 
     def take(self, n: int) -> TaskSet:
-        """Return a new TaskSet with the first *n* examples."""
         sliced = self._dataset.select(range(min(n, len(self._dataset))))
-        return TaskSet(task=self.task, dataset=sliced, name=self.name)
+        return TaskSet(spec=self.spec, dataset=sliced, name=self.name)
 
     def __repr__(self) -> str:
         return f"TaskSet(name={self.name!r}, len={len(self)})"

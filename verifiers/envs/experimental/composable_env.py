@@ -29,7 +29,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv, CliAgentMonitorRubric
 from verifiers.envs.experimental.sandbox_mixin import SandboxMonitorRubric
-from verifiers.envs.experimental.task import Task
+from verifiers.envs.experimental.task import TaskSpec, TaskSet
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,9 @@ class ComposableRubric(SandboxMonitorRubric):
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        self.add_reward_func(self.task_reward)
+        self.add_reward_func(self.spec_reward)
 
-    async def task_reward(self, state: State) -> float:
+    async def spec_reward(self, state: State) -> float:
         """Return the reward computed by the Task during rollout."""
         return float(state.get("reward") or 0.0)
 
@@ -68,7 +68,7 @@ class ComposableEnv(CliAgentEnv):
     Parameters
     ----------
     task:
-        A ``Task`` or ``TaskSet`` that provides what to solve.
+        A ``TaskSet`` or ``TaskSpec`` that provides what to solve.
     run_command:
         Shell command to start the agent binary in the sandbox.
     install_script:
@@ -80,7 +80,7 @@ class ComposableEnv(CliAgentEnv):
 
     def __init__(
         self,
-        task: Task,
+        task: TaskSet | TaskSpec,
         run_command: str,
         *,
         install_script: str | None = None,
@@ -96,7 +96,7 @@ class ComposableEnv(CliAgentEnv):
             kwargs["rubric"] = ComposableRubric()
         super().__init__(run_command=run_command, **kwargs)
 
-        self.task = task
+        self.spec = task
         self.install_script = install_script
         self.system_prompt_path = system_prompt_path
         self.test_timeout = test_timeout
@@ -109,18 +109,18 @@ class ComposableEnv(CliAgentEnv):
         """Delegate to Task for per-instance docker images."""
         info = state.get("info") or {}
         try:
-            return self.task.get_image(info)
+            return self.spec.get_image(info)
         except Exception:
             return self.docker_image
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Merge base env vars with Task-provided env vars."""
         env_vars = await super().build_env_vars(state)
-        env_vars.update(self.task.get_env_vars())
+        env_vars.update(self.spec.get_env_vars())
         # Set AGENT_WORKDIR from task if available
         info = state.get("info") or {}
         try:
-            env_vars.setdefault("AGENT_WORKDIR", self.task.get_workdir(info))
+            env_vars.setdefault("AGENT_WORKDIR", self.spec.get_workdir(info))
         except Exception:
             pass
         return env_vars
@@ -130,12 +130,12 @@ class ComposableEnv(CliAgentEnv):
         sandbox_id = state["sandbox_id"]
 
         # 1. Task setup (repo checkout, venv links, proof file, etc.)
-        await self.task.setup(self.sandbox_client, sandbox_id, state)
+        await self.spec.setup(self.sandbox_client, sandbox_id, state)
 
         # 2. Upload task instruction for the agent to read
         info = state.get("info") or {}
         try:
-            prompt = self.task.get_prompt(info)
+            prompt = self.spec.get_prompt(info)
             instruction = ""
             for msg in prompt:
                 content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
@@ -187,7 +187,7 @@ class ComposableEnv(CliAgentEnv):
         state["_run_background_job"] = self.run_background_job
 
         try:
-            reward = await self.task.evaluate(
+            reward = await self.spec.evaluate(
                 self.sandbox_client, sandbox_id, state,
             )
             if isinstance(reward, dict):

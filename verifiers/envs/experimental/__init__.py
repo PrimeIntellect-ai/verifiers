@@ -2,17 +2,15 @@ from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 
 __all__ = [
     "SandboxMixin",
-    # Composable architecture
-    "Task",
+    "TaskSpec",
     "TaskSet",
     "ComposableEnv",
 ]
 
 
 def __getattr__(name: str):
-    """Lazy imports for composable architecture classes."""
     _lazy = {
-        "Task": "verifiers.envs.experimental.task:Task",
+        "TaskSpec": "verifiers.envs.experimental.task:TaskSpec",
         "TaskSet": "verifiers.envs.experimental.task:TaskSet",
         "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
     }

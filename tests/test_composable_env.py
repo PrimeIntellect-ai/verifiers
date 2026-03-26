@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from verifiers.envs.experimental.task import Task, TaskSet
+from verifiers.envs.experimental.task import TaskSpec, TaskSet
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ class MockTask:
 
 def test_mock_task_implements_protocol():
     task = MockTask()
-    assert isinstance(task, Task)
+    assert isinstance(task, TaskSpec)
 
 
 def test_task_get_prompt():
@@ -77,18 +77,24 @@ def _make_dataset(n=3):
 
 def test_taskset_len():
     ds = _make_dataset(5)
-    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    ts = TaskSet(spec=MockTask(), dataset=ds, name="test")
     assert len(ts) == 5
 
 
 def test_taskset_get_dataset():
     ds = _make_dataset()
-    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    ts = TaskSet(spec=MockTask(), dataset=ds, name="test")
     assert ts.get_dataset() is ds
 
 
-def test_taskset_delegates_to_task():
-    ts = TaskSet(task=MockTask(), dataset=_make_dataset(), name="test")
+def test_taskset_spec():
+    spec = MockTask()
+    ts = TaskSet(spec=spec, dataset=_make_dataset(), name="test")
+    assert ts.spec is spec
+
+
+def test_taskset_delegates_to_spec():
+    ts = TaskSet(spec=MockTask(), dataset=_make_dataset(), name="test")
     assert ts.get_image({"id": 1}) == "python:3.11-slim"
     assert ts.get_workdir({"id": 1}) == "/testbed"
     assert ts.get_env_vars() == {"FOO": "bar"}
@@ -98,19 +104,19 @@ def test_taskset_delegates_to_task():
 
 def test_taskset_filter():
     ds = _make_dataset(5)
-    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    ts = TaskSet(spec=MockTask(), dataset=ds, name="test")
     filtered = ts.filter(lambda ex: ex["info"]["id"] < 3)
     assert len(filtered) == 3
 
 
 def test_taskset_take():
     ds = _make_dataset(5)
-    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    ts = TaskSet(spec=MockTask(), dataset=ds, name="test")
     taken = ts.take(2)
     assert len(taken) == 2
 
 
 def test_taskset_repr():
-    ts = TaskSet(task=MockTask(), dataset=_make_dataset(), name="mytest")
+    ts = TaskSet(spec=MockTask(), dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)
     assert "3" in repr(ts)
