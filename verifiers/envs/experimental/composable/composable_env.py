@@ -87,9 +87,26 @@ class ComposableEnv(CliAgentEnv):
         except Exception:
             return self.docker_image
 
+    # Keys set by CliAgentEnv that tasks must not override.
+    _PROTECTED_ENV_VARS = frozenset({
+        "OPENAI_BASE_URL",
+        "OPENAI_TIMEOUT",
+        "OPENAI_REQUEST_TIMEOUT",
+        "HTTPX_TIMEOUT",
+        "OPENAI_MODEL",
+    })
+
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
-        env_vars.update(self.spec.get_env_vars())
+        task_env_vars = self.spec.get_env_vars()
+        # Fail hard if a task tries to override infrastructure-critical vars
+        conflicts = self._PROTECTED_ENV_VARS & task_env_vars.keys()
+        if conflicts:
+            raise ValueError(
+                f"TaskSpec.get_env_vars() must not override protected keys: {conflicts}. "
+                f"These are set by CliAgentEnv for the interception mechanism."
+            )
+        env_vars.update(task_env_vars)
         info = state.get("info") or {}
         try:
             env_vars.setdefault("AGENT_WORKDIR", self.spec.get_workdir(info))
