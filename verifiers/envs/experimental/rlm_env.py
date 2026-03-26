@@ -285,6 +285,7 @@ def _ensure_rlm_metric_state(state: State) -> None:
 
     state.setdefault("_dropped_turns_count", 0)
     state.setdefault("_drop_sequence", 0)
+    state.setdefault("_keep_from_assistant_index", 0)
 
     state.setdefault("context_drop_count", 0)
     state.setdefault("context_total_turns_dropped", 0)
@@ -2647,8 +2648,8 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> str:
         """Core logic for the remove_conversation_turns root tool."""
         current_main_turns = self._main_turn_count(state)
-        already_dropped = state.get("_dropped_turns_count", 0)
-        visible_turns = current_main_turns - already_dropped
+        keep_from = state.get("_keep_from_assistant_index", 0)
+        visible_turns = current_main_turns - keep_from
         max_droppable = max(0, visible_turns - self.min_turns_in_context)
 
         if n_turns == -1:
@@ -2668,7 +2669,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"Maximum droppable: {max_droppable}. No turns were dropped."
             )
 
-        state["_dropped_turns_count"] = already_dropped + n_turns
+        state["_keep_from_assistant_index"] = keep_from + n_turns
+        state["_dropped_turns_count"] = state.get("_dropped_turns_count", 0) + n_turns
         state["_drop_sequence"] = state.get("_drop_sequence", 0) + 1
         new_visible = visible_turns - n_turns
 
@@ -3684,6 +3686,7 @@ class RLMEnv(vf.StatefulToolEnv):
             # Initialize context dropping state
             state["_dropped_turns_count"] = 0
             state["_drop_sequence"] = 0
+            state["_keep_from_assistant_index"] = 0
 
             _ensure_rlm_metric_state(state)
 
@@ -4112,22 +4115,24 @@ class RLMEnv(vf.StatefulToolEnv):
             prev_turn_completion = last_main["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
 
-            dropped_count = state.get("_dropped_turns_count", 0)
-            if dropped_count > 0:
-                messages = self._apply_context_dropping(messages, dropped_count)
+            keep_from = state.get("_keep_from_assistant_index", 0)
+            if keep_from > 0:
+                messages = self._apply_context_dropping(messages, keep_from)
 
             env_response = await self.env_response(messages, state)
             return concat_messages([messages, env_response])
 
     def _apply_context_dropping(
-        self, messages: Messages, dropped_count: int
+        self, messages: Messages, keep_from_assistant_index: int
     ) -> Messages:
-        """Remove the oldest *dropped_count* turns from *messages*.
+        """Drop all turns before the *keep_from_assistant_index*-th assistant message.
 
         Always preserves ``messages[0]`` (the scaffolded first user message).
         A "turn" is one assistant message plus all subsequent tool messages.
+        Idempotent: if the messages are already truncated past the index, returns
+        them unchanged.
         """
-        if dropped_count <= 0:
+        if keep_from_assistant_index <= 0:
             return messages
 
         # Find turn boundaries (each assistant message starts a new turn)
@@ -4138,12 +4143,12 @@ class RLMEnv(vf.StatefulToolEnv):
             or (isinstance(msg, dict) and msg.get("role") == "assistant")
         ]
 
-        if not assistant_indices or dropped_count >= len(assistant_indices):
+        if not assistant_indices or keep_from_assistant_index >= len(assistant_indices):
             return messages
 
         # Keep messages[0] (scaffolded prompt) + everything from the
-        # (dropped_count)-th turn onward.
-        keep_from = assistant_indices[dropped_count]
+        # keep_from_assistant_index-th turn onward.
+        keep_from = assistant_indices[keep_from_assistant_index]
         return [messages[0]] + list(messages[keep_from:])
 
     async def env_response(

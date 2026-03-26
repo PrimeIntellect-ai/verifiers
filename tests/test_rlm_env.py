@@ -2944,6 +2944,7 @@ class TestContextDropping:
             "trajectory_id": trajectory_id,
             "trajectory": trajectory,
             "_dropped_turns_count": dropped,
+            "_keep_from_assistant_index": dropped,
             "_drop_sequence": 0,
             "rollout_id": "test_rollout",
         }
@@ -2958,6 +2959,7 @@ class TestContextDropping:
         )
 
         assert state["_dropped_turns_count"] == 2
+        assert state["_keep_from_assistant_index"] == 2
         assert state["_drop_sequence"] == 1
         assert "Dropped 2" in result
         assert "dropped first two" in result
@@ -2973,6 +2975,7 @@ class TestContextDropping:
 
         # 6 visible - 3 min = 3 droppable
         assert state["_dropped_turns_count"] == 3
+        assert state["_keep_from_assistant_index"] == 3
         assert "Dropped 3" in result
 
     @pytest.mark.asyncio
@@ -3003,10 +3006,12 @@ class TestContextDropping:
 
         await env_with_dropping._handle_remove_conversation_turns(state, 1, "first")
         assert state["_dropped_turns_count"] == 1
+        assert state["_keep_from_assistant_index"] == 1
         assert state["_drop_sequence"] == 1
 
         await env_with_dropping._handle_remove_conversation_turns(state, 2, "second")
         assert state["_dropped_turns_count"] == 3
+        assert state["_keep_from_assistant_index"] == 3
         assert state["_drop_sequence"] == 2
 
     # -- _apply_context_dropping --
@@ -3045,6 +3050,28 @@ class TestContextDropping:
         ]
         result = env_with_dropping._apply_context_dropping(messages, 5)
         assert result == messages
+
+    def test_apply_is_idempotent(self, env_with_dropping):
+        """Applying the same keep_from_assistant_index twice gives the same result."""
+        messages = [
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content="response 0"),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+            vf.AssistantMessage(content="response 1"),
+            vf.ToolMessage(tool_call_id="t1", content="tool 1"),
+            vf.AssistantMessage(content="response 2"),
+            vf.ToolMessage(tool_call_id="t2", content="tool 2"),
+        ]
+
+        # First application: drop first 2 turns
+        result1 = env_with_dropping._apply_context_dropping(messages, 2)
+        assert len(result1) == 3  # scaffolded + asst_2 + tool_2
+
+        # Second application on already-truncated result: same index, no further dropping
+        result2 = env_with_dropping._apply_context_dropping(result1, 2)
+        assert len(result2) == 3  # unchanged — only 1 assistant msg, index 2 >= count
+        assert result2[0].content == "scaffolded prompt"
+        assert result2[1].content == "response 2"
 
     # -- _upload_summary --
 
