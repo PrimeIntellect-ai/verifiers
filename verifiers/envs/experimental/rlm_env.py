@@ -1159,18 +1159,6 @@ def _render_worker_script(paths: RLMWorkerPaths, *, repl_language: str) -> str:
 
 
 class RLMPromptBuilder:
-    """Builds all prompt text for the RLM environment.
-
-    Holds configuration and template stores as instance/class state.
-    All build methods are pure: they depend only on self config and their arguments.
-
-    Subclasses can override individual ``build_*`` methods to customise specific
-    prompt sections, or override the class-level template stores to change prompt
-    text without touching any method logic.
-    """
-
-    # -- Class-level template stores (override in subclass to customise) ------
-
     SUB_LLM_SYSTEM_PROMPT_STORE: dict[str, str] = {
         "light": ("You have {num_turns} turns available to fulfill your task."),
         "medium": (
@@ -1313,36 +1301,28 @@ export RLM_READY=1
 """,
     }
 
-    # -- Constructor ----------------------------------------------------------
-
     def __init__(
         self,
         *,
         repl_language: Literal["bash", "python"],
         root_prompt_verbosity: Literal["light", "medium", "heavy"],
-        sub_prompt_verbosity: Literal["light", "medium", "heavy"],
         custom_system_prompt: str | None,
         pip_install_packages: str,
         expose_message_history: bool,
         root_max_completion_tokens: int | None,
         sub_max_completion_tokens: int | None,
-        sub_llm_max_turns: int,
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
-        self.sub_prompt_verbosity = sub_prompt_verbosity
         self.custom_system_prompt = custom_system_prompt
         self.pip_install_packages = pip_install_packages
         self.expose_message_history = expose_message_history
         self.root_max_completion_tokens = root_max_completion_tokens
         self.sub_max_completion_tokens = sub_max_completion_tokens
-        self.sub_llm_max_turns = sub_llm_max_turns
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
-
-    # -- Fragment builders (each independently overridable) -------------------
 
     def build_base_system_prompt(self) -> str:
         """Select the base system prompt from stores or custom override."""
@@ -1459,8 +1439,6 @@ export RLM_READY=1
             f"across all sub-LLM calls via llm_batch().\n"
         )
 
-    # -- Assembly -------------------------------------------------------------
-
     def build_system_prompt(self) -> str:
         """Assemble the full RLM system prompt from all fragments."""
         return (
@@ -1472,40 +1450,6 @@ export RLM_READY=1
             + self.build_sub_budget_note()
             + self.build_message_history_note()
         )
-
-    def build_system_prompt_fragments(self) -> dict[str, str]:
-        """Return a dict of named prompt fragments plus the assembled prompt.
-
-        Keys: ``full``, ``packages_docs``, ``root_tools_docs``, ``sub_tools_docs``.
-        """
-        packages_docs = self.build_packages_documentation()
-        root_tools_docs = self.build_root_tools_documentation()
-        sub_tools_docs = self.build_sub_tools_documentation()
-        full = (
-            self.build_base_system_prompt()
-            + packages_docs
-            + root_tools_docs
-            + sub_tools_docs
-            + self.build_root_budget_note()
-            + self.build_sub_budget_note()
-            + self.build_message_history_note()
-        )
-        return {
-            "full": full,
-            "packages_docs": packages_docs,
-            "root_tools_docs": root_tools_docs,
-            "sub_tools_docs": sub_tools_docs,
-        }
-
-    # -- Sub-LLM system prompt -----------------------------------------------
-
-    def build_sub_llm_system_prompt(self) -> str:
-        """Build the system prompt prepended to every sub-LLM call."""
-        return self.SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
-            num_turns=self.sub_llm_max_turns
-        )
-
-    # -- Scaffolding injection (static — pure message manipulation) -----------
 
     @staticmethod
     def wrap_in_scaffolding(system_prompt: str) -> str:
@@ -1550,8 +1494,6 @@ export RLM_READY=1
 
         # No user message found — append one.
         messages.append({"role": "user", "content": scaffold})
-
-    # -- Shared helper --------------------------------------------------------
 
     @staticmethod
     def _format_tool_docs_into(lines: list[str], tool_defs: list[vf.Tool]) -> None:
@@ -2529,29 +2471,23 @@ class RLMEnv(vf.StatefulToolEnv):
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
         self._executor = RLMExecutor(self)
-        self.prompt_builder = self._create_prompt_builder()
+        self.prompt_builder = RLMPromptBuilder(
+            repl_language=self.repl_language,
+            root_prompt_verbosity=self.root_prompt_verbosity,
+            custom_system_prompt=self.custom_system_prompt,
+            pip_install_packages=self.pip_install_packages,
+            expose_message_history=self.expose_message_history,
+            root_max_completion_tokens=self.root_max_completion_tokens,
+            sub_max_completion_tokens=self.sub_max_completion_tokens,
+            root_tool_defs=self.root_tool_defs,
+            sub_tool_defs=self.sub_tool_defs,
+        )
 
         # Add the REPL tool (state is injected via update_tool_args)
         if self.repl_language == "bash":
             self.add_tool(self.call_bash_repl, args_to_skip=["state"])
         else:
             self.add_tool(self.call_python_repl, args_to_skip=["state"])
-
-    def _create_prompt_builder(self) -> RLMPromptBuilder:
-        """Create the prompt builder. Override to use a custom builder class."""
-        return RLMPromptBuilder(
-            repl_language=self.repl_language,
-            root_prompt_verbosity=self.root_prompt_verbosity,
-            sub_prompt_verbosity=self.sub_prompt_verbosity,
-            custom_system_prompt=self.custom_system_prompt,
-            pip_install_packages=self.pip_install_packages,
-            expose_message_history=self.expose_message_history,
-            root_max_completion_tokens=self.root_max_completion_tokens,
-            sub_max_completion_tokens=self.sub_max_completion_tokens,
-            sub_llm_max_turns=self.sub_llm_max_turns,
-            root_tool_defs=self.root_tool_defs,
-            sub_tool_defs=self.sub_tool_defs,
-        )
 
     def get_sandbox_request(self, state: State) -> CreateSandboxRequest:
         """Return the sandbox request for this rollout.
@@ -3542,11 +3478,7 @@ class RLMEnv(vf.StatefulToolEnv):
             state["retain_filesystem_after_rollout"] = (
                 self.retain_filesystem_after_rollout
             )
-            fragments = self.prompt_builder.build_system_prompt_fragments()
-            state["rlm_system_prompt"] = fragments["full"]
-            state["rlm_packages_docs"] = fragments["packages_docs"]
-            state["rlm_root_tools_docs"] = fragments["root_tools_docs"]
-            state["rlm_sub_tools_docs"] = fragments["sub_tools_docs"]
+            state["rlm_system_prompt"] = self.prompt_builder.build_system_prompt()
             deduped_shared, _ = _dedupe_tools(
                 self.shared_tools, context="shared tools", reserved_names=set()
             )
@@ -3974,15 +3906,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 prompt = [UserMessage(content=prompt)]
 
             system_prompt = state.get("rlm_system_prompt")
-            packages_docs = state.get("rlm_packages_docs")
-            root_tools_docs = state.get("rlm_root_tools_docs")
-            sub_tools_docs = state.get("rlm_sub_tools_docs")
-            if (
-                system_prompt is None
-                or packages_docs is None
-                or root_tools_docs is None
-                or sub_tools_docs is None
-            ):
+            if system_prompt is None:
                 raise ValueError("RLM setup_state must run before get_prompt_messages")
 
             messages = []
