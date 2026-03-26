@@ -19,6 +19,12 @@ Quick start::
     swe = R2ETaskSet()                          # 4578 SWE instances
     lean = LeanTaskSet("minif2f")               # 244 Lean theorems
 
+    # Access individual tasks
+    task = swe[0]                               # one Task instance
+    task.prompt                                 # the problem statement
+    task.info                                   # metadata
+    task.get_image()                            # docker image for this instance
+
     # Slice them
     small = swe.take(50)                        # first 50
     filtered = swe.filter(lambda ex: ...)       # custom filter
@@ -125,6 +131,40 @@ class TaskSpec(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# Task — one problem instance
+# ---------------------------------------------------------------------------
+
+
+class Task:
+    """A single problem instance: data + a reference to its TaskSpec.
+
+    Usually created via ``TaskSet[i]`` rather than directly::
+
+        taskset = R2ETaskSet()
+        task = taskset[0]
+        task.prompt          # Messages
+        task.info            # metadata dict
+        task.spec            # the TaskSpec that handles this type
+        task.get_image()     # delegates to spec
+    """
+
+    def __init__(self, spec: TaskSpec, prompt: Messages, info: dict, answer: str = ""):
+        self.spec = spec
+        self.prompt = prompt
+        self.info = info
+        self.answer = answer
+
+    def get_image(self) -> str:
+        return self.spec.get_image(self.info)
+
+    def get_workdir(self) -> str:
+        return self.spec.get_workdir(self.info)
+
+    def __repr__(self) -> str:
+        return f"Task(spec={type(self.spec).__name__}, info_keys={list(self.info.keys())})"
+
+
+# ---------------------------------------------------------------------------
 # TaskSet — a collection of problem instances
 # ---------------------------------------------------------------------------
 
@@ -151,6 +191,17 @@ class TaskSet:
 
     def __len__(self) -> int:
         return len(self._dataset)
+
+    def __getitem__(self, i: int) -> Task:
+        """Return the i-th Task instance."""
+        row = self._dataset[i]
+        prompt = self.spec.get_prompt(row.get("info") or {})
+        return Task(
+            spec=self.spec,
+            prompt=prompt,
+            info=row.get("info") or {},
+            answer=row.get("answer", ""),
+        )
 
     # -- TaskSpec delegation ------------------------------------------------
 

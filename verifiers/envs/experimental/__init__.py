@@ -3,6 +3,7 @@ from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 __all__ = [
     "SandboxMixin",
     "TaskSpec",
+    "Task",
     "TaskSet",
     "ComposableEnv",
 ]
@@ -11,6 +12,7 @@ __all__ = [
 def __getattr__(name: str):
     _lazy = {
         "TaskSpec": "verifiers.envs.experimental.task:TaskSpec",
+        "Task": "verifiers.envs.experimental.task:Task",
         "TaskSet": "verifiers.envs.experimental.task:TaskSet",
         "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
     }
