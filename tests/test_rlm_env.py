@@ -514,6 +514,8 @@ class TestPromptVerbosity:
         env = rlm_env
         env.sub_prompt_verbosity = verbosity
         env.sub_llm_max_turns = 7
+        env.prompt_builder.sub_prompt_verbosity = verbosity
+        env.prompt_builder.sub_llm_max_turns = 7
 
         captured: dict[str, Any] = {}
 

@@ -1306,21 +1306,25 @@ export RLM_READY=1
         *,
         repl_language: Literal["bash", "python"],
         root_prompt_verbosity: Literal["light", "medium", "heavy"],
+        sub_prompt_verbosity: Literal["light", "medium", "heavy"],
         custom_system_prompt: str | None,
         pip_install_packages: str,
         expose_message_history: bool,
         root_max_completion_tokens: int | None,
         sub_max_completion_tokens: int | None,
+        sub_llm_max_turns: int,
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
+        self.sub_prompt_verbosity = sub_prompt_verbosity
         self.custom_system_prompt = custom_system_prompt
         self.pip_install_packages = pip_install_packages
         self.expose_message_history = expose_message_history
         self.root_max_completion_tokens = root_max_completion_tokens
         self.sub_max_completion_tokens = sub_max_completion_tokens
+        self.sub_llm_max_turns = sub_llm_max_turns
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
 
@@ -1449,6 +1453,12 @@ export RLM_READY=1
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
             + self.build_message_history_note()
+        )
+
+    def build_sub_llm_system_prompt(self) -> str:
+        """Build the system prompt prepended to every sub-LLM call."""
+        return self.SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
+            num_turns=self.sub_llm_max_turns
         )
 
     @staticmethod
@@ -2474,11 +2484,13 @@ class RLMEnv(vf.StatefulToolEnv):
         self.prompt_builder = RLMPromptBuilder(
             repl_language=self.repl_language,
             root_prompt_verbosity=self.root_prompt_verbosity,
+            sub_prompt_verbosity=self.sub_prompt_verbosity,
             custom_system_prompt=self.custom_system_prompt,
             pip_install_packages=self.pip_install_packages,
             expose_message_history=self.expose_message_history,
             root_max_completion_tokens=self.root_max_completion_tokens,
             sub_max_completion_tokens=self.sub_max_completion_tokens,
+            sub_llm_max_turns=self.sub_llm_max_turns,
             root_tool_defs=self.root_tool_defs,
             sub_tool_defs=self.sub_tool_defs,
         )
@@ -3109,11 +3121,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         messages_with_system: Messages = [
-            SystemMessage(
-                content=RLMPromptBuilder.SUB_LLM_SYSTEM_PROMPT_STORE[
-                    self.sub_prompt_verbosity
-                ].format(num_turns=self.sub_llm_max_turns)
-            ),
+            SystemMessage(content=self.prompt_builder.build_sub_llm_system_prompt()),
             *messages,
         ]
 
