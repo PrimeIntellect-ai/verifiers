@@ -951,10 +951,11 @@ class ArcMultistrategyEnv(MultiAgentEnv):
     Multi-strategy pipeline: codegen_v1b (parent) + codegen_v4 + image (children).
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, v4_model: str | None = None, **kwargs):
         self._actor_id = "codegen_v1b"
         self.actors = ["codegen_v1b", "codegen_v4"]
         self.name = "arc_multistrategy"
+        self.v4_model = v4_model
         super().__init__(max_turns=1, **kwargs)
 
     def get_initial_actor(self, state: State) -> str:
@@ -1037,7 +1038,8 @@ class ArcMultistrategyEnv(MultiAgentEnv):
 
         child_states = await self.registry.spawn(
             inputs=child_inputs, client=state["client"],
-            model=state["model"], sampling_args=state.get("sampling_args"),
+            model=self.v4_model or state["model"],
+            sampling_args=state.get("sampling_args"),
             score=False,
         )
         collect_candidates(candidates, reasoning_store, child_states)
@@ -1187,6 +1189,7 @@ def load_environment(
     num_examples: int | None = None,
     max_dim: int = 30,
     sort_by_size: bool = False,
+    v4_model: str | None = None,
     **kwargs,
 ) -> ArcMultistrategyEnv:
     """Entry point for vf-eval / prime-rl."""
@@ -1196,7 +1199,7 @@ def load_environment(
     codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
     codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
 
-    pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset, **kwargs)
+    pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset, v4_model=v4_model, **kwargs)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
 
     Registry(
