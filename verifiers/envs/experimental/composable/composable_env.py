@@ -40,9 +40,9 @@ class ComposableRubric(SandboxMonitorRubric):
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        self.add_reward_func(self.spec_reward)
+        self.add_reward_func(self.task_reward)
 
-    async def spec_reward(self, state: State) -> float:
+    async def task_reward(self, state: State) -> float:
         """Return the reward computed by the Task during rollout."""
         return float(state.get("reward") or 0.0)
 
