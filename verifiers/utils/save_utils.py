@@ -324,19 +324,15 @@ class GenerateOutputsBuilder:
             aid = o.get("actor_id")
             if aid:
                 actor_outputs[aid].append(o)
-        if len(actor_outputs) > 1:
+        num_actors = len(actor_outputs)
+        if num_actors > 1:
+            actor_rollouts = self.rollouts_per_example // num_actors
             for aid, actor_outs in sorted(actor_outputs.items()):
                 actor_rewards = [o.get("reward", 0.0) for o in actor_outs]
                 avg_metrics[f"{aid}/reward"] = sum(actor_rewards) / len(actor_rewards)
-                # Debug: check per-actor output counts per example
-                from collections import Counter
-                eid_counts = Counter(o.get("example_id", 0) for o in actor_outs)
-                sample_counts = list(eid_counts.values())[:5]
-                print(f"[DEBUG] {aid}: {len(actor_outs)} outputs, rollouts_per_example={self.rollouts_per_example}, per-example counts (first 5): {sample_counts}")
                 actor_pass_at_k, _ = compute_pass_at_k(
-                    actor_outs, self.rollouts_per_example, self.pass_threshold
+                    actor_outs, actor_rollouts, self.pass_threshold
                 )
-                print(f"[DEBUG] {aid}: actor_pass_at_k={actor_pass_at_k}")
                 for k, v in actor_pass_at_k.items():
                     avg_metrics[f"{aid}/pass@{k}"] = v
 
