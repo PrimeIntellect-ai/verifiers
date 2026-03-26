@@ -173,7 +173,8 @@ def load_environment(
         use_sandbox: Auto-deploy CUA server to sandbox (default: True)
         server_url: CUA server URL for manual mode (default: http://localhost:3000)
         browserbase_api_key: Browserbase API key (or set BROWSERBASE_API_KEY env var)
-        browserbase_project_id: Browserbase project ID (or set BROWSERBASE_PROJECT_ID env var)
+        browserbase_project_id: Optional Browserbase project ID (or set
+            BROWSERBASE_PROJECT_ID env var)
         env: Browser environment - "LOCAL" or "BROWSERBASE" (default: BROWSERBASE)
         viewport_width: Browser viewport width (default: 1024)
         viewport_height: Browser viewport height (default: 768)

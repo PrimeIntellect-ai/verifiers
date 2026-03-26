@@ -81,6 +81,10 @@ class BrowserEnv(vf.StatefulToolEnv):
         prebuilt_image: str = "deepdream19/cua-server:latest",
         # Error handling
         stop_errors: list[type[Exception]] | None = None,
+        # Direct credential overrides
+        browserbase_api_key: str | None = None,
+        browserbase_project_id: str | None = None,
+        model_api_key: str | None = None,
         # Common
         **kwargs: Any,
     ):
@@ -89,7 +93,7 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         Args:
             mode: Operating mode - "dom" for natural language or "cua" for vision-based
-            project_id: Browserbase project ID
+            project_id: Backward-compatible alias for browserbase_project_id
             browserbase_api_key_var: Env var name for Browserbase API key (default: BROWSERBASE_API_KEY)
             model_api_key_var: Env var name for model API key (default: MODEL_API_KEY)
             stagehand_model: Model for Stagehand in DOM mode (default: openai/gpt-4o-mini)
@@ -116,6 +120,10 @@ class BrowserEnv(vf.StatefulToolEnv):
             use_prebuilt_image: Use pre-built Docker image for fastest startup (default: True)
             prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
             stop_errors: List of exception types that should trigger cleanup (default: [vf.SandboxError])
+            browserbase_api_key: Optional Browserbase API key override
+            browserbase_project_id: Optional Browserbase project ID override. If omitted,
+                Browserbase uses the account default project.
+            model_api_key: Optional model API key override for DOM mode
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
         super().__init__(
@@ -123,13 +131,26 @@ class BrowserEnv(vf.StatefulToolEnv):
             **kwargs,
         )
         self.mode = mode
-        browserbase_api_key = os.getenv(browserbase_api_key_var)
-        model_api_key = os.getenv(model_api_key_var)
+        if (
+            project_id is not None
+            and browserbase_project_id is not None
+            and project_id != browserbase_project_id
+        ):
+            raise ValueError(
+                "Received conflicting Browserbase project IDs via project_id and "
+                "browserbase_project_id."
+            )
+
+        resolved_project_id = browserbase_project_id or project_id
+        resolved_browserbase_api_key = browserbase_api_key or os.getenv(
+            browserbase_api_key_var
+        )
+        resolved_model_api_key = model_api_key or os.getenv(model_api_key_var)
         if mode == "dom":
             self._mode_impl: BrowserMode = DOMMode(
-                browserbase_api_key=browserbase_api_key,
-                project_id=project_id,
-                model_api_key=model_api_key,
+                browserbase_api_key=resolved_browserbase_api_key,
+                project_id=resolved_project_id,
+                model_api_key=resolved_model_api_key,
                 stagehand_model=stagehand_model,
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
                 proxies=proxies,
@@ -141,8 +162,8 @@ class BrowserEnv(vf.StatefulToolEnv):
                 server_url=server_url,
                 server_port=server_port,
                 env=env,
-                browserbase_api_key=browserbase_api_key,
-                browserbase_project_id=project_id,
+                browserbase_api_key=resolved_browserbase_api_key,
+                browserbase_project_id=resolved_project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
                 save_screenshots=save_screenshots,

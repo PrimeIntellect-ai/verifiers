@@ -96,7 +96,7 @@ async def judge_answer(
 
 
 def load_environment(
-    project_id: str,
+    project_id: str | None = None,
     max_turns: int = 10,
     judge_model: str = "gpt-4o-mini",
     system_prompt: str = DOM_SYSTEM_PROMPT,
@@ -118,7 +118,8 @@ def load_environment(
     Args:
         max_turns: Maximum conversation turns (default: 10)
         judge_model: Model for judging task completion
-        project_id: Browserbase project ID (required)
+        project_id: Optional Browserbase project ID. If omitted, Browserbase uses
+            the account default project.
         browserbase_api_key_var: Env var name for Browserbase API key
         stagehand_model: Model for Stagehand operations (default: openai/gpt-4o-mini)
         model_api_key_var: Env var name for model API key

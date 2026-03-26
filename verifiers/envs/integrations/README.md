@@ -126,7 +126,7 @@ pnpm install
 
 ```bash
 BROWSERBASE_API_KEY         # Browserbase cloud API key
-BROWSERBASE_PROJECT_ID      # Browserbase cloud project
+BROWSERBASE_PROJECT_ID      # Optional Browserbase cloud project
 MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
 OPENAI_API_KEY              # For LLM judge evaluation
 ```

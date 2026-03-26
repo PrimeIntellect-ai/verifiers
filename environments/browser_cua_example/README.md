@@ -32,7 +32,7 @@ uv pip install -e ./environments/browser_cua_example
 ```bash
 # Browserbase credentials
 export BROWSERBASE_API_KEY="your-api-key"
-export BROWSERBASE_PROJECT_ID="your-project-id"
+# Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
 
 # API key for agent model
 export OPENAI_API_KEY="your-openai-key"
