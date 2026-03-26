@@ -5,7 +5,6 @@ __all__ = [
     # Composable architecture
     "Task",
     "TaskSet",
-    "MergedTaskSet",
     "ComposableEnv",
 ]
 
@@ -15,7 +14,6 @@ def __getattr__(name: str):
     _lazy = {
         "Task": "verifiers.envs.experimental.task:Task",
         "TaskSet": "verifiers.envs.experimental.task:TaskSet",
-        "MergedTaskSet": "verifiers.envs.experimental.task:MergedTaskSet",
         "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
     }
     if name in _lazy:

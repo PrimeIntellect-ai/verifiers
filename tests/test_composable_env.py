@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from verifiers.envs.experimental.task import Task, TaskSet, MergedTaskSet
+from verifiers.envs.experimental.task import Task, TaskSet
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -114,31 +114,3 @@ def test_taskset_repr():
     ts = TaskSet(task=MockTask(), dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)
     assert "3" in repr(ts)
-
-
-# ── MergedTaskSet ───────────────────────────────────────────────────────
-
-
-def test_merged_taskset():
-    ts1 = TaskSet(task=MockTask(), dataset=_make_dataset(3), name="a")
-    ts2 = TaskSet(task=MockTask(), dataset=_make_dataset(2), name="b")
-    merged = TaskSet.merge(ts1, ts2)
-    assert len(merged) == 5
-
-
-def test_merged_taskset_needs_sandbox():
-    task_no_sandbox = MockTask()
-    task_no_sandbox.needs_sandbox = False
-    ts1 = TaskSet(task=task_no_sandbox, dataset=_make_dataset(2), name="a")
-    ts2 = TaskSet(task=task_no_sandbox, dataset=_make_dataset(2), name="b")
-    merged = TaskSet.merge(ts1, ts2)
-    assert merged.needs_sandbox is False
-
-
-def test_merged_taskset_repr():
-    ts1 = TaskSet(task=MockTask(), dataset=_make_dataset(2), name="a")
-    ts2 = TaskSet(task=MockTask(), dataset=_make_dataset(3), name="b")
-    merged = TaskSet.merge(ts1, ts2)
-    assert "a" in repr(merged)
-    assert "b" in repr(merged)
-    assert "5" in repr(merged)
