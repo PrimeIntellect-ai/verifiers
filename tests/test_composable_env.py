@@ -1,21 +1,10 @@
-"""Tests for the composable architecture: Task, Agent, ComposableEnv."""
+"""Tests for the composable architecture: Task, TaskSet, ComposableEnv."""
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from verifiers.envs.experimental.agent import LLMAgent, ReActAgent, SingleTurnAgent, _filter_signature
-from verifiers.envs.experimental.task import Task
-from verifiers.types import (
-    AssistantMessage,
-    Response,
-    ResponseMessage,
-    State,
-    Tool,
-    ToolCall,
-    TrajectoryStep,
-)
+from verifiers.envs.experimental.task import Task, TaskSet, MergedTaskSet
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -54,45 +43,6 @@ class MockTask:
         pass
 
 
-def _make_mock_response(content="Done", tool_calls=None):
-    """Create a mock Response object."""
-    return Response(
-        id="resp-1",
-        created=0,
-        model="test-model",
-        usage=None,
-        message=ResponseMessage(
-            content=content,
-            reasoning_content=None,
-            thinking_blocks=None,
-            tool_calls=tool_calls,
-            finish_reason="stop",
-            is_truncated=False,
-            tokens=None,
-        ),
-    )
-
-
-def _make_mock_client(responses=None):
-    """Create a mock Client that returns preset responses."""
-    client = AsyncMock()
-    if responses is None:
-        responses = [_make_mock_response()]
-    client.get_response = AsyncMock(side_effect=responses)
-    return client
-
-
-def _make_state(client=None, model="test-model"):
-    """Create a minimal State dict."""
-    state = State(input={"prompt": [], "example_id": 0, "task": "test"})
-    state["client"] = client or _make_mock_client()
-    state["model"] = model
-    state["sampling_args"] = {}
-    state["trajectory"] = []
-    state["timing"] = {"start_time": 0}
-    return state
-
-
 # ── Task Protocol ───────────────────────────────────────────────────────
 
 
@@ -108,133 +58,87 @@ def test_task_get_prompt():
     assert "42" in prompt[0]["content"]
 
 
-# ── filter_signature ────────────────────────────────────────────────────
+def test_task_needs_sandbox():
+    task = MockTask()
+    assert task.needs_sandbox is False
 
 
-def test_filter_signature_removes_args():
-    def my_tool(command: str, state: dict, timeout: int = 90) -> str:
-        return "ok"
-
-    filtered = _filter_signature(my_tool, ["state", "timeout"])
-    import inspect
-
-    sig = inspect.signature(filtered)
-    param_names = list(sig.parameters.keys())
-    assert "command" in param_names
-    assert "state" not in param_names
-    assert "timeout" not in param_names
+# ── TaskSet ─────────────────────────────────────────────────────────────
 
 
-def test_filter_signature_noop_on_empty():
-    def my_tool(x: int) -> int:
-        return x
-
-    result = _filter_signature(my_tool, [])
-    assert result is my_tool
-
-
-# ── LLMAgent ────────────────────────────────────────────────────────────
+def _make_dataset(n=3):
+    from datasets import Dataset
+    return Dataset.from_dict({
+        "question": [f"q{i}" for i in range(n)],
+        "info": [{"id": i} for i in range(n)],
+        "answer": ["" for _ in range(n)],
+    })
 
 
-def test_react_agent_is_llm_agent_alias():
-    assert ReActAgent is LLMAgent
+def test_taskset_len():
+    ds = _make_dataset(5)
+    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    assert len(ts) == 5
 
 
-def test_llm_agent_add_tool():
-    agent = LLMAgent()
-
-    def my_tool(question: str) -> str:
-        """A test tool."""
-        return "answer"
-
-    agent.add_tool(my_tool)
-    assert agent.tool_defs is not None
-    assert len(agent.tool_defs) == 1
-    assert agent.tool_defs[0].name == "my_tool"
+def test_taskset_get_dataset():
+    ds = _make_dataset()
+    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    assert ts.get_dataset() is ds
 
 
-def test_llm_agent_add_tool_with_args_to_skip():
-    agent = LLMAgent()
-
-    def execute_bash(command: str, state: dict, timeout: int = 90) -> str:
-        """Execute a bash command."""
-        return "output"
-
-    agent.add_tool(execute_bash, args_to_skip=["state", "timeout"])
-    assert len(agent.tool_defs) == 1
-    td = agent.tool_defs[0]
-    assert td.name == "execute_bash"
-    # The schema should only have "command", not "state" or "timeout"
-    props = td.parameters.get("properties", {})
-    assert "command" in props
-    assert "state" not in props
-    assert "timeout" not in props
+def test_taskset_delegates_to_task():
+    ts = TaskSet(task=MockTask(), dataset=_make_dataset(), name="test")
+    assert ts.get_image({"id": 1}) == "python:3.11-slim"
+    assert ts.get_workdir({"id": 1}) == "/testbed"
+    assert ts.get_env_vars() == {"FOO": "bar"}
+    assert ts.get_extra_tools() == []
+    assert ts.needs_sandbox is False
 
 
-def test_llm_agent_remove_tool():
-    agent = LLMAgent()
-
-    def tool_a() -> str:
-        return "a"
-
-    agent.add_tool(tool_a)
-    assert len(agent._tools) == 1
-    agent.remove_tool("tool_a")
-    assert len(agent._tools) == 0
-    assert agent.tool_defs is None or len(agent.tool_defs) == 0
+def test_taskset_filter():
+    ds = _make_dataset(5)
+    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    filtered = ts.filter(lambda ex: ex["info"]["id"] < 3)
+    assert len(filtered) == 3
 
 
-def test_llm_agent_inject_tool_args():
-    agent = LLMAgent()
-
-    def my_tool(command: str, state: dict) -> str:
-        return f"state={state}"
-
-    agent.add_tool(my_tool, args_to_skip=["state"])
-    agent.inject_tool_args(state={"sandbox_id": "sb-123"})
-    assert agent._injected_args["state"] == {"sandbox_id": "sb-123"}
+def test_taskset_take():
+    ds = _make_dataset(5)
+    ts = TaskSet(task=MockTask(), dataset=ds, name="test")
+    taken = ts.take(2)
+    assert len(taken) == 2
 
 
-@pytest.mark.asyncio
-async def test_llm_agent_run_no_tools():
-    """Agent with no tools should make one LLM call and return."""
-    client = _make_mock_client([_make_mock_response("The answer is 42")])
-    state = _make_state(client=client)
-    agent = LLMAgent()
-
-    steps = await agent.run([{"role": "user", "content": "What is 6*7?"}], state)
-    assert len(steps) == 1
-    assert steps[0]["completion"][0].content == "The answer is 42"
+def test_taskset_repr():
+    ts = TaskSet(task=MockTask(), dataset=_make_dataset(), name="mytest")
+    assert "mytest" in repr(ts)
+    assert "3" in repr(ts)
 
 
-@pytest.mark.asyncio
-async def test_llm_agent_run_with_tool_calls():
-    """Agent should dispatch tool calls and continue the loop."""
-    # First response: model calls a tool
-    tool_call = ToolCall(id="tc-1", name="greet", arguments='{"name": "Alice"}')
-    resp1 = _make_mock_response(content=None, tool_calls=[tool_call])
-    # Second response: model returns final answer
-    resp2 = _make_mock_response(content="Hello Alice!")
-    client = _make_mock_client([resp1, resp2])
-    state = _make_state(client=client)
-
-    def greet(name: str) -> str:
-        """Greet someone."""
-        return f"Hi {name}!"
-
-    agent = LLMAgent(tools=[greet])
-    steps = await agent.run([{"role": "user", "content": "Say hi to Alice"}], state)
-    assert len(steps) == 2  # tool call turn + final answer turn
+# ── MergedTaskSet ───────────────────────────────────────────────────────
 
 
-# ── SingleTurnAgent ─────────────────────────────────────────────────────
+def test_merged_taskset():
+    ts1 = TaskSet(task=MockTask(), dataset=_make_dataset(3), name="a")
+    ts2 = TaskSet(task=MockTask(), dataset=_make_dataset(2), name="b")
+    merged = TaskSet.merge(ts1, ts2)
+    assert len(merged) == 5
 
 
-@pytest.mark.asyncio
-async def test_single_turn_agent():
-    client = _make_mock_client([_make_mock_response("I'm a user reporting a bug")])
-    state = _make_state(client=client)
-    agent = SingleTurnAgent(system_prompt="You are a user.")
-    steps = await agent.run([{"role": "user", "content": "What's wrong?"}], state)
-    assert len(steps) == 1
-    assert steps[0]["extras"]["agent_id"] == "single_turn"
+def test_merged_taskset_needs_sandbox():
+    task_no_sandbox = MockTask()
+    task_no_sandbox.needs_sandbox = False
+    ts1 = TaskSet(task=task_no_sandbox, dataset=_make_dataset(2), name="a")
+    ts2 = TaskSet(task=task_no_sandbox, dataset=_make_dataset(2), name="b")
+    merged = TaskSet.merge(ts1, ts2)
+    assert merged.needs_sandbox is False
+
+
+def test_merged_taskset_repr():
+    ts1 = TaskSet(task=MockTask(), dataset=_make_dataset(2), name="a")
+    ts2 = TaskSet(task=MockTask(), dataset=_make_dataset(3), name="b")
+    merged = TaskSet.merge(ts1, ts2)
+    assert "a" in repr(merged)
+    assert "b" in repr(merged)
+    assert "5" in repr(merged)

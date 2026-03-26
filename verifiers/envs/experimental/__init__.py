@@ -2,14 +2,10 @@ from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 
 __all__ = [
     "SandboxMixin",
-    # Composable architecture (Task / Agent / Environment)
+    # Composable architecture
     "Task",
     "TaskSet",
     "MergedTaskSet",
-    "Agent",
-    "ReActAgent",
-    "LLMAgent",
-    "SingleTurnAgent",
     "ComposableEnv",
 ]
 
@@ -20,10 +16,6 @@ def __getattr__(name: str):
         "Task": "verifiers.envs.experimental.task:Task",
         "TaskSet": "verifiers.envs.experimental.task:TaskSet",
         "MergedTaskSet": "verifiers.envs.experimental.task:MergedTaskSet",
-        "Agent": "verifiers.envs.experimental.agent:Agent",
-        "ReActAgent": "verifiers.envs.experimental.agent:ReActAgent",
-        "LLMAgent": "verifiers.envs.experimental.agent:LLMAgent",
-        "SingleTurnAgent": "verifiers.envs.experimental.agent:SingleTurnAgent",
         "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
     }
     if name in _lazy:
