@@ -1444,8 +1444,8 @@ export RLM_READY=1
         )
 
     def build_system_prompt(self) -> str:
-        """Assemble the full RLM system prompt from all fragments."""
-        return (
+        """Assemble the full RLM system prompt, wrapped in scaffolding tags."""
+        body = (
             self.build_base_system_prompt()
             + self.build_packages_documentation()
             + self.build_root_tools_documentation()
@@ -1454,17 +1454,13 @@ export RLM_READY=1
             + self.build_sub_budget_note()
             + self.build_message_history_note()
         )
+        return "<RLM_SCAFFOLDING>\n" + body + "\n</RLM_SCAFFOLDING>\n\n"
 
     def build_sub_llm_system_prompt(self) -> str:
         """Build the system prompt prepended to every sub-LLM call."""
         return self.SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
             num_turns=self.sub_llm_max_turns
         )
-
-    @staticmethod
-    def wrap_in_scaffolding(system_prompt: str) -> str:
-        """Wrap a system prompt in ``<RLM_SCAFFOLDING>`` tags."""
-        return "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
 
     @staticmethod
     def inject_scaffolding_into_messages(
@@ -3929,8 +3925,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     raise TypeError(
                         f"Unsupported prompt message type: {type(message).__name__}"
                     )
-            scaffold = RLMPromptBuilder.wrap_in_scaffolding(system_prompt)
-            RLMPromptBuilder.inject_scaffolding_into_messages(messages, scaffold)
+            RLMPromptBuilder.inject_scaffolding_into_messages(messages, system_prompt)
 
             return [from_raw_message(message) for message in messages]
         else:
