@@ -7,14 +7,16 @@ while the Task provides the docker image, sandbox setup, and evaluation.
 
 Usage::
 
-    task = SweTaskAdapter(R2EGymTask())
+    from tasksets.swe import R2ETaskSet
+    task = R2ETaskSet()
     env = ComposableEnv(
         task=task,
         run_command='opencode run "$(cat /task/instruction.md)"',
         install_script="curl -fsSL ... | bash",
     )
 
-    # or with a TaskSet
+    # or with a different TaskSet
+    from tasksets.lean import LeanTaskSet
     task = LeanTaskSet("minif2f")
     env = ComposableEnv(task=task, run_command="opencode run ...")
 """
@@ -181,7 +183,7 @@ class ComposableEnv(CliAgentEnv):
             state["reward"] = 0.0
             return
 
-        # Store run_background_job in state for SweTaskAdapter compat
+        # Store run_background_job so Task.evaluate() can run tests
         state["_run_background_job"] = self.run_background_job
 
         try:

@@ -74,7 +74,7 @@ class Task(Protocol):
         """Return domain-specific tools the agent may use.
 
         Each tool is a ``(callable, args_to_skip)`` tuple or a plain callable.
-        ComposableEnv injects these into ReActAgent automatically.
+        ComposableEnv injects these into the agent automatically.
         """
         ...
 
