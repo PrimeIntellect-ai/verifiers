@@ -40,9 +40,9 @@ def extract_lora_from_checkpoint(ckpt_dir: str, output_dir: str, base_model: str
     lora_state = {}
     for key, value in model_state.items():
         if "lora_A" in key or "lora_B" in key:
-            # Clean up key: remove leading prefixes, add PEFT prefix
+            # Clean up key: remove FSDP/compile prefixes only (keep model. prefix)
             clean = key
-            for prefix in ["_fsdp_wrapped_module.", "_orig_mod.", "model."]:
+            for prefix in ["_fsdp_wrapped_module.", "_orig_mod."]:
                 if clean.startswith(prefix):
                     clean = clean[len(prefix):]
             # Ensure PEFT format: base_model.model.<path>
@@ -63,9 +63,10 @@ def extract_lora_from_checkpoint(ckpt_dir: str, output_dir: str, base_model: str
 
     print(f"\nFound {len(lora_state)} LoRA tensors")
 
-    # Save as pytorch bin
-    torch.save(lora_state, out_path / "adapter_model.bin")
-    print(f"Saved adapter_model.bin")
+    # Save as safetensors
+    from safetensors.torch import save_file
+    save_file(lora_state, out_path / "adapter_model.safetensors")
+    print(f"Saved adapter_model.safetensors")
 
     # Detect target modules from keys
     target_modules = set()
