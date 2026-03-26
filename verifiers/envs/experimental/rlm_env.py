@@ -1554,13 +1554,13 @@ class RLMExecutor(SandboxMixin):
             raise vf.SandboxError(
                 f"Sandbox {sandbox_id} OOM during command: {command[:100]}"
             ) from e
-        except SandboxTimeoutError as e:
-            raise vf.SandboxError(
-                f"Sandbox {sandbox_id} timed out: {command[:100]}"
-            ) from e
         except CommandTimeoutError as e:
             raise RLMSandboxCommandTimeout(
                 f"Command timed out after {timeout}s in {sandbox_id}: {command[:100]}"
+            ) from e
+        except SandboxTimeoutError as e:
+            raise vf.SandboxError(
+                f"Sandbox {sandbox_id} timed out: {command[:100]}"
             ) from e
         except Exception as e:
             raise vf.SandboxError(f"Sandbox command failed in {sandbox_id}: {e}") from e
