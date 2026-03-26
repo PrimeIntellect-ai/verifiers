@@ -8,17 +8,13 @@ while the Task provides the docker image, sandbox setup, and evaluation.
 Usage::
 
     from tasksets.swe import R2ETaskSet
-    task = R2ETaskSet()
+
+    taskset = R2ETaskSet()
     env = ComposableEnv(
-        task=task,
+        taskset=taskset,
         run_command='opencode run "$(cat /task/instruction.md)"',
         install_script="curl -fsSL ... | bash",
     )
-
-    # or with a different TaskSet
-    from tasksets.lean import LeanTaskSet
-    task = LeanTaskSet("minif2f")
-    env = ComposableEnv(task=task, run_command="opencode run ...")
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv, CliAgentMonitorRubric
 from verifiers.envs.experimental.sandbox_mixin import SandboxMonitorRubric
-from verifiers.envs.experimental.task import TaskSpec, TaskSet
+from verifiers.envs.experimental.task import TaskSet
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
@@ -67,20 +63,20 @@ class ComposableEnv(CliAgentEnv):
 
     Parameters
     ----------
-    task:
-        A ``TaskSet`` or ``TaskSpec`` that provides what to solve.
+    taskset:
+        A ``TaskSet`` — the collection of tasks to solve.
     run_command:
         Shell command to start the agent binary in the sandbox.
     install_script:
         Optional shell command to install the agent binary during
         ``post_sandbox_setup``.
     test_timeout:
-        Timeout in seconds for ``task.evaluate()``.
+        Timeout in seconds for ``TaskSpec.evaluate()``.
     """
 
     def __init__(
         self,
-        task: TaskSet | TaskSpec,
+        taskset: TaskSet,
         run_command: str,
         *,
         install_script: str | None = None,
@@ -88,15 +84,12 @@ class ComposableEnv(CliAgentEnv):
         test_timeout: int = 900,
         **kwargs: Any,
     ):
-        # Auto-extract dataset from TaskSet if not provided
-        if "dataset" not in kwargs and hasattr(task, "get_dataset"):
-            kwargs["dataset"] = task.get_dataset()
-        # Inject ComposableRubric unless user provided one
+        kwargs["dataset"] = taskset.get_dataset()
         if "rubric" not in kwargs:
             kwargs["rubric"] = ComposableRubric()
         super().__init__(run_command=run_command, **kwargs)
 
-        self.spec = task
+        self.spec = taskset.spec
         self.install_script = install_script
         self.system_prompt_path = system_prompt_path
         self.test_timeout = test_timeout
