@@ -28,6 +28,7 @@ from verifiers.envs.experimental.rlm_env import (
     RLMWorkerRecoveryError,
     SubLLMEmptyModelResponseError,
 )
+from verifiers.types import UserMessage
 
 # =============================================================================
 # Helpers
@@ -85,6 +86,7 @@ def rlm_env() -> RLMEnv:
         max_turns=10,
         max_output_length=1000,
         repl_language="python",
+        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -105,6 +107,7 @@ def rlm_env_with_sub_tools() -> RLMEnv:
         sub_tools=[sample_tool, another_tool],
         sub_llm_max_turns=3,
         repl_language="python",
+        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -117,6 +120,7 @@ def rlm_env_bash() -> RLMEnv:
         max_turns=10,
         max_output_length=1000,
         repl_language="bash",
+        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -1984,10 +1988,10 @@ class TestMessageHistory:
         finally:
             await env.cleanup_rlm_state(result)
 
-    def test_expose_message_history_defaults_to_false(self):
+    def test_expose_message_history_defaults_to_true(self):
         dataset = make_dataset({})
         env = build_env(dataset, interception_url="http://test.invalid")
-        assert env.expose_message_history is False
+        assert env.expose_message_history is True
 
     @pytest.mark.asyncio
     async def test_setup_state_initializes_upload_counter(self):
@@ -2829,3 +2833,234 @@ class TestFilesystemProvisioning:
         await executor._write_sandbox_files(session, state)
 
         assert executor.sandbox_client.upload_file.await_count == 4
+
+
+# =============================================================================
+# Context Dropping
+# =============================================================================
+
+
+class TestContextDropping:
+    @pytest.fixture
+    def env_with_dropping(self) -> RLMEnv:
+        dataset = make_dataset({})
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            return build_env(
+                dataset,
+                allow_context_dropping=True,
+                min_turns_in_context=3,
+                expose_message_history=False,
+                interception_url="http://test.invalid",
+            )
+
+    @pytest.fixture
+    def env_without_dropping(self) -> RLMEnv:
+        dataset = make_dataset({})
+        return build_env(
+            dataset,
+            allow_context_dropping=False,
+            expose_message_history=False,
+            interception_url="http://test.invalid",
+        )
+
+    # -- Tool registration --
+
+    def test_tool_registered_when_enabled(self, env_with_dropping):
+        assert "remove_conversation_turns" in env_with_dropping.root_tool_names
+
+    def test_tool_not_registered_when_disabled(self, env_without_dropping):
+        assert "remove_conversation_turns" not in env_without_dropping.root_tool_names
+
+    def test_tool_name_reserved(self):
+        from verifiers.envs.experimental.rlm_env import _FIXED_REPL_TOOL_NAMES
+
+        assert "remove_conversation_turns" in _FIXED_REPL_TOOL_NAMES
+
+    # -- Default changes --
+
+    def test_expose_message_history_defaults_to_true(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, interception_url="http://test.invalid")
+        assert env.expose_message_history is True
+
+    def test_warning_when_dropping_without_message_history(self):
+        dataset = make_dataset({})
+        with pytest.warns(UserWarning, match="allow_context_dropping=True"):
+            build_env(
+                dataset,
+                allow_context_dropping=True,
+                expose_message_history=False,
+                interception_url="http://test.invalid",
+            )
+
+    def test_no_warning_when_dropping_with_message_history(self):
+        dataset = make_dataset({})
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            build_env(
+                dataset,
+                allow_context_dropping=True,
+                expose_message_history=True,
+                interception_url="http://test.invalid",
+            )
+
+    # -- System prompt --
+
+    def test_system_prompt_includes_note_when_enabled(self, env_with_dropping):
+        prompt = env_with_dropping.prompt_builder.build_system_prompt()
+        assert "remove_conversation_turns" in prompt
+        assert "min_turns_in_context" not in prompt or "3" in prompt
+
+    def test_system_prompt_excludes_note_when_disabled(self, env_without_dropping):
+        prompt = env_without_dropping.prompt_builder.build_system_prompt()
+        assert "remove_conversation_turns" not in prompt
+
+    # -- _handle_remove_conversation_turns --
+
+    def _make_state(self, main_turns: int, dropped: int = 0) -> dict:
+        """Build a minimal state with the given number of main turns."""
+        trajectory_id = "main_id"
+        trajectory = []
+        for i in range(main_turns):
+            trajectory.append(
+                {
+                    "trajectory_id": trajectory_id,
+                    "prompt": [{"role": "user", "content": f"turn {i}"}],
+                    "completion": [{"role": "assistant", "content": f"response {i}"}],
+                    "response": None,
+                    "tokens": None,
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": False,
+                    "extras": None,
+                }
+            )
+        return {
+            "trajectory_id": trajectory_id,
+            "trajectory": trajectory,
+            "_dropped_turns_count": dropped,
+            "_drop_sequence": 0,
+            "rollout_id": "test_rollout",
+        }
+
+    @pytest.mark.asyncio
+    async def test_basic_drop(self, env_with_dropping):
+        state = self._make_state(main_turns=6)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        result = await env_with_dropping._handle_remove_conversation_turns(
+            state, 2, "dropped first two"
+        )
+
+        assert state["_dropped_turns_count"] == 2
+        assert state["_drop_sequence"] == 1
+        assert "Dropped 2" in result
+        assert "dropped first two" in result
+
+    @pytest.mark.asyncio
+    async def test_drop_minus_one(self, env_with_dropping):
+        state = self._make_state(main_turns=6)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        result = await env_with_dropping._handle_remove_conversation_turns(
+            state, -1, ""
+        )
+
+        # 6 visible - 3 min = 3 droppable
+        assert state["_dropped_turns_count"] == 3
+        assert "Dropped 3" in result
+
+    @pytest.mark.asyncio
+    async def test_drop_exceeds_limit(self, env_with_dropping):
+        state = self._make_state(main_turns=5)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        result = await env_with_dropping._handle_remove_conversation_turns(state, 4, "")
+
+        assert state["_dropped_turns_count"] == 0
+        assert "Cannot drop" in result
+        env_with_dropping._upload_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drop_zero(self, env_with_dropping):
+        state = self._make_state(main_turns=5)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        result = await env_with_dropping._handle_remove_conversation_turns(state, 0, "")
+
+        assert state["_dropped_turns_count"] == 0
+        assert "Nothing to drop" in result
+
+    @pytest.mark.asyncio
+    async def test_cumulative_drops(self, env_with_dropping):
+        state = self._make_state(main_turns=8)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        await env_with_dropping._handle_remove_conversation_turns(state, 1, "first")
+        assert state["_dropped_turns_count"] == 1
+        assert state["_drop_sequence"] == 1
+
+        await env_with_dropping._handle_remove_conversation_turns(state, 2, "second")
+        assert state["_dropped_turns_count"] == 3
+        assert state["_drop_sequence"] == 2
+
+    # -- _apply_context_dropping --
+
+    def test_apply_preserves_scaffolded_message(self, env_with_dropping):
+        messages = [
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content="response 0"),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+            vf.AssistantMessage(content="response 1"),
+            vf.ToolMessage(tool_call_id="t1", content="tool 1"),
+            vf.AssistantMessage(content="response 2"),
+            vf.ToolMessage(tool_call_id="t2", content="tool 2"),
+        ]
+
+        result = env_with_dropping._apply_context_dropping(messages, 2)
+
+        assert result[0].content == "scaffolded prompt"
+        assert len(result) == 3  # scaffolded + asst_2 + tool_2
+        assert result[1].content == "response 2"
+
+    def test_apply_zero_is_noop(self, env_with_dropping):
+        messages = [
+            UserMessage(content="scaffolded"),
+            vf.AssistantMessage(content="r0"),
+        ]
+        result = env_with_dropping._apply_context_dropping(messages, 0)
+        assert result == messages
+
+    def test_apply_drop_all_returns_unchanged(self, env_with_dropping):
+        """Dropping more than available turns returns messages unchanged."""
+        messages = [
+            UserMessage(content="scaffolded"),
+            vf.AssistantMessage(content="r0"),
+            vf.ToolMessage(tool_call_id="t0", content="t0"),
+        ]
+        result = env_with_dropping._apply_context_dropping(messages, 5)
+        assert result == messages
+
+    # -- _upload_summary --
+
+    @pytest.mark.asyncio
+    async def test_upload_summary(self, env_with_dropping):
+        state = self._make_state(main_turns=5)
+
+        session = MagicMock()
+        session.sandbox_id = "sbx_test"
+        session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
+        env_with_dropping._executor._get_session = MagicMock(return_value=session)
+        env_with_dropping._executor._execute_sandbox_command = AsyncMock()
+
+        await env_with_dropping._upload_summary(state, 2, "test summary", 3)
+
+        env_with_dropping._executor._execute_sandbox_command.assert_awaited_once()
+        cmd = env_with_dropping._executor._execute_sandbox_command.call_args[0][1]
+        assert ".summaries" in cmd
+        assert "base64" in cmd
