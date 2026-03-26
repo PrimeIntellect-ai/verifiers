@@ -126,5 +126,94 @@ class TaskSet:
         sliced = self._dataset.select(range(min(n, len(self._dataset))))
         return TaskSet(spec=self.spec, dataset=sliced, name=self.name)
 
+    async def validate_taskset(
+        self,
+        n: int | None = None,
+        concurrency: int = 10,
+        cpu_cores: int = 2,
+        memory_gb: int = 4,
+        disk_size_gb: int = 2,
+        timeout_minutes: int = 15,
+        test_timeout: int = 900,
+    ) -> list[dict]:
+        """Validate instances by applying gold solutions and checking evaluation.
+
+        Creates sandboxes, runs ``spec.validate()`` on each instance, tears
+        down sandboxes.  Returns a list of ``{index, valid, elapsed, error}``
+        dicts.
+
+        Parameters
+        ----------
+        n:
+            Number of instances to validate.  None = all.
+        concurrency:
+            Max concurrent sandboxes.
+        """
+        import asyncio
+        import logging
+        import time
+
+        from prime_sandboxes import CreateSandboxRequest
+        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+
+        logger = logging.getLogger(__name__)
+        client = ThreadedAsyncSandboxClient(max_workers=concurrency)
+        sem = asyncio.Semaphore(concurrency)
+        ds = self.get_dataset()
+        total = min(n, len(ds)) if n else len(ds)
+
+        async def run_background_job(state: dict, cmd: str, timeout: int, working_dir: str | None = None) -> Any:
+            sid = state["sandbox_id"]
+            job = await client.start_background_job(sid, cmd, working_dir=working_dir)
+            for _ in range(0, timeout + 3, 3):
+                status = await client.get_background_job(sid, job)
+                if status.completed:
+                    return status
+                await asyncio.sleep(3)
+            raise TimeoutError(f"Background job timed out after {timeout}s")
+
+        async def validate_one(i: int) -> dict:
+            row = ds[i]
+            info = row["info"]
+            state: dict = {"info": info, "_run_background_job": run_background_job}
+
+            async with sem:
+                image = self.spec.get_image(info)
+                sb = await client.create(CreateSandboxRequest(
+                    name=f"validate-{i}",
+                    docker_image=image,
+                    cpu_cores=cpu_cores,
+                    memory_gb=memory_gb,
+                    disk_size_gb=disk_size_gb,
+                    timeout_minutes=timeout_minutes,
+                ))
+                state["sandbox_id"] = sb.id
+                await client.wait_for_creation(sb.id, max_attempts=120)
+
+                t0 = time.time()
+                try:
+                    await self.spec.setup(client, sb.id, state)
+                    valid = await self.spec.validate(client, sb.id, state)
+                    elapsed = time.time() - t0
+                    logger.info(f"[{i}] valid={valid} ({elapsed:.0f}s)")
+                    return {"index": i, "valid": valid, "elapsed": elapsed, "error": None}
+                except Exception as e:
+                    elapsed = time.time() - t0
+                    logger.warning(f"[{i}] ERROR: {e} ({elapsed:.0f}s)")
+                    return {"index": i, "valid": False, "elapsed": elapsed, "error": str(e)}
+                finally:
+                    await client.delete(sb.id)
+
+        logger.info(f"Validating {total} instances from {self.name} (concurrency={concurrency})")
+        t0 = time.time()
+        results = await asyncio.gather(*[validate_one(i) for i in range(total)])
+        elapsed = time.time() - t0
+
+        passed = sum(1 for r in results if r["valid"])
+        failed = sum(1 for r in results if not r["valid"])
+        logger.info(f"Validation complete: {passed}/{total} valid, {failed} failed ({elapsed:.0f}s)")
+
+        return results
+
     def __repr__(self) -> str:
         return f"TaskSet(name={self.name!r}, len={len(self)})"
