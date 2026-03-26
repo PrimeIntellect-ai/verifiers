@@ -1,21 +1,84 @@
 """TaskSpec and TaskSet — WHAT to solve.
 
+Overview
+--------
+
 A **TaskSpec** defines the shared behavior for a problem type: docker image,
 sandbox setup, prompt construction, and evaluation logic.  You write one
-TaskSpec per domain (SWE, Lean, Math, Harbor, etc.).
+TaskSpec per domain (e.g. ``R2EGymTask``, ``LeanTask``, ``MathTask``).
 
-A **TaskSet** is a collection of Tasks backed by a TaskSpec.  This is what
-you hand to ``ComposableEnv`` or a training loop — it looks like an HF
-Dataset but also knows how to setup sandboxes and evaluate results.
+A **TaskSet** is a collection of problem instances backed by a TaskSpec.
+This is what you hand to ``ComposableEnv`` or a training loop.
 
-::
+Quick start::
 
-    from tasksets.swe import R2ETaskSet     # 4578 tasks
-    from tasksets.lean import LeanTaskSet   # 244 tasks
+    from swe_tasksets import R2ETaskSet
+    from lean_tasksets import LeanTaskSet
 
-    r2e = R2ETaskSet()
-    lean = LeanTaskSet("minif2f")
-    subset = r2e.filter(lambda ex: ...).take(100)
+    # Create tasksets
+    swe = R2ETaskSet()                          # 4578 SWE instances
+    lean = LeanTaskSet("minif2f")               # 244 Lean theorems
+
+    # Slice them
+    small = swe.take(50)                        # first 50
+    filtered = swe.filter(lambda ex: ...)       # custom filter
+
+    # Validate (are the gold solutions correct?)
+    results = await swe.take(10).validate_taskset(concurrency=5)
+    # → [{index: 0, valid: True, elapsed: 12.0}, ...]
+
+    # Train with an agent
+    env = ComposableEnv(taskset=swe, run_command="opencode run ...")
+
+TaskSpec protocol
+-----------------
+
+To create a new task type, implement these methods::
+
+    class MyTaskSpec:
+        needs_sandbox = True  # False for pure-LLM tasks (math, QA)
+
+        def get_prompt(self, info: dict) -> Messages:
+            '''What the agent sees.'''
+
+        def get_image(self, info: dict) -> str:
+            '''Docker image for this instance.'''
+
+        def get_workdir(self, info: dict) -> str:
+            '''Working directory inside the sandbox.'''
+
+        def get_env_vars(self) -> dict[str, str]:
+            '''Environment variables for the sandbox.'''
+
+        async def setup(self, sandbox_client, sandbox_id, state) -> None:
+            '''Prepare the sandbox (install deps, write files, etc).'''
+
+        async def evaluate(self, sandbox_client, sandbox_id, state) -> float:
+            '''Score the result (run tests, check answer, etc). Returns 0.0-1.0.'''
+
+        async def validate(self, sandbox_client, sandbox_id, state) -> bool:
+            '''Verify this instance is solvable (apply gold solution, evaluate).'''
+
+        def get_extra_tools(self) -> list:
+            '''Domain-specific tools (e.g. compile_proof for Lean).'''
+
+TaskSet
+-------
+
+A TaskSet wraps a TaskSpec + an HF Dataset::
+
+    taskset = TaskSet(spec=my_spec, dataset=my_dataset, name="my-tasks")
+
+    len(taskset)                    # number of instances
+    taskset.get_dataset()           # the HF Dataset
+    taskset.spec                    # the TaskSpec
+
+    # Combinators
+    taskset.take(100)               # first 100 instances
+    taskset.filter(predicate)       # filter by predicate
+
+    # Validation
+    await taskset.validate_taskset(n=10, concurrency=5)
 """
 
 from __future__ import annotations
@@ -36,7 +99,7 @@ class TaskSpec(Protocol):
 
     Implementations provide the per-instance docker image, sandbox
     preparation, prompt construction, and evaluation logic.
-    One TaskSpec per domain (R2EGymTaskSpec, LeanTaskSpec, etc.).
+    One TaskSpec per domain (R2EGymTask, LeanTask, etc.).
     """
 
     needs_sandbox: bool
@@ -83,6 +146,7 @@ class TaskSet:
         return getattr(self.spec, "needs_sandbox", True)
 
     def get_dataset(self) -> Any:
+        """Return the underlying HF Dataset."""
         return self._dataset
 
     def __len__(self) -> int:
@@ -119,12 +183,16 @@ class TaskSet:
     # -- Combinators --------------------------------------------------------
 
     def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
+        """Return a new TaskSet with only examples matching *predicate*."""
         filtered = self._dataset.filter(predicate)
         return TaskSet(spec=self.spec, dataset=filtered, name=self.name)
 
     def take(self, n: int) -> TaskSet:
+        """Return a new TaskSet with the first *n* examples."""
         sliced = self._dataset.select(range(min(n, len(self._dataset))))
         return TaskSet(spec=self.spec, dataset=sliced, name=self.name)
+
+    # -- Validation ---------------------------------------------------------
 
     async def validate_taskset(
         self,
@@ -134,13 +202,20 @@ class TaskSet:
         memory_gb: int = 4,
         disk_size_gb: int = 2,
         timeout_minutes: int = 15,
-        test_timeout: int = 900,
     ) -> list[dict]:
         """Validate instances by applying gold solutions and checking evaluation.
 
         Creates sandboxes, runs ``spec.validate()`` on each instance, tears
-        down sandboxes.  Returns a list of ``{index, valid, elapsed, error}``
-        dicts.
+        down sandboxes.  Returns a list of dicts::
+
+            [{"index": 0, "valid": True, "elapsed": 12.3, "error": None}, ...]
+
+        Example::
+
+            taskset = R2ETaskSet().take(100)
+            results = await taskset.validate_taskset(concurrency=10)
+            valid = [r for r in results if r["valid"]]
+            print(f"{len(valid)}/{len(results)} instances are solvable")
 
         Parameters
         ----------
