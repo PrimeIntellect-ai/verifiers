@@ -76,13 +76,17 @@ class DOMMode:
 
         async with self._client_lock:
             if self.stagehand_client is None:
-                stagehand_kwargs = {
-                    "browserbase_api_key": self.api_key,
-                    "model_api_key": api_key,
-                }
-                if self.project_id is not None:
-                    stagehand_kwargs["browserbase_project_id"] = self.project_id
-                self.stagehand_client = AsyncStagehand(**stagehand_kwargs)
+                if self.project_id is None:
+                    self.stagehand_client = AsyncStagehand(
+                        browserbase_api_key=self.api_key,
+                        model_api_key=api_key,
+                    )
+                else:
+                    self.stagehand_client = AsyncStagehand(
+                        browserbase_api_key=self.api_key,
+                        browserbase_project_id=self.project_id,
+                        model_api_key=api_key,
+                    )
 
         # Build browserbase session params
         browserbase_params = {}
