@@ -3073,6 +3073,24 @@ class TestContextDropping:
         assert result2[0].content == "scaffolded prompt"
         assert result2[1].content == "response 2"
 
+    def test_apply_preserves_system_message_preamble(self, env_with_dropping):
+        """System message + scaffolded user message are both preserved."""
+        messages = [
+            vf.SystemMessage(content="system instructions"),
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content="response 0"),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+            vf.AssistantMessage(content="response 1"),
+            vf.ToolMessage(tool_call_id="t1", content="tool 1"),
+        ]
+
+        result = env_with_dropping._apply_context_dropping(messages, 1)
+
+        assert len(result) == 4  # system + user + asst_1 + tool_1
+        assert result[0].content == "system instructions"
+        assert result[1].content == "scaffolded prompt"
+        assert result[2].content == "response 1"
+
     # -- _upload_summary --
 
     @pytest.mark.asyncio

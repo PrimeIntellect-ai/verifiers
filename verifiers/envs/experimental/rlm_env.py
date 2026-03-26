@@ -4127,10 +4127,10 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> Messages:
         """Drop all turns before the *keep_from_assistant_index*-th assistant message.
 
-        Always preserves ``messages[0]`` (the scaffolded first user message).
-        A "turn" is one assistant message plus all subsequent tool messages.
-        Idempotent: if the messages are already truncated past the index, returns
-        them unchanged.
+        Preserves all messages before the first assistant message (system messages,
+        the scaffolded user message, etc.). A "turn" is one assistant message plus
+        all subsequent tool messages. Idempotent: if the messages are already
+        truncated past the index, returns them unchanged.
         """
         if keep_from_assistant_index <= 0:
             return messages
@@ -4146,10 +4146,11 @@ class RLMEnv(vf.StatefulToolEnv):
         if not assistant_indices or keep_from_assistant_index >= len(assistant_indices):
             return messages
 
-        # Keep messages[0] (scaffolded prompt) + everything from the
-        # keep_from_assistant_index-th turn onward.
+        # Preserve everything before the first assistant message (system msgs,
+        # scaffolded user msg, etc.), then keep from the target turn onward.
+        preamble = list(messages[: assistant_indices[0]])
         keep_from = assistant_indices[keep_from_assistant_index]
-        return [messages[0]] + list(messages[keep_from:])
+        return preamble + list(messages[keep_from:])
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
