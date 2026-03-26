@@ -192,6 +192,11 @@ class TaskSet:
     def __len__(self) -> int:
         return len(self._dataset)
 
+    def __iter__(self):
+        """Iterate over Tasks in the set."""
+        for i in range(len(self)):
+            yield self[i]
+
     def __getitem__(self, i: int) -> Task:
         """Return the i-th Task instance."""
         row = self._dataset[i]
