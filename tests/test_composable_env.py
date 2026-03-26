@@ -39,8 +39,8 @@ class MockTask:
     def get_extra_tools(self):
         return []
 
-    async def apply_gold_patch(self, sandbox_client, sandbox_id, state):
-        pass
+    async def validate(self, sandbox_client, sandbox_id, state):
+        return True
 
 
 # ── Task Protocol ───────────────────────────────────────────────────────

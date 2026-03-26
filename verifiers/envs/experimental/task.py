@@ -48,7 +48,17 @@ class TaskSpec(Protocol):
     async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None: ...
     async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]: ...
     def get_extra_tools(self) -> list: ...
-    async def apply_gold_patch(self, sandbox_client: Any, sandbox_id: str, state: State) -> None: ...
+
+    async def validate(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+        """Verify this instance is solvable.
+
+        Applies the known-correct solution and checks that evaluation
+        passes.  Domain-specific: SWE applies the gold patch and runs
+        tests, Lean compiles the ground-truth proof, Harbor runs solve.sh.
+        Returns True if the instance is valid, False if broken.
+        Tasks without a gold solution should return True (assume valid).
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +113,8 @@ class TaskSet:
     async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]:
         return await self.spec.evaluate(sandbox_client, sandbox_id, state)
 
-    async def apply_gold_patch(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
-        return await self.spec.apply_gold_patch(sandbox_client, sandbox_id, state)
+    async def validate(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+        return await self.spec.validate(sandbox_client, sandbox_id, state)
 
     # -- Combinators --------------------------------------------------------
 
