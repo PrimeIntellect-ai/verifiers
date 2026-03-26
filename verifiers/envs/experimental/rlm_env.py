@@ -286,6 +286,13 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_dropped_turns_count", 0)
     state.setdefault("_drop_sequence", 0)
 
+    state.setdefault("context_drop_count", 0)
+    state.setdefault("context_total_turns_dropped", 0)
+    state.setdefault("context_drop_mean_remaining_turns", 0.0)
+    state.setdefault("context_drop_mean_turns_between", 0.0)
+    state.setdefault("_context_drop_remaining_turns_list", [])
+    state.setdefault("_context_drop_at_main_turns", [])
+
 
 def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
     _ensure_rlm_metric_state(state)
@@ -371,6 +378,10 @@ class RLMMonitorRubric(vf.Rubric):
         "repl_call_count",
         "repl_mean_time_seconds",
         "root_tool_call_count",
+        "context_drop_count",
+        "context_total_turns_dropped",
+        "context_drop_mean_remaining_turns",
+        "context_drop_mean_turns_between",
     ]
 
     def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
@@ -2660,6 +2671,23 @@ class RLMEnv(vf.StatefulToolEnv):
         state["_dropped_turns_count"] = already_dropped + n_turns
         state["_drop_sequence"] = state.get("_drop_sequence", 0) + 1
         new_visible = visible_turns - n_turns
+
+        # Update context dropping metrics
+        _ensure_rlm_metric_state(state)
+        state["context_drop_count"] += 1
+        state["context_total_turns_dropped"] = state["_dropped_turns_count"]
+
+        remaining_list: list[int] = state["_context_drop_remaining_turns_list"]
+        remaining_list.append(new_visible)
+        state["context_drop_mean_remaining_turns"] = sum(remaining_list) / len(
+            remaining_list
+        )
+
+        at_turns: list[int] = state["_context_drop_at_main_turns"]
+        at_turns.append(current_main_turns)
+        if len(at_turns) >= 2:
+            gaps = [at_turns[i] - at_turns[i - 1] for i in range(1, len(at_turns))]
+            state["context_drop_mean_turns_between"] = sum(gaps) / len(gaps)
 
         await self._upload_summary(state, n_turns, summary, new_visible)
 

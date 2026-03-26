@@ -3064,3 +3064,64 @@ class TestContextDropping:
         cmd = env_with_dropping._executor._execute_sandbox_command.call_args[0][1]
         assert ".summaries" in cmd
         assert "base64" in cmd
+
+    # -- Metrics --
+
+    @pytest.mark.asyncio
+    async def test_basic_drop_metrics(self, env_with_dropping):
+        state = self._make_state(main_turns=6)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
+
+        assert state["context_drop_count"] == 1
+        assert state["context_total_turns_dropped"] == 2
+        assert state["context_drop_mean_remaining_turns"] == 4.0  # 6 - 2
+        assert state["context_drop_mean_turns_between"] == 0.0  # only 1 drop
+
+    @pytest.mark.asyncio
+    async def test_cumulative_drop_metrics(self, env_with_dropping):
+        # 10 turns, min_turns_in_context=3
+        state = self._make_state(main_turns=10)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        # Drop 2 at turn 10: 10 visible -> 8 remaining
+        await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
+        assert state["context_drop_count"] == 1
+        assert state["context_drop_mean_remaining_turns"] == 8.0
+
+        # Simulate 3 more main turns (total 13 in trajectory)
+        for i in range(3):
+            state["trajectory"].append(
+                {
+                    "trajectory_id": state["trajectory_id"],
+                    "prompt": [{"role": "user", "content": f"extra {i}"}],
+                    "completion": [{"role": "assistant", "content": f"extra resp {i}"}],
+                    "response": None,
+                    "tokens": None,
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": False,
+                    "extras": None,
+                }
+            )
+
+        # Drop 3 at turn 13: 13-2=11 visible -> 8 remaining
+        await env_with_dropping._handle_remove_conversation_turns(state, 3, "")
+        assert state["context_drop_count"] == 2
+        assert state["context_total_turns_dropped"] == 5
+        # mean remaining: (8 + 8) / 2 = 8.0
+        assert state["context_drop_mean_remaining_turns"] == 8.0
+        # turns between: [13 - 10] = [3], mean = 3.0
+        assert state["context_drop_mean_turns_between"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_failed_drop_does_not_update_metrics(self, env_with_dropping):
+        state = self._make_state(main_turns=4)
+        env_with_dropping._upload_summary = AsyncMock()
+
+        # Try to drop 5 (exceeds limit)
+        await env_with_dropping._handle_remove_conversation_turns(state, 5, "")
+
+        assert state.get("context_drop_count", 0) == 0
+        assert state.get("context_total_turns_dropped", 0) == 0
