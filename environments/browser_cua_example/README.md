@@ -133,15 +133,17 @@ To build and push a custom CUA server image:
 
 ```bash
 cd assets/templates/browserbase/cua
-./build-and-push.sh                    # Push as :latest
-./build-and-push.sh v1.0.0             # Push with version tag
-DOCKERHUB_USER=myuser ./build-and-push.sh  # Use different Docker Hub user
+./build-and-push.sh bb-project-id-optional-20260326
+DOCKERHUB_USER=myuser ./build-and-push.sh bb-project-id-optional-20260326
+DOCKERHUB_USER=myuser PUSH_LATEST=true ./build-and-push.sh bb-project-id-optional-20260326
 ```
 
 Then use your custom image:
 ```bash
-prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:v1.0.0"}'
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:bb-project-id-optional-20260326"}'
 ```
+
+Use the versioned tag first for validation. Only set `PUSH_LATEST=true` once you want `latest` to move as well.
 
 ## DOM vs CUA Mode Comparison
 

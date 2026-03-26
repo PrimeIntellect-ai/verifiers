@@ -8,7 +8,8 @@
 #
 # Usage:
 #   ./build-and-push.sh                    # Push as :latest
-#   ./build-and-push.sh v1.0.0             # Push as :v1.0.0
+#   ./build-and-push.sh v1.0.0             # Push only :v1.0.0
+#   PUSH_LATEST=true ./build-and-push.sh v1.0.0  # Also promote :latest
 #   DOCKERHUB_USER=myuser ./build-and-push.sh  # Use different Docker Hub user
 
 set -e
@@ -18,10 +19,12 @@ DOCKERHUB_USER=${DOCKERHUB_USER:-"deepdream19"}
 VERSION=${1:-latest}
 IMAGE_NAME="cua-server"
 FULL_IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${VERSION}"
+PUSH_LATEST=${PUSH_LATEST:-false}
 
 echo "============================================"
 echo "Building CUA Server Runtime Image"
 echo "Target: ${FULL_IMAGE}"
+echo "Promote latest: ${PUSH_LATEST}"
 echo "============================================"
 
 # Ensure we're in the right directory
@@ -62,8 +65,8 @@ echo ""
 echo "Pushing to Docker Hub..."
 docker push "${FULL_IMAGE}"
 
-# Also tag and push as latest if we're pushing a version tag
-if [ "$VERSION" != "latest" ]; then
+# Also tag and push as latest if explicitly requested
+if [ "$VERSION" != "latest" ] && [ "$PUSH_LATEST" = "true" ]; then
     echo "Also tagging as :latest..."
     docker tag "${FULL_IMAGE}" "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
     docker push "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"

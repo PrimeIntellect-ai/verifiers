@@ -48,6 +48,28 @@ env = BrowserEnv(
 )
 ```
 
+## Building and Publishing Images
+
+Build a local runtime image from this template:
+
+```bash
+pnpm install
+pnpm build:binary:docker
+docker build --platform linux/amd64 -f Dockerfile.runtime -t cua-server:local .
+```
+
+Publish a versioned tag without changing `latest`:
+
+```bash
+DOCKERHUB_USER=myuser ./build-and-push.sh bb-project-id-optional-20260326
+```
+
+Promote that tag to `latest` only when you explicitly want the shared default image to change:
+
+```bash
+DOCKERHUB_USER=myuser PUSH_LATEST=true ./build-and-push.sh bb-project-id-optional-20260326
+```
+
 ## Architecture
 
 ```
@@ -93,6 +115,8 @@ Content-Type: application/json
 
 {
   "env": "LOCAL",           // or "BROWSERBASE"
+  "browserbaseApiKey": "...", // required for BROWSERBASE sessions
+  "browserbaseProjectId": "...", // optional; Browserbase default project is used when omitted
   "viewport": {
     "width": 1024,
     "height": 768
@@ -271,4 +295,3 @@ cua-server/
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file
 ```
-
