@@ -131,11 +131,23 @@ class ComposableEnv(CliAgentEnv):
             prompt = self.spec.get_prompt(info)
             instruction = ""
             for msg in prompt:
-                content = getattr(msg, "content", "") if not isinstance(msg, dict) else msg.get("content", "")
-                if content and getattr(msg, "role", msg.get("role") if isinstance(msg, dict) else "") == "user":
+                content = (
+                    getattr(msg, "content", "")
+                    if not isinstance(msg, dict)
+                    else msg.get("content", "")
+                )
+                if (
+                    content
+                    and getattr(
+                        msg, "role", msg.get("role") if isinstance(msg, dict) else ""
+                    )
+                    == "user"
+                ):
                     instruction += str(content)
             if instruction:
-                await self.sandbox_client.execute_command(sandbox_id, "mkdir -p /task", timeout=10)
+                await self.sandbox_client.execute_command(
+                    sandbox_id, "mkdir -p /task", timeout=10
+                )
                 await self.sandbox_client.execute_command(
                     sandbox_id,
                     f"cat > /task/instruction.md << 'INSTRUCTION_EOF'\n{instruction}\nINSTRUCTION_EOF",
@@ -146,16 +158,22 @@ class ComposableEnv(CliAgentEnv):
 
         # 3. Upload system prompt if provided
         if self.system_prompt_path:
-            await self.sandbox_client.execute_command(sandbox_id, "mkdir -p /opencode", timeout=10)
+            await self.sandbox_client.execute_command(
+                sandbox_id, "mkdir -p /opencode", timeout=10
+            )
             await self.sandbox_client.upload_file(
-                sandbox_id, "/opencode/system.txt", str(self.system_prompt_path),
+                sandbox_id,
+                "/opencode/system.txt",
+                str(self.system_prompt_path),
             )
 
         # 4. Agent install (optional)
         if self.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
             result = await self.sandbox_client.execute_command(
-                sandbox_id, self.install_script, timeout=300,
+                sandbox_id,
+                self.install_script,
+                timeout=300,
             )
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
@@ -181,7 +199,9 @@ class ComposableEnv(CliAgentEnv):
 
         try:
             reward = await self.spec.evaluate(
-                self.sandbox_client, sandbox_id, state,
+                self.sandbox_client,
+                sandbox_id,
+                state,
             )
             if isinstance(reward, dict):
                 state["role_rewards"] = reward

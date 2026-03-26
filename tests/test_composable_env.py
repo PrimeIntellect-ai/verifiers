@@ -1,8 +1,6 @@
 """Tests for the composable architecture: Task, TaskSet, ComposableEnv."""
 
-from unittest.mock import AsyncMock
 
-import pytest
 
 from verifiers.envs.experimental.composable import TaskSpec, TaskSet
 
@@ -68,11 +66,14 @@ def test_task_needs_sandbox():
 
 def _make_dataset(n=3):
     from datasets import Dataset
-    return Dataset.from_dict({
-        "question": [f"q{i}" for i in range(n)],
-        "info": [{"id": i} for i in range(n)],
-        "answer": ["" for _ in range(n)],
-    })
+
+    return Dataset.from_dict(
+        {
+            "question": [f"q{i}" for i in range(n)],
+            "info": [{"id": i} for i in range(n)],
+            "answer": ["" for _ in range(n)],
+        }
+    )
 
 
 def test_taskset_len():

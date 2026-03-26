@@ -114,11 +114,17 @@ class TaskSpec(Protocol):
     def get_image(self, info: dict) -> str: ...
     def get_workdir(self, info: dict) -> str: ...
     def get_env_vars(self) -> dict[str, str]: ...
-    async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None: ...
-    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]: ...
+    async def setup(
+        self, sandbox_client: Any, sandbox_id: str, state: State
+    ) -> None: ...
+    async def evaluate(
+        self, sandbox_client: Any, sandbox_id: str, state: State
+    ) -> float | dict[str, float]: ...
     def get_extra_tools(self) -> list: ...
 
-    async def validate(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+    async def validate(
+        self, sandbox_client: Any, sandbox_id: str, state: State
+    ) -> bool:
         """Verify this instance is solvable.
 
         Applies the known-correct solution and checks that evaluation
@@ -161,7 +167,9 @@ class Task:
         return self.spec.get_workdir(self.info)
 
     def __repr__(self) -> str:
-        return f"Task(spec={type(self.spec).__name__}, info_keys={list(self.info.keys())})"
+        return (
+            f"Task(spec={type(self.spec).__name__}, info_keys={list(self.info.keys())})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +238,14 @@ class TaskSet:
     async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
         return await self.spec.setup(sandbox_client, sandbox_id, state)
 
-    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float | dict[str, float]:
+    async def evaluate(
+        self, sandbox_client: Any, sandbox_id: str, state: State
+    ) -> float | dict[str, float]:
         return await self.spec.evaluate(sandbox_client, sandbox_id, state)
 
-    async def validate(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+    async def validate(
+        self, sandbox_client: Any, sandbox_id: str, state: State
+    ) -> bool:
         return await self.spec.validate(sandbox_client, sandbox_id, state)
 
     # -- Combinators --------------------------------------------------------
@@ -293,7 +305,9 @@ class TaskSet:
         ds = self.get_dataset()
         total = min(n, len(ds)) if n else len(ds)
 
-        async def run_background_job(state: dict, cmd: str, timeout: int, working_dir: str | None = None) -> Any:
+        async def run_background_job(
+            state: dict, cmd: str, timeout: int, working_dir: str | None = None
+        ) -> Any:
             sid = state["sandbox_id"]
             job = await client.start_background_job(sid, cmd, working_dir=working_dir)
             for _ in range(0, timeout + 3, 3):
@@ -310,14 +324,16 @@ class TaskSet:
 
             async with sem:
                 image = self.spec.get_image(info)
-                sb = await client.create(CreateSandboxRequest(
-                    name=f"validate-{i}",
-                    docker_image=image,
-                    cpu_cores=cpu_cores,
-                    memory_gb=memory_gb,
-                    disk_size_gb=disk_size_gb,
-                    timeout_minutes=timeout_minutes,
-                ))
+                sb = await client.create(
+                    CreateSandboxRequest(
+                        name=f"validate-{i}",
+                        docker_image=image,
+                        cpu_cores=cpu_cores,
+                        memory_gb=memory_gb,
+                        disk_size_gb=disk_size_gb,
+                        timeout_minutes=timeout_minutes,
+                    )
+                )
                 state["sandbox_id"] = sb.id
                 await client.wait_for_creation(sb.id, max_attempts=120)
 
@@ -327,22 +343,36 @@ class TaskSet:
                     valid = await self.spec.validate(client, sb.id, state)
                     elapsed = time.time() - t0
                     logger.info(f"[{i}] valid={valid} ({elapsed:.0f}s)")
-                    return {"index": i, "valid": valid, "elapsed": elapsed, "error": None}
+                    return {
+                        "index": i,
+                        "valid": valid,
+                        "elapsed": elapsed,
+                        "error": None,
+                    }
                 except Exception as e:
                     elapsed = time.time() - t0
                     logger.warning(f"[{i}] ERROR: {e} ({elapsed:.0f}s)")
-                    return {"index": i, "valid": False, "elapsed": elapsed, "error": str(e)}
+                    return {
+                        "index": i,
+                        "valid": False,
+                        "elapsed": elapsed,
+                        "error": str(e),
+                    }
                 finally:
                     await client.delete(sb.id)
 
-        logger.info(f"Validating {total} instances from {self.name} (concurrency={concurrency})")
+        logger.info(
+            f"Validating {total} instances from {self.name} (concurrency={concurrency})"
+        )
         t0 = time.time()
         results = await asyncio.gather(*[validate_one(i) for i in range(total)])
         elapsed = time.time() - t0
 
         passed = sum(1 for r in results if r["valid"])
         failed = sum(1 for r in results if not r["valid"])
-        logger.info(f"Validation complete: {passed}/{total} valid, {failed} failed ({elapsed:.0f}s)")
+        logger.info(
+            f"Validation complete: {passed}/{total} valid, {failed} failed ({elapsed:.0f}s)"
+        )
 
         return results
 
