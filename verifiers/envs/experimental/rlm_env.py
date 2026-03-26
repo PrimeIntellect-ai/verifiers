@@ -48,7 +48,14 @@ else:
 
 from aiohttp import web
 import tenacity as tc
-from prime_sandboxes import CommandTimeoutError, SandboxClient
+from prime_sandboxes import (
+    CommandTimeoutError,
+    SandboxClient,
+    SandboxOOMError,
+    SandboxTimeoutError,
+    UploadTimeoutError,
+    DownloadTimeoutError,
+)
 from prime_sandboxes.core import APIClient
 from prime_tunnel import Tunnel
 
@@ -168,6 +175,19 @@ class RLMSessionError(vf.SandboxError):
 
 class RLMSetupError(vf.SandboxError):
     """Raised when RLM environment setup fails (package install, setup hook, etc.)."""
+
+
+class RLMSandboxCommandTimeout(vf.SandboxError):
+    """A sandbox command timed out.
+
+    Wraps ``CommandTimeoutError`` from ``prime_sandboxes`` as a ``vf.SandboxError``
+    so it is caught by the framework's infrastructure-error handling instead of
+    propagating as a raw ``RuntimeError`` through the ZMQ boundary.
+
+    Callers that need to distinguish timeouts from other sandbox errors (e.g.
+    ``execute()`` converting to ``RLMCodeExecutionTimeout``, ``_wait_for_ready()``
+    converting to ``RLMWorkerError``) can catch this type specifically.
+    """
 
 
 @dataclass(frozen=True)
@@ -1365,7 +1385,7 @@ class RLMExecutor(SandboxMixin):
 
         try:
             raw = await self._send_worker_request(session, payload)
-        except CommandTimeoutError as e:
+        except RLMSandboxCommandTimeout as e:
             raise RLMCodeExecutionTimeout from e
         except RLMCodeExecutionTimeout:
             raise
@@ -1530,10 +1550,20 @@ class RLMExecutor(SandboxMixin):
                 working_dir=working_dir,
                 timeout=timeout,
             )
-        except CommandTimeoutError:
-            raise
+        except SandboxOOMError as e:
+            raise vf.SandboxError(
+                f"Sandbox {sandbox_id} OOM during command: {command[:100]}"
+            ) from e
+        except SandboxTimeoutError as e:
+            raise vf.SandboxError(
+                f"Sandbox {sandbox_id} timed out: {command[:100]}"
+            ) from e
+        except CommandTimeoutError as e:
+            raise RLMSandboxCommandTimeout(
+                f"Command timed out after {timeout}s in {sandbox_id}: {command[:100]}"
+            ) from e
         except Exception as e:
-            raise RuntimeError(e)
+            raise vf.SandboxError(f"Sandbox command failed in {sandbox_id}: {e}") from e
 
     async def _install_packages(self, session: SandboxRLMReplSession) -> None:
         sandbox_id = session.sandbox_id
@@ -1672,7 +1702,7 @@ class RLMExecutor(SandboxMixin):
                 cmd,
                 timeout=self.env.max_startup_wait_seconds,
             )
-        except CommandTimeoutError as exc:
+        except RLMSandboxCommandTimeout as exc:
             log_tail = await self._read_worker_log_tail(session)
             raise RLMWorkerError(
                 "RLM worker failed to become ready before timeout."
@@ -1946,6 +1976,14 @@ class RLMExecutor(SandboxMixin):
         upload = self.env.with_retry_on_read_errors(self.sandbox_client.upload_file)
         try:
             await upload(sandbox_id, remote_path, local_path)
+        except UploadTimeoutError as e:
+            raise vf.SandboxError(
+                f"{context} upload timed out for sandbox {sandbox_id}: {remote_path}"
+            ) from e
+        except SandboxOOMError as e:
+            raise vf.SandboxError(
+                f"{context} failed (sandbox OOM) for sandbox {sandbox_id}: {remote_path}"
+            ) from e
         except Exception as e:
             raise vf.SandboxError(
                 f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
@@ -1961,6 +1999,14 @@ class RLMExecutor(SandboxMixin):
         download = self.env.with_retry_on_read_errors(self.sandbox_client.download_file)
         try:
             await download(sandbox_id, remote_path, local_path)
+        except DownloadTimeoutError as e:
+            raise vf.SandboxError(
+                f"{context} download timed out for sandbox {sandbox_id}: {remote_path}"
+            ) from e
+        except SandboxOOMError as e:
+            raise vf.SandboxError(
+                f"{context} failed (sandbox OOM) for sandbox {sandbox_id}: {remote_path}"
+            ) from e
         except Exception as e:
             raise vf.SandboxError(
                 f"{context} failed for sandbox {sandbox_id}: {repr(e)}"
