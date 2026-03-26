@@ -318,6 +318,22 @@ class GenerateOutputsBuilder:
                         metrics[metric_name].append(metric_value)
         avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
 
+        # per-actor metrics (reward + pass@k) when multiple actors exist
+        actor_outputs: dict[str, list] = defaultdict(list)
+        for o in self.outputs:
+            aid = o.get("actor_id")
+            if aid:
+                actor_outputs[aid].append(o)
+        if len(actor_outputs) > 1:
+            for aid, actor_outs in sorted(actor_outputs.items()):
+                actor_rewards = [o.get("reward", 0.0) for o in actor_outs]
+                avg_metrics[f"{aid}/reward"] = sum(actor_rewards) / len(actor_rewards)
+                actor_pass_at_k, _ = compute_pass_at_k(
+                    actor_outs, self.rollouts_per_example, self.pass_threshold
+                )
+                for k, v in actor_pass_at_k.items():
+                    avg_metrics[f"{aid}/pass@{k}"] = v
+
         # compute error rate from accumulated outputs
         errors = [o.get("error") for o in self.outputs]
         has_errors = [e is not None for e in errors]
