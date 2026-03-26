@@ -890,7 +890,7 @@ def load_environment(
         from openai import AsyncOpenAI
         codegen_v4_agent.client = AsyncOpenAI(base_url=codegen_v4_url, api_key="EMPTY")
 
-    pipeline_env = ArcSyntheticMultistrategyEnv(rubric=rubric, dataset=dataset, v4_model=v4_model)
+    pipeline_env = ArcSyntheticMultistrategyEnv(rubric=rubric, dataset=dataset, v4_model=v4_model, **kwargs)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
 
     Registry(

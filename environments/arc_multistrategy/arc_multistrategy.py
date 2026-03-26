@@ -1187,6 +1187,7 @@ def load_environment(
     num_examples: int | None = None,
     max_dim: int = 30,
     sort_by_size: bool = False,
+    **kwargs,
 ) -> ArcMultistrategyEnv:
     """Entry point for vf-eval / prime-rl."""
     dataset = load_and_prepare_dataset(hf_dataset, split, num_examples, max_dim, sort_by_size)
@@ -1195,7 +1196,7 @@ def load_environment(
     codegen_v1b_agent = Agent(id="codegen_v1b", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
     codegen_v4_agent = Agent(id="codegen_v4", system_prompt=CODEGEN_SYSTEM_PROMPT, is_trainable=True, model="Qwen/Qwen3-4B-Instruct-2507")
 
-    pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset)
+    pipeline_env = ArcMultistrategyEnv(rubric=rubric, dataset=dataset, **kwargs)
     codegen_v4_env = CodegenEnv(actor_id="codegen_v4", env_name="codegen_v4")
 
     Registry(
