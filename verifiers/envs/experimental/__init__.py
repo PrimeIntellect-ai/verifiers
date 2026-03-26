@@ -5,6 +5,7 @@ __all__ = [
     "TaskSpec",
     "Task",
     "TaskSet",
+    "Harness",
     "ComposableEnv",
 ]
 
@@ -14,6 +15,7 @@ def __getattr__(name: str):
         "TaskSpec": "verifiers.envs.experimental.composable:TaskSpec",
         "Task": "verifiers.envs.experimental.composable:Task",
         "TaskSet": "verifiers.envs.experimental.composable:TaskSet",
+        "Harness": "verifiers.envs.experimental.composable:Harness",
         "ComposableEnv": "verifiers.envs.experimental.composable:ComposableEnv",
     }
     if name in _lazy:

@@ -300,7 +300,9 @@ class TaskSet:
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
         logger = logging.getLogger(__name__)
-        client = ThreadedAsyncSandboxClient(max_workers=min(max(1, concurrency // 8), 50))
+        client = ThreadedAsyncSandboxClient(
+            max_workers=min(max(1, concurrency // 8), 50)
+        )
         sem = asyncio.Semaphore(concurrency)
         ds = self.get_dataset()
         total = min(n, len(ds)) if n else len(ds)
