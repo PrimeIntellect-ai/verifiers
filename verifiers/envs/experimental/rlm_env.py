@@ -1579,14 +1579,6 @@ export RLM_READY=1
                 lines.append("")
 
 
-# Backward-compatible aliases so existing imports/tests keep working.
-_SUB_LLM_SYSTEM_PROMPT_STORE = RLMPromptBuilder.SUB_LLM_SYSTEM_PROMPT_STORE
-_RLM_MESSAGE_HISTORY_NOTE_PYTHON = RLMPromptBuilder.MESSAGE_HISTORY_NOTE_PYTHON
-_RLM_MESSAGE_HISTORY_NOTE_BASH = RLMPromptBuilder.MESSAGE_HISTORY_NOTE_BASH
-_RLM_PYTHON_SYSTEM_PROMPT_STORE = RLMPromptBuilder.PYTHON_SYSTEM_PROMPT_STORE
-_RLM_BASH_SYSTEM_PROMPT_STORE = RLMPromptBuilder.BASH_SYSTEM_PROMPT_STORE
-
-
 class RLMExecutor(SandboxMixin):
     def __init__(self, env: "RLMEnv") -> None:
         self.env = env
@@ -2632,18 +2624,6 @@ class RLMEnv(vf.StatefulToolEnv):
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
-
-    def _generate_packages_documentation(self) -> str:
-        """Generate documentation for installed packages to include in system prompt."""
-        return self.prompt_builder.build_packages_documentation()
-
-    def _generate_sub_tools_documentation(self) -> str:
-        """Generate documentation for sub-agent tools to include in system prompt."""
-        return self.prompt_builder.build_sub_tools_documentation()
-
-    def _generate_root_tools_documentation(self) -> str:
-        """Generate documentation for root REPL tools to include in system prompt."""
-        return self.prompt_builder.build_root_tools_documentation()
 
     def _compute_fs_metadata(
         self, fs_root: str, *, disallow_symlinks: bool = False

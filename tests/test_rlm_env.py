@@ -214,11 +214,11 @@ class TestFormatExecutionOutput:
 
 class TestGenerateSubToolsDocumentation:
     def test_empty_when_no_sub_tools(self, rlm_env):
-        docs = rlm_env._generate_sub_tools_documentation()
+        docs = rlm_env.prompt_builder.build_sub_tools_documentation()
         assert docs == ""
 
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
-        docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
+        docs = rlm_env_with_sub_tools.prompt_builder.build_sub_tools_documentation()
         assert "Sub-LLM Tools" in docs
         assert "sample_tool" in docs
         assert "another_tool" in docs
@@ -226,7 +226,7 @@ class TestGenerateSubToolsDocumentation:
         assert "Reverse a string" in docs
 
     def test_docs_include_parameters(self, rlm_env_with_sub_tools):
-        docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
+        docs = rlm_env_with_sub_tools.prompt_builder.build_sub_tools_documentation()
         assert "Parameters" in docs
         assert "`x`" in docs or "x" in docs
         assert "`y`" in docs or "y" in docs
@@ -547,9 +547,9 @@ class TestPromptVerbosity:
             parent_turn=0,
         )
 
-        expected = rlm_module._SUB_LLM_SYSTEM_PROMPT_STORE[verbosity].format(
-            num_turns=env.sub_llm_max_turns
-        )
+        expected = rlm_module.RLMPromptBuilder.SUB_LLM_SYSTEM_PROMPT_STORE[
+            verbosity
+        ].format(num_turns=env.sub_llm_max_turns)
         assert captured["messages"][0]["role"] == "system"
         assert captured["messages"][0]["content"] == expected
 
