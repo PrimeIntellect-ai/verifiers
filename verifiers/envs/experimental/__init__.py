@@ -11,10 +11,10 @@ __all__ = [
 
 def __getattr__(name: str):
     _lazy = {
-        "TaskSpec": "verifiers.envs.experimental.task:TaskSpec",
-        "Task": "verifiers.envs.experimental.task:Task",
-        "TaskSet": "verifiers.envs.experimental.task:TaskSet",
-        "ComposableEnv": "verifiers.envs.experimental.composable_env:ComposableEnv",
+        "TaskSpec": "verifiers.envs.experimental.composable:TaskSpec",
+        "Task": "verifiers.envs.experimental.composable:Task",
+        "TaskSet": "verifiers.envs.experimental.composable:TaskSet",
+        "ComposableEnv": "verifiers.envs.experimental.composable:ComposableEnv",
     }
     if name in _lazy:
         import importlib

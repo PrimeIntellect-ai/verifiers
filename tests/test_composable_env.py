@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from verifiers.envs.experimental.task import TaskSpec, TaskSet
+from verifiers.envs.experimental.composable import TaskSpec, TaskSet
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────

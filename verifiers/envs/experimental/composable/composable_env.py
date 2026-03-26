@@ -25,7 +25,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv, CliAgentMonitorRubric
 from verifiers.envs.experimental.sandbox_mixin import SandboxMonitorRubric
-from verifiers.envs.experimental.task import TaskSet
+from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
