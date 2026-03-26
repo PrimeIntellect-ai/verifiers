@@ -1158,31 +1158,41 @@ def _render_worker_script(paths: RLMWorkerPaths, *, repl_language: str) -> str:
     return script
 
 
-# System prompt for sub-LLMs (called via llm_batch)
-_SUB_LLM_SYSTEM_PROMPT_STORE = {
-    "light": ("You have {num_turns} turns available to fulfill your task."),
-    "medium": (
-        "You will be given a task to perform."
-        " Consider the tools at your disposal closely,"
-        " and don't be afraid to think as much as you need about every step."
-        "\n\nYou have {num_turns} turns available to fulfill your task."
-        " You will be warned when there's only one turn left."
-    ),
-    "heavy": (
-        "You will be given a task to perform."
-        " Consider the tools at your disposal closely,"
-        " and don't be afraid to think as much as you need about every step."
-        "\n\nYou have {num_turns} turns available to fulfill your task."
-        " Unless the task is trivial, use the turns to their fullest to make sure you get the answer right."
-        " Plan well for how to fulfill the task within the turn limit, but don't be afraid to experiment;"
-        " there's a tradeoff to be had and you should think very carefully about how to optimize it."
-        " You will be warned when there's only one turn left."
-    ),
-}
+class RLMPromptBuilder:
+    """Builds all prompt text for the RLM environment.
 
+    Holds configuration and template stores as instance/class state.
+    All build methods are pure: they depend only on self config and their arguments.
 
-# System prompt for RLM
-_RLM_MESSAGE_HISTORY_NOTE_PYTHON = """
+    Subclasses can override individual ``build_*`` methods to customise specific
+    prompt sections, or override the class-level template stores to change prompt
+    text without touching any method logic.
+    """
+
+    # -- Class-level template stores (override in subclass to customise) ------
+
+    SUB_LLM_SYSTEM_PROMPT_STORE: dict[str, str] = {
+        "light": ("You have {num_turns} turns available to fulfill your task."),
+        "medium": (
+            "You will be given a task to perform."
+            " Consider the tools at your disposal closely,"
+            " and don't be afraid to think as much as you need about every step."
+            "\n\nYou have {num_turns} turns available to fulfill your task."
+            " You will be warned when there's only one turn left."
+        ),
+        "heavy": (
+            "You will be given a task to perform."
+            " Consider the tools at your disposal closely,"
+            " and don't be afraid to think as much as you need about every step."
+            "\n\nYou have {num_turns} turns available to fulfill your task."
+            " Unless the task is trivial, use the turns to their fullest to make sure you get the answer right."
+            " Plan well for how to fulfill the task within the turn limit, but don't be afraid to experiment;"
+            " there's a tradeoff to be had and you should think very carefully about how to optimize it."
+            " You will be warned when there's only one turn left."
+        ),
+    }
+
+    MESSAGE_HISTORY_NOTE_PYTHON: str = """
 The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
 ```python
 import json
@@ -1190,25 +1200,25 @@ history = [json.loads(line) for line in open(".messages")]
 ```
 """
 
-_RLM_MESSAGE_HISTORY_NOTE_BASH = """
+    MESSAGE_HISTORY_NOTE_BASH: str = """
 The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
 ```bash
 cat .messages  # one JSON object per line
 ```
 """
 
-_RLM_PYTHON_SYSTEM_PROMPT_STORE = {
-    "light": """You have the `call_python_repl` tool and a filesystem available to you.
+    PYTHON_SYSTEM_PROMPT_STORE: dict[str, str] = {
+        "light": """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
 """,
-    "medium": """You have the `call_python_repl` tool and a filesystem available to you.
+        "medium": """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
 
 This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
 """,
-    "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
+        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
 
 A filesystem is available; explore it as needed.
 
@@ -1246,21 +1256,20 @@ answer["ready"] = True
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
    Pass a list of strings only (no message dicts).
 """,
-}
+    }
 
-
-_RLM_BASH_SYSTEM_PROMPT_STORE = {
-    "light": """You have the `call_bash_repl` tool and a filesystem available to you.
+    BASH_SYSTEM_PROMPT_STORE: dict[str, str] = {
+        "light": """You have the `call_bash_repl` tool and a filesystem available to you.
 
 In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
 """,
-    "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
+        "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
 
 In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
 
 This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
 """,
-    "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
+        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
 
 A filesystem is available; explore it as needed.
 
@@ -1302,7 +1311,280 @@ export RLM_READY=1
      (or provide the JSON via stdin).
    - `llm_batch` accepts `--json` with `{"prompts":[...]}`
 """,
-}
+    }
+
+    # -- Constructor ----------------------------------------------------------
+
+    def __init__(
+        self,
+        *,
+        repl_language: Literal["bash", "python"],
+        root_prompt_verbosity: Literal["light", "medium", "heavy"],
+        sub_prompt_verbosity: Literal["light", "medium", "heavy"],
+        custom_system_prompt: str | None,
+        pip_install_packages: str,
+        expose_message_history: bool,
+        root_max_completion_tokens: int | None,
+        sub_max_completion_tokens: int | None,
+        sub_llm_max_turns: int,
+        root_tool_defs: list[vf.Tool],
+        sub_tool_defs: list[vf.Tool],
+    ) -> None:
+        self.repl_language = repl_language
+        self.root_prompt_verbosity = root_prompt_verbosity
+        self.sub_prompt_verbosity = sub_prompt_verbosity
+        self.custom_system_prompt = custom_system_prompt
+        self.pip_install_packages = pip_install_packages
+        self.expose_message_history = expose_message_history
+        self.root_max_completion_tokens = root_max_completion_tokens
+        self.sub_max_completion_tokens = sub_max_completion_tokens
+        self.sub_llm_max_turns = sub_llm_max_turns
+        self.root_tool_defs = root_tool_defs
+        self.sub_tool_defs = sub_tool_defs
+
+    # -- Fragment builders (each independently overridable) -------------------
+
+    def build_base_system_prompt(self) -> str:
+        """Select the base system prompt from stores or custom override."""
+        if self.custom_system_prompt:
+            return self.custom_system_prompt
+        if self.repl_language == "bash":
+            return self.BASH_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
+        return self.PYTHON_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
+
+    def build_packages_documentation(self) -> str:
+        """Generate markdown listing of pip packages available in the REPL."""
+        if self.repl_language != "python":
+            return ""
+        if not self.pip_install_packages:
+            return ""
+
+        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
+        if not packages:
+            return ""
+
+        lines = [
+            "\n## Installed Packages\n",
+            "The following Python packages are pre-installed in the REPL environment:\n",
+        ]
+        for pkg in packages:
+            lines.append(f"- `{pkg}`")
+        lines.append("")
+        lines.append("You can import and use these packages directly in your code.\n")
+
+        return "\n".join(lines)
+
+    def build_root_tools_documentation(self) -> str:
+        """Generate markdown docs for root REPL tools."""
+        if not self.root_tool_defs:
+            return ""
+
+        lines = ["\n## Root REPL Tools\n"]
+        if self.repl_language == "bash":
+            lines.append(
+                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
+            )
+        else:
+            lines.append(
+                "The root model can call the following tools inside the Python REPL:\n"
+            )
+
+        self._format_tool_docs_into(lines, self.root_tool_defs)
+
+        lines.append(
+            "These tools run on the host and are only accessible from within the REPL."
+        )
+        if self.repl_language == "bash":
+            lines.append(
+                "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
+                'structured args/kwargs, use `tool_name --json \'{"args": [...], '
+                '"kwargs": {...}}\'` or provide the JSON via stdin.'
+            )
+            lines.append(
+                "For `llm_batch`, use positional string prompts or "
+                '`--json \'{"prompts": ["..."]}\'`.'
+            )
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def build_sub_tools_documentation(self) -> str:
+        """Generate markdown docs for sub-LLM tools."""
+        if not self.sub_tool_defs:
+            return ""
+
+        lines = ["\n## Sub-LLM Tools\n"]
+        lines.append(
+            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
+        )
+
+        self._format_tool_docs_into(lines, self.sub_tool_defs)
+
+        lines.append(
+            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
+            "tools autonomously."
+        )
+        lines.append(
+            "You do NOT need to manage tool calls yourself - just describe the task "
+            "in your prompt.\n"
+        )
+
+        return "\n".join(lines)
+
+    def build_message_history_note(self) -> str:
+        """Return the message-history documentation note, or empty string."""
+        if not self.expose_message_history:
+            return ""
+        if self.repl_language == "bash":
+            return self.MESSAGE_HISTORY_NOTE_BASH
+        return self.MESSAGE_HISTORY_NOTE_PYTHON
+
+    def build_root_budget_note(self) -> str:
+        """Return root-model token budget note, or empty string."""
+        if self.root_max_completion_tokens is None:
+            return ""
+        return (
+            f"\nYou have a total budget of "
+            f"{self.root_max_completion_tokens} completion tokens "
+            f"for your own responses across this entire rollout.\n"
+        )
+
+    def build_sub_budget_note(self) -> str:
+        """Return sub-LLM token budget note, or empty string."""
+        if self.sub_max_completion_tokens is None:
+            return ""
+        return (
+            f"\nYou have a total budget of "
+            f"{self.sub_max_completion_tokens} completion tokens "
+            f"across all sub-LLM calls via llm_batch().\n"
+        )
+
+    # -- Assembly -------------------------------------------------------------
+
+    def build_system_prompt(self) -> str:
+        """Assemble the full RLM system prompt from all fragments."""
+        return (
+            self.build_base_system_prompt()
+            + self.build_packages_documentation()
+            + self.build_root_tools_documentation()
+            + self.build_sub_tools_documentation()
+            + self.build_root_budget_note()
+            + self.build_sub_budget_note()
+            + self.build_message_history_note()
+        )
+
+    def build_system_prompt_fragments(self) -> dict[str, str]:
+        """Return a dict of named prompt fragments plus the assembled prompt.
+
+        Keys: ``full``, ``packages_docs``, ``root_tools_docs``, ``sub_tools_docs``.
+        """
+        packages_docs = self.build_packages_documentation()
+        root_tools_docs = self.build_root_tools_documentation()
+        sub_tools_docs = self.build_sub_tools_documentation()
+        full = (
+            self.build_base_system_prompt()
+            + packages_docs
+            + root_tools_docs
+            + sub_tools_docs
+            + self.build_root_budget_note()
+            + self.build_sub_budget_note()
+            + self.build_message_history_note()
+        )
+        return {
+            "full": full,
+            "packages_docs": packages_docs,
+            "root_tools_docs": root_tools_docs,
+            "sub_tools_docs": sub_tools_docs,
+        }
+
+    # -- Sub-LLM system prompt -----------------------------------------------
+
+    def build_sub_llm_system_prompt(self) -> str:
+        """Build the system prompt prepended to every sub-LLM call."""
+        return self.SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
+            num_turns=self.sub_llm_max_turns
+        )
+
+    # -- Scaffolding injection (static — pure message manipulation) -----------
+
+    @staticmethod
+    def wrap_in_scaffolding(system_prompt: str) -> str:
+        """Wrap a system prompt in ``<RLM_SCAFFOLDING>`` tags."""
+        return "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
+
+    @staticmethod
+    def inject_scaffolding_into_messages(
+        messages: list[dict[str, Any]], scaffold: str
+    ) -> None:
+        """Inject *scaffold* into the first user message (in-place).
+
+        Handles string, list, and dict content types. If no user message
+        exists, appends a new one. Idempotent — skips injection when the
+        scaffolding tag is already present.
+        """
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+            msg_mut = cast(dict[str, Any], msg)
+            content = msg_mut.get("content")
+            if isinstance(content, str) or content is None:
+                text = content or ""
+                if text.startswith("<RLM_SCAFFOLDING>"):
+                    return
+                msg_mut["content"] = scaffold + text
+            elif isinstance(content, list):
+                if (
+                    content
+                    and isinstance(content[0], dict)
+                    and content[0].get("type") == "text"
+                    and str(content[0].get("text", "")).startswith("<RLM_SCAFFOLDING>")
+                ):
+                    return
+                msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
+            elif isinstance(content, dict):
+                msg_mut["content"] = [
+                    {"type": "text", "text": scaffold},
+                    content,
+                ]
+            return
+
+        # No user message found — append one.
+        messages.append({"role": "user", "content": scaffold})
+
+    # -- Shared helper --------------------------------------------------------
+
+    @staticmethod
+    def _format_tool_docs_into(lines: list[str], tool_defs: list[vf.Tool]) -> None:
+        """Format Tool objects into markdown lines and append to *lines*."""
+        for tool_def in tool_defs:
+            name = tool_def.name
+            desc = tool_def.description or "No description"
+            params_obj = tool_def.parameters.get("properties", {})
+            params = params_obj if isinstance(params_obj, dict) else {}
+
+            lines.append(f"### `{name}`")
+            lines.append(f"{desc}\n")
+
+            if params:
+                lines.append("**Parameters:**")
+                for param_name, param_info in params.items():
+                    param_dict = (
+                        cast(dict[str, Any], param_info)
+                        if isinstance(param_info, dict)
+                        else {}
+                    )
+                    param_type = param_dict.get("type", "any")
+                    param_desc = param_dict.get("description", "")
+                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
+                lines.append("")
+
+
+# Backward-compatible aliases so existing imports/tests keep working.
+_SUB_LLM_SYSTEM_PROMPT_STORE = RLMPromptBuilder.SUB_LLM_SYSTEM_PROMPT_STORE
+_RLM_MESSAGE_HISTORY_NOTE_PYTHON = RLMPromptBuilder.MESSAGE_HISTORY_NOTE_PYTHON
+_RLM_MESSAGE_HISTORY_NOTE_BASH = RLMPromptBuilder.MESSAGE_HISTORY_NOTE_BASH
+_RLM_PYTHON_SYSTEM_PROMPT_STORE = RLMPromptBuilder.PYTHON_SYSTEM_PROMPT_STORE
+_RLM_BASH_SYSTEM_PROMPT_STORE = RLMPromptBuilder.BASH_SYSTEM_PROMPT_STORE
 
 
 class RLMExecutor(SandboxMixin):
@@ -2255,12 +2537,29 @@ class RLMEnv(vf.StatefulToolEnv):
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
         self._executor = RLMExecutor(self)
+        self.prompt_builder = self._create_prompt_builder()
 
         # Add the REPL tool (state is injected via update_tool_args)
         if self.repl_language == "bash":
             self.add_tool(self.call_bash_repl, args_to_skip=["state"])
         else:
             self.add_tool(self.call_python_repl, args_to_skip=["state"])
+
+    def _create_prompt_builder(self) -> RLMPromptBuilder:
+        """Create the prompt builder. Override to use a custom builder class."""
+        return RLMPromptBuilder(
+            repl_language=self.repl_language,
+            root_prompt_verbosity=self.root_prompt_verbosity,
+            sub_prompt_verbosity=self.sub_prompt_verbosity,
+            custom_system_prompt=self.custom_system_prompt,
+            pip_install_packages=self.pip_install_packages,
+            expose_message_history=self.expose_message_history,
+            root_max_completion_tokens=self.root_max_completion_tokens,
+            sub_max_completion_tokens=self.sub_max_completion_tokens,
+            sub_llm_max_turns=self.sub_llm_max_turns,
+            root_tool_defs=self.root_tool_defs,
+            sub_tool_defs=self.sub_tool_defs,
+        )
 
     def get_sandbox_request(self, state: State) -> CreateSandboxRequest:
         """Return the sandbox request for this rollout.
@@ -2336,106 +2635,15 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
-        if self.repl_language != "python":
-            return ""
-        if not self.pip_install_packages:
-            return ""
-
-        # Parse package names from pip_install_packages string
-        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
-        if not packages:
-            return ""
-
-        lines = [
-            "\n## Installed Packages\n",
-            "The following Python packages are pre-installed in the REPL environment:\n",
-        ]
-        for pkg in packages:
-            lines.append(f"- `{pkg}`")
-        lines.append("")
-        lines.append("You can import and use these packages directly in your code.\n")
-
-        return "\n".join(lines)
-
-    def _append_tool_docs(self, lines: list[str], tool_defs: list[vf.Tool]) -> None:
-        for tool_def in tool_defs:
-            name = tool_def.name
-            desc = tool_def.description or "No description"
-            params_obj = tool_def.parameters.get("properties", {})
-            params = params_obj if isinstance(params_obj, dict) else {}
-
-            lines.append(f"### `{name}`")
-            lines.append(f"{desc}\n")
-
-            if params:
-                lines.append("**Parameters:**")
-                for param_name, param_info in params.items():
-                    param_dict = (
-                        cast(dict[str, Any], param_info)
-                        if isinstance(param_info, dict)
-                        else {}
-                    )
-                    param_type = param_dict.get("type", "any")
-                    param_desc = param_dict.get("description", "")
-                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
-                lines.append("")
+        return self.prompt_builder.build_packages_documentation()
 
     def _generate_sub_tools_documentation(self) -> str:
         """Generate documentation for sub-agent tools to include in system prompt."""
-        if not self.sub_tools:
-            return ""
-
-        lines = ["\n## Sub-LLM Tools\n"]
-        lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
-        )
-
-        self._append_tool_docs(lines, self.sub_tool_defs)
-
-        lines.append(
-            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
-            "tools autonomously."
-        )
-        lines.append(
-            "You do NOT need to manage tool calls yourself - just describe the task "
-            "in your prompt.\n"
-        )
-
-        return "\n".join(lines)
+        return self.prompt_builder.build_sub_tools_documentation()
 
     def _generate_root_tools_documentation(self) -> str:
         """Generate documentation for root REPL tools to include in system prompt."""
-        if not self.root_tools:
-            return ""
-
-        lines = ["\n## Root REPL Tools\n"]
-        if self.repl_language == "bash":
-            lines.append(
-                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
-            )
-        else:
-            lines.append(
-                "The root model can call the following tools inside the Python REPL:\n"
-            )
-
-        self._append_tool_docs(lines, self.root_tool_defs)
-
-        lines.append(
-            "These tools run on the host and are only accessible from within the REPL."
-        )
-        if self.repl_language == "bash":
-            lines.append(
-                "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
-                'structured args/kwargs, use `tool_name --json \'{"args": [...], '
-                '"kwargs": {...}}\'` or provide the JSON via stdin.'
-            )
-            lines.append(
-                "For `llm_batch`, use positional string prompts or "
-                '`--json \'{"prompts": ["..."]}\'`.'
-            )
-        lines.append("")
-
-        return "\n".join(lines)
+        return self.prompt_builder.build_root_tools_documentation()
 
     def _compute_fs_metadata(
         self, fs_root: str, *, disallow_symlinks: bool = False
@@ -2986,9 +3194,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
         messages_with_system: Messages = [
             SystemMessage(
-                content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
-                    num_turns=self.sub_llm_max_turns
-                )
+                content=RLMPromptBuilder.SUB_LLM_SYSTEM_PROMPT_STORE[
+                    self.sub_prompt_verbosity
+                ].format(num_turns=self.sub_llm_max_turns)
             ),
             *messages,
         ]
@@ -3354,52 +3562,11 @@ class RLMEnv(vf.StatefulToolEnv):
             state["retain_filesystem_after_rollout"] = (
                 self.retain_filesystem_after_rollout
             )
-            if self.custom_system_prompt:
-                base_system_prompt = self.custom_system_prompt
-            elif self.repl_language == "bash":
-                base_system_prompt = _RLM_BASH_SYSTEM_PROMPT_STORE[
-                    self.root_prompt_verbosity
-                ]
-            else:
-                base_system_prompt = _RLM_PYTHON_SYSTEM_PROMPT_STORE[
-                    self.root_prompt_verbosity
-                ]
-
-            packages_docs = self._generate_packages_documentation()
-            root_tools_docs = self._generate_root_tools_documentation()
-            sub_tools_docs = self._generate_sub_tools_documentation()
-            message_history_docs = ""
-            if self.expose_message_history:
-                if self.repl_language == "bash":
-                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_BASH
-                else:
-                    message_history_docs = _RLM_MESSAGE_HISTORY_NOTE_PYTHON
-            root_budget_docs = ""
-            if self.root_max_completion_tokens is not None:
-                root_budget_docs = (
-                    f"\nYou have a total budget of "
-                    f"{self.root_max_completion_tokens} completion tokens "
-                    f"for your own responses across this entire rollout.\n"
-                )
-            sub_budget_docs = ""
-            if self.sub_max_completion_tokens is not None:
-                sub_budget_docs = (
-                    f"\nYou have a total budget of "
-                    f"{self.sub_max_completion_tokens} completion tokens "
-                    f"across all sub-LLM calls via llm_batch().\n"
-                )
-            state["rlm_system_prompt"] = (
-                base_system_prompt
-                + packages_docs
-                + root_tools_docs
-                + sub_tools_docs
-                + root_budget_docs
-                + sub_budget_docs
-                + message_history_docs
-            )
-            state["rlm_packages_docs"] = packages_docs
-            state["rlm_root_tools_docs"] = root_tools_docs
-            state["rlm_sub_tools_docs"] = sub_tools_docs
+            fragments = self.prompt_builder.build_system_prompt_fragments()
+            state["rlm_system_prompt"] = fragments["full"]
+            state["rlm_packages_docs"] = fragments["packages_docs"]
+            state["rlm_root_tools_docs"] = fragments["root_tools_docs"]
+            state["rlm_sub_tools_docs"] = fragments["sub_tools_docs"]
             deduped_shared, _ = _dedupe_tools(
                 self.shared_tools, context="shared tools", reserved_names=set()
             )
@@ -3850,43 +4017,8 @@ class RLMEnv(vf.StatefulToolEnv):
                     raise TypeError(
                         f"Unsupported prompt message type: {type(message).__name__}"
                     )
-            scaffold = (
-                "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
-            )
-            inserted = False
-            for msg in messages:
-                if msg.get("role") != "user":
-                    continue
-                msg_mut = cast(dict[str, Any], msg)
-                content = msg_mut.get("content")
-                if isinstance(content, str) or content is None:
-                    text = content or ""
-                    if text.startswith("<RLM_SCAFFOLDING>"):
-                        inserted = True
-                        break
-                    msg_mut["content"] = scaffold + text
-                elif isinstance(content, list):
-                    if (
-                        content
-                        and isinstance(content[0], dict)
-                        and content[0].get("type") == "text"
-                        and str(content[0].get("text", "")).startswith(
-                            "<RLM_SCAFFOLDING>"
-                        )
-                    ):
-                        inserted = True
-                        break
-                    msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
-                elif isinstance(content, dict):
-                    msg_mut["content"] = [
-                        {"type": "text", "text": scaffold},
-                        content,
-                    ]
-                inserted = True
-                break
-
-            if not inserted:
-                messages.append({"role": "user", "content": scaffold})
+            scaffold = RLMPromptBuilder.wrap_in_scaffolding(system_prompt)
+            RLMPromptBuilder.inject_scaffolding_into_messages(messages, scaffold)
 
             return [from_raw_message(message) for message in messages]
         else:
