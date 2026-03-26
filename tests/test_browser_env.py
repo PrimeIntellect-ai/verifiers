@@ -490,7 +490,7 @@ class TestDOMModeLLMConfig:
 
     @pytest.mark.asyncio
     async def test_create_session_omits_project_id_when_missing(self):
-        """Test Stagehand init omits browserbase_project_id when unset."""
+        """Test Stagehand init passes None for browserbase_project_id when unset."""
         from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
 
         mock_session = MagicMock(id="session-id")
@@ -511,6 +511,7 @@ class TestDOMModeLLMConfig:
         assert session is mock_session
         mock_stagehand_cls.assert_called_once_with(
             browserbase_api_key="bb-api-key",
+            browserbase_project_id=None,
             model_api_key="model-api-key",
         )
 
