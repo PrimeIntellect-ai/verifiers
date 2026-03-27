@@ -58,13 +58,20 @@ def load_prime_config() -> dict:
     return {}
 
 
-def _build_headers_and_api_key(
-    config: ClientConfig,
+def build_prime_headers(
+    api_key_var: str = "PRIME_API_KEY",
 ) -> tuple[dict[str, str], str | None]:
-    headers = dict(config.extra_headers)
-    api_key = os.getenv(config.api_key_var)
+    """Build headers and resolve API key for Prime API calls.
 
-    if config.api_key_var == "PRIME_API_KEY":
+    When api_key_var is "PRIME_API_KEY", loads team context from PRIME_TEAM_ID
+    env var or ~/.prime/config.json and adds X-Prime-Team-ID header for team
+    billing (see client_utils._build_headers_and_api_key for the ClientConfig
+    equivalent used by generation clients).
+    """
+    headers: dict[str, str] = {}
+    api_key = os.getenv(api_key_var)
+
+    if api_key_var == "PRIME_API_KEY":
         prime_config = load_prime_config()
         if not api_key:
             api_key = prime_config.get("api_key", "")
@@ -72,6 +79,14 @@ def _build_headers_and_api_key(
         if team_id:
             headers["X-Prime-Team-ID"] = team_id
 
+    return headers, api_key
+
+
+def _build_headers_and_api_key(
+    config: ClientConfig,
+) -> tuple[dict[str, str], str | None]:
+    extra_headers, api_key = build_prime_headers(config.api_key_var)
+    headers = {**dict(config.extra_headers), **extra_headers}
     return headers, api_key
 
 
