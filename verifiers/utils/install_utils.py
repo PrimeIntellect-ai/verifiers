@@ -200,7 +200,15 @@ def install_from_local(env_name: str, env_dir: str = "./environments") -> bool:
         True if installation succeeded
     """
     env_folder = normalize_package_name(env_name)
-    env_path = Path(env_dir) / env_folder
+    base = Path(env_dir)
+    env_path = base / env_folder
+
+    # Also check one level of subdirectories (e.g. environments/nemo_gym/nemo_mcqa/).
+    if not env_path.exists() and base.is_dir():
+        for subdir in base.iterdir():
+            if subdir.is_dir() and (subdir / env_folder).is_dir():
+                env_path = subdir / env_folder
+                break
 
     if not env_path.exists():
         logger.error(f"Local environment not found: {env_path}")

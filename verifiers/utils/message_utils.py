@@ -111,6 +111,8 @@ def from_raw_message(message: dict) -> Message:
         return TextMessage.model_validate(message)
     elif message["role"] == "system":
         return SystemMessage.model_validate(message)
+    elif message["role"] == "developer":
+        return SystemMessage.model_validate({**message, "role": "system"})
     elif message["role"] == "user":
         return UserMessage.model_validate(message)
     elif message["role"] == "assistant":
