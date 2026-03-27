@@ -452,7 +452,7 @@ env_group = vf.EnvGroup(
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Nested `EnvGroup`s are supported — inner task names are preserved for correct routing. Requesting an unknown task raises `ValueError`.
 
 ---
 
