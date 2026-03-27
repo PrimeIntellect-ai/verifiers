@@ -3692,19 +3692,8 @@ class ViewRunScreen(Screen):
         if not self._log_files:
             return
         items: List[RolloutCopyItem] = []
-        # Current log file first
-        current_path = self._log_files[self._active_log_tab]
-        items.append(
-            RolloutCopyItem(
-                key="current-log",
-                label=f"Log: {_log_tab_label(current_path)}",
-                body=current_path.read_text(encoding="utf-8", errors="replace"),
-            )
-        )
-        # Other log files
+        current_key = f"log-{self._active_log_tab}"
         for idx, path in enumerate(self._log_files):
-            if idx == self._active_log_tab:
-                continue
             items.append(
                 RolloutCopyItem(
                     key=f"log-{idx}",
@@ -3715,7 +3704,7 @@ class ViewRunScreen(Screen):
         self.app.push_screen(
             RolloutCopyScreen(
                 items,
-                start_key="current-log",
+                start_key=current_key,
                 title="Copy Logs",
             )
         )
