@@ -142,6 +142,26 @@ OpenAIChatResponse: TypeAlias = ChatCompletion
 OpenAITool: TypeAlias = ChatCompletionToolParam
 
 
+OPENAI_CHAT_COMPLETIONS_EXTRA_BODY_ARG_NAMES = frozenset({"reasoning"})
+
+
+def normalize_openai_chat_sampling_args(sampling_args: SamplingArgs) -> dict[str, Any]:
+    normalized = dict(sampling_args)
+    if "max_tokens" in normalized:
+        normalized["max_completion_tokens"] = normalized.pop("max_tokens")
+
+    extra_body = dict(normalized.pop("extra_body", {}) or {})
+    for key in OPENAI_CHAT_COMPLETIONS_EXTRA_BODY_ARG_NAMES:
+        if key in normalized:
+            extra_body[key] = normalized.pop(key)
+
+    normalized = {k: v for k, v in normalized.items() if v is not None}
+    extra_body = {k: v for k, v in extra_body.items() if v is not None}
+    if extra_body:
+        normalized["extra_body"] = extra_body
+    return normalized
+
+
 class OpenAIChatCompletionsClient(
     Client[
         AsyncOpenAI,
@@ -248,12 +268,6 @@ class OpenAIChatCompletionsClient(
         tools: list[OpenAITool] | None = None,
         **kwargs,
     ) -> OpenAIChatResponse:
-        def normalize_sampling_args(sampling_args: SamplingArgs):
-            sampling_args = dict(sampling_args)
-            if "max_tokens" in sampling_args:
-                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
-
         # Audio inputs require text-only modality unless explicitly requested.
         has_audio = False
         for message in prompt:
@@ -274,6 +288,7 @@ class OpenAIChatCompletionsClient(
         if has_audio and "modalities" not in sampling_args:
             sampling_args = {**sampling_args, "modalities": ["text"]}
 
+        sampling_args = normalize_openai_chat_sampling_args(sampling_args)
         extra_headers = kwargs.pop("extra_headers", None)
 
         if tools:
@@ -282,14 +297,14 @@ class OpenAIChatCompletionsClient(
                 messages=prompt,
                 tools=tools,
                 extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
+                **sampling_args,
             )
         else:
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=prompt,
                 extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
+                **sampling_args,
             )
         return response
 
