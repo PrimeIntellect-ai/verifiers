@@ -3538,8 +3538,6 @@ class ViewRunScreen(Screen):
                 text.append("\n")
             line = loader.get_line(i)
             if self._log_highlight_regex:
-                plain_line = Text(line)
-                _stylize_matches(plain_line, self._log_highlight_regex, "reverse")
                 _append_styled_log_line(text, line)
                 # Apply highlights on top
                 offset = len(text.plain) - len(line)
