@@ -1,0 +1,17 @@
+[project]
+name = "context-dropping-rlm"
+version = "0.1.0"
+tags = ["rlm", "context-management", "multi-turn"]
+license = "Apache-2.0"
+description = "Tests context dropping in RLMEnv: model must find facts across many files, dropping old context to stay within limits."
+dependencies = [
+    "verifiers>=0.1.12.dev1",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["context_dropping_rlm.py"]
