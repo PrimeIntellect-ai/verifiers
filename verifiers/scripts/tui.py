@@ -2966,6 +2966,24 @@ class ViewRunScreen(Screen):
         Binding("ctrl+c", "copy", show=False),
     ]
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Dynamically show/hide footer bindings based on view mode."""
+        mode = getattr(self, "_view_mode", "rollouts")
+        hide_in_logs = (
+            "expand_all",
+            "collapse_all",
+            "toggle_markdown_math",
+            "show_logs",
+        )
+        hide_in_rollouts = ("show_rollouts",)
+        if mode == "logs":
+            if action in hide_in_logs:
+                return False
+        else:
+            if action in hide_in_rollouts:
+                return False
+        return True
+
     def __init__(self, run: RunInfo):
         super().__init__()
         self.run = run
@@ -3452,6 +3470,7 @@ class ViewRunScreen(Screen):
         self.query_one("#logs-panel", Panel).display = True
         self._populate_logs_view()
         self.query_one("#logs-scroll", LogScrollPane).focus()
+        self.refresh_bindings()
 
     def action_show_rollouts(self) -> None:
         if self._view_mode == "rollouts":
@@ -3460,6 +3479,7 @@ class ViewRunScreen(Screen):
         self.query_one("#logs-panel", Panel).display = False
         self.query_one("#history-panel", Panel).display = True
         self._focus_primary_content()
+        self.refresh_bindings()
 
     def _cycle_log_tab(self, delta: int) -> None:
         if not self._log_files or len(self._log_files) < 2:
