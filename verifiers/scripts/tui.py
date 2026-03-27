@@ -446,9 +446,6 @@ class LazyLogFile:
         self._cache[index] = line
         return line
 
-    def get_range(self, start: int, end: int) -> List[str]:
-        return [self.get_line(i) for i in range(start, min(end, len(self)))]
-
     def __len__(self) -> int:
         return self._ensure_count()
 
@@ -460,10 +457,6 @@ class LazyLogFile:
         if self._eof:
             return False
         return self._read_next_line() is not None
-
-    def all_text(self) -> str:
-        """Read the entire file content (for copy mode)."""
-        return self._path.read_text(encoding="utf-8", errors="replace")
 
 
 # ----------------------------
