@@ -386,6 +386,163 @@ class LazyRunResults:
         return self._count_hint
 
 
+class LazyLogFile:
+    """Lazy loader for log files with line-level random access."""
+
+    MAX_DISPLAY_LINES = 10_000
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._fh = path.open("r", encoding="utf-8", errors="replace")
+        self._offsets: List[int] = []
+        self._cache: Dict[int, str] = {}
+        self._eof = False
+        self._count: Optional[int] = None
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+
+    def _read_next_line(self) -> Optional[str]:
+        if self._eof:
+            return None
+        pos = self._fh.tell()
+        line = self._fh.readline()
+        if not line:
+            self._eof = True
+            self._count = len(self._offsets)
+            return None
+        self._offsets.append(pos)
+        return line
+
+    def _ensure_index(self, index: int) -> bool:
+        if index < 0:
+            return False
+        while len(self._offsets) <= index and not self._eof:
+            if self._read_next_line() is None:
+                break
+        return index < len(self._offsets)
+
+    def _ensure_count(self) -> int:
+        if self._count is not None:
+            return self._count
+        while not self._eof:
+            if self._read_next_line() is None:
+                break
+        self._count = len(self._offsets)
+        return self._count
+
+    def get_line(self, index: int) -> str:
+        if index in self._cache:
+            return self._cache[index]
+        if not self._ensure_index(index):
+            return ""
+        pos = self._fh.tell()
+        try:
+            self._fh.seek(self._offsets[index])
+            line = self._fh.readline().rstrip("\n\r")
+        finally:
+            self._fh.seek(pos)
+        self._cache[index] = line
+        return line
+
+    def get_range(self, start: int, end: int) -> List[str]:
+        return [self.get_line(i) for i in range(start, min(end, len(self)))]
+
+    def __len__(self) -> int:
+        return self._ensure_count()
+
+    def __bool__(self) -> bool:
+        if self._count is not None:
+            return self._count > 0
+        if self._offsets:
+            return True
+        if self._eof:
+            return False
+        return self._read_next_line() is not None
+
+    def all_text(self) -> str:
+        """Read the entire file content (for copy mode)."""
+        return self._path.read_text(encoding="utf-8", errors="replace")
+
+
+# ----------------------------
+# Log styling helpers
+# ----------------------------
+
+_LOG_LEVEL_STYLES: Dict[str, str] = {
+    "DEBUG": "dim blue",
+    "INFO": "bold green",
+    "WARNING": "bold yellow",
+    "ERROR": "bold red",
+    "CRITICAL": "bold red reverse",
+}
+
+
+def _parse_log_header(line: str) -> Optional[Tuple[str, str, str, str]]:
+    """Parse a log line into (timestamp, source, level, message).
+
+    Expected format: '2026-03-03 22:57:21 - source.name - LEVEL ...'
+    """
+    if len(line) < 22 or line[19:22] != " - ":
+        return None
+    rest = line[22:]
+    sep_idx = rest.find(" - ")
+    if sep_idx < 0:
+        return None
+    source = rest[:sep_idx]
+    after_source = rest[sep_idx + 3 :]
+    space_idx = after_source.find(" ")
+    if space_idx < 0:
+        level = after_source
+        message = ""
+    else:
+        level = after_source[:space_idx]
+        message = after_source[space_idx:]
+    if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        return None
+    return line[:19], source, level, message
+
+
+def _append_styled_log_line(log_text: Text, line: str) -> None:
+    """Append a log line to a Text object with colored header parts."""
+    parsed = _parse_log_header(line)
+    if parsed is None:
+        log_text.append(line, style="dim")
+        return
+    timestamp, source, level, message = parsed
+    level_style = _LOG_LEVEL_STYLES.get(level, "dim")
+    log_text.append(timestamp, style="bold dim")
+    log_text.append(" - ", style="dim")
+    log_text.append(source, style="dim cyan")
+    log_text.append(" - ", style="dim")
+    log_text.append(level, style=level_style)
+    log_text.append(message, style="dim")
+
+
+def _log_tab_label(path: Path) -> str:
+    """Derive a display label from a log file path."""
+    stem = path.stem
+    if stem.startswith("env_"):
+        stem = stem[4:]
+    return stem
+
+
+def _discover_log_files(run_path: Path) -> List[Path]:
+    """Find log files in a run directory, sorted with env_server first."""
+    log_files = sorted(run_path.glob("*.log"))
+    # Put env_server.log first, then workers in natural order
+    server_logs = [p for p in log_files if p.name == "env_server.log"]
+    worker_logs = sorted(
+        [p for p in log_files if p.name.startswith("env_worker_")],
+        key=lambda p: (
+            int(p.stem.split("_")[-1]) if p.stem.split("_")[-1].isdigit() else 0
+        ),
+    )
+    other_logs = [p for p in log_files if p not in server_logs and p not in worker_logs]
+    return server_logs + worker_logs + other_logs
+
+
 # ----------------------------
 # Formatting helpers
 # ----------------------------
@@ -1217,6 +1374,33 @@ class TabbedScrollPane(VerticalScroll):
         tc = self._get_tabbed_content()
         if tc is not None:
             tc.query_one(ContentTabs).action_next_tab()
+
+
+class LogScrollPane(VerticalScroll):
+    """A VerticalScroll that switches log file tabs with left/right arrows."""
+
+    BINDINGS = [
+        Binding("left", "prev_log_tab", "Prev log", show=False),
+        Binding("right", "next_log_tab", "Next log", show=False),
+    ]
+
+    def _get_view_run_screen(self) -> Optional["ViewRunScreen"]:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, Screen):
+                return node if isinstance(node, ViewRunScreen) else None
+            node = node.parent
+        return None
+
+    def action_prev_log_tab(self) -> None:
+        screen = self._get_view_run_screen()
+        if screen is not None:
+            screen._cycle_log_tab(-1)
+
+    def action_next_log_tab(self) -> None:
+        screen = self._get_view_run_screen()
+        if screen is not None:
+            screen._cycle_log_tab(1)
 
 
 # ----------------------------
@@ -2771,8 +2955,10 @@ class ViewRunScreen(Screen):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
-        Binding("left,p", "prev_record", "Prev rollout"),
-        Binding("right,n", "next_record", "Next rollout"),
+        Binding("p", "prev_record", "Prev rollout"),
+        Binding("n", "next_record", "Next rollout"),
+        Binding("l", "show_logs", "Logs"),
+        Binding("r", "show_rollouts", "Rollouts"),
         Binding("pageup", "history_page_up", show=False),
         Binding("pagedown", "history_page_down", show=False),
         Binding("home", "history_home", show=False),
@@ -2800,6 +2986,13 @@ class ViewRunScreen(Screen):
         self._highlight_timer = None
         self._previous_animation_level: Optional[AnimationLevel] = None
         self._render_markdown_math = True
+        # Log viewer state
+        self._log_files: List[Path] = _discover_log_files(run.path)
+        self._log_loaders: Dict[int, LazyLogFile] = {}
+        self._active_log_tab: int = 0
+        self._view_mode: Literal["rollouts", "logs"] = "rollouts"
+        self._log_highlight_regex: Optional[re.Pattern] = None
+        self._log_highlight_timer = None
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
@@ -2829,6 +3022,16 @@ class ViewRunScreen(Screen):
                         "", id="history-summary", classes="subtitle", markup=False
                     )
                     yield VerticalScroll(*completion_sections, id="completion-scroll")
+                with Panel(id="logs-panel", classes="logs-panel"):
+                    yield Label(
+                        Text("Logs", style="bold"),
+                        id="logs-header",
+                        classes="column-header",
+                    )
+                    yield Static(
+                        "", id="logs-tab-bar", classes="subtitle", markup=False
+                    )
+                    yield LogScrollPane(id="logs-scroll")
                 with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
@@ -3041,6 +3244,8 @@ class ViewRunScreen(Screen):
 
     def on_unmount(self) -> None:
         self.records.close()
+        for loader in self._log_loaders.values():
+            loader.close()
         if self._previous_animation_level is not None:
             cast(App[Any], self.app).animation_level = self._previous_animation_level
 
@@ -3241,6 +3446,112 @@ class ViewRunScreen(Screen):
         rollout_list.scroll_to_highlight()
         self._set_current_record(new_index)
 
+    # ------ Log viewer ------
+
+    def action_show_logs(self) -> None:
+        if not self._log_files:
+            self.notify("No log files available for this run", severity="warning")
+            return
+        if self._view_mode == "logs":
+            return
+        self._view_mode = "logs"
+        self.query_one("#history-panel", Panel).display = False
+        self.query_one("#logs-panel", Panel).display = True
+        self._populate_logs_view()
+        self.query_one("#logs-scroll", LogScrollPane).focus()
+
+    def action_show_rollouts(self) -> None:
+        if self._view_mode == "rollouts":
+            return
+        self._view_mode = "rollouts"
+        self.query_one("#logs-panel", Panel).display = False
+        self.query_one("#history-panel", Panel).display = True
+        self._focus_primary_content()
+
+    def _cycle_log_tab(self, delta: int) -> None:
+        if not self._log_files or len(self._log_files) < 2:
+            return
+        self._active_log_tab = (self._active_log_tab + delta) % len(self._log_files)
+        self._populate_logs_view()
+
+    def _build_log_tab_bar(self) -> Text:
+        if len(self._log_files) <= 1:
+            return Text()
+        text = Text()
+        for i, path in enumerate(self._log_files):
+            if i > 0:
+                text.append("  ")
+            label = _log_tab_label(path)
+            if i == self._active_log_tab:
+                text.append(f"[{label}]", style="bold")
+            else:
+                text.append(f" {label} ", style="dim")
+        text.append("  ")
+        text.append("(←/→ to switch)", style="dim italic")
+        return text
+
+    def _populate_logs_view(self) -> None:
+        if not self._log_files:
+            self.query_one("#logs-tab-bar", Static).update(
+                Text("No log files available", style="dim")
+            )
+            return
+
+        # Update tab bar
+        self.query_one("#logs-tab-bar", Static).update(self._build_log_tab_bar())
+
+        # Get or create lazy loader
+        if self._active_log_tab not in self._log_loaders:
+            self._log_loaders[self._active_log_tab] = LazyLogFile(
+                self._log_files[self._active_log_tab]
+            )
+        loader = self._log_loaders[self._active_log_tab]
+
+        # Update header
+        log_name = _log_tab_label(self._log_files[self._active_log_tab])
+        line_count = len(loader)
+        self.query_one("#logs-header", Label).update(
+            Text.assemble(
+                ("Logs", "bold"),
+                (f"  {log_name}", "dim"),
+                (f"  ({line_count:,} lines)", "dim"),
+            )
+        )
+
+        # Build log content
+        container = self.query_one("#logs-scroll", LogScrollPane)
+        container.remove_children()
+
+        if line_count == 0:
+            container.mount(Static(Text("(empty log file)", style="dim"), markup=False))
+            return
+
+        text = Text()
+        # Cap display at last MAX_DISPLAY_LINES lines
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        if start > 0:
+            text.append(
+                f"... {start:,} earlier lines not shown ...\n\n", style="dim italic"
+            )
+        for i in range(start, line_count):
+            if i > start:
+                text.append("\n")
+            line = loader.get_line(i)
+            if self._log_highlight_regex:
+                plain_line = Text(line)
+                _stylize_matches(plain_line, self._log_highlight_regex, "reverse")
+                _append_styled_log_line(text, line)
+                # Apply highlights on top
+                offset = len(text.plain) - len(line)
+                for match in self._log_highlight_regex.finditer(line):
+                    text.stylize(
+                        "reverse", offset + match.start(), offset + match.end()
+                    )
+            else:
+                _append_styled_log_line(text, line)
+
+        container.mount(Static(text, markup=False, classes="log-content"))
+
     def _build_search_lines(
         self, record: Dict[str, Any]
     ) -> Tuple[List[Tuple[int, int, str]], List[Tuple[int, int, str]]]:
@@ -3272,6 +3583,9 @@ class ViewRunScreen(Screen):
         return prompt_lines, completion_lines
 
     def action_search(self) -> None:
+        if self._view_mode == "logs":
+            self._search_logs()
+            return
         if not self.records:
             return
         record = self.records[self.current_record_idx]
@@ -3281,7 +3595,46 @@ class ViewRunScreen(Screen):
             self._handle_search_result,
         )
 
+    def _search_logs(self) -> None:
+        if not self._log_files:
+            return
+        if self._active_log_tab not in self._log_loaders:
+            return
+        loader = self._log_loaders[self._active_log_tab]
+        # Build log lines as completion_lines for SearchScreen
+        log_lines: List[Tuple[int, int, str]] = []
+        line_count = len(loader)
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        for i in range(start, line_count):
+            log_lines.append((0, -1, loader.get_line(i)))
+        self.app.push_screen(
+            SearchScreen([], log_lines),
+            self._handle_log_search_result,
+        )
+
+    def _handle_log_search_result(self, result: Optional[SearchResult]) -> None:
+        if self._log_highlight_timer is not None:
+            self._log_highlight_timer.stop()
+            self._log_highlight_timer = None
+        self._log_highlight_regex = None
+        if result is not None:
+            try:
+                self._log_highlight_regex = re.compile(result.pattern, re.IGNORECASE)
+            except re.error:
+                return
+            self._log_highlight_timer = self.set_timer(3.0, self._clear_log_highlight)
+        self._populate_logs_view()
+
+    def _clear_log_highlight(self) -> None:
+        self._log_highlight_regex = None
+        self._log_highlight_timer = None
+        if self._view_mode == "logs":
+            self._populate_logs_view()
+
     def action_copy(self) -> None:
+        if self._view_mode == "logs":
+            self._copy_logs()
+            return
         if not self.records:
             return
         record = self.records[self.current_record_idx]
@@ -3290,6 +3643,38 @@ class ViewRunScreen(Screen):
                 self._build_rollout_copy_items(record),
                 start_key="snapshot",
                 title=f"Copy Rollout #{self.current_record_idx}",
+            )
+        )
+
+    def _copy_logs(self) -> None:
+        if not self._log_files:
+            return
+        items: List[RolloutCopyItem] = []
+        # Current log file first
+        current_path = self._log_files[self._active_log_tab]
+        items.append(
+            RolloutCopyItem(
+                key="current-log",
+                label=f"Log: {_log_tab_label(current_path)}",
+                body=current_path.read_text(encoding="utf-8", errors="replace"),
+            )
+        )
+        # Other log files
+        for idx, path in enumerate(self._log_files):
+            if idx == self._active_log_tab:
+                continue
+            items.append(
+                RolloutCopyItem(
+                    key=f"log-{idx}",
+                    label=f"Log: {_log_tab_label(path)}",
+                    body=path.read_text(encoding="utf-8", errors="replace"),
+                )
+            )
+        self.app.push_screen(
+            RolloutCopyScreen(
+                items,
+                start_key="current-log",
+                title="Copy Logs",
             )
         )
 
@@ -3352,21 +3737,22 @@ class ViewRunScreen(Screen):
             if self.focused is first_candidate:
                 break
 
+    def _center_scroll_target(self) -> VerticalScroll:
+        if self._view_mode == "logs":
+            return self.query_one("#logs-scroll", LogScrollPane)
+        return self.query_one("#completion-scroll", VerticalScroll)
+
     def action_history_page_up(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
-            animate=False
-        )
+        self._center_scroll_target().scroll_page_up(animate=False)
 
     def action_history_page_down(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_page_down(
-            animate=False
-        )
+        self._center_scroll_target().scroll_page_down(animate=False)
 
     def action_history_home(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_home(animate=False)
+        self._center_scroll_target().scroll_home(animate=False)
 
     def action_history_end(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
+        self._center_scroll_target().scroll_end(animate=False)
 
     def _make_body_widget(self, body: str, column: str) -> Widget:
         """Create the appropriate body widget based on render mode."""
@@ -4305,7 +4691,33 @@ class VerifiersTUI(App):
         height: 100%;
         layout: vertical;
     }
-    
+
+    .logs-panel {
+        width: 1fr;
+        height: 100%;
+        layout: vertical;
+        display: none;
+    }
+
+    #logs-scroll {
+        layout: vertical;
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-size-vertical: 2;
+        scrollbar-color: $primary 40%;
+        scrollbar-color-hover: $primary 70%;
+        scrollbar-color-active: $accent;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-corner-color: $panel;
+    }
+
+    #logs-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
     .column-header {
         height: auto;
         margin-bottom: 0;
