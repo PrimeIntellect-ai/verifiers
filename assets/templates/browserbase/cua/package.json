@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
+    "test": "node --import tsx --test tests/*.test.mjs",
     "build:binary": "bash scripts/build-binary.sh",
     "build:binary:docker": "docker build --platform linux/amd64 -f Dockerfile.build -t cua-builder . && docker run --rm --platform linux/amd64 -v $(pwd)/dist:/output cua-builder"
   },
@@ -24,4 +25,3 @@
   },
   "packageManager": "pnpm@9.15.0"
 }
-

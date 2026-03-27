@@ -66,6 +66,8 @@ npm install @browserbasehq/stagehand fastify
 |----------|---------|-------------|
 | `CUA_SERVER_PORT` | `3000` | Server port |
 | `CUA_SERVER_HOST` | `0.0.0.0` | Server host |
+| `CUA_SESSION_CREATE_MAX_CONCURRENT` | `2` | Max concurrent session-create inits |
+| `CUA_SESSION_CREATE_MAX_PENDING` | `200` | Max queued session-create requests before 503 |
 
 ## API Endpoints
 
@@ -271,4 +273,3 @@ cua-server/
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file
 ```
-

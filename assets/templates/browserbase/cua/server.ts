@@ -1,5 +1,5 @@
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { sessionManager } from "./sessionManager";
+import { SessionCreateError, sessionManager } from "./sessionManager";
 import { executeAction } from "./actionExecutor";
 import { captureBrowserState } from "./stateCapture";
 import {
@@ -9,6 +9,79 @@ import {
   SessionCreateResponse,
   ErrorResponse,
 } from "./types";
+import { ActionValidationError } from "./actionExecutor";
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("status code 429") ||
+    message.includes("http 429")
+  );
+}
+
+function isTimeoutError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("etimedout")
+  );
+}
+
+function buildErrorResponse(
+  error: unknown,
+  fallbackCode: string,
+): { statusCode: number; body: ErrorResponse } {
+  if (error instanceof ActionValidationError) {
+    return {
+      statusCode: 400,
+      body: {
+        error: error.message,
+        code: error.code,
+        retryable: false,
+        details: error.details,
+      },
+    };
+  }
+
+  const errorMessage = getErrorMessage(error);
+  if (isRateLimitError(error)) {
+    return {
+      statusCode: 429,
+      body: {
+        error: errorMessage,
+        code: "RATE_LIMITED",
+        retryable: true,
+      },
+    };
+  }
+
+  if (isTimeoutError(error)) {
+    return {
+      statusCode: 504,
+      body: {
+        error: errorMessage,
+        code: `${fallbackCode}_TIMEOUT`,
+        retryable: true,
+      },
+    };
+  }
+
+  return {
+    statusCode: 500,
+    body: {
+      error: errorMessage,
+      code: fallbackCode,
+      retryable: false,
+    },
+  };
+}
 
 /**
  * Create and configure the Fastify server with CUA primitive routes
@@ -46,9 +119,18 @@ export function createServer(): FastifyInstance {
         state,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      reply.status(500);
-      return { error: errorMessage, code: "SESSION_CREATE_FAILED" };
+      if (error instanceof SessionCreateError) {
+        reply.status(error.statusCode);
+        return {
+          error: error.message,
+          code: error.code,
+          retryable: error.retryable,
+          statusCode: error.statusCode,
+        };
+      }
+      const { statusCode, body } = buildErrorResponse(error, "SESSION_CREATE_FAILED");
+      reply.status(statusCode);
+      return body;
     }
   });
 
@@ -140,8 +222,6 @@ export function createServer(): FastifyInstance {
         state,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
       // Try to capture state even on error
       let state;
       try {
@@ -154,15 +234,12 @@ export function createServer(): FastifyInstance {
         };
       }
 
-      reply.status(500);
-      return {
-        success: false,
-        error: errorMessage,
-        state,
-      };
+      const { statusCode, body } = buildErrorResponse(error, "ACTION_EXECUTION_FAILED");
+      body.state = state;
+      reply.status(statusCode);
+      return body;
     }
   });
 
   return server;
 }
-
