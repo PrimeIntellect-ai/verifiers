@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from openai import AsyncOpenAI
 
+from verifiers.utils.config_utils import ensure_keys
+
 from verifiers.synth.prompts import (
     BACKTRANSLATE_PROMPT,
     FILTER_JUDGE_PROMPT,
@@ -141,6 +143,7 @@ class SynthDataBuilder:
             filter_threshold=filter_threshold,
             filter_ceiling=filter_ceiling,
         )
+        self._validate_keys(config)
         normalized = self._resolve_seeds(seeds)
         logger.info("Normalized %d seeds", len(normalized))
 
@@ -157,6 +160,15 @@ class SynthDataBuilder:
 
         stats = self._compute_stats(raw, filtered, config)
         return BuildResult(raw_samples=raw, filtered_samples=filtered, stats=stats)
+
+    @staticmethod
+    def _validate_keys(config: SynthConfig) -> None:
+        """Fail fast if required API keys are missing."""
+        needed: set[str] = set()
+        for model_str in (config.generator_model, config.filter_model):
+            provider, _ = _parse_model(model_str)
+            needed.add(PROVIDER_CONFIGS[provider]["key"])
+        ensure_keys(sorted(needed))
 
     # ------------------------------------------------------------------
     # Seed resolution & normalization
