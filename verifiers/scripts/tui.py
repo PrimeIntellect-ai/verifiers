@@ -3624,6 +3624,48 @@ class ViewRunScreen(Screen):
                 return
             self._log_highlight_timer = self.set_timer(3.0, self._clear_log_highlight)
         self._populate_logs_view()
+        if result is not None and self._log_highlight_regex is not None:
+            self._scroll_to_first_log_match()
+
+    def _scroll_to_first_log_match(self) -> None:
+        """Scroll the logs panel so the first matching line is visible."""
+        if (
+            self._active_log_tab not in self._log_loaders
+            or not self._log_highlight_regex
+        ):
+            return
+        loader = self._log_loaders[self._active_log_tab]
+        line_count = len(loader)
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        # Find the first matching line index (relative to displayed range)
+        first_match_display_idx: Optional[int] = None
+        for i in range(start, line_count):
+            if self._log_highlight_regex.search(loader.get_line(i)):
+                first_match_display_idx = i - start
+                break
+        if first_match_display_idx is None:
+            return
+        # Account for the "... N earlier lines not shown ..." header (2 lines)
+        offset_lines = 2 if start > 0 else 0
+        target_line = first_match_display_idx + offset_lines
+        container = self.query_one("#logs-scroll", LogScrollPane)
+
+        def _do_scroll() -> None:
+            # Estimate scroll position: each log line is roughly 1 row of height
+            # in the Static widget. We scroll to a Y offset proportional to the
+            # target line relative to total content height.
+            content_height = container.virtual_size.height
+            visible_height = container.size.height
+            total_lines = (line_count - start) + offset_lines
+            if total_lines <= 0 or content_height <= visible_height:
+                return
+            fraction = target_line / total_lines
+            target_y = int(fraction * content_height)
+            # Center the match in the viewport
+            target_y = max(0, target_y - visible_height // 2)
+            container.scroll_to(y=target_y, animate=False)
+
+        self.call_after_refresh(_do_scroll)
 
     def _clear_log_highlight(self) -> None:
         self._log_highlight_regex = None
