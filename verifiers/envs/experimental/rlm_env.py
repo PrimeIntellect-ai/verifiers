@@ -2647,21 +2647,40 @@ class RLMEnv(vf.StatefulToolEnv):
         self, state: State, n_turns: int, summary: str
     ) -> str:
         """Core logic for the remove_conversation_turns root tool."""
-        current_main_turns = self._main_turn_count(state)
+        rid = state.get("rollout_id", "?")
+        main_turn = self._main_turn_count(state)
         keep_from = state.get("_keep_from_assistant_index", 0)
-        visible_turns = current_main_turns - keep_from
+        visible_turns = main_turn - keep_from
         max_droppable = max(0, visible_turns - self.min_turns_in_context)
 
         if n_turns == -1:
             n_turns = max_droppable
 
         if n_turns <= 0:
+            logger.debug(
+                "[%s] main turn %d: context drop: nothing to drop "
+                "(n_turns=%d, %d visible)",
+                rid,
+                main_turn,
+                n_turns,
+                visible_turns,
+            )
             return (
                 f"Nothing to drop (n_turns={n_turns}). "
                 f"Currently {visible_turns} turn(s) visible in context."
             )
 
         if n_turns > max_droppable:
+            logger.warning(
+                "[%s] main turn %d: context drop rejected: requested %d turn(s) "
+                "but max droppable is %d (%d visible, min=%d)",
+                rid,
+                main_turn,
+                n_turns,
+                max_droppable,
+                visible_turns,
+                self.min_turns_in_context,
+            )
             return (
                 f"Cannot drop {n_turns} turn(s). "
                 f"You have {visible_turns} turn(s) visible in context and "
@@ -2673,6 +2692,18 @@ class RLMEnv(vf.StatefulToolEnv):
         state["_dropped_turns_count"] = state.get("_dropped_turns_count", 0) + n_turns
         state["_drop_sequence"] = state.get("_drop_sequence", 0) + 1
         new_visible = visible_turns - n_turns
+
+        logger.debug(
+            "[%s] main turn %d: context drop: %d turn(s) dropped "
+            "(%d visible -> %d visible, keep_from=%d, summary=%s)",
+            rid,
+            main_turn,
+            n_turns,
+            visible_turns,
+            new_visible,
+            state["_keep_from_assistant_index"],
+            "yes" if summary.strip() else "no",
+        )
 
         # Update context dropping metrics
         _ensure_rlm_metric_state(state)
@@ -2686,7 +2717,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         at_turns: list[int] = state["_context_drop_at_main_turns"]
-        at_turns.append(current_main_turns)
+        at_turns.append(main_turn)
         if len(at_turns) >= 2:
             gaps = [at_turns[i] - at_turns[i - 1] for i in range(1, len(at_turns))]
             state["context_drop_mean_turns_between"] = sum(gaps) / len(gaps)
