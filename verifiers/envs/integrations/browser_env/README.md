@@ -32,7 +32,7 @@ When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]
 | Variable | Required | Notes |
 | -------- | -------- | ----- |
 | `BROWSERBASE_API_KEY` | Yes | Browserbase API key |
-| `BROWSERBASE_PROJECT_ID` | Yes | Browserbase project id |
+| `BROWSERBASE_PROJECT_ID` | No | Optional Browserbase project id. If omitted, Browserbase uses the account default project |
 | `MODEL_API_KEY` | DOM only | Stagehand’s LLM, unless `proxy_model_to_stagehand=True` (then the rollout client supplies the key) |
 | `OPENAI_API_KEY` (or your judge provider) | If you use `JudgeRubric` / LLM judges | Not used by `BrowserEnv` itself |
 
@@ -44,7 +44,7 @@ Shell exports for local runs (e.g. `prime eval run`):
 
 ```bash
 export BROWSERBASE_API_KEY="your-api-key"
-export BROWSERBASE_PROJECT_ID="your-project-id"
+# Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
 ```
 
 For DOM mode (default Stagehand routing), also:

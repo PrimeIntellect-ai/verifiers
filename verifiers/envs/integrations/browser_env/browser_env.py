@@ -89,7 +89,8 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         Args:
             mode: Operating mode - "dom" for natural language or "cua" for vision-based
-            project_id: Browserbase project ID
+            project_id: Optional Browserbase project ID. If omitted, Browserbase
+                uses the account default project.
             browserbase_api_key_var: Env var name for Browserbase API key (default: BROWSERBASE_API_KEY)
             model_api_key_var: Env var name for model API key (default: MODEL_API_KEY)
             stagehand_model: Model for Stagehand in DOM mode (default: openai/gpt-4o-mini)
@@ -123,13 +124,13 @@ class BrowserEnv(vf.StatefulToolEnv):
             **kwargs,
         )
         self.mode = mode
-        browserbase_api_key = os.getenv(browserbase_api_key_var)
-        model_api_key = os.getenv(model_api_key_var)
+        resolved_browserbase_api_key = os.getenv(browserbase_api_key_var)
+        resolved_model_api_key = os.getenv(model_api_key_var)
         if mode == "dom":
             self._mode_impl: BrowserMode = DOMMode(
-                browserbase_api_key=browserbase_api_key,
+                browserbase_api_key=resolved_browserbase_api_key,
                 project_id=project_id,
-                model_api_key=model_api_key,
+                model_api_key=resolved_model_api_key,
                 stagehand_model=stagehand_model,
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
                 proxies=proxies,
@@ -141,7 +142,7 @@ class BrowserEnv(vf.StatefulToolEnv):
                 server_url=server_url,
                 server_port=server_port,
                 env=env,
-                browserbase_api_key=browserbase_api_key,
+                browserbase_api_key=resolved_browserbase_api_key,
                 browserbase_project_id=project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
