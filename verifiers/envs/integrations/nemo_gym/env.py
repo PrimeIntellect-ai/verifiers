@@ -13,7 +13,7 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import RolloutInput, SamplingArgs, State
 
-from .utils import _map_nemo_result_to_state, _resolve_agent_name, _reward_from_nemo
+from .utils import _map_nemo_gym_result_to_state, _resolve_agent_name, _reward_from_nemo_gym
 
 
 class NemoGymEnv(vf.Environment):
@@ -51,7 +51,7 @@ class NemoGymEnv(vf.Environment):
 
         super().__init__(
             dataset=dataset,
-            rubric=rubric or vf.Rubric(funcs=[_reward_from_nemo], weights=[1.0]),
+            rubric=rubric or vf.Rubric(funcs=[_reward_from_nemo_gym], weights=[1.0]),
             system_prompt=system_prompt,
             message_type="chat",
             **kwargs,
@@ -197,7 +197,7 @@ class NemoGymEnv(vf.Environment):
                 return None
 
             future = asyncio.run_coroutine_threadsafe(_run(), self._bg_loop)
-            nemo_result = await asyncio.get_running_loop().run_in_executor(
+            nemo_gym_result = await asyncio.get_running_loop().run_in_executor(
                 None, future.result
             )
 
@@ -211,7 +211,7 @@ class NemoGymEnv(vf.Environment):
             _fill_timing(state, start_time)
             return state
 
-        _map_nemo_result_to_state(state, nemo_result, model)
+        _map_nemo_gym_result_to_state(state, nemo_gym_result, model)
         state["stop_condition"] = "has_error" if state.get("error") else "completed"
         state["is_completed"] = True
         _fill_timing(state, start_time)

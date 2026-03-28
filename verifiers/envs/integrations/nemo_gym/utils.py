@@ -144,8 +144,8 @@ def _resolve_agent_name(gym_config_path: str) -> str:
     )
 
 
-def _reward_from_nemo(state: State, **kwargs: Any) -> float:
-    return float(state.get("nemo_reward", 0.0) or 0.0)
+def _reward_from_nemo_gym(state: State, **kwargs: Any) -> float:
+    return float(state.get("nemo_gym_reward", 0.0) or 0.0)
 
 
 def _nemo_item_to_assistant_message(item: dict[str, Any]) -> AssistantMessage:
@@ -171,7 +171,7 @@ def _nemo_item_to_assistant_message(item: dict[str, Any]) -> AssistantMessage:
     return AssistantMessage(role="assistant", content=str(item))
 
 
-def _make_synthetic_response(
+def _make_response(
     msg: AssistantMessage,
     model: str,
     gen_ids: list[int],
@@ -187,7 +187,7 @@ def _make_synthetic_response(
         routed_experts=None,
     )
     return Response(
-        id=f"nemo-{uuid.uuid4().hex[:8]}",
+        id=f"nemo_gym-{uuid.uuid4().hex[:8]}",
         created=int(time.time()),
         model=model,
         usage=None,
@@ -240,7 +240,7 @@ def _build_trajectory_from_nemo(
         trajectory.append({
             "prompt": step_prompt,
             "completion": [assistant_msg],
-            "response": _make_synthetic_response(
+            "response": _make_response(
                 assistant_msg, model, gen_ids, logprobs, prompt_ids
             ),
             "tokens": {
@@ -263,27 +263,27 @@ def _build_trajectory_from_nemo(
     return trajectory, completion_messages
 
 
-def _map_nemo_result_to_state(state: State, nemo_result: Any, model: str) -> None:
+def _map_nemo_gym_result_to_state(state: State, nemo_gym_result: Any, model: str) -> None:
     import verifiers as vf
 
-    if not isinstance(nemo_result, dict) or nemo_result.get("error"):
+    if not isinstance(nemo_gym_result, dict) or nemo_gym_result.get("error"):
         error_detail = (
-            nemo_result.get("error", "unknown error")
-            if isinstance(nemo_result, dict)
-            else repr(nemo_result)
+            nemo_gym_result.get("error", "unknown error")
+            if isinstance(nemo_gym_result, dict)
+            else repr(nemo_gym_result)
         )
         state["error"] = vf.InfraError(
             f"NeMo Gym agent server rollout failed: {error_detail}"
         )
-        state["nemo_reward"] = 0.0
+        state["nemo_gym_reward"] = 0.0
         state["completion"] = []
         return
 
-    state["nemo_reward"] = float(nemo_result.get("reward", 0.0) or 0.0)
-    state["nemo_result"] = nemo_result
+    state["nemo_gym_reward"] = float(nemo_gym_result.get("reward", 0.0) or 0.0)
+    state["nemo_gym_result"] = nemo_gym_result
 
     output_items: list[dict[str, Any]] = (
-        nemo_result.get("response") or {}
+        nemo_gym_result.get("response") or {}
     ).get("output") or []
 
     trajectory, completion_messages = _build_trajectory_from_nemo(
