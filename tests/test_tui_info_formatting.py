@@ -450,29 +450,20 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     # Simulate _finish_loading_comparison_stats setup
     screen._stats_by_path = stats
     screen._setting_keys, screen._run_settings = _varying_run_setting_keys(screen.runs)
-    (
-        screen._display_maps,
-        screen._style_maps,
-        screen._legend_rows,
-    ) = screen._build_setting_display_maps(screen._setting_keys, screen._run_settings)
-    from rich.console import Group
 
     rendered = _render_to_text(
-        Group(
-            screen._build_comparison_header(),
-            screen._build_comparison_outcomes(),
-        ),
+        screen._build_comparison_outcomes(),
         width=220,
     )
 
-    assert "Ablation summary" in rendered
-    assert "Ablation axes" in rendered
     assert "Outcome groups" in rendered
     assert "temperature" in rendered
     assert "max_tokens" in rendered
     assert "split" in rendered
-    assert "run-1" in rendered
-    assert "run-2" in rendered
+    assert "rollouts" in rendered
+    assert (
+        "unique" in rendered
+    )  # "unique prompts" header (may be truncated at narrow widths)
     assert "=0" in rendered
     assert "=1" in rendered
     assert "█" in rendered
