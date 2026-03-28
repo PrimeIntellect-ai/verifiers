@@ -1,6 +1,6 @@
 [project]
 name = "nemo-gym-arc-agi"
-description = "NeMo Gym arc_agi environment"
+description = "NeMo Gym ARC AGI 1 and 2 environment"
 tags = ["nemo-gym", "knowledge", "single-turn"]
 version = "0.1.0"
 requires-python = ">=3.12"

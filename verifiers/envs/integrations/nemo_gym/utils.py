@@ -121,12 +121,13 @@ def _build_dataset(
     return Dataset.from_list(dataset_rows), path
 
 
-def _resolve_gym_config(resources_server: str) -> str:
+def _resolve_gym_config(resources_server: str, config_name: str | None = None) -> str:
     root = _resolve_resources_servers_root()
-    path = root / resources_server / "configs" / f"{resources_server}.yaml"
+    name = config_name or resources_server
+    path = root / resources_server / "configs" / f"{name}.yaml"
     if not path.exists():
         raise FileNotFoundError(
-            f"Could not find NeMo Gym config for '{resources_server}': {path}"
+            f"Could not find NeMo Gym config for '{resources_server}/{name}': {path}"
         )
     return str(path)
 

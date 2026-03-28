@@ -1,7 +1,7 @@
 [project]
-name = "nemo-gym-workplace-assistant"
-description = "NeMo Gym workplace assistant environment"
-tags = ["nemo-gym", "agent", "tools", "multi-turn"]
+name = "nemo-gym-xlam_fc"
+description = "NeMo Gym xlam function calling environment"
+tags = ["nemo-gym"]
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,7 +14,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["nemo_gym_workplace_assistant.py", "pyproject.toml"]
+include = ["nemo_gym_xlam_fc.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
 num_examples = 5
