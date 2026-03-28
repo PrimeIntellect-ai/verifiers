@@ -1,0 +1,16 @@
+[project]
+name = "livecodebench"
+version = "0.1.0"
+dependencies = [
+    "verifiers>=0.1.0",
+    "docker>=6.0.0",
+    "datasets>=2.14.0",
+    "requests>=2.28.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["livecodebench.py"]
