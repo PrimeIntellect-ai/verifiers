@@ -1,259 +1,215 @@
-"""TaskSpec and TaskSet — WHAT to solve.
+"""Task and TaskSet — WHAT to solve.
 
-Overview
---------
+A **Task** is a single, fully self-contained problem instance.  It knows
+its prompt, its docker image, how to set up a sandbox, and how to
+evaluate a solution.  No arguments needed — everything is bound.
 
-A **TaskSpec** defines the shared behavior for a problem type: docker image,
-sandbox setup, prompt construction, and evaluation logic.  You write one
-TaskSpec per domain (e.g. ``R2EGymTask``, ``LeanTask``, ``MathTask``).
+A **TaskSet** is a collection of Tasks backed by an HF Dataset.
+It defines the shared behavior (image resolution, setup, evaluation)
+and produces fully-bound Task instances.
 
-A **TaskSet** is a collection of problem instances backed by a TaskSpec.
-This is what you hand to ``ComposableEnv`` or a training loop.
-
-Quick start::
+::
 
     from swe_tasksets import R2ETaskSet
-    from lean_tasksets import LeanTaskSet
 
-    # Create tasksets
-    swe = R2ETaskSet()                          # 4578 SWE instances
-    lean = LeanTaskSet("minif2f")               # 244 Lean theorems
+    taskset = R2ETaskSet()               # 4578 tasks
+    task = taskset[0]                     # one fully-bound task
+    task.prompt                           # the problem statement
+    task.image                            # docker image for THIS instance
+    await task.setup(sandbox_client, sandbox_id)
+    await task.evaluate(sandbox_client, sandbox_id, state)
 
-    # Access individual tasks
-    task = swe[0]                               # one Task instance
-    task.prompt                                 # the problem statement
-    task.info                                   # metadata
-    task.get_image()                            # docker image for this instance
+    # Slice, filter, validate
+    small = taskset.take(50)
+    results = await taskset.validate(concurrency=5)
 
-    # Slice them
-    small = swe.take(50)                        # first 50
-    filtered = swe.filter(lambda ex: ...)       # custom filter
+To create a new task type, subclass TaskSet::
 
-    # Validate (are the gold solutions correct?)
-    results = await swe.take(10).validate_taskset(concurrency=5)
-    # → [{index: 0, valid: True, elapsed: 12.0}, ...]
+    class MyTaskSet(TaskSet):
+        needs_sandbox = True
 
-    # Train with an agent
-    env = ComposableEnv(taskset=swe, run_command="opencode run ...")
-
-TaskSpec protocol
------------------
-
-To create a new task type, implement these methods::
-
-    class MyTaskSpec:
-        needs_sandbox = True  # False for pure-LLM tasks (math, QA)
-
-        def get_prompt(self, info: dict) -> Messages:
-            '''What the agent sees.'''
-
-        def get_image(self, info: dict) -> str:
-            '''Docker image for this instance.'''
-
-        def get_workdir(self, info: dict) -> str:
-            '''Working directory inside the sandbox.'''
-
-        def get_env_vars(self) -> dict[str, str]:
-            '''Environment variables for the sandbox.'''
-
-        async def setup(self, sandbox_client, sandbox_id, state) -> None:
-            '''Prepare the sandbox (install deps, write files, etc).'''
-
-        async def evaluate(self, sandbox_client, sandbox_id, state) -> float:
-            '''Score the result (run tests, check answer, etc). Returns 0.0-1.0.'''
-
-        async def validate(self, sandbox_client, sandbox_id, state) -> bool:
-            '''Verify this instance is solvable (apply gold solution, evaluate).'''
-
-        def get_extra_tools(self) -> list:
-            '''Domain-specific tools (e.g. compile_proof for Lean).'''
-
-TaskSet
--------
-
-A TaskSet wraps a TaskSpec + an HF Dataset::
-
-    taskset = TaskSet(spec=my_spec, dataset=my_dataset, name="my-tasks")
-
-    len(taskset)                    # number of instances
-    taskset.get_dataset()           # the HF Dataset
-    taskset.spec                    # the TaskSpec
-
-    # Combinators
-    taskset.take(100)               # first 100 instances
-    taskset.filter(predicate)       # filter by predicate
-
-    # Validation
-    await taskset.validate_taskset(n=10, concurrency=5)
+        def _get_prompt(self, info: dict) -> Messages: ...
+        def _get_image(self, info: dict) -> str: ...
+        def _get_workdir(self, info: dict) -> str: ...
+        def _get_env_vars(self) -> dict[str, str]: ...
+        async def _setup(self, sandbox_client, sandbox_id, state) -> None: ...
+        async def _evaluate(self, sandbox_client, sandbox_id, state) -> float: ...
+        async def _validate(self, sandbox_client, sandbox_id, state) -> bool: ...
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable
 
 from verifiers.types import Messages, State
 
 
-
-
-@runtime_checkable
-class TaskSpec(Protocol):
-    """Protocol defining HOW to handle a problem type.
-
-    Implementations provide the per-instance docker image, sandbox
-    preparation, prompt construction, and evaluation logic.
-    One TaskSpec per domain (R2EGymTask, LeanTask, etc.).
-    """
-
-    needs_sandbox: bool
-
-    def get_prompt(self, info: dict) -> Messages: ...
-    def get_image(self, info: dict) -> str: ...
-    def get_workdir(self, info: dict) -> str: ...
-    def get_env_vars(self) -> dict[str, str]: ...
-    async def setup(
-        self, sandbox_client: Any, sandbox_id: str, state: State
-    ) -> None: ...
-    async def evaluate(
-        self, sandbox_client: Any, sandbox_id: str, state: State
-    ) -> float | dict[str, float]: ...
-    def get_extra_tools(self) -> list: ...
-
-    async def validate(
-        self, sandbox_client: Any, sandbox_id: str, state: State
-    ) -> bool:
-        """Verify this instance is solvable.
-
-        Applies the known-correct solution and checks that evaluation
-        passes.  Domain-specific: SWE applies the gold patch and runs
-        tests, Lean compiles the ground-truth proof, Harbor runs solve.sh.
-        Returns True if the instance is valid, False if broken.
-        Tasks without a gold solution should return True (assume valid).
-        """
-        ...
-
-
-
-
 class Task:
-    """A single problem instance: data + a reference to its TaskSpec.
+    """A single, fully-bound problem instance.
 
-    Usually created via ``TaskSet[i]`` rather than directly::
+    All methods are pre-bound to this instance's data — no ``info`` arg needed.
 
-        taskset = R2ETaskSet()
+    Created via ``TaskSet[i]``, not directly::
+
         task = taskset[0]
-        task.prompt          # Messages
-        task.info            # metadata dict
-        task.spec            # the TaskSpec that handles this type
-        task.get_image()     # delegates to spec
+        task.prompt         # Messages
+        task.image          # docker image string
+        task.info           # raw metadata dict
+        task.answer         # ground truth (if available)
     """
 
-    def __init__(self, spec: TaskSpec, prompt: Messages, info: dict, answer: str = ""):
-        self.spec = spec
+    def __init__(
+        self,
+        taskset: TaskSet,
+        prompt: Messages,
+        info: dict,
+        answer: str = "",
+    ):
+        self._taskset = taskset
         self.prompt = prompt
         self.info = info
         self.answer = answer
 
-    def get_image(self) -> str:
-        return self.spec.get_image(self.info)
+    @property
+    def image(self) -> str:
+        return self._taskset._get_image(self.info)
 
-    def get_workdir(self) -> str:
-        return self.spec.get_workdir(self.info)
+    @property
+    def workdir(self) -> str:
+        return self._taskset._get_workdir(self.info)
+
+    async def setup(self, sandbox_client: Any, sandbox_id: str, state: State | None = None) -> None:
+        s = state if state is not None else {"info": self.info}
+        return await self._taskset._setup(sandbox_client, sandbox_id, s)
+
+    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State | None = None) -> float:
+        s = state if state is not None else {"info": self.info}
+        return await self._taskset._evaluate(sandbox_client, sandbox_id, s)
+
+    async def validate(self, sandbox_client: Any, sandbox_id: str, state: State | None = None) -> bool:
+        s = state if state is not None else {"info": self.info}
+        return await self._taskset._validate(sandbox_client, sandbox_id, s)
 
     def __repr__(self) -> str:
-        return (
-            f"Task(spec={type(self.spec).__name__}, info_keys={list(self.info.keys())})"
-        )
-
-
+        return f"Task(taskset={self._taskset.name!r}, info_keys={list(self.info.keys())})"
 
 
 class TaskSet:
-    """A collection of Tasks backed by a ``TaskSpec``.
+    """A collection of Tasks with shared behavior.
 
-    Each row in the dataset is one Task (one problem instance).
-    The TaskSpec provides the shared behavior (image, setup, evaluate).
+    Subclass this to create a new task type.  Override the ``_``-prefixed
+    methods to define how tasks are handled.  The public API (used by
+    ComposableEnv) delegates to these.
+
+    Parameters
+    ----------
+    dataset:
+        An HF ``Dataset`` with at least ``info`` and ``answer`` columns.
+    name:
+        Human-readable name for this task set.
     """
 
-    def __init__(self, spec: TaskSpec, dataset: Any, name: str = ""):
-        self.spec = spec
+    needs_sandbox: bool = True
+
+    def __init__(self, dataset: Any, name: str = ""):
         self._dataset = dataset
         self.name = name
 
-    @property
-    def needs_sandbox(self) -> bool:
-        return getattr(self.spec, "needs_sandbox", True)
+    # -- Override these in subclasses ----------------------------------------
+
+    def _get_prompt(self, info: dict) -> Messages:
+        raise NotImplementedError
+
+    def _get_image(self, info: dict) -> str:
+        raise NotImplementedError
+
+    def _get_workdir(self, info: dict) -> str:
+        return "/app"
+
+    def _get_env_vars(self) -> dict[str, str]:
+        return {}
+
+    async def _setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
+        pass
+
+    async def _evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float:
+        return 0.0
+
+    async def _validate(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+        return True
+
+    def _get_extra_tools(self) -> list:
+        return []
+
+    # -- Public API (used by ComposableEnv) ----------------------------------
 
     def get_dataset(self) -> Any:
-        """Return the underlying HF Dataset."""
         return self._dataset
 
     def __len__(self) -> int:
         return len(self._dataset)
 
     def __iter__(self):
-        """Iterate over Tasks in the set."""
         for i in range(len(self)):
             yield self[i]
 
     def __getitem__(self, i: int) -> Task:
-        """Return the i-th Task instance."""
         row = self._dataset[i]
-        prompt = self.spec.get_prompt(row.get("info") or {})
+        info = row.get("info") or {}
         return Task(
-            spec=self.spec,
-            prompt=prompt,
-            info=row.get("info") or {},
+            taskset=self,
+            prompt=self._get_prompt(info),
+            info=info,
             answer=row.get("answer", ""),
         )
 
-    # -- TaskSpec delegation ------------------------------------------------
+    # -- Delegators for ComposableEnv (pass info from state) -----------------
 
     def get_prompt(self, info: dict) -> Messages:
-        return self.spec.get_prompt(info)
+        return self._get_prompt(info)
 
     def get_image(self, info: dict) -> str:
-        return self.spec.get_image(info)
+        return self._get_image(info)
 
     def get_workdir(self, info: dict) -> str:
-        return self.spec.get_workdir(info)
+        return self._get_workdir(info)
 
     def get_env_vars(self) -> dict[str, str]:
-        return self.spec.get_env_vars()
+        return self._get_env_vars()
 
     def get_extra_tools(self) -> list:
-        if hasattr(self.spec, "get_extra_tools"):
-            return self.spec.get_extra_tools() or []
-        return []
+        return self._get_extra_tools()
 
     async def setup(self, sandbox_client: Any, sandbox_id: str, state: State) -> None:
-        return await self.spec.setup(sandbox_client, sandbox_id, state)
+        return await self._setup(sandbox_client, sandbox_id, state)
 
-    async def evaluate(
-        self, sandbox_client: Any, sandbox_id: str, state: State
-    ) -> float | dict[str, float]:
-        return await self.spec.evaluate(sandbox_client, sandbox_id, state)
+    async def evaluate(self, sandbox_client: Any, sandbox_id: str, state: State) -> float:
+        return await self._evaluate(sandbox_client, sandbox_id, state)
 
-    async def validate(
-        self, sandbox_client: Any, sandbox_id: str, state: State
-    ) -> bool:
-        return await self.spec.validate(sandbox_client, sandbox_id, state)
+    async def validate_instance(self, sandbox_client: Any, sandbox_id: str, state: State) -> bool:
+        return await self._validate(sandbox_client, sandbox_id, state)
 
     # -- Combinators --------------------------------------------------------
 
     def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
-        """Return a new TaskSet with only examples matching *predicate*."""
         filtered = self._dataset.filter(predicate)
-        return TaskSet(spec=self.spec, dataset=filtered, name=self.name)
+        new = self._clone(filtered)
+        return new
 
     def take(self, n: int) -> TaskSet:
-        """Return a new TaskSet with the first *n* examples."""
         sliced = self._dataset.select(range(min(n, len(self._dataset))))
-        return TaskSet(spec=self.spec, dataset=sliced, name=self.name)
+        return self._clone(sliced)
+
+    def _clone(self, dataset: Any) -> TaskSet:
+        """Create a copy of this TaskSet with a different dataset."""
+        clone = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        clone._dataset = dataset
+        return clone
 
     # -- Validation ---------------------------------------------------------
 
-    async def validate_taskset(
+    async def validate(
         self,
         n: int | None = None,
         concurrency: int = 10,
@@ -264,24 +220,14 @@ class TaskSet:
     ) -> list[dict]:
         """Validate instances by applying gold solutions and checking evaluation.
 
-        Creates sandboxes, runs ``spec.validate()`` on each instance, tears
-        down sandboxes.  Returns a list of dicts::
+        Creates sandboxes, runs ``_validate()`` on each instance, tears
+        down sandboxes.
 
-            [{"index": 0, "valid": True, "elapsed": 12.3, "error": None}, ...]
+        Returns a list of ``{"index": int, "valid": bool, "elapsed": float, "error": str|None}``.
 
         Example::
 
-            taskset = R2ETaskSet().take(100)
-            results = await taskset.validate_taskset(concurrency=10)
-            valid = [r for r in results if r["valid"]]
-            print(f"{len(valid)}/{len(results)} instances are solvable")
-
-        Parameters
-        ----------
-        n:
-            Number of instances to validate.  None = all.
-        concurrency:
-            Max concurrent sandboxes.
+            results = await taskset.take(10).validate(concurrency=5)
         """
         import asyncio
         import logging
@@ -291,9 +237,7 @@ class TaskSet:
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
         logger = logging.getLogger(__name__)
-        client = ThreadedAsyncSandboxClient(
-            max_workers=min(max(1, concurrency // 8), 50)
-        )
+        client = ThreadedAsyncSandboxClient(max_workers=min(max(1, concurrency // 8), 50))
         sem = asyncio.Semaphore(concurrency)
         ds = self.get_dataset()
         total = min(n, len(ds)) if n else len(ds)
@@ -304,57 +248,39 @@ class TaskSet:
             state: dict = {"info": info}
 
             async with sem:
-                image = self.spec.get_image(info)
-                sb = await client.create(
-                    CreateSandboxRequest(
-                        name=f"validate-{i}",
-                        docker_image=image,
-                        cpu_cores=cpu_cores,
-                        memory_gb=memory_gb,
-                        disk_size_gb=disk_size_gb,
-                        timeout_minutes=timeout_minutes,
-                    )
-                )
+                image = self._get_image(info)
+                sb = await client.create(CreateSandboxRequest(
+                    name=f"validate-{i}",
+                    docker_image=image,
+                    cpu_cores=cpu_cores,
+                    memory_gb=memory_gb,
+                    disk_size_gb=disk_size_gb,
+                    timeout_minutes=timeout_minutes,
+                ))
                 state["sandbox_id"] = sb.id
                 await client.wait_for_creation(sb.id, max_attempts=120)
 
                 t0 = time.time()
                 try:
-                    await self.spec.setup(client, sb.id, state)
-                    valid = await self.spec.validate(client, sb.id, state)
+                    await self._setup(client, sb.id, state)
+                    valid = await self._validate(client, sb.id, state)
                     elapsed = time.time() - t0
                     logger.info(f"[{i}] valid={valid} ({elapsed:.0f}s)")
-                    return {
-                        "index": i,
-                        "valid": valid,
-                        "elapsed": elapsed,
-                        "error": None,
-                    }
+                    return {"index": i, "valid": valid, "elapsed": elapsed, "error": None}
                 except Exception as e:
                     elapsed = time.time() - t0
                     logger.warning(f"[{i}] ERROR: {e} ({elapsed:.0f}s)")
-                    return {
-                        "index": i,
-                        "valid": False,
-                        "elapsed": elapsed,
-                        "error": str(e),
-                    }
+                    return {"index": i, "valid": False, "elapsed": elapsed, "error": str(e)}
                 finally:
                     await client.delete(sb.id)
 
-        logger.info(
-            f"Validating {total} instances from {self.name} (concurrency={concurrency})"
-        )
+        logger.info(f"Validating {total} instances from {self.name} (concurrency={concurrency})")
         t0 = time.time()
         results = await asyncio.gather(*[validate_one(i) for i in range(total)])
         elapsed = time.time() - t0
 
         passed = sum(1 for r in results if r["valid"])
-        failed = sum(1 for r in results if not r["valid"])
-        logger.info(
-            f"Validation complete: {passed}/{total} valid, {failed} failed ({elapsed:.0f}s)"
-        )
-
+        logger.info(f"Validation: {passed}/{total} valid ({elapsed:.0f}s)")
         return results
 
     def __repr__(self) -> str:

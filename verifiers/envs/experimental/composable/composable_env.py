@@ -72,7 +72,7 @@ class ComposableEnv(CliAgentEnv):
             kwargs["rubric"] = ComposableRubric()
         super().__init__(run_command=harness.run_command, **kwargs)
 
-        self.spec = taskset.spec
+        self.taskset = taskset
         self.harness = harness
         self.test_timeout = test_timeout
 
@@ -83,7 +83,7 @@ class ComposableEnv(CliAgentEnv):
     async def get_docker_image(self, state: State) -> str:
         info = state.get("info") or {}
         try:
-            return self.spec.get_image(info)
+            return self.taskset.get_image(info)
         except Exception:
             return self.docker_image
 
@@ -98,7 +98,7 @@ class ComposableEnv(CliAgentEnv):
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
-        task_env_vars = self.spec.get_env_vars()
+        task_env_vars = self.taskset.get_env_vars()
         # Fail hard if a task tries to override infrastructure-critical vars
         conflicts = self._PROTECTED_ENV_VARS & task_env_vars.keys()
         if conflicts:
@@ -109,7 +109,7 @@ class ComposableEnv(CliAgentEnv):
         env_vars.update(task_env_vars)
         info = state.get("info") or {}
         try:
-            env_vars.setdefault("AGENT_WORKDIR", self.spec.get_workdir(info))
+            env_vars.setdefault("AGENT_WORKDIR", self.taskset.get_workdir(info))
         except Exception:
             pass
         return env_vars
@@ -119,12 +119,12 @@ class ComposableEnv(CliAgentEnv):
         sandbox_id = state["sandbox_id"]
 
         # 1. Task setup (repo checkout, venv links, proof file, etc.)
-        await self.spec.setup(self.sandbox_client, sandbox_id, state)
+        await self.taskset.setup(self.sandbox_client, sandbox_id, state)
 
         # 2. Upload instruction to harness-declared path
         info = state.get("info") or {}
         try:
-            prompt = self.spec.get_prompt(info)
+            prompt = self.taskset.get_prompt(info)
             instruction = ""
             for msg in prompt:
                 content = (
@@ -189,7 +189,7 @@ class ComposableEnv(CliAgentEnv):
             return
 
         try:
-            reward = await self.spec.evaluate(self.sandbox_client, sandbox_id, state)
+            reward = await self.taskset.evaluate(self.sandbox_client, sandbox_id, state)
             if isinstance(reward, dict):
                 state["role_rewards"] = reward
                 state["reward"] = sum(reward.values()) / len(reward) if reward else 0.0
