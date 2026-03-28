@@ -88,7 +88,7 @@ from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 logger = logging.getLogger(__name__)
 
-_FIXED_REPL_TOOL_NAMES = frozenset({"llm_batch"})
+_FIXED_REPL_TOOL_NAMES = frozenset({"llm_batch", "remove_conversation_turns"})
 
 
 def _tool_display_name(tool: Callable) -> str:
@@ -283,6 +283,17 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
 
+    state.setdefault("_dropped_turns_count", 0)
+    state.setdefault("_drop_sequence", 0)
+    state.setdefault("_keep_from_assistant_index", 0)
+
+    state.setdefault("context_drop_count", 0)
+    state.setdefault("context_total_turns_dropped", 0)
+    state.setdefault("context_drop_mean_remaining_turns", 0.0)
+    state.setdefault("context_drop_mean_turns_between", 0.0)
+    state.setdefault("_context_drop_remaining_turns_list", [])
+    state.setdefault("_context_drop_at_main_turns", [])
+
 
 def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
     _ensure_rlm_metric_state(state)
@@ -368,6 +379,10 @@ class RLMMonitorRubric(vf.Rubric):
         "repl_call_count",
         "repl_mean_time_seconds",
         "root_tool_call_count",
+        "context_drop_count",
+        "context_total_turns_dropped",
+        "context_drop_mean_remaining_turns",
+        "context_drop_mean_turns_between",
     ]
 
     def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
@@ -1315,6 +1330,8 @@ export RLM_READY=1
         sub_llm_max_turns: int,
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
+        allow_context_dropping: bool = False,
+        min_turns_in_context: int = 3,
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
@@ -1327,6 +1344,8 @@ export RLM_READY=1
         self.sub_llm_max_turns = sub_llm_max_turns
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
+        self.allow_context_dropping = allow_context_dropping
+        self.min_turns_in_context = min_turns_in_context
 
     def build_base_system_prompt(self) -> str:
         """Select the base system prompt from stores or custom override."""
@@ -1423,6 +1442,21 @@ export RLM_READY=1
             return self.MESSAGE_HISTORY_NOTE_BASH
         return self.MESSAGE_HISTORY_NOTE_PYTHON
 
+    def build_context_dropping_note(self) -> str:
+        """Return context-dropping documentation note, or empty string."""
+        if not self.allow_context_dropping:
+            return ""
+        return (
+            "\n## Context Management\n\n"
+            "You can drop old conversation turns from context to free up space using "
+            '`remove_conversation_turns(n_turns, summary="")`.\n'
+            f"- At least {self.min_turns_in_context} turns must remain in context.\n"
+            "- Use `n_turns=-1` to drop the maximum possible.\n"
+            "- Provide a `summary` to record what was in the dropped turns.\n"
+            "- Dropped turns are still accessible via the `.messages` file.\n"
+            "- Summaries are recorded in the `.summaries` file (JSONL).\n"
+        )
+
     def build_root_budget_note(self) -> str:
         """Return root-model token budget note, or empty string."""
         if self.root_max_completion_tokens is None:
@@ -1453,6 +1487,7 @@ export RLM_READY=1
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
             + self.build_message_history_note()
+            + self.build_context_dropping_note()
         )
         return "<RLM_SCAFFOLDING>\n" + body + "\n</RLM_SCAFFOLDING>\n\n"
 
@@ -2356,7 +2391,9 @@ class RLMEnv(vf.StatefulToolEnv):
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
-        expose_message_history: bool = False,
+        expose_message_history: bool = True,
+        allow_context_dropping: bool = False,
+        min_turns_in_context: int = 3,
         retain_filesystem_after_rollout: bool = False,
         sandbox_docker_image: str = "python:3.11-slim",
         sandbox_cpu_cores: int = 1,
@@ -2408,6 +2445,18 @@ class RLMEnv(vf.StatefulToolEnv):
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
         self.expose_message_history = expose_message_history
+        self.allow_context_dropping = allow_context_dropping
+        self.min_turns_in_context = min_turns_in_context
+        if self.allow_context_dropping and not self.expose_message_history:
+            import warnings
+
+            warnings.warn(
+                "allow_context_dropping=True but expose_message_history=False. "
+                "The model won't be able to read dropped context from .messages. "
+                "Consider setting expose_message_history=True.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self._interception_bind_host = "127.0.0.1"
         self.sandbox_docker_image = sandbox_docker_image
@@ -2489,6 +2538,8 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_llm_max_turns=self.sub_llm_max_turns,
             root_tool_defs=self.root_tool_defs,
             sub_tool_defs=self.sub_tool_defs,
+            allow_context_dropping=self.allow_context_dropping,
+            min_turns_in_context=self.min_turns_in_context,
         )
 
         # Add the REPL tool (state is injected via update_tool_args)
@@ -2559,7 +2610,160 @@ class RLMEnv(vf.StatefulToolEnv):
             return results
 
         llm_batch.__name__ = "llm_batch"
-        return [llm_batch]
+        tools: list[Callable] = [llm_batch]
+
+        if self.allow_context_dropping:
+
+            async def remove_conversation_turns(n_turns: int, summary: str = "") -> str:
+                """
+                Drop the oldest n_turns from your conversation context.
+
+                Dropped turns remain accessible via the .messages file.
+                Summaries are recorded in the .summaries file.
+
+                Args:
+                    n_turns: Number of oldest turns to drop. Use -1 to drop the
+                             maximum possible.
+                    summary: Optional summary of the dropped context.
+
+                Returns:
+                    Status message with turns dropped, turns remaining, and echoed summary.
+                """
+                context = self._root_tool_context_var.get()
+                if context is None:
+                    raise RuntimeError(
+                        "remove_conversation_turns called outside of a tool request context."
+                    )
+                return await self._handle_remove_conversation_turns(
+                    context["state"], n_turns, summary
+                )
+
+            remove_conversation_turns.__name__ = "remove_conversation_turns"
+            tools.append(remove_conversation_turns)
+
+        return tools
+
+    async def _handle_remove_conversation_turns(
+        self, state: State, n_turns: int, summary: str
+    ) -> str:
+        """Core logic for the remove_conversation_turns root tool."""
+        rid = state.get("rollout_id", "?")
+        main_turn = self._main_turn_count(state)
+        keep_from = state.get("_keep_from_assistant_index", 0)
+        visible_turns = main_turn - keep_from
+        max_droppable = max(0, visible_turns - self.min_turns_in_context)
+
+        if n_turns == -1:
+            n_turns = max_droppable
+
+        if n_turns <= 0:
+            logger.debug(
+                "[%s] main turn %d: context drop: nothing to drop "
+                "(n_turns=%d, %d visible)",
+                rid,
+                main_turn,
+                n_turns,
+                visible_turns,
+            )
+            return (
+                f"Nothing to drop (n_turns={n_turns}). "
+                f"Currently {visible_turns} turn(s) visible in context."
+            )
+
+        if n_turns > max_droppable:
+            logger.warning(
+                "[%s] main turn %d: context drop rejected: requested %d turn(s) "
+                "but max droppable is %d (%d visible, min=%d)",
+                rid,
+                main_turn,
+                n_turns,
+                max_droppable,
+                visible_turns,
+                self.min_turns_in_context,
+            )
+            return (
+                f"Cannot drop {n_turns} turn(s). "
+                f"You have {visible_turns} turn(s) visible in context and "
+                f"min_turns_in_context={self.min_turns_in_context}. "
+                f"Maximum droppable: {max_droppable}. No turns were dropped."
+            )
+
+        state["_keep_from_assistant_index"] = keep_from + n_turns
+        state["_dropped_turns_count"] = state.get("_dropped_turns_count", 0) + n_turns
+        state["_drop_sequence"] = state.get("_drop_sequence", 0) + 1
+        new_visible = visible_turns - n_turns
+
+        logger.debug(
+            "[%s] main turn %d: context drop: %d turn(s) dropped "
+            "(%d visible -> %d visible, keep_from=%d, summary=%s)",
+            rid,
+            main_turn,
+            n_turns,
+            visible_turns,
+            new_visible,
+            state["_keep_from_assistant_index"],
+            "yes" if summary.strip() else "no",
+        )
+
+        # Update context dropping metrics
+        _ensure_rlm_metric_state(state)
+        state["context_drop_count"] += 1
+        state["context_total_turns_dropped"] = state["_dropped_turns_count"]
+
+        remaining_list: list[int] = state["_context_drop_remaining_turns_list"]
+        remaining_list.append(new_visible)
+        state["context_drop_mean_remaining_turns"] = sum(remaining_list) / len(
+            remaining_list
+        )
+
+        at_turns: list[int] = state["_context_drop_at_main_turns"]
+        at_turns.append(main_turn)
+        if len(at_turns) >= 2:
+            gaps = [at_turns[i] - at_turns[i - 1] for i in range(1, len(at_turns))]
+            state["context_drop_mean_turns_between"] = sum(gaps) / len(gaps)
+
+        await self._upload_summary(state, n_turns, summary, new_visible)
+
+        parts = [
+            f"Dropped {n_turns} oldest turn(s) from context.",
+            f"Turns now visible: {new_visible}.",
+        ]
+        if summary:
+            parts.append(f"Summary recorded: {summary}")
+        parts.append("Dropped turns are still accessible via .messages.")
+        return "\n".join(parts)
+
+    async def _upload_summary(
+        self, state: State, n_turns: int, summary: str, turns_remaining: int
+    ) -> None:
+        """Append a summary entry to .summaries JSONL in the sandbox."""
+        entry = json.dumps(
+            {
+                "n_turns_dropped": n_turns,
+                "summary": summary,
+                "timestamp": time.time(),
+                "turns_remaining": turns_remaining,
+            },
+            ensure_ascii=False,
+        )
+        entry_line = entry + "\n"
+
+        session = self._executor._get_session(state)
+        if not session.sandbox_id:
+            return
+        fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
+        remote_path = f"{fs_root}/.summaries"
+        delta_b64 = base64.b64encode(entry_line.encode("utf-8")).decode("ascii")
+        cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+
+        try:
+            await self._executor._execute_sandbox_command(
+                session.sandbox_id,
+                f"bash -lc {shlex.quote(cmd)}",
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning("Failed to upload summary: %s", e)
 
     def _build_worker_env_vars(self, state: State) -> dict[str, str]:
         return {
@@ -3510,6 +3714,11 @@ class RLMEnv(vf.StatefulToolEnv):
             # Initialize message history upload counter
             state["_messages_uploaded_count"] = 0
 
+            # Initialize context dropping state
+            state["_dropped_turns_count"] = 0
+            state["_drop_sequence"] = 0
+            state["_keep_from_assistant_index"] = 0
+
             _ensure_rlm_metric_state(state)
 
             return state
@@ -3936,8 +4145,43 @@ class RLMEnv(vf.StatefulToolEnv):
             prev_turn_prompt = last_main["prompt"]
             prev_turn_completion = last_main["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+
+            keep_from = state.get("_keep_from_assistant_index", 0)
+            if keep_from > 0:
+                messages = self._apply_context_dropping(messages, keep_from)
+
             env_response = await self.env_response(messages, state)
             return concat_messages([messages, env_response])
+
+    def _apply_context_dropping(
+        self, messages: Messages, keep_from_assistant_index: int
+    ) -> Messages:
+        """Drop all turns before the *keep_from_assistant_index*-th assistant message.
+
+        Preserves all messages before the first assistant message (system messages,
+        the scaffolded user message, etc.). A "turn" is one assistant message plus
+        all subsequent tool messages. Idempotent: if the messages are already
+        truncated past the index, returns them unchanged.
+        """
+        if keep_from_assistant_index <= 0:
+            return messages
+
+        # Find turn boundaries (each assistant message starts a new turn)
+        assistant_indices = [
+            i
+            for i, msg in enumerate(messages)
+            if getattr(msg, "role", None) == "assistant"
+            or (isinstance(msg, dict) and msg.get("role") == "assistant")
+        ]
+
+        if not assistant_indices or keep_from_assistant_index >= len(assistant_indices):
+            return messages
+
+        # Preserve everything before the first assistant message (system msgs,
+        # scaffolded user msg, etc.), then keep from the target turn onward.
+        preamble = list(messages[: assistant_indices[0]])
+        keep_from = assistant_indices[keep_from_assistant_index]
+        return preamble + list(messages[keep_from:])
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
