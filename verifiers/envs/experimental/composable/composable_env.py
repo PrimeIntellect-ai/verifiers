@@ -188,8 +188,6 @@ class ComposableEnv(CliAgentEnv):
             state["reward"] = 0.0
             return
 
-        state["_run_background_job"] = self.run_background_job
-
         try:
             reward = await self.spec.evaluate(self.sandbox_client, sandbox_id, state)
             if isinstance(reward, dict):

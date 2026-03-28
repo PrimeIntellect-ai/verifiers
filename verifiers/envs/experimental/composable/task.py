@@ -298,22 +298,10 @@ class TaskSet:
         ds = self.get_dataset()
         total = min(n, len(ds)) if n else len(ds)
 
-        async def run_background_job(
-            state: dict, cmd: str, timeout: int, working_dir: str | None = None
-        ) -> Any:
-            sid = state["sandbox_id"]
-            job = await client.start_background_job(sid, cmd, working_dir=working_dir)
-            for _ in range(0, timeout + 3, 3):
-                status = await client.get_background_job(sid, job)
-                if status.completed:
-                    return status
-                await asyncio.sleep(3)
-            raise TimeoutError(f"Background job timed out after {timeout}s")
-
         async def validate_one(i: int) -> dict:
             row = ds[i]
             info = row["info"]
-            state: dict = {"info": info, "_run_background_job": run_background_job}
+            state: dict = {"info": info}
 
             async with sem:
                 image = self.spec.get_image(info)
