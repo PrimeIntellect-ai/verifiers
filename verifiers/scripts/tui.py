@@ -536,6 +536,30 @@ def _discover_log_files(run_path: Path) -> List[Path]:
     return server_logs + worker_logs + other_logs
 
 
+def _merge_log_files(log_files: List[Path]) -> List[str]:
+    """Merge lines from multiple log files, sorted by timestamp.
+
+    Lines without a parseable timestamp are attached to the preceding
+    timestamped line (continuation lines from multi-line log messages).
+    """
+    # Collect all lines with their timestamps
+    entries: List[Tuple[str, int, str]] = []  # (timestamp, file_idx, line)
+    for file_idx, path in enumerate(log_files):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        current_ts = ""
+        for line in lines:
+            parsed = _parse_log_header(line)
+            if parsed is not None:
+                current_ts = parsed[0]  # timestamp string
+            entries.append((current_ts, file_idx, line))
+    # Stable sort by timestamp — preserves original order for same-timestamp lines
+    entries.sort(key=lambda e: e[0])
+    return [line for _, _, line in entries]
+
+
 # ----------------------------
 # Formatting helpers
 # ----------------------------
@@ -2998,8 +3022,10 @@ class ViewRunScreen(Screen):
         self._previous_animation_level: Optional[AnimationLevel] = None
         self._render_markdown_math = True
         # Log viewer state
+        # Tab 0 = "all" (merged), tab 1+ = individual files
         self._log_files: List[Path] = _discover_log_files(run.path)
         self._log_loaders: Dict[int, LazyLogFile] = {}
+        self._merged_log_lines: Optional[List[str]] = None
         self._active_log_tab: int = 0
         self._view_mode: Literal["rollouts", "logs"] = "rollouts"
         self._log_highlight_regex: Optional[re.Pattern] = None
@@ -3482,19 +3508,28 @@ class ViewRunScreen(Screen):
         self.refresh_bindings()
 
     def _cycle_log_tab(self, delta: int) -> None:
-        if not self._log_files or len(self._log_files) < 2:
+        num_tabs = self._log_tab_count()
+        if num_tabs < 2:
             return
-        self._active_log_tab = (self._active_log_tab + delta) % len(self._log_files)
+        self._active_log_tab = (self._active_log_tab + delta) % num_tabs
         self._populate_logs_view()
 
+    def _log_tab_count(self) -> int:
+        """Number of log tabs: 'all' + individual files if 2+ files, else just 1."""
+        if len(self._log_files) >= 2:
+            return len(self._log_files) + 1  # "all" tab + individual files
+        return len(self._log_files)  # 0 or 1
+
     def _build_log_tab_bar(self) -> Text:
-        if len(self._log_files) <= 1:
+        num_tabs = self._log_tab_count()
+        if num_tabs <= 1:
             return Text()
         text = Text()
-        for i, path in enumerate(self._log_files):
+        # Tab 0 = "all", tabs 1+ = individual files
+        labels = ["all"] + [_log_tab_label(p) for p in self._log_files]
+        for i, label in enumerate(labels):
             if i > 0:
                 text.append("  ")
-            label = _log_tab_label(path)
             if i == self._active_log_tab:
                 text.append(f"[{label}]", style="bold")
             else:
@@ -3502,6 +3537,26 @@ class ViewRunScreen(Screen):
         text.append("  ")
         text.append("(←/→ to switch)", style="dim italic")
         return text
+
+    def _get_active_log_lines(self) -> Tuple[List[str], str]:
+        """Return (lines, tab_label) for the active log tab."""
+        is_merged = len(self._log_files) >= 2 and self._active_log_tab == 0
+        if is_merged:
+            if self._merged_log_lines is None:
+                self._merged_log_lines = _merge_log_files(self._log_files)
+            return self._merged_log_lines, "all"
+        # Individual file tab — index into _log_files
+        file_idx = (
+            self._active_log_tab - 1
+            if len(self._log_files) >= 2
+            else self._active_log_tab
+        )
+        if file_idx not in self._log_loaders:
+            self._log_loaders[file_idx] = LazyLogFile(self._log_files[file_idx])
+        loader = self._log_loaders[file_idx]
+        line_count = len(loader)
+        lines = [loader.get_line(i) for i in range(line_count)]
+        return lines, _log_tab_label(self._log_files[file_idx])
 
     def _populate_logs_view(self) -> None:
         if not self._log_files:
@@ -3513,16 +3568,10 @@ class ViewRunScreen(Screen):
         # Update tab bar
         self.query_one("#logs-tab-bar", Static).update(self._build_log_tab_bar())
 
-        # Get or create lazy loader
-        if self._active_log_tab not in self._log_loaders:
-            self._log_loaders[self._active_log_tab] = LazyLogFile(
-                self._log_files[self._active_log_tab]
-            )
-        loader = self._log_loaders[self._active_log_tab]
+        lines, log_name = self._get_active_log_lines()
+        line_count = len(lines)
 
         # Update header
-        log_name = _log_tab_label(self._log_files[self._active_log_tab])
-        line_count = len(loader)
         self.query_one("#logs-header", Label).update(
             Text.assemble(
                 ("Logs", "bold"),
@@ -3549,7 +3598,7 @@ class ViewRunScreen(Screen):
         for i in range(start, line_count):
             if i > start:
                 text.append("\n")
-            line = loader.get_line(i)
+            line = lines[i]
             if self._log_highlight_regex:
                 _append_styled_log_line(text, line)
                 # Apply highlights on top
@@ -3609,15 +3658,12 @@ class ViewRunScreen(Screen):
     def _search_logs(self) -> None:
         if not self._log_files:
             return
-        if self._active_log_tab not in self._log_loaders:
-            return
-        loader = self._log_loaders[self._active_log_tab]
-        # Build log lines as completion_lines for SearchScreen
-        log_lines: List[Tuple[int, int, str]] = []
-        line_count = len(loader)
+        lines, _ = self._get_active_log_lines()
+        line_count = len(lines)
         start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
-        for i in range(start, line_count):
-            log_lines.append((0, -1, loader.get_line(i)))
+        log_lines: List[Tuple[int, int, str]] = [
+            (0, -1, lines[i]) for i in range(start, line_count)
+        ]
         self.app.push_screen(
             SearchScreen([], log_lines),
             self._handle_log_search_result,
@@ -3640,18 +3686,15 @@ class ViewRunScreen(Screen):
 
     def _scroll_to_first_log_match(self) -> None:
         """Scroll the logs panel so the first matching line is visible."""
-        if (
-            self._active_log_tab not in self._log_loaders
-            or not self._log_highlight_regex
-        ):
+        if not self._log_highlight_regex or not self._log_files:
             return
-        loader = self._log_loaders[self._active_log_tab]
-        line_count = len(loader)
+        lines, _ = self._get_active_log_lines()
+        line_count = len(lines)
         start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
         # Find the first matching line index (relative to displayed range)
         first_match_display_idx: Optional[int] = None
         for i in range(start, line_count):
-            if self._log_highlight_regex.search(loader.get_line(i)):
+            if self._log_highlight_regex.search(lines[i]):
                 first_match_display_idx = i - start
                 break
         if first_match_display_idx is None:
@@ -3703,15 +3746,32 @@ class ViewRunScreen(Screen):
         if not self._log_files:
             return
         items: List[RolloutCopyItem] = []
-        current_key = f"log-{self._active_log_tab}"
+        has_merged = len(self._log_files) >= 2
+        if has_merged:
+            # "all" tab uses merged lines
+            if self._merged_log_lines is None:
+                self._merged_log_lines = _merge_log_files(self._log_files)
+            items.append(
+                RolloutCopyItem(
+                    key="log-all",
+                    label="Log: all (merged)",
+                    body="\n".join(self._merged_log_lines),
+                )
+            )
         for idx, path in enumerate(self._log_files):
             items.append(
                 RolloutCopyItem(
-                    key=f"log-{idx}",
+                    key=f"log-file-{idx}",
                     label=f"Log: {_log_tab_label(path)}",
                     body=path.read_text(encoding="utf-8", errors="replace"),
                 )
             )
+        # Select the copy target matching the active tab
+        if has_merged and self._active_log_tab == 0:
+            current_key = "log-all"
+        else:
+            file_idx = self._active_log_tab - 1 if has_merged else self._active_log_tab
+            current_key = f"log-file-{file_idx}"
         self.app.push_screen(
             RolloutCopyScreen(
                 items,
