@@ -94,9 +94,6 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from verifiers.types import Messages, State
 
 
-# ---------------------------------------------------------------------------
-# TaskSpec — shared behavior for a problem type
-# ---------------------------------------------------------------------------
 
 
 @runtime_checkable
@@ -136,9 +133,6 @@ class TaskSpec(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# Task — one problem instance
-# ---------------------------------------------------------------------------
 
 
 class Task:
@@ -172,9 +166,6 @@ class Task:
         )
 
 
-# ---------------------------------------------------------------------------
-# TaskSet — a collection of problem instances
-# ---------------------------------------------------------------------------
 
 
 class TaskSet:
