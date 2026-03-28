@@ -2,6 +2,11 @@
 
 Newer and more experimental environment classes that may have some sharper edges + change more frequently.
 
+## ComposableEnv
+
+See [composable/README.md](composable/README.md) for the composable Task/Agent architecture docs.
+
+
 ## GymEnv
 
 Universal runner for Gym-compatible environments. Wraps any environment that implements `reset(seed)` and `step(action)` methods (following the OpenAI Gym / Gymnasium API). Supports both old-style 4-tuple and new-style 5-tuple step returns.
