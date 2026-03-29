@@ -49,6 +49,9 @@ This folder contains installable example environments that showcase common usage
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
 
+- **NeMo Gym**
+  - **nemo_gym**: NeMo Gym integration via `NemoGymEnv`. The NeMo Gym agent server manages the full multi turn rollout, including tools, state logic and verification.
+
 ### Composition
 - **EnvGroup**
   - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
