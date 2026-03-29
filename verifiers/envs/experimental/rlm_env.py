@@ -663,6 +663,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
+    SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
 
 
     def _decode_arg(raw: str):
@@ -696,7 +697,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=SUB_LLM_TIMEOUT) as resp:
                 resp_body = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             try:
