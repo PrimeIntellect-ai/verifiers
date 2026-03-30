@@ -78,9 +78,18 @@ class ComposableEnv(CliAgentEnv):
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
-    async def get_docker_image(self, state: State) -> str:
+    def _get_spec(self, state: State) -> Any:
+        """Get SandboxSpec, cached on state to avoid redundant calls."""
+        cached = state.get("_sandbox_spec")
+        if cached is not None:
+            return cached
         info = state.get("info") or {}
         spec = self.taskset.get_sandbox_spec(info)
+        state["_sandbox_spec"] = spec
+        return spec
+
+    async def get_docker_image(self, state: State) -> str:
+        spec = self._get_spec(state)
         if spec:
             return spec.image
         if self.harness.sandbox_spec:
@@ -89,8 +98,7 @@ class ComposableEnv(CliAgentEnv):
 
     def get_sandbox_resources(self, state: State) -> dict[str, Any]:
         """Per-instance resources from SandboxSpec, or harness defaults."""
-        info = state.get("info") or {}
-        spec = self.taskset.get_sandbox_spec(info)
+        spec = self._get_spec(state)
         if spec:
             return {
                 "cpu_cores": spec.cpu_cores,
@@ -134,8 +142,7 @@ class ComposableEnv(CliAgentEnv):
 
         # Populate sandbox context in state (once, used by setup/evaluate/validate)
         state["sandbox_client"] = self.sandbox_client
-        info = state.get("info") or {}
-        spec = self.taskset.get_sandbox_spec(info)
+        spec = self._get_spec(state)
         state["test_timeout"] = spec.timeout_minutes * 60 if spec else 900
 
         # 1. Task setup
