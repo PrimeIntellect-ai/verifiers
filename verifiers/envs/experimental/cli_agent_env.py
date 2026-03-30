@@ -213,6 +213,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             disk_size_gb=resources["disk_size_gb"],
             gpu_count=resources["gpu_count"],
             gpu_type=resources.get("gpu_type"),
+            vm=resources["gpu_count"] > 0,
             timeout_minutes=resources["timeout_minutes"],
             environment_vars=env_vars,
             team_id=self.team_id,

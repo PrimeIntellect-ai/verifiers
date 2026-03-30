@@ -279,6 +279,7 @@ class TaskSet:
                             disk_size_gb=spec.disk_size_gb,
                             gpu_count=spec.gpu_count,
                             gpu_type=spec.gpu_type,
+                            vm=spec.gpu_count > 0,
                             timeout_minutes=spec.timeout_minutes,
                         )
                     )
