@@ -59,7 +59,13 @@ def _make_reusable_socket(port: int = 0) -> socket.socket:
 
 
 def get_free_port_pair() -> int:
-    """Get a free port whose successor (port+1) is also free."""
+    """Get a free port whose successor (port+1) is also free.
+
+    The sockets are kept alive in ``_reserved_sockets`` to prevent the OS
+    from reassigning the ports before the caller can bind them.  Call
+    :func:`release_reserved_ports` once the ports have been bound (e.g.
+    by a subprocess) or are no longer needed.
+    """
     for _ in range(10):
         s1 = _make_reusable_socket()
         port = s1.getsockname()[1]
@@ -71,3 +77,21 @@ def get_free_port_pair() -> int:
         _reserved_sockets.extend([s1, s2])
         return port
     raise RuntimeError("Could not find a free port pair after 10 attempts")
+
+
+def release_reserved_ports() -> None:
+    """Close all sockets held by :func:`get_free_port_pair`.
+
+    On macOS, ZMQ cannot bind a port that is held open by another socket
+    (even with ``SO_REUSEADDR``), so reserved sockets must be released
+    before a subprocess can bind the same ports.  With the ``spawn``
+    multiprocessing context the subprocess does not inherit file
+    descriptors, so the reservation is only useful for preventing the
+    *main* process from accidentally reusing the port.
+    """
+    for s in _reserved_sockets:
+        try:
+            s.close()
+        except OSError:
+            pass
+    _reserved_sockets.clear()
