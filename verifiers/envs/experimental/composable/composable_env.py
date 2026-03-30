@@ -66,7 +66,6 @@ class ComposableEnv(CliAgentEnv):
         self,
         taskset: TaskSet,
         harness: Harness,
-        test_timeout: int = 900,
         **kwargs: Any,
     ):
         kwargs["dataset"] = taskset.get_dataset()
@@ -76,7 +75,6 @@ class ComposableEnv(CliAgentEnv):
 
         self.taskset = taskset
         self.harness = harness
-        self.test_timeout = test_timeout
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
@@ -136,7 +134,9 @@ class ComposableEnv(CliAgentEnv):
 
         # Populate sandbox context in state (once, used by setup/evaluate/validate)
         state["sandbox_client"] = self.sandbox_client
-        state["test_timeout"] = self.test_timeout
+        info = state.get("info") or {}
+        spec = self.taskset.get_sandbox_spec(info)
+        state["test_timeout"] = spec.timeout_minutes * 60 if spec else 900
 
         # 1. Task setup
         await self.taskset.setup(state)
@@ -150,7 +150,6 @@ class ComposableEnv(CliAgentEnv):
         )
 
         # 3. Upload instruction to harness-declared path
-        info = state.get("info") or {}
         instruction = self.taskset.get_instruction(info)
         if instruction.strip():
             await self.upload_content(
