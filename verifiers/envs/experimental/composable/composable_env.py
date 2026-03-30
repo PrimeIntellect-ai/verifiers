@@ -157,6 +157,7 @@ class ComposableEnv(CliAgentEnv):
         )
 
         # 3. Upload instruction to harness-declared path
+        info = state.get("info") or {}
         instruction = self.taskset.get_instruction(info)
         if instruction.strip():
             await self.upload_content(
