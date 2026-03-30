@@ -251,6 +251,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "memory_gb": self.memory_gb,
             "disk_size_gb": self.disk_size_gb,
             "gpu_count": self.gpu_count,
+            "gpu_type": None,
             "timeout_minutes": math.ceil(self.timeout_seconds / 60),
         }
 
