@@ -7,10 +7,12 @@ import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from openai import AsyncOpenAI
-
+from verifiers.clients import resolve_client
+from verifiers.clients.client import Client
+from verifiers.types import ClientConfig, Messages, Response, SystemMessage, UserMessage
+from verifiers.utils.message_utils import maybe_normalize_messages
 from verifiers.utils.config_utils import ensure_keys
 
 from verifiers.synth.prompts import (
@@ -51,14 +53,21 @@ def _parse_model(model_str: str) -> tuple[str, str]:
     return DEFAULT_PROVIDER, model_str
 
 
-def _make_client(model_str: str) -> tuple[AsyncOpenAI, str]:
-    """Create an AsyncOpenAI client from a provider/model string."""
-    import os
-
+def _make_client(model_str: str) -> tuple[Client, str]:
+    """Create a verifiers client from a provider/model string."""
     provider, model = _parse_model(model_str)
     cfg = PROVIDER_CONFIGS[provider]
-    api_key = os.getenv(cfg["key"], "EMPTY")
-    return AsyncOpenAI(api_key=api_key, base_url=cfg["url"]), model
+    client_type = (
+        "anthropic_messages" if provider == "anthropic" else "openai_chat_completions"
+    )
+    client = resolve_client(
+        ClientConfig(
+            client_type=client_type,
+            api_key_var=cfg["key"],
+            api_base_url=cfg["url"],
+        )
+    )
+    return client, model
 
 
 def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -97,6 +106,33 @@ def _stringify_value(value: Any) -> str:
     if isinstance(value, (list, dict)):
         return json.dumps(value, default=str)
     return str(value)
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    chunks.append(part["text"])
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+        return " ".join(chunks).strip()
+    return ""
+
+
+def _response_to_text(response: Response) -> str:
+    return _message_content_to_text(response.message.content).strip()
+
+
+def _is_message_like(value: Any) -> bool:
+    return isinstance(value, dict) or (
+        hasattr(value, "role") and hasattr(value, "content")
+    )
 
 
 def _aggregate_seed_context(
@@ -145,17 +181,21 @@ def _messages_for_task(
     task_field: str,
     answer_field: str,
     system_prompt: str,
-) -> tuple[list[dict[str, str]], str]:
+) -> tuple[Messages, str]:
     """Build model messages and a human-readable task string from a dataset row."""
     value = row.get(task_field)
     if (
         task_field == "prompt"
         and isinstance(value, list)
-        and all(isinstance(item, dict) for item in value)
+        and all(_is_message_like(item) for item in value)
     ):
-        messages = [dict(item) for item in value]
-        if system_prompt and (not messages or messages[0].get("role") != "system"):
-            messages = [{"role": "system", "content": system_prompt}, *messages]
+        messages = maybe_normalize_messages(
+            cast(Messages, value), field_name=f"row[{task_field!r}]"
+        )
+        if system_prompt and (
+            not messages or not isinstance(messages[0], SystemMessage)
+        ):
+            messages = [SystemMessage(content=system_prompt), *messages]
         return messages, _stringify_value(value)
 
     if task_field in row:
@@ -164,25 +204,20 @@ def _messages_for_task(
         task_payload = {k: v for k, v in row.items() if k != answer_field}
         task_text = _stringify_value(task_payload)
 
-    messages: list[dict[str, str]] = []
+    messages: Messages = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": task_text})
+        messages.append(SystemMessage(content=system_prompt))
+    messages.append(UserMessage(content=task_text))
     return messages, task_text
 
 
-def _with_reference_material(
-    messages: list[dict[str, str]], context: str | None
-) -> list[dict[str, str]]:
+def _with_reference_material(messages: Messages, context: str | None) -> Messages:
     """Inject bounded seed context into the messages without flattening prompt rows."""
     if not context:
         return messages
 
-    ref_message = {
-        "role": "user",
-        "content": f"Reference material:\n{context[:6000]}",
-    }
-    if messages and messages[0].get("role") == "system":
+    ref_message = UserMessage(content=f"Reference material:\n{context[:6000]}")
+    if messages and isinstance(messages[0], SystemMessage):
         return [messages[0], ref_message, *messages[1:]]
     return [ref_message, *messages]
 
@@ -406,12 +441,15 @@ class SynthDataBuilder:
             samples_per_subtopic=config.samples_per_subtopic,
             max_subtopics_line=max_line,
         )
-        resp = await gen_client.chat.completions.create(
-            model=gen_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
-        text = (resp.choices[0].message.content or "").strip()
+        try:
+            resp = await gen_client.get_response(
+                prompt=[UserMessage(content=prompt)],
+                model=gen_model,
+                sampling_args={"temperature": 0.7},
+            )
+        finally:
+            await gen_client.close()
+        text = _response_to_text(resp)
         parsed = _parse_json_object(text)
 
         subtopics: list[str]
@@ -473,12 +511,12 @@ class SynthDataBuilder:
                     schema_json=schema_json,
                 )
                 async with sem:
-                    resp = await gen_client.chat.completions.create(
+                    resp = await gen_client.get_response(
+                        prompt=[UserMessage(content=prompt)],
                         model=gen_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.9,
+                        sampling_args={"temperature": 0.9},
                     )
-                text = (resp.choices[0].message.content or "").strip()
+                text = _response_to_text(resp)
                 parsed = _parse_json_object(text)
                 if not parsed:
                     logger.warning("Failed to parse sample from LLM response")
@@ -490,8 +528,11 @@ class SynthDataBuilder:
                 samples.append(SynthSample(row=dict(parsed), subtopic=subtopic))
             return samples
 
-        results = await asyncio.gather(*[gen_one(st) for st in plan.subtopics])
-        return [s for batch in results for s in batch]
+        try:
+            results = await asyncio.gather(*[gen_one(st) for st in plan.subtopics])
+            return [s for batch in results for s in batch]
+        finally:
+            await gen_client.close()
 
     # ------------------------------------------------------------------
     # Stage 3: Filtering (single path, two thresholds)
@@ -513,17 +554,15 @@ class SynthDataBuilder:
         ref = plan.reference_material
         has_ref = bool(ref) and ref != _NO_SOURCE_DIRECTIVE
 
-        async def attempt_answer(
-            messages: list[dict[str, str]], context: str | None
-        ) -> str:
+        async def attempt_answer(messages: Messages, context: str | None) -> str:
             messages = _with_reference_material(messages, context)
             async with sem:
-                resp = await filter_client.chat.completions.create(
+                resp = await filter_client.get_response(
+                    prompt=messages,
                     model=filter_model,
-                    messages=messages,
-                    temperature=0.0,
+                    sampling_args={"temperature": 0.0},
                 )
-            return (resp.choices[0].message.content or "").strip()
+            return _response_to_text(resp)
 
         async def judge(task_text: str, golden: str, response: str) -> float:
             prompt = FILTER_JUDGE_PROMPT.format(
@@ -531,13 +570,14 @@ class SynthDataBuilder:
                 golden_answer=golden,
                 response=response,
             )
+            judge_messages: Messages = [UserMessage(content=prompt)]
             async with sem:
-                resp = await filter_client.chat.completions.create(
+                resp = await filter_client.get_response(
+                    prompt=judge_messages,
                     model=filter_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
+                    sampling_args={"temperature": 0.0},
                 )
-            text = (resp.choices[0].message.content or "").strip()
+            text = _response_to_text(resp)
             parsed = _parse_json_object(text)
             if parsed:
                 return float(parsed.get("score", 0.0))
@@ -561,7 +601,10 @@ class SynthDataBuilder:
                 )
             return sample
 
-        scored = await asyncio.gather(*[score_sample(s) for s in samples])
+        try:
+            scored = await asyncio.gather(*[score_sample(s) for s in samples])
+        finally:
+            await filter_client.close()
 
         kept: list[SynthSample] = []
         for s in scored:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from verifiers.types import Messages
+
 
 @dataclass
 class EnvSpec:
@@ -15,7 +17,7 @@ class EnvSpec:
     reward_functions: list[dict[str, Any]]
     dataset_schema: dict[str, Any]
     parser_info: str | None
-    few_shot: list[dict[str, Any]] | None
+    few_shot: Messages | None
 
 
 @dataclass
