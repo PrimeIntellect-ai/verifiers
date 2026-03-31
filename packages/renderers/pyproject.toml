@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "renderers"
+version = "0.1.0"
+description = "Chat template renderers — deterministic message-to-token conversion for LLM training"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "transformers>=4.50.0",
+]
+
+[project.optional-dependencies]
+proxy = [
+    "httpx>=0.27.0",
+    "starlette>=0.40.0",
+    "uvicorn>=0.30.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["renderers"]
