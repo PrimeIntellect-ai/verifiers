@@ -68,6 +68,7 @@ class EnvWorker:
         stats_address: str,
         death_pipe: Connection | None = None,
     ):
+        set_proc_title(f"EnvWorker{worker_id}")
         self.death_pipe = death_pipe
         self.env_id = env_id
         self.worker_id = worker_id
@@ -355,8 +356,6 @@ class EnvWorker:
         self.logger.info(f"Shut down worker {self.worker_name}")
 
     async def run(self) -> None:
-        set_proc_title(f"EnvWorker{self.worker_id}")
-
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 

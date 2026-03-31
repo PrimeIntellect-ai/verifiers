@@ -41,6 +41,7 @@ class EnvServer(ABC):
         stats_log_interval: float = 10.0,
         death_pipe: Connection | None = None,
     ):
+        set_proc_title("EnvServer")
         self.death_pipe = death_pipe
 
         logger_kwargs: dict[str, Any] = {
@@ -85,8 +86,6 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
-        set_proc_title("EnvServer")
-
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
