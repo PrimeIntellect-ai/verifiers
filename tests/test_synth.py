@@ -16,9 +16,11 @@ from verifiers.synth.builder import (
     _parse_json_array,
     _parse_json_object,
     _parse_model,
+    _validate_row_against_schema,
 )
 from verifiers.synth.prompts import render_env_spec
-from verifiers.synth.types import BuildResult, SynthConfig, SynthSample
+from verifiers.synth.models import SynthConfig, SynthSample
+from verifiers.synth.result import BuildResult
 
 
 # ---------------------------------------------------------------------------
@@ -111,8 +113,8 @@ class TestExtractEnvSpec:
         builder = SynthDataBuilder(env=simple_env)
         spec = builder.env_spec
 
-        assert len(spec.example_rows) > 0
         assert "answer" in spec.dataset_schema
+        assert spec.dataset_schema["answer"]["dtype"] == "string"
 
     def test_reward_function_metadata(self, simple_env):
         builder = SynthDataBuilder(env=simple_env)
@@ -135,19 +137,21 @@ class TestResolveSeeds:
         builder = SynthDataBuilder(env=simple_env)
         result = builder._resolve_seeds(["explicit text"])
         assert len(result) == 1
+        assert result[0]["kind"] == "text"
         assert result[0]["content"] == "explicit text"
 
     def test_falls_back_to_env_dataset(self, simple_env):
         builder = SynthDataBuilder(env=simple_env)
         result = builder._resolve_seeds(None)
-        assert len(result) > 0
-        assert result[0]["content"] == "What is 2+2?"
+        assert len(result) == 1
+        assert result[0]["kind"] == "rows"
+        assert len(result[0]["rows"]) == 2
+        assert result[0]["rows"][0]["question"] == "What is 2+2?"
+        assert result[0]["rows"][0]["answer"] == "4"
 
-    def test_raises_when_no_seeds_and_empty_dataset(self):
+    def test_seedless_mode_on_empty_dataset(self):
         async def dummy_reward(completion, answer) -> float:
             return 1.0
-
-        from verifiers import Rubric, SingleTurnEnv
 
         empty_ds = Dataset.from_dict({"question": [], "answer": []})
         env = SingleTurnEnv(
@@ -156,8 +160,11 @@ class TestResolveSeeds:
             rubric=Rubric(funcs=[dummy_reward]),
         )
         builder = SynthDataBuilder(env=env)
-        with pytest.raises(ValueError, match="No seeds provided"):
-            builder._resolve_seeds(None)
+        result = builder._resolve_seeds(None)
+        assert len(result) == 1
+        assert result[0]["id"] == "0"
+        assert result[0].get("kind") == "text"
+        assert result[0]["content"] == ""
 
 
 class TestNormalizeSeeds:
@@ -166,6 +173,7 @@ class TestNormalizeSeeds:
         result = SynthDataBuilder._normalize_seeds(seeds)
 
         assert len(result) == 2
+        assert result[0]["kind"] == "text"
         assert result[0]["content"] == "This is some raw text"
         assert result[1]["content"] == "Another piece of text"
         assert result[0]["id"] == "0"
@@ -178,6 +186,7 @@ class TestNormalizeSeeds:
 
             result = SynthDataBuilder._normalize_seeds([str(p)])
             assert len(result) == 1
+            assert result[0]["kind"] == "text"
             assert result[0]["content"] == "File content here"
 
     def test_glob_expansion(self):
@@ -188,6 +197,7 @@ class TestNormalizeSeeds:
             pattern = str(Path(tmpdir) / "*.md")
             result = SynthDataBuilder._normalize_seeds([pattern])
             assert len(result) == 3
+            assert all(r["kind"] == "text" for r in result)
             contents = sorted(r["content"] for r in result)
             assert contents == ["Document 0", "Document 1", "Document 2"]
 
@@ -195,23 +205,27 @@ class TestNormalizeSeeds:
         ds = Dataset.from_dict({"content": ["seed one", "seed two"]})
         result = SynthDataBuilder._normalize_seeds(ds)
 
-        assert len(result) == 2
-        assert result[0]["content"] == "seed one"
+        assert len(result) == 1
+        assert result[0]["kind"] == "rows"
+        assert result[0]["rows"][0]["content"] == "seed one"
+        assert result[0]["rows"][1]["content"] == "seed two"
 
     def test_hf_dataset_fallback_column(self):
         ds = Dataset.from_dict({"text": ["alpha", "beta"]})
-        result = _normalize_dataset_seeds(ds)
+        result = _normalize_dataset_seeds(ds, 3)
 
-        assert len(result) == 2
-        assert result[0]["content"] == "alpha"
+        assert len(result) == 1
+        assert result[0]["rows"][0]["text"] == "alpha"
 
     def test_mixed_seeds(self):
         ds = Dataset.from_dict({"content": ["from dataset"]})
         result = SynthDataBuilder._normalize_seeds(["raw text", ds])
 
         assert len(result) == 2
+        assert result[0]["kind"] == "text"
         assert result[0]["content"] == "raw text"
-        assert result[1]["content"] == "from dataset"
+        assert result[1]["kind"] == "rows"
+        assert result[1]["rows"][0]["content"] == "from dataset"
 
 
 # ---------------------------------------------------------------------------
@@ -293,10 +307,11 @@ class TestParseModel:
 class TestSynthSample:
     def test_to_row_basic(self):
         sample = SynthSample(
-            question="What is 1+1?",
-            answer="2",
-            info={"difficulty": "easy"},
-            seed_id="0",
+            row={
+                "question": "What is 1+1?",
+                "answer": "2",
+                "info": '{"difficulty": "easy"}',
+            },
             subtopic="arithmetic",
         )
         row = sample.to_row()
@@ -304,13 +319,9 @@ class TestSynthSample:
         assert row["question"] == "What is 1+1?"
         assert row["answer"] == "2"
         assert "info" in row
-        parsed_info = json.loads(row["info"])
-        assert parsed_info["difficulty"] == "easy"
 
-    def test_to_row_empty_info(self):
-        sample = SynthSample(
-            question="Q", answer="A", info={}, seed_id="0", subtopic="t"
-        )
+    def test_to_row_minimal(self):
+        sample = SynthSample(row={"question": "Q", "answer": "A"}, subtopic="t")
         row = sample.to_row()
         assert row["question"] == "Q"
         assert row["answer"] == "A"
@@ -325,10 +336,7 @@ class TestBuildResult:
     def test_save_creates_files(self):
         samples = [
             SynthSample(
-                question="Q1",
-                answer="A1",
-                info={"topic": "math"},
-                seed_id="0",
+                row={"question": "Q1", "answer": "A1"},
                 subtopic="algebra",
                 score_with_context=0.9,
                 score_without_context=0.1,
@@ -342,9 +350,13 @@ class TestBuildResult:
                 "total_filtered": 1,
                 "pass_rate": 1 / 3,
                 "per_subtopic": {"algebra": {"generated": 3, "filtered": 1}},
+                "coverage": {"algebra": {"total": 3, "passed": 1, "rate": 1 / 3}},
                 "config": {
                     "generator_model": "gpt-4.1",
                     "filter_model": "gpt-4.1",
+                    "filter_threshold": 0.8,
+                    "filter_ceiling": 0.2,
+                    "coverage_quality": 0.8,
                 },
             },
         )
@@ -370,26 +382,25 @@ class TestBuildResult:
 
 
 # ---------------------------------------------------------------------------
-# SynthConfig filter modes
+# SynthConfig
 # ---------------------------------------------------------------------------
 
 
-class TestFilterMode:
-    def test_default_is_standard(self):
+class TestSynthConfig:
+    def test_defaults(self):
         config = SynthConfig()
-        assert config.filter_mode == "standard"
+        assert config.max_seed_examples == 3
+        assert config.filter_threshold == 0.8
+        assert config.filter_ceiling is None
+        assert config.max_subtopics is None
+        assert config.coverage_quality == 0.8
 
-    def test_icl_calibrated_mode(self):
-        config = SynthConfig(filter_mode="icl_calibrated")
-        assert config.filter_mode == "icl_calibrated"
+    def test_icl_calibrated_via_ceiling(self):
+        config = SynthConfig(filter_ceiling=0.2)
         assert config.filter_ceiling == 0.2
+        assert config.filter_threshold == 0.8
 
-    def test_standard_mode_ignores_ceiling(self):
-        """In standard mode, filter_ceiling exists but is unused by _filter."""
-        config = SynthConfig(filter_mode="standard", filter_threshold=0.7)
-        assert config.filter_threshold == 0.7
-
-    def test_dataset_card_shows_filter_mode(self):
+    def test_dataset_card_icl_calibrated(self):
         result = BuildResult(
             raw_samples=[],
             filtered_samples=[],
@@ -397,13 +408,19 @@ class TestFilterMode:
                 "total_generated": 0,
                 "total_filtered": 0,
                 "pass_rate": 0.0,
-                "config": {"filter_mode": "icl_calibrated"},
+                "per_subtopic": {},
+                "coverage": {},
+                "config": {
+                    "filter_threshold": 0.8,
+                    "filter_ceiling": 0.2,
+                    "coverage_quality": 0.8,
+                },
             },
         )
         card = result._render_card()
         assert "ICL-calibrated" in card
 
-    def test_dataset_card_standard_mode(self):
+    def test_dataset_card_learnability_only(self):
         result = BuildResult(
             raw_samples=[],
             filtered_samples=[],
@@ -411,11 +428,108 @@ class TestFilterMode:
                 "total_generated": 0,
                 "total_filtered": 0,
                 "pass_rate": 0.0,
-                "config": {"filter_mode": "standard"},
+                "per_subtopic": {},
+                "coverage": {},
+                "config": {
+                    "filter_threshold": 0.8,
+                    "filter_ceiling": None,
+                    "coverage_quality": 0.8,
+                },
             },
         )
         card = result._render_card()
-        assert "Standard" in card
+        assert "Learnability only" in card
+
+
+class TestSchemaValidation:
+    def test_exact_prompt_shape_passes(self):
+        schema = Dataset.from_dict(
+            {"prompt": [[{"role": "user", "content": "hi"}]], "answer": ["ok"]}
+        ).features.to_dict()
+        row = {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "answer": "ok",
+        }
+        valid, reason = _validate_row_against_schema(row, schema)
+        assert valid is True
+        assert reason is None
+
+    def test_exact_prompt_shape_rejects_flat_string(self):
+        schema = Dataset.from_dict(
+            {"prompt": [[{"role": "user", "content": "hi"}]], "answer": ["ok"]}
+        ).features.to_dict()
+        row = {"prompt": "hi", "answer": "ok"}
+        valid, reason = _validate_row_against_schema(row, schema)
+        assert valid is False
+        assert reason is not None
+
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+
+
+class TestCoverage:
+    def _make_result(
+        self, coverage: dict, coverage_quality: float = 0.8
+    ) -> BuildResult:
+        return BuildResult(
+            raw_samples=[],
+            filtered_samples=[],
+            stats={
+                "total_generated": 0,
+                "total_filtered": 0,
+                "pass_rate": 0.0,
+                "per_subtopic": {},
+                "coverage": coverage,
+                "config": {"coverage_quality": coverage_quality},
+            },
+        )
+
+    def test_no_failures(self):
+        result = self._make_result(
+            {
+                "algebra": {"total": 10, "passed": 9, "rate": 0.9},
+                "geometry": {"total": 10, "passed": 8, "rate": 0.8},
+            }
+        )
+        assert result.coverage_failures == []
+
+    def test_one_failure(self):
+        result = self._make_result(
+            {
+                "algebra": {"total": 10, "passed": 9, "rate": 0.9},
+                "geometry": {"total": 10, "passed": 3, "rate": 0.3},
+            }
+        )
+        assert result.coverage_failures == ["geometry"]
+
+    def test_all_failures(self):
+        result = self._make_result(
+            {
+                "a": {"total": 5, "passed": 0, "rate": 0.0},
+                "b": {"total": 5, "passed": 1, "rate": 0.2},
+            }
+        )
+        assert len(result.coverage_failures) == 2
+
+    def test_custom_quality_threshold(self):
+        result = self._make_result(
+            {"topic": {"total": 10, "passed": 5, "rate": 0.5}},
+            coverage_quality=0.4,
+        )
+        assert result.coverage_failures == []
+
+    def test_coverage_in_dataset_card(self):
+        result = self._make_result(
+            {
+                "good": {"total": 10, "passed": 9, "rate": 0.9},
+                "bad": {"total": 10, "passed": 1, "rate": 0.1},
+            }
+        )
+        card = result._render_card()
+        assert "Coverage Failures" in card
+        assert "bad" in card
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +547,8 @@ class TestRenderEnvSpec:
         assert "SingleTurnEnv" in text
         assert "You are a helpful assistant." in text
         assert "correct_answer" in text
+        assert "Dataset schema from the environment" in text
+        assert "question" in text
 
     def test_tool_env_render(self, tool_env_instance):
         builder = SynthDataBuilder(env=tool_env_instance)
