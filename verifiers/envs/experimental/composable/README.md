@@ -20,7 +20,7 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 ```python
 from swe_tasksets import R2EGymTaskSet
-from opencode_agent import opencode_harness
+from opencode_harness import opencode_harness
 from verifiers.envs.experimental.composable import ComposableEnv
 
 # Create a taskset
@@ -41,7 +41,7 @@ results = await taskset.take(10).validate(concurrency=5)
 
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")
-env = ComposableEnv(taskset=taskset, harness=harness)
+env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
 ```
 
 ## Writing a new TaskSet
@@ -54,10 +54,7 @@ class MyMathTaskSet(TaskSet):
         return info["question"]
 
     def get_rubric(self) -> vf.Rubric:
-        return HybridMathRubric()
-
-    async def evaluate(self, state) -> None:
-        pass  # rubric handles scoring
+        return MyMathRubric()
 ```
 
 For **sandbox tasks** (SWE, Lean, Harbor), subclass `SandboxTaskSet`:
@@ -77,10 +74,6 @@ class MySWETaskSet(SandboxTaskSet):
         # state["sandbox_client"], state["sandbox_id"] available
         ...
 
-    async def evaluate(self, state) -> None:
-        # Run tests, store state["test_output"] for rubric to score
-        ...
-
     async def validate_instance(self, state) -> bool:
         # Apply gold patch, run tests, return True if passes
         ...
@@ -88,16 +81,50 @@ class MySWETaskSet(SandboxTaskSet):
 
 ## Scoring
 
-Each taskset provides its own rubric via `get_rubric()`. The separation is:
+Each taskset provides its own rubric via `get_rubric()`. The rubric owns **all
+scoring logic** — running tests, reading files, computing rewards. It is NOT
+just a state reader.
 
-- **`evaluate(state)`** — runs in `post_rollout` while the sandbox is alive. Executes tests and stores raw results in state (e.g. `state["test_output"]`).
-- **Rubric** — runs after the rollout. Reads raw results from state and computes the reward.
+Use `keep_sandbox_for_scoring=True` on the environment so the sandbox stays
+alive after the rollout for the rubric to use.
 
-This matches the verifiers pattern of separating rollout from scoring, enabling retry of scoring without re-running the rollout.
+```
+Rollout completes → sandbox kept alive → rubric.score_rollout() runs tests
+    → rubric.cleanup() deletes sandbox
+```
+
+This enables **retrying scoring independently of the rollout**: if scoring
+fails (transient sandbox error), the rubric can retry without re-running the
+agent.
+
+### Writing a rubric
+
+```python
+class MySWERubric(vf.Rubric):
+    def __init__(self, taskset, **kwargs):
+        super().__init__(**kwargs)
+        self.taskset = taskset
+        self.add_reward_func(self.solved)
+
+    async def solved(self, state, info, **kwargs) -> float:
+        sandbox_client = state["sandbox_client"]
+        sandbox_id = state["sandbox_id"]
+        # Run tests in the sandbox
+        test_output = await self.taskset._run_tests(sandbox_client, sandbox_id, state, ...)
+        return float(self.taskset._calculate_reward(test_output, info))
+
+    @vf.cleanup
+    async def cleanup_sandbox(self, state):
+        sandbox_client = state.get("sandbox_client")
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_client and sandbox_id:
+            await sandbox_client.delete(sandbox_id)
+```
 
 ## State context
 
-All `SandboxTaskSet` methods (`setup`, `evaluate`, `validate_instance`) receive `state` which contains:
+All `SandboxTaskSet` methods (`setup`, `validate_instance`) and rubric reward
+functions receive `state` which contains:
 
 - `state["sandbox_client"]` — the async sandbox client
 - `state["sandbox_id"]` — current sandbox ID
@@ -113,7 +140,7 @@ ComposableEnv subclasses `CliAgentEnv` without modifying it. It overrides these 
 - **`get_sandbox_resources(state)`** — reads CPU, memory, GPU from `SandboxSpec`
 - **`build_env_vars(state)`** — merges task env vars and exports `AGENT_WORKDIR`
 - **`post_sandbox_setup(state)`** — runs task setup, uploads instruction + system prompt, installs agent
-- **`post_rollout(state)`** — runs `evaluate(state)` to prepare state for the rubric
+- **`post_rollout(state)`** — collects agent logs (scoring is done by the rubric)
 
 Everything else — tunnel, HTTP interception, background job polling, streaming, TITO caching — is inherited from `CliAgentEnv` unchanged.
 

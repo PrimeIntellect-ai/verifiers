@@ -95,7 +95,6 @@ class TaskSet:
     Override:
         get_instruction(info) -> str
         get_rubric() -> vf.Rubric
-        evaluate(state) -> None  (optional, prepare state for rubric)
         validate_instance(state) -> bool  (optional)
     """
 
@@ -117,8 +116,11 @@ class TaskSet:
     def get_rubric(self) -> Any:
         """Return the rubric for scoring this taskset.
 
-        The rubric should read raw results from state (e.g. state["test_output"])
-        and compute the reward — not just read a pre-computed state["reward"].
+        The rubric owns all scoring logic — running tests, reading files,
+        computing rewards.  Use ``keep_sandbox_for_scoring=True`` on the
+        environment so the sandbox stays alive for the rubric.
+        The rubric should have a ``@vf.cleanup`` handler to delete the
+        sandbox when done.
         """
         raise NotImplementedError
 
@@ -133,14 +135,6 @@ class TaskSet:
         return {}
 
     async def setup(self, state: State) -> None:
-        pass
-
-    async def evaluate(self, state: State) -> None:
-        """Run tests / prepare state for the rubric. Called in post_rollout.
-
-        Store raw results in state (e.g. state["test_output"]).
-        The rubric handles reward computation.
-        """
         pass
 
     async def validate_instance(self, state: State) -> bool:
@@ -337,7 +331,6 @@ class SandboxTaskSet(TaskSet):
         get_sandbox_spec(info) -> SandboxSpec
         get_rubric() -> vf.Rubric
         setup(state) -> None
-        evaluate(state) -> None  (run tests, store raw results in state)
         validate_instance(state) -> bool  (optional)
         get_workdir(info) -> str  (optional, default "/app")
         get_env_vars() -> dict  (optional)
@@ -363,9 +356,6 @@ class SandboxTaskSet(TaskSet):
         return {}
 
     async def setup(self, state: State) -> None:
-        pass
-
-    async def evaluate(self, state: State) -> None:
         pass
 
     async def validate_instance(self, state: State) -> bool:

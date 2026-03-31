@@ -185,10 +185,11 @@ class ComposableEnv(CliAgentEnv):
                 )
 
     async def post_rollout(self, state: State) -> None:
-        """Run task evaluation (test execution) after the agent finishes.
+        """Collect agent logs after the agent finishes.
 
-        Stores raw results in state for the rubric to score.
-        Does NOT compute reward — that's the rubric's job.
+        Scoring is handled entirely by the rubric (via ``score_rollout``),
+        not here.  Use ``keep_sandbox_for_scoring=True`` so the sandbox
+        stays alive for the rubric to run tests / read files.
         """
         sandbox_id = state.get("sandbox_id")
         if sandbox_id and self.harness.log_path and "agent_logs" not in state:
@@ -203,12 +204,3 @@ class ComposableEnv(CliAgentEnv):
                 self.logger.warning(f"Failed to collect agent logs: {e}")
 
         await super().post_rollout(state)
-
-        if state.get("error") and isinstance(state["error"], vf.InfraError):
-            return
-
-        try:
-            await self.taskset.evaluate(state)
-        except Exception as e:
-            self.logger.warning(f"Task evaluation failed: {e}")
-            state["error"] = e
