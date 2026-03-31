@@ -7,7 +7,9 @@ from typing import Any
 def render_env_spec(spec: dict[str, Any]) -> str:
     """Render an EnvSpec dict into a human-readable description for LLM prompts."""
     lines: list[str] = []
-    lines.append(f"Environment type: {spec['env_type']} (max_turns={spec['max_turns']})")
+    lines.append(
+        f"Environment type: {spec['env_type']} (max_turns={spec['max_turns']})"
+    )
 
     if spec.get("system_prompt"):
         lines.append(f'System prompt: "{spec["system_prompt"]}"')
@@ -34,92 +36,91 @@ def render_env_spec(spec: dict[str, Any]) -> str:
     if spec.get("parser_info"):
         lines.append(f"Expected output format: {spec['parser_info']}")
 
-    example_rows = spec.get("example_rows", [])
-    if example_rows:
-        lines.append("Example dataset rows:")
-        for row in example_rows[:2]:
-            display = {k: v for k, v in row.items() if k != "prompt"}
-            if "prompt" in row:
-                msgs = row["prompt"]
-                if isinstance(msgs, list) and msgs:
-                    last = msgs[-1]
-                    content = last.get("content", "") if isinstance(last, dict) else str(last)
-                    display["prompt_preview"] = content[:200]
-            lines.append(f"  {json.dumps(display, default=str)}")
+    ds_schema = spec.get("dataset_schema") or {}
+    if ds_schema:
+        lines.append("Dataset schema from the environment (exact full feature spec):")
+        lines.append(json.dumps(ds_schema, indent=2, default=str))
 
     return "\n".join(lines)
 
 
 PLAN_PROMPT = """\
-You are a synthetic data planner. Given source material and an environment \
-specification, identify distinct subtopics that can be used to generate diverse \
-training tasks.
+You are a synthetic data planner. You receive an environment specification and \
+at most a small seed sample. Infer what task distribution this environment is \
+meant to capture, then propose subtopics for diverse synthetic data.
 
 ## Environment
 {env_spec}
 
-## Source Material (seed)
-{seed_content}
+## Seed sample (bounded, complete rows/documents, JSON or text)
+{examples_json}
 
 ## Instructions
-Identify exactly {num_subtopics} distinct subtopics from the source material \
-that are relevant to the environment's task domain. Each subtopic should be \
-specific enough to generate focused tasks, but broad enough to support \
-{samples_per_subtopic} unique samples.
+1. Read every field in each seed example. Infer the intent of the environment \
+and what a good synthetic row should look like.
+2. Propose distinct subtopics that naturally partition the task space. Each \
+subtopic should support {samples_per_subtopic} unique new rows.{max_subtopics_line}
 
-Return a JSON array of subtopic strings. Example:
-["subtopic one", "subtopic two", "subtopic three"]
+3. The dataset schema shown above, when present, is authoritative. Do not invent \
+or rename columns.
+4. **generation_guidance**: Brief instructions for a downstream generator so it \
+produces rows that match real examples in structure and style.
 
-Return ONLY the JSON array, no other text.
+Return a single JSON object with exactly these keys:
+- "subtopics": string array
+- "generation_guidance": string
+
+Return ONLY the JSON object, no other text.
 """
 
 
-BACKTRANSLATE_PROMPT = """\
-You are a synthetic data generator. Given source material, an environment \
-specification, and a subtopic, generate a training task with a golden answer.
+GENERATE_PROMPT = """\
+You are a synthetic data generator. Produce **one** new dataset row that matches \
+the schema and style of the seed examples.
 
 ## Environment
 {env_spec}
 
-## Source Material
-{seed_content}
+## Reference material (seed rows and/or documents)
+{source_section}
 
 ## Subtopic
 {subtopic}
 
-## Instructions
-Using the source material above, create a task that:
-1. Matches the environment's dataset format (see example rows above)
-2. Has a clear, verifiable answer derivable from the source material
-3. Focuses on the specified subtopic
-4. Would require access to the source material to answer correctly
-5. Is self-contained — the question makes sense without seeing the source
+## Generation guidance
+{generation_guidance}
 
-Return a single JSON object with these fields:
-- "question": the task question (string)
-- "answer": the golden answer (string)
-- "info": additional metadata as a JSON object (include at minimum \
-{{"seed_id": "{seed_id}", "subtopic": "{subtopic}"}})
+## Required output schema
+The environment schema is authoritative. Output a single JSON object that matches \
+this schema exactly, including keys and value structure:
+{schema_json}
+
+## Instructions
+1. Output a single JSON object that matches the schema exactly.
+2. Match the shape and nesting of the seed examples for every field.
+3. The row must be plausible for the subtopic and consistent with the environment \
+and reward criteria.
+4. Do not include helper keys like "subtopic" unless they are real dataset columns.
 
 Return ONLY the JSON object, no other text.
 """
 
 
 FILTER_JUDGE_PROMPT = """\
-You are a judge evaluating whether a response correctly answers a question.
+You are a judge evaluating whether a response correctly answers a task.
 
-## Question
-{question}
+## Task
+{task_text}
 
-## Golden Answer
+## Golden reference
 {golden_answer}
 
-## Model Response
+## Model response
 {response}
 
 ## Instructions
 Determine whether the model's response is correct by comparing it to the \
-golden answer. The response does not need to match exactly, but must convey \
+golden reference. The response does not need to match exactly, but must convey \
 the same core information.
 
 Return a JSON object:
@@ -127,3 +128,8 @@ Return a JSON object:
 
 Return ONLY the JSON object, no other text.
 """
+
+_NO_SOURCE_DIRECTIVE = (
+    "No external source material provided. Use the environment "
+    "specification above to infer what tasks should look like."
+)
