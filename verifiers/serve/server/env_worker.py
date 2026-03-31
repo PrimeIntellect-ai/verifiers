@@ -32,7 +32,7 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.process_utils import monitor_death_pipe
+from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
 
 
@@ -355,6 +355,8 @@ class EnvWorker:
         self.logger.info(f"Shut down worker {self.worker_name}")
 
     async def run(self) -> None:
+        set_proc_title(f"EnvWorker{self.worker_id}")
+
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 

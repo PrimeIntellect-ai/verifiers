@@ -51,6 +51,7 @@ dependencies = [
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
+    "setproctitle>=1.3.0",
 ]
 
 [dependency-groups]

@@ -15,7 +15,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
-from verifiers.utils.process_utils import monitor_death_pipe
+from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 
 
 class EnvServer(ABC):
@@ -85,6 +85,8 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
+        set_proc_title("EnvServer")
+
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
