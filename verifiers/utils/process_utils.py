@@ -23,7 +23,6 @@ def set_proc_title(name: str) -> None:
     """
     title = f"{VERIFIERS_PROC_PREFIX}::{name}"
     setproctitle.setproctitle(title)
-    logger.info(f"Process title set to {title!r}")
 
 
 def monitor_death_pipe(death_pipe: Connection) -> None:
