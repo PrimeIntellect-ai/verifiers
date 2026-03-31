@@ -19,7 +19,7 @@ The task and harness each own different concerns.  ComposableEnv connects them:
 **Harness owns** (via Harness dataclass):
 - How to install the agent: ``install_script``
 - How to run the agent: ``run_command``
-- Where the agent reads instruction: ``instruction_path`` (default ``/task/instruction.md``)
+- Where the agent reads instruction: ``instruction_path`` (default ``/opencode/prompt.txt``)
 - Where the agent reads system prompt: ``system_prompt_path``
 - System prompt content: ``system_prompt``
 - Fallback sandbox resources: ``sandbox_spec`` (when task doesn't need sandbox)
@@ -161,7 +161,7 @@ class ComposableEnv(CliAgentEnv):
         instruction = self.taskset.get_instruction(info)
         if instruction.strip():
             await self.upload_content(
-                sandbox_id, instruction.strip(), self.harness.instruction_path
+                sandbox_id, instruction, self.harness.instruction_path
             )
 
         # 4. Upload system prompt to harness-declared path
