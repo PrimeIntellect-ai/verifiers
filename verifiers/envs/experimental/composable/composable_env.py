@@ -98,7 +98,7 @@ class ComposableEnv(CliAgentEnv):
 
     def get_sandbox_resources(self, state: State) -> dict[str, Any]:
         """Per-instance resources from SandboxSpec, or harness defaults."""
-        spec = self._get_spec(state)
+        spec = self._get_spec(state) or self.harness.sandbox_spec
         if spec:
             return {
                 "cpu_cores": spec.cpu_cores,
@@ -106,16 +106,7 @@ class ComposableEnv(CliAgentEnv):
                 "disk_size_gb": spec.disk_size_gb,
                 "gpu_count": spec.gpu_count,
                 "gpu_type": spec.gpu_type,
-                "timeout_minutes": spec.timeout_minutes,
-            }
-        if self.harness.sandbox_spec:
-            spec = self.harness.sandbox_spec
-            return {
-                "cpu_cores": spec.cpu_cores,
-                "memory_gb": spec.memory_gb,
-                "disk_size_gb": spec.disk_size_gb,
-                "gpu_count": spec.gpu_count,
-                "gpu_type": spec.gpu_type,
+                "vm": spec.gpu_count > 0,
                 "timeout_minutes": spec.timeout_minutes,
             }
         return super().get_sandbox_resources(state)
