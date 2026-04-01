@@ -245,11 +245,11 @@ def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
     assert "Average" in rendered
     assert "Min" in rendered
     assert "Max" in rendered
-    assert "sub-LLM completion tokens" in rendered
+    assert "sub llm completion tokens" in rendered
     assert "28,698" in rendered
     assert "877" in rendered
     assert "56,519" in rendered
-    assert "sub-LLM call count" in rendered
+    assert "sub llm call count" in rendered
     assert "Distribution" in rendered
 
 

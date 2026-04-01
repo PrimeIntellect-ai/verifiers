@@ -270,9 +270,9 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("sub_llm_max_batch_size", 0)
     state.setdefault("sub_llm_mean_batch_size", 0.0)
 
-    state.setdefault("main_rlm_turns", 0)
-    state.setdefault("main_rlm_prompt_tokens", 0)
-    state.setdefault("main_rlm_completion_tokens", 0)
+    state.setdefault("root_llm_turns", 0)
+    state.setdefault("root_llm_prompt_tokens", 0)
+    state.setdefault("root_llm_completion_tokens", 0)
 
     state.setdefault("repl_total_time_seconds", 0.0)
     state.setdefault("repl_call_count", 0)
@@ -287,12 +287,12 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_drop_sequence", 0)
     state.setdefault("_keep_from_assistant_index", 0)
 
-    state.setdefault("context_drop_count", 0)
-    state.setdefault("context_total_turns_dropped", 0)
-    state.setdefault("context_drop_mean_remaining_turns", 0.0)
-    state.setdefault("context_drop_mean_turns_between", 0.0)
-    state.setdefault("_context_drop_remaining_turns_list", [])
-    state.setdefault("_context_drop_at_main_turns", [])
+    state.setdefault("compaction_count", 0)
+    state.setdefault("compaction_total_turns_dropped", 0)
+    state.setdefault("compaction_mean_remaining_turns", 0.0)
+    state.setdefault("compaction_mean_turns_between", 0.0)
+    state.setdefault("_compaction_remaining_turns_list", [])
+    state.setdefault("_compaction_at_root_llm_turns", [])
 
 
 def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
@@ -349,9 +349,9 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
             state["sub_llm_max_batch_size"] = 0
             state["sub_llm_mean_batch_size"] = 0.0
     else:
-        state["main_rlm_turns"] += 1
-        state["main_rlm_prompt_tokens"] += prompt_tokens
-        state["main_rlm_completion_tokens"] += completion_tokens
+        state["root_llm_turns"] += 1
+        state["root_llm_prompt_tokens"] += prompt_tokens
+        state["root_llm_completion_tokens"] += completion_tokens
 
 
 def _update_root_tool_metrics(state: State, tool_name: str) -> None:
@@ -372,17 +372,17 @@ class RLMMonitorRubric(vf.Rubric):
         "sub_llm_batch_count",
         "sub_llm_max_batch_size",
         "sub_llm_mean_batch_size",
-        "main_rlm_turns",
-        "main_rlm_prompt_tokens",
-        "main_rlm_completion_tokens",
+        "root_llm_turns",
+        "root_llm_prompt_tokens",
+        "root_llm_completion_tokens",
         "repl_total_time_seconds",
         "repl_call_count",
         "repl_mean_time_seconds",
         "root_tool_call_count",
-        "context_drop_count",
-        "context_total_turns_dropped",
-        "context_drop_mean_remaining_turns",
-        "context_drop_mean_turns_between",
+        "compaction_count",
+        "compaction_total_turns_dropped",
+        "compaction_mean_remaining_turns",
+        "compaction_mean_turns_between",
     ]
 
     def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
@@ -2680,20 +2680,20 @@ class RLMEnv(vf.StatefulToolEnv):
 
         # Update context dropping metrics
         _ensure_rlm_metric_state(state)
-        state["context_drop_count"] += 1
-        state["context_total_turns_dropped"] = state["_dropped_turns_count"]
+        state["compaction_count"] += 1
+        state["compaction_total_turns_dropped"] = state["_dropped_turns_count"]
 
-        remaining_list: list[int] = state["_context_drop_remaining_turns_list"]
+        remaining_list: list[int] = state["_compaction_remaining_turns_list"]
         remaining_list.append(new_visible)
-        state["context_drop_mean_remaining_turns"] = sum(remaining_list) / len(
+        state["compaction_mean_remaining_turns"] = sum(remaining_list) / len(
             remaining_list
         )
 
-        at_turns: list[int] = state["_context_drop_at_main_turns"]
+        at_turns: list[int] = state["_compaction_at_root_llm_turns"]
         at_turns.append(main_turn)
         if len(at_turns) >= 2:
             gaps = [at_turns[i] - at_turns[i - 1] for i in range(1, len(at_turns))]
-            state["context_drop_mean_turns_between"] = sum(gaps) / len(gaps)
+            state["compaction_mean_turns_between"] = sum(gaps) / len(gaps)
 
         await self._upload_summary(state, n_turns, summary, new_visible)
 
@@ -3986,7 +3986,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         if self.root_max_completion_tokens is not None:
-            used = state.get("main_rlm_completion_tokens", 0)
+            used = state.get("root_llm_completion_tokens", 0)
             budget = self.root_max_completion_tokens
             output += f"\n[{used}/{budget} root completion tokens used]"
 
@@ -4135,7 +4135,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Check if root model completion token budget is exhausted."""
         if self.root_max_completion_tokens is None:
             return False
-        used = state.get("main_rlm_completion_tokens", 0)
+        used = state.get("root_llm_completion_tokens", 0)
         return used >= self.root_max_completion_tokens
 
     # =========================================================================

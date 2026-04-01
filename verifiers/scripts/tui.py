@@ -1235,14 +1235,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
         "Scores": 5,
         "Other": 6,
     }
-    replacements = (
-        ("sub llm", "sub-LLM"),
-        ("main rlm", "main RLM"),
-        ("root rlm", "root RLM"),
-        ("llm", "LLM"),
-        ("repl", "REPL"),
-    )
-    prepared: List[Tuple[int, int, str, str, MetricSummary]] = []
+    prepared: List[Tuple[int, str, str, MetricSummary]] = []
     for summary in metric_summaries:
         lowered = summary.name.lower()
         if "token" in lowered:
@@ -1260,23 +1253,10 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
         else:
             category = "Other"
 
-        prefix_rank = 4
-        if lowered.startswith("sub_llm_"):
-            prefix_rank = 0
-        elif lowered.startswith("main_rlm_"):
-            prefix_rank = 1
-        elif lowered.startswith("root_"):
-            prefix_rank = 2
-        elif lowered.startswith("repl_"):
-            prefix_rank = 3
-
         display_name = summary.name.replace("_", " ")
-        for source, target in replacements:
-            display_name = display_name.replace(source, target)
         prepared.append(
             (
                 category_order.get(category, 99),
-                prefix_rank,
                 display_name,
                 category,
                 summary,
@@ -1291,7 +1271,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     count_width = len("N")
 
     previous_category: str | None = None
-    for _, _, display_name, category, summary in sorted(prepared):
+    for _, display_name, category, summary in sorted(prepared):
         avg_text = _format_metric_stat_value(summary.avg)
         min_text = _format_metric_stat_value(summary.min_value)
         max_text = _format_metric_stat_value(summary.max_value)

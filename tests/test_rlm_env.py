@@ -2445,25 +2445,25 @@ class TestRootLLMMaxCompletionTokens:
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
         assert rlm_env.root_max_completion_tokens is None
-        state = {"main_rlm_completion_tokens": 999999}
+        state = {"root_llm_completion_tokens": 999999}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 500}
+        state = {"root_llm_completion_tokens": 500}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 1000}
+        state = {"root_llm_completion_tokens": 1000}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 1500}
+        state = {"root_llm_completion_tokens": 1500}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
@@ -2483,7 +2483,7 @@ class TestRootLLMMaxCompletionTokens:
         state = {
             "trajectory": [],
             "context_warning_sent": False,
-            "main_rlm_completion_tokens": 1200,
+            "root_llm_completion_tokens": 1200,
         }
         output = await rlm_env.call_python_repl("print('test')", state)
 
@@ -2506,7 +2506,7 @@ class TestRootLLMMaxCompletionTokens:
         state = {
             "trajectory": [],
             "context_warning_sent": False,
-            "main_rlm_completion_tokens": 1200,
+            "root_llm_completion_tokens": 1200,
         }
         output = await rlm_env.call_python_repl("print('test')", state)
 
@@ -2565,7 +2565,7 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env.root_max_completion_tokens = 1000
         rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
 
-        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
+        state = {"root_llm_completion_tokens": 1500, "rollout_id": "test"}
         fake_tool_messages = [MagicMock()]
 
         with patch(
@@ -2584,7 +2584,7 @@ class TestRootLLMMaxCompletionTokens:
         final_env_response."""
         rlm_env.root_max_completion_tokens = 1000
 
-        state = {"main_rlm_completion_tokens": 500}
+        state = {"root_llm_completion_tokens": 500}
         fake_tool_messages = [MagicMock()]
 
         with patch(
@@ -2603,7 +2603,7 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env.root_max_completion_tokens = 1000
 
         state = {
-            "main_rlm_completion_tokens": 500,
+            "root_llm_completion_tokens": 500,
             "final_answer": "already set",
         }
         fake_tool_messages = [MagicMock()]
@@ -3146,10 +3146,10 @@ class TestContextDropping:
 
         await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
 
-        assert state["context_drop_count"] == 1
-        assert state["context_total_turns_dropped"] == 2
-        assert state["context_drop_mean_remaining_turns"] == 4.0  # 6 - 2
-        assert state["context_drop_mean_turns_between"] == 0.0  # only 1 drop
+        assert state["compaction_count"] == 1
+        assert state["compaction_total_turns_dropped"] == 2
+        assert state["compaction_mean_remaining_turns"] == 4.0  # 6 - 2
+        assert state["compaction_mean_turns_between"] == 0.0  # only 1 drop
 
     @pytest.mark.asyncio
     async def test_cumulative_drop_metrics(self, env_with_dropping):
@@ -3159,8 +3159,8 @@ class TestContextDropping:
 
         # Drop 2 at turn 10: 10 visible -> 8 remaining
         await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
-        assert state["context_drop_count"] == 1
-        assert state["context_drop_mean_remaining_turns"] == 8.0
+        assert state["compaction_count"] == 1
+        assert state["compaction_mean_remaining_turns"] == 8.0
 
         # Simulate 3 more main turns (total 13 in trajectory)
         for i in range(3):
@@ -3180,12 +3180,12 @@ class TestContextDropping:
 
         # Drop 3 at turn 13: 13-2=11 visible -> 8 remaining
         await env_with_dropping._handle_remove_conversation_turns(state, 3, "")
-        assert state["context_drop_count"] == 2
-        assert state["context_total_turns_dropped"] == 5
+        assert state["compaction_count"] == 2
+        assert state["compaction_total_turns_dropped"] == 5
         # mean remaining: (8 + 8) / 2 = 8.0
-        assert state["context_drop_mean_remaining_turns"] == 8.0
+        assert state["compaction_mean_remaining_turns"] == 8.0
         # turns between: [13 - 10] = [3], mean = 3.0
-        assert state["context_drop_mean_turns_between"] == 3.0
+        assert state["compaction_mean_turns_between"] == 3.0
 
     @pytest.mark.asyncio
     async def test_failed_drop_does_not_update_metrics(self, env_with_dropping):
@@ -3195,5 +3195,5 @@ class TestContextDropping:
         # Try to drop 5 (exceeds limit)
         await env_with_dropping._handle_remove_conversation_turns(state, 5, "")
 
-        assert state.get("context_drop_count", 0) == 0
-        assert state.get("context_total_turns_dropped", 0) == 0
+        assert state.get("compaction_count", 0) == 0
+        assert state.get("compaction_total_turns_dropped", 0) == 0
