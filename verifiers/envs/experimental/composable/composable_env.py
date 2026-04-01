@@ -179,9 +179,7 @@ class ComposableEnv(CliAgentEnv):
                     f"harness {type(self.harness).__name__} does not implement "
                     f"format_mcp_config"
                 )
-            await self.upload_content(
-                sandbox_id, mcp_config, "/task/mcp_config.json"
-            )
+            await self.upload_content(sandbox_id, mcp_config, "/task/mcp_config.json")
 
         # 6. Install agent binary
         if self.harness.install_script:
