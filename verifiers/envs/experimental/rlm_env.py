@@ -1028,16 +1028,16 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
         pwd_marker = f"__RLM_PWD__{marker}__"
 
         bash_script = (
-            f'cd "${{RLM_PWD:-$PWD}}"\\n'
-            f'export RLM_READY="${{RLM_READY:-}}"\\n'
-            f'export RLM_CONTENT="${{RLM_CONTENT-}}"\\n'
+            f'cd "${{REPL_PWD:-$PWD}}"\\n'
+            f'export ANSWER_READY="${{ANSWER_READY:-}}"\\n'
+            f'export ANSWER_CONTENT="${{ANSWER_CONTENT-}}"\\n'
             f"{TOOL_DEF_SCRIPT}\\n"
             f"(\\n"
             f"trap '"
             f'__RLM_STATUS=$?; '
             f'printf "\\n{end_marker}__%s\\n" "$__RLM_STATUS"; '
-            f'printf "{env_marker}__%s__" "${{RLM_READY:-}}"; '
-            f'printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n"; '
+            f'printf "{env_marker}__%s__" "${{ANSWER_READY:-}}"; '
+            f'printf "%s" "${{ANSWER_CONTENT-}}" | base64 | tr -d "\\n"; '
             f'printf "\\n{pwd_marker}__%s\\n" "$PWD"'
             f"' EXIT\\n"
             f"{code}\\n"
@@ -1047,9 +1047,9 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
         env = os.environ.copy()
         env.update(
             {
-                "RLM_READY": "1" if state.get("ready") else "",
-                "RLM_CONTENT": state.get("content", ""),
-                "RLM_PWD": state.get("cwd", ""),
+                "ANSWER_READY": "1" if state.get("ready") else "",
+                "ANSWER_CONTENT": state.get("content", ""),
+                "REPL_PWD": state.get("cwd", ""),
                 "RLM_ROOT_TOOL_HELPER": helper_path,
                 "RLM_ROOT_TOOL_PYTHON": sys.executable,
             }
@@ -1211,23 +1211,23 @@ There exists an `answer` variable, which is a dict. `answer["content"]` must con
 
     BASH_BASE_PROMPT: str = """You have the `call_bash_repl` tool and a filesystem available to you.
 
-In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
+In the end, the `ANSWER_CONTENT` environment variable must contain your answer. When the final answer is set, call `export ANSWER_READY=1`.
 """
 
     SUB_LLM_ROOT_INSTRUCTION_STORE: dict[str, str] = {
         "light": (
-            "Make use of sub-LLMs via `llm_batch` whenever they could be useful."
+            "Make use of sub-models via `llm_batch` whenever they could be useful."
         ),
         "medium": (
-            "Make use of sub-LLMs via `llm_batch` whenever they could be useful;"
+            "Make use of sub-models via `llm_batch` whenever they could be useful;"
             " prefer calling them in parallel to calling them sequentially."
         ),
         "heavy": (
-            "\n## Sub-LLM Usage\n\n"
+            "\n## llm_batch Usage\n\n"
             "- Use `llm_batch()` for semantic tasks — summarization,"
             " understanding text, classification, etc.\n"
             "- Pass a list of strings only (no message dicts).\n"
-            "- Prefer calling sub-LLMs in parallel to calling them sequentially."
+            "- Prefer calling sub-models in parallel to calling them sequentially."
         ),
     }
 
@@ -1346,15 +1346,15 @@ In the end, the `RLM_CONTENT` environment variable must contain your answer. Whe
         if not self.enable_sub_llms or not self.sub_tool_defs:
             return ""
 
-        lines = ["\n## Sub-LLM Tools\n"]
+        lines = ["\n## Sub-Model Tools\n"]
         lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
+            "The sub-models called via `llm_batch()` have access to the following tools:\n"
         )
 
         self._format_tool_docs_into(lines, self.sub_tool_defs)
 
         lines.append(
-            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
+            "When delegating tasks to sub-models via `llm_batch()`, they can use these "
             "tools autonomously."
         )
         lines.append(
@@ -1404,7 +1404,7 @@ In the end, the `RLM_CONTENT` environment variable must contain your answer. Whe
         return (
             f"\nYou have a total budget of "
             f"{self.sub_max_completion_tokens} completion tokens "
-            f"across all sub-LLM calls via llm_batch().\n"
+            f"across all llm_batch() calls.\n"
         )
 
     def build_system_prompt(self) -> str:
@@ -1420,7 +1420,7 @@ In the end, the `RLM_CONTENT` environment variable must contain your answer. Whe
             + self.build_message_history_note()
             + self.build_context_dropping_note()
         )
-        return "<RLM_SCAFFOLDING>\n" + body + "\n</RLM_SCAFFOLDING>\n\n"
+        return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
 
     def build_sub_llm_system_prompt(self) -> str:
         """Build the system prompt prepended to every sub-LLM call."""
@@ -1445,7 +1445,7 @@ In the end, the `RLM_CONTENT` environment variable must contain your answer. Whe
             content = msg_mut.get("content")
             if isinstance(content, str) or content is None:
                 text = content or ""
-                if text.startswith("<RLM_SCAFFOLDING>"):
+                if text.startswith("<SCAFFOLDING>"):
                     return
                 msg_mut["content"] = scaffold + text
             elif isinstance(content, list):
@@ -1453,7 +1453,7 @@ In the end, the `RLM_CONTENT` environment variable must contain your answer. Whe
                     content
                     and isinstance(content[0], dict)
                     and content[0].get("type") == "text"
-                    and str(content[0].get("text", "")).startswith("<RLM_SCAFFOLDING>")
+                    and str(content[0].get("text", "")).startswith("<SCAFFOLDING>")
                 ):
                     return
                 msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
@@ -2556,7 +2556,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
             async def llm_batch(prompts: list[str]) -> list[str]:
                 """
-                Call the sub-LLM on multiple prompts in parallel.
+                Call a sub-model on multiple prompts in parallel.
 
                 - Input: a list of prompt strings.
                 - Output: a list of responses in the same order as the input prompts.
@@ -3035,9 +3035,9 @@ class RLMEnv(vf.StatefulToolEnv):
         used = state_ref.get("sub_llm_completion_tokens", 0)
         budget = self.sub_max_completion_tokens
         return (
-            f"Sub-LLM token budget exhausted "
+            f"llm_batch token budget exhausted "
             f"(used {used}/{budget} completion tokens). "
-            f"No further sub-LLM calls are available. "
+            f"No further llm_batch calls are available. "
             f"Finalize your answer with the information you have."
         )
 
@@ -3065,7 +3065,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 contents = [msg] * len(prompts)
                 summary_lines = [
                     f"llm_batch: {len(prompts)} call(s) skipped — "
-                    f"sub-LLM token budget exhausted "
+                    f"llm_batch token budget exhausted "
                     f"({used}/{self.sub_max_completion_tokens} "
                     f"completion tokens used)"
                 ]
@@ -3173,7 +3173,9 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.sub_max_completion_tokens is not None:
             used = state_ref.get("sub_llm_completion_tokens", 0)
             budget = self.sub_max_completion_tokens
-            summary_lines.append(f"  [{used}/{budget} sub-LLM completion tokens used]")
+            summary_lines.append(
+                f"  [{used}/{budget} llm_batch completion tokens used]"
+            )
 
         return contents, summary_lines
 
@@ -3258,9 +3260,9 @@ class RLMEnv(vf.StatefulToolEnv):
                         {
                             "message": {
                                 "content": (
-                                    f"Sub-LLM token budget exhausted "
+                                    f"llm_batch token budget exhausted "
                                     f"(used {used}/{budget} completion tokens). "
-                                    f"No further sub-LLM calls are available. "
+                                    f"No further llm_batch calls are available. "
                                     f"Finalize your answer with the information you have."
                                 )
                             }
@@ -3980,7 +3982,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return await self._call_repl(
             code,
             state,
-            ready_instruction="Please finalize your answer soon by setting RLM_READY=1.",
+            ready_instruction="Please finalize your answer soon by setting ANSWER_READY=1.",
             append_execution_time=False,
         )
 
