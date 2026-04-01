@@ -143,7 +143,12 @@ class ComposableEnv(CliAgentEnv):
         # Populate sandbox context in state (once, used by setup/evaluate/validate)
         state["sandbox_client"] = self.sandbox_client
         spec = self._get_spec(state)
-        state["test_timeout"] = spec.timeout_minutes * 60 if spec else 900
+        if spec:
+            state["test_timeout"] = spec.timeout_minutes * 60
+        elif self.harness.sandbox_spec:
+            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
+        else:
+            state["test_timeout"] = 900
 
         # 1. Task setup
         await self.taskset.setup(state)
