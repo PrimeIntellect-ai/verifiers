@@ -1216,18 +1216,18 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
     SUB_LLM_ROOT_INSTRUCTION_STORE: dict[str, str] = {
         "light": (
-            "Make use of sub-models via `llm_batch` whenever they could be useful."
+            "Make use of sub-LLMs via `llm_batch` whenever they could be useful."
         ),
         "medium": (
-            "Make use of sub-models via `llm_batch` whenever they could be useful;"
+            "Make use of sub-LLMs via `llm_batch` whenever they could be useful;"
             " prefer calling them in parallel to calling them sequentially."
         ),
         "heavy": (
-            "\n## llm_batch Usage\n\n"
+            "\n## Sub-LLM Usage\n\n"
             "- Use `llm_batch()` for semantic tasks — summarization,"
             " understanding text, classification, etc.\n"
             "- Pass a list of strings only (no message dicts).\n"
-            "- Prefer calling sub-models in parallel to calling them sequentially."
+            "- Prefer calling sub-LLMs in parallel to calling them sequentially."
         ),
     }
 
@@ -1346,15 +1346,15 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         if not self.enable_sub_llms or not self.sub_tool_defs:
             return ""
 
-        lines = ["\n## Sub-Model Tools\n"]
+        lines = ["\n## Sub-LLM Tools\n"]
         lines.append(
-            "The sub-models called via `llm_batch()` have access to the following tools:\n"
+            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
         )
 
         self._format_tool_docs_into(lines, self.sub_tool_defs)
 
         lines.append(
-            "When delegating tasks to sub-models via `llm_batch()`, they can use these "
+            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
             "tools autonomously."
         )
         lines.append(
@@ -2556,7 +2556,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
             async def llm_batch(prompts: list[str]) -> list[str]:
                 """
-                Call a sub-model on multiple prompts in parallel.
+                Call the sub-LLM on multiple prompts in parallel.
 
                 - Input: a list of prompt strings.
                 - Output: a list of responses in the same order as the input prompts.

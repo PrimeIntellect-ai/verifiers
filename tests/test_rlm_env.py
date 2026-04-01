@@ -223,7 +223,7 @@ class TestGenerateSubToolsDocumentation:
 
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
         docs = rlm_env_with_sub_tools.prompt_builder.build_sub_tools_documentation()
-        assert "Sub-Model Tools" in docs
+        assert "Sub-LLM Tools" in docs
         assert "sample_tool" in docs
         assert "another_tool" in docs
         assert "Add two numbers" in docs
@@ -460,10 +460,10 @@ class TestPromptVerbosity:
                 "light",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "Make use of sub-models via `llm_batch`",
+                    "Make use of sub-LLMs via `llm_batch`",
                 ],
                 [
-                    "## llm_batch Usage",
+                    "## Sub-LLM Usage",
                 ],
             ),
             (
@@ -473,14 +473,14 @@ class TestPromptVerbosity:
                     "prefer calling them in parallel",
                 ],
                 [
-                    "## llm_batch Usage",
+                    "## Sub-LLM Usage",
                 ],
             ),
             (
                 "heavy",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "## llm_batch Usage",
+                    "## Sub-LLM Usage",
                     "Pass a list of strings only",
                 ],
                 [],
@@ -535,7 +535,6 @@ class TestPromptVerbosity:
             prompt = result["rlm_system_prompt"]
             assert "llm_batch" not in prompt
             assert "sub-LLM" not in prompt
-            assert "sub-model" not in prompt.lower()
             assert "You have the `call_python_repl` tool" in prompt
         finally:
             await env.cleanup_rlm_state(result)
@@ -970,10 +969,10 @@ class TestToolSplitConfiguration:
         try:
             prompt = result["rlm_system_prompt"]
             assert "REPL Tools" in prompt
-            assert "Sub-Model Tools" in prompt
+            assert "Sub-LLM Tools" in prompt
 
             repl_index = prompt.find("REPL Tools")
-            sub_index = prompt.find("Sub-Model Tools")
+            sub_index = prompt.find("Sub-LLM Tools")
             assert repl_index != -1
             assert sub_index != -1
             assert repl_index < sub_index
