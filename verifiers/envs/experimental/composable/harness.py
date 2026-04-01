@@ -36,11 +36,11 @@ class Harness:
     system_prompt:
         System prompt content. Written to ``system_prompt_path`` in the
         sandbox before the agent starts. None = no system prompt.
-    instruction_path:
-        Where the task instruction is written in the sandbox.
     system_prompt_path:
         Where the system prompt is written in the sandbox.
         Only used if ``system_prompt`` is not None.
+    instruction_path:
+        Where the task instruction is written in the sandbox.
     log_path:
         Optional path to the agent log file inside the sandbox.
     sandbox_spec:
@@ -52,7 +52,7 @@ class Harness:
     install_script: str | None = None
     run_command: str = ""
     system_prompt: str | None = None
-    instruction_path: str = "/task/instruction.md"
     system_prompt_path: str = "/task/system_prompt.txt"
+    instruction_path: str = "/task/instruction.md"
     log_path: str | None = None
     sandbox_spec: SandboxSpec | None = None
