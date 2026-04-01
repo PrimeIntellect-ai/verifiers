@@ -168,18 +168,10 @@ class ComposableEnv(CliAgentEnv):
                 sandbox_id, self.harness.system_prompt, self.harness.system_prompt_path
             )
 
-        # 5. Upload MCP server files and pass configs to harness
+        # 5. Wire MCP servers from taskset into harness
         mcp_servers = self.taskset.get_mcp_servers()
         if mcp_servers:
             self.harness.mcp_servers = mcp_servers
-            for name, spec in mcp_servers.items():
-                if spec.files:
-                    for sandbox_path, content in spec.files.items():
-                        parent = sandbox_path.rsplit("/", 1)[0]
-                        await self.sandbox_client.execute_command(
-                            sandbox_id, f"mkdir -p {parent}", timeout=10
-                        )
-                        await self.upload_content(sandbox_id, content, sandbox_path)
             mcp_config = self.harness.format_mcp_config(mcp_servers)
             if mcp_config is None:
                 raise NotImplementedError(

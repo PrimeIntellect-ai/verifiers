@@ -36,10 +36,12 @@ from verifiers.types import Messages, State
 class MCPServerSpec:
     """An MCP server that a TaskSet provides to the agent.
 
-    The server script is uploaded into the sandbox and spawned by the
-    agent harness via stdio transport.  The harness is responsible for
-    mapping this spec to its own config format (e.g. OpenCode's ``mcp``
-    section, Claude Code's ``--mcp-server`` flag, etc.).
+    The server is spawned by the agent harness via stdio transport.
+    The harness maps this spec to its own config format (e.g. OpenCode's
+    ``mcp`` section, Claude Code's ``--mcp-server`` flag, etc.).
+
+    The taskset is responsible for getting the server binary/script into
+    the sandbox (e.g. via ``setup()``, docker image, or install script).
 
     Attributes
     ----------
@@ -48,14 +50,10 @@ class MCPServerSpec:
         e.g. ``["python", "/task/tools/serper_search.py"]``.
     env_vars:
         Environment variables the server needs (e.g. API keys).
-    files:
-        Files to upload into the sandbox before the server starts.
-        Mapping of sandbox path → file content.
     """
 
     command: list[str]
     env_vars: dict[str, str] | None = None
-    files: dict[str, str] | None = None
 
 
 @dataclass
