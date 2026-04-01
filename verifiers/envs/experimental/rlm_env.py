@@ -122,7 +122,6 @@ def _dedupe_tools(
 def _merge_tool_lists(
     *,
     fixed_tools: list[Callable],
-    shared_tools: list[Callable],
     role_tools: list[Callable],
     context: str,
     reserved_names: set[str],
@@ -133,12 +132,6 @@ def _merge_tool_lists(
         reserved_names=set(),
     )
     merged = list(fixed)
-    deduped_shared, _ = _dedupe_tools(
-        shared_tools,
-        context=f"{context} shared tools",
-        reserved_names=reserved_names,
-    )
-    merged.extend(deduped_shared)
     deduped_role, _ = _dedupe_tools(
         role_tools,
         context=f"{context} tools",
@@ -2239,16 +2232,14 @@ class RLMEnv(vf.StatefulToolEnv):
 
     Args:
         max_turns: Maximum number of root-model turns (default: 50).
-        tools: List of tools shared by both the root REPL and sub-LLMs.
-                   These are added first in the tool documentation order.
-        root_tools: List of tools available only to the root REPL.
-                   The root model can call these inside the REPL as Python functions.
+        tools: List of standard tools given directly to the root LLM via
+                   normal tool calling (alongside the REPL tool). These are NOT
+                   available inside the REPL or to sub-LLMs.
+        root_tools: List of tools available only inside the REPL. The root
+                   model can call these as Python functions (or shell commands
+                   in bash mode) within REPL code. They are proxied via HTTP.
         sub_tools: List of tools available only to sub-LLMs.
                    Sub-LLMs access these via standard tool calling.
-        (Ordering) The root tool list is: fixed tools (e.g. llm_batch), then `tools`,
-                   then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
-                   Each list is deduplicated by tool name. If two different tools
-                   share a name within a list, initialization raises an error.
         sub_llm_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         sub_max_completion_tokens: Total completion-token budget shared across all
                    sub-LLM calls in a rollout.  When set, the environment tracks
@@ -2372,8 +2363,8 @@ class RLMEnv(vf.StatefulToolEnv):
         self.enable_sub_llms = enable_sub_llms
         self.repl_language = repl_language
         self.sub_model = sub_model
-        self.shared_tools = tools or []
-        self.root_only_tools = root_tools or []
+        self.standard_tools = tools or []
+        self.repl_tools = root_tools or []
         self.sub_only_tools = sub_tools or []
         self.sub_llm_max_turns = sub_llm_max_turns
         self.sub_max_completion_tokens = sub_max_completion_tokens
@@ -2453,14 +2444,12 @@ class RLMEnv(vf.StatefulToolEnv):
         active_reserved = {_tool_display_name(t) for t in fixed_root_tools}
         self.root_tools, self.root_tool_map = _merge_tool_lists(
             fixed_tools=fixed_root_tools,
-            shared_tools=self.shared_tools,
-            role_tools=self.root_only_tools,
+            role_tools=self.repl_tools,
             context="root tools",
             reserved_names=active_reserved,
         )
         self.sub_tools, self.sub_tool_map = _merge_tool_lists(
             fixed_tools=[],
-            shared_tools=self.shared_tools,
             role_tools=self.sub_only_tools,
             context="sub-LLM tools",
             reserved_names=active_reserved,
@@ -2489,7 +2478,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
         super().__init__(
-            tools=[],
+            tools=self.standard_tools,
             max_turns=max_turns,
             **kwargs,
         )
@@ -3660,12 +3649,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 self.retain_filesystem_after_rollout
             )
             state["rlm_system_prompt"] = self.prompt_builder.build_system_prompt()
-            deduped_shared, _ = _dedupe_tools(
-                self.shared_tools, context="shared tools", reserved_names=set()
-            )
-            state["rlm_shared_tools"] = [
-                _tool_display_name(tool) for tool in deduped_shared
-            ]
             state["rlm_root_tools"] = [
                 _tool_display_name(tool) for tool in self.root_tools
             ]

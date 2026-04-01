@@ -899,7 +899,7 @@ class TestRLMEnvInitialization:
 
 
 class TestToolSplitConfiguration:
-    def test_tool_name_collision_raises(self):
+    def test_repl_tool_name_collision_raises(self):
         def tool_a() -> str:
             return "a"
 
@@ -910,7 +910,7 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         with pytest.raises(ValueError, match="collision"):
-            build_env(dataset, tools=[tool_a, tool_b])
+            build_env(dataset, root_tools=[tool_a, tool_b])
 
     def test_fixed_tool_override_raises(self):
         def llm_batch() -> str:  # pragma: no cover - name collision test
@@ -918,37 +918,36 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         with pytest.raises(ValueError, match="llm_batch"):
-            build_env(dataset, tools=[llm_batch])
+            build_env(dataset, root_tools=[llm_batch])
 
-    def test_tools_not_exposed_as_environment_tool_defs(self):
-        def shared_tool() -> str:
-            return "shared"
+    def test_standard_tools_exposed_repl_tools_not(self):
+        def standard_tool() -> str:
+            return "standard"
 
-        def root_tool() -> str:
-            return "root"
+        def repl_tool() -> str:
+            return "repl"
 
         def sub_tool() -> str:
             return "sub"
 
         dataset = make_dataset({})
         env = build_env(
-            dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
+            dataset,
+            tools=[standard_tool],
+            root_tools=[repl_tool],
+            sub_tools=[sub_tool],
         )
 
         tool_names = {tool.name for tool in env.tool_defs}
-        assert "shared_tool" not in tool_names
-        assert "root_tool" not in tool_names
+        assert "standard_tool" in tool_names
+        assert "repl_tool" not in tool_names
         assert "sub_tool" not in tool_names
 
     @pytest.mark.asyncio
-    async def test_root_and_sub_tools_documented_and_ordered(self):
-        def shared_tool() -> str:
-            """Shared tool."""
-            return "shared"
-
-        def root_tool() -> str:
-            """Root-only tool."""
-            return "root"
+    async def test_repl_and_sub_tools_documented_and_ordered(self):
+        def repl_tool() -> str:
+            """REPL-only tool."""
+            return "repl"
 
         def sub_tool() -> str:
             """Sub-only tool."""
@@ -957,8 +956,7 @@ class TestToolSplitConfiguration:
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            tools=[shared_tool],
-            root_tools=[root_tool],
+            root_tools=[repl_tool],
             sub_tools=[sub_tool],
             interception_url="http://test.invalid",
         )
@@ -973,31 +971,26 @@ class TestToolSplitConfiguration:
             assert "REPL Tools" in prompt
             assert "Sub-LLM Tools" in prompt
 
-            root_index = prompt.find("REPL Tools")
+            repl_index = prompt.find("REPL Tools")
             sub_index = prompt.find("Sub-LLM Tools")
-            assert root_index != -1
+            assert repl_index != -1
             assert sub_index != -1
-            assert root_index < sub_index
+            assert repl_index < sub_index
 
-            root_section = prompt[root_index:sub_index]
+            repl_section = prompt[repl_index:sub_index]
             sub_section = prompt[sub_index:]
 
-            assert "llm_batch" in root_section
-            assert root_section.find("llm_batch") < root_section.find("shared_tool")
-            assert root_section.find("shared_tool") < root_section.find("root_tool")
+            assert "llm_batch" in repl_section
+            assert repl_section.find("llm_batch") < repl_section.find("repl_tool")
 
-            assert "shared_tool" in sub_section
             assert "sub_tool" in sub_section
-            assert "root_tool" not in sub_section
-            assert sub_section.find("shared_tool") < sub_section.find("sub_tool")
+            assert "repl_tool" not in sub_section
 
-            assert result["rlm_shared_tools"] == ["shared_tool"]
             assert result["rlm_root_tools"] == [
                 "llm_batch",
-                "shared_tool",
-                "root_tool",
+                "repl_tool",
             ]
-            assert result["rlm_sub_tools"] == ["shared_tool", "sub_tool"]
+            assert result["rlm_sub_tools"] == ["sub_tool"]
         finally:
             await env.cleanup_rlm_state(result)
 
