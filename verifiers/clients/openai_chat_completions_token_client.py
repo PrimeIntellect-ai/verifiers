@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionAssistantMessageParam
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
@@ -231,7 +231,9 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # assistant and env response is correct, while avoiding template behaviors
         # that depend on the assistant being the last message (e.g., Qwen3's
         # context-dependent think block injection with add_generation_prompt=False).
-        dummy_assistant: OpenAIChatMessage = {"role": "assistant", "content": "x"}
+        dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+            role="assistant", content="x"
+        )
 
         try:
             bridge_full_ids = await self.tokenize(
