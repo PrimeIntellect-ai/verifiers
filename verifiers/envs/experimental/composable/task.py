@@ -346,7 +346,7 @@ class SandboxTaskSet(TaskSet):
 
     # -- Override these ------------------------------------------------------
 
-    def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
+    def get_sandbox_spec(self, info: dict) -> SandboxSpec:
         raise NotImplementedError
 
     def get_workdir(self, info: dict) -> str:
