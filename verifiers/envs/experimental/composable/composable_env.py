@@ -79,9 +79,14 @@ class ComposableEnv(CliAgentEnv):
     # -- CliAgentEnv hooks --------------------------------------------------
 
     def _get_spec(self, state: State) -> Any:
-        """Get SandboxSpec for this instance."""
+        """Get SandboxSpec, cached on state to avoid redundant calls."""
+        cached = state.get("_sandbox_spec")
+        if cached is not None:
+            return cached
         info = state.get("info") or {}
-        return self.taskset.get_sandbox_spec(info)
+        spec = self.taskset.get_sandbox_spec(info)
+        state["_sandbox_spec"] = spec
+        return spec
 
     async def get_docker_image(self, state: State) -> str:
         spec = self._get_spec(state)
