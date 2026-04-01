@@ -234,7 +234,9 @@ class TaskSet:
         from prime_sandboxes import CreateSandboxRequest
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
-        client = ThreadedAsyncSandboxClient(max_workers=concurrency)
+        client = ThreadedAsyncSandboxClient(
+            max_workers=min(max(1, concurrency // 8), 50)
+        )
         sem = asyncio.Semaphore(concurrency)
         assert isinstance(self, SandboxTaskSet)
 
