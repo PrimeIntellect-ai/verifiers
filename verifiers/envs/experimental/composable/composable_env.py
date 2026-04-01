@@ -181,10 +181,15 @@ class ComposableEnv(CliAgentEnv):
                         )
                         await self.upload_content(sandbox_id, content, sandbox_path)
             mcp_config = self.harness.format_mcp_config(mcp_servers)
-            if mcp_config:
-                await self.upload_content(
-                    sandbox_id, mcp_config, "/task/mcp_config.json"
+            if mcp_config is None:
+                raise NotImplementedError(
+                    f"TaskSet provides MCP servers {list(mcp_servers)} but "
+                    f"harness {type(self.harness).__name__} does not implement "
+                    f"format_mcp_config"
                 )
+            await self.upload_content(
+                sandbox_id, mcp_config, "/task/mcp_config.json"
+            )
 
         # 6. Install agent binary
         if self.harness.install_script:
