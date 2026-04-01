@@ -108,7 +108,7 @@ preview = true
 required-version = "<0.11.0"
 
 [tool.uv.sources]
-prime-sandboxes = { git = "https://github.com/primeintellect-ai/prime.git", subdirectory = "packages/prime-sandboxes", rev = "8b38a92dd1e60f9ee0cb241f56a294bfa955a371" }
+prime-sandboxes = { git = "https://github.com/primeintellect-ai/prime.git", subdirectory = "packages/prime-sandboxes" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
