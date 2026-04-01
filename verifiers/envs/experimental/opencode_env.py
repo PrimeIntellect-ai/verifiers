@@ -294,8 +294,6 @@ class OpenCodeEnv(CliAgentEnv):
             content = message.content
             if content is None:
                 content = ""
-            elif isinstance(content, str):
-                content = content.rstrip()
             reasoning_content = message.reasoning_content or None
             normalized_message = message.model_copy(
                 update={

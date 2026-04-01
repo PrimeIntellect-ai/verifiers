@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from typing import cast
@@ -137,8 +138,29 @@ class MathRubric(Rubric):
 
         return reward
 
+    async def teardown(self):
+        """Shut down the PPE cleanly so _python_exit doesn't hang.
+
+        On Python <3.13, workers forked from a threaded process (asyncio +
+        ZMQ) can deadlock. Killing them first lets the manager thread exit,
+        so _python_exit()'s join() returns immediately.
+        """
+        await super().teardown()
+        if hasattr(self, "executor_name"):
+            unregister_executor(self.executor_name)
+        if hasattr(self, "executor"):
+            if sys.version_info < (3, 13):
+                procs = list(
+                    (getattr(self.executor, "_processes", None) or {}).values()
+                )
+                for p in procs:
+                    p.kill()
+                for p in procs:
+                    p.join(timeout=5)
+            self.executor.shutdown(wait=True, cancel_futures=True)
+
     def __del__(self):
-        """Shutdown the process pool executor when the object is garbage collected."""
+        """Best-effort cleanup if teardown() was never called."""
         if hasattr(self, "executor_name"):
             unregister_executor(self.executor_name)
         if hasattr(self, "executor"):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from asyncio import Future
 from enum import Enum
 from typing import Annotated, Literal, TypeVar

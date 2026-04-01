@@ -136,7 +136,7 @@ def scale_executors(concurrency: int) -> int:
         f"{n}={t}" for n, t in zip(_executor_registry.keys(), targets)
     )
     logger.info(
-        f"Scaled {len(_executor_registry)} registered executor(s) and default executor ({targets_str})"
+        f"Scaled default executor and {len(_executor_registry)} registered executor(s) ({targets_str})"
     )
     return concurrency
 

@@ -10,10 +10,9 @@ import zmq
 import zmq.asyncio
 
 from verifiers.utils.logging_utils import print_time
-from verifiers.utils.worker_utils import msgpack_encoder
-from verifiers.workers.client.env_client import EnvClient
-from verifiers.workers.server.zmq_env_server import derive_health_address
-from verifiers.workers.types import (
+from verifiers.utils.serve_utils import msgpack_encoder
+from verifiers.serve.client.env_client import EnvClient
+from verifiers.serve.types import (
     BaseRequest,
     BaseResponseT,
     HealthRequest,
@@ -50,9 +49,6 @@ class ZMQEnvClient(EnvClient):
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 10)
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 2)
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_CNT, 3)
-
-        # Health address — probed by the dedicated health-check thread
-        self.health_address = derive_health_address(address)
 
         self.receiver_lock = asyncio.Lock()
         self.receiver_task: asyncio.Task | None = None
@@ -361,13 +357,14 @@ class ZMQEnvClient(EnvClient):
         own synchronous ZMQ context so that it is completely immune to asyncio
         event loop lag from high-concurrency workloads.  State transitions are
         forwarded to the event loop via ``call_soon_threadsafe``.
+
+        Uses a DEALER socket on the main address (same port as requests).
+        Sends ``b"ping"`` as the payload; the server responds inline.
         """
         ctx = zmq.Context()
-        sock = ctx.socket(zmq.REQ)
+        sock = ctx.socket(zmq.DEALER)
         sock.setsockopt(zmq.LINGER, 0)
-        sock.setsockopt(zmq.REQ_RELAXED, 1)
-        sock.setsockopt(zmq.REQ_CORRELATE, 1)
-        sock.connect(self.health_address)
+        sock.connect(self.address)
 
         # Generous probe timeout — no cost since this is a dedicated thread.
         probe_timeout_ms = max(int(self.health_check_interval * 1000), 2000)
@@ -382,10 +379,11 @@ class ZMQEnvClient(EnvClient):
         while not self.stop_health_thread.is_set():
             is_healthy = False
             try:
-                sock.send(b"ping")
-                raw = sock.recv()
-                resp = msgpack.unpackb(raw, raw=False)
-                is_healthy = resp.get("success", False)
+                sock.send_multipart([b"health", b"ping"])
+                frames = sock.recv_multipart()
+                if len(frames) == 2:
+                    resp = msgpack.unpackb(frames[1], raw=False)
+                    is_healthy = resp.get("success", False)
             except zmq.Again:
                 pass
             except Exception:

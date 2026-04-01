@@ -6,7 +6,9 @@ from collections.abc import Coroutine
 from time import perf_counter
 from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
 
+import numpy as np
 import tenacity as tc
+from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
@@ -94,6 +96,46 @@ class EventLoopLagMonitor:
         while True:
             lag = await self.measure_lag()
             self.lags.append(lag)
+
+
+class EventLoopLagStats(BaseModel):
+    """Snapshot of event loop lag statistics."""
+
+    min: float = 0.0
+    mean: float = 0.0
+    median: float = 0.0
+    p90: float = 0.0
+    p99: float = 0.0
+    max: float = 0.0
+    n: int = 0
+
+    def __str__(self) -> str:
+        from verifiers.utils.logging_utils import print_time
+
+        if self.n == 0:
+            return "no samples"
+        return (
+            f"min={print_time(self.min)} mean={print_time(self.mean)} "
+            f"median={print_time(self.median)} p90={print_time(self.p90)} "
+            f"p99={print_time(self.p99)} max={print_time(self.max)} (n={self.n})"
+        )
+
+    @classmethod
+    def from_monitor(cls, monitor: EventLoopLagMonitor) -> "EventLoopLagStats":
+        lags = monitor.lags
+        n = len(lags)
+        if n == 0:
+            return cls(n=0)
+        arr = np.array(lags)
+        return cls(
+            min=float(arr.min()),
+            mean=float(arr.mean()),
+            median=float(np.median(arr)),
+            p90=float(np.percentile(arr, 90)),
+            p99=float(np.percentile(arr, 99)),
+            max=float(arr.max()),
+            n=n,
+        )
 
 
 def maybe_retry(

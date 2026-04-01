@@ -14,6 +14,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import (
@@ -29,16 +30,15 @@ from typing import (
 
 from verifiers.clients import Client, resolve_client
 from verifiers.decorators import discover_decorated
+from verifiers.serve import ZMQEnvClient
 from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.serve_utils import get_free_port
 from verifiers.utils.thread_utils import scale_executors
-from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.workers.client.zmq_env_client import ZMQEnvClient
-from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
+from verifiers.serve import EnvClient
 from verifiers.types import (
     ClientConfig,
     DatasetBuilder,
@@ -84,7 +85,6 @@ from verifiers.utils.save_utils import (
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
-from verifiers.workers.client.env_client import EnvClient
 
 _MESSAGE_TYPE_UNSET = object()
 
@@ -151,6 +151,7 @@ class Environment(ABC):
 
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
+        self.death_pipe_writer: Connection | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -1265,10 +1266,11 @@ class Environment(ABC):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        num_workers: int = 1,
         # logging configs
         log_level: str | None = None,
-        log_file: str | None = None,
-        log_file_level: str | None = None,
+        log_dir: str | None = None,
+        console_logging: bool = True,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10m
@@ -1276,31 +1278,47 @@ class Environment(ABC):
     ) -> None:
         """Start a ZMQ server process for this environment.
 
+        Spawns a :class:`ZMQEnvServer` (router + *num_workers* worker
+        processes, default 1).
+
         .. warning::
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        address = address or f"tcp://127.0.0.1:{get_free_port_pair()}"
+        from verifiers.serve import ZMQEnvServer
+
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
         extra_env_kwargs = extra_env_kwargs or {}
+
+        # Death pipe: parent keeps writer, children monitor reader.
+        # When the parent dies (even SIGKILL), the OS closes the writer end
+        # and children get EOF → clean shutdown.
+        death_pipe_reader, self.death_pipe_writer = mp.Pipe(duplex=False)
+
         # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
         # the parent process, which has caused hangs when multiple env server
         # subprocesses share the same fds.
-        self.env_server_process = mp.get_context(
-            "spawn"
-        ).Process(
+        ctx = mp.get_context("spawn")
+        self.env_server_process = ctx.Process(
             target=ZMQEnvServer.run_server,
             args=(
                 self.env_id,
                 self.env_args,
                 extra_env_kwargs,
                 log_level,
-                log_file,
-                log_file_level,
+                log_dir,
+                console_logging,
             ),
-            kwargs=dict(address=address),
-            daemon=False,  # cannot be daemon because we spawn subprocesses from the env server
+            kwargs=dict(
+                address=address,
+                num_workers=num_workers,
+                death_pipe=death_pipe_reader,
+            ),
+            daemon=False,
         )
         self.env_server_process.start()
+        # Close the reader in the parent — only children should hold it.
+        death_pipe_reader.close()
         self.env_client = ZMQEnvClient(
             address=address,
             health_check_interval=health_check_interval,
@@ -1320,12 +1338,13 @@ class Environment(ABC):
         if self.env_client is not None:
             await self.env_client.close()
             self.env_client = None
+        if self.death_pipe_writer is not None:
+            self.death_pipe_writer.close()
+            self.death_pipe_writer = None
         if self.env_server_process is not None:
-            self.env_server_process.terminate()
-            self.env_server_process.join(timeout=5)
-            if self.env_server_process.is_alive():
-                self.env_server_process.kill()
-                self.env_server_process.join(timeout=5)
+            from verifiers.utils.process_utils import terminate_process
+
+            terminate_process(self.env_server_process)
             self.env_server_process = None
 
     make_dataset = staticmethod(make_dataset)

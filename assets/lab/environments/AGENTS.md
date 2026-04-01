@@ -754,7 +754,7 @@ def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
 
 This raises `MissingKeyError` with a clear message listing all missing keys and instructions for setting them:
 
-- **Environments Hub CI**: Add secrets on the environment's Settings page
+- **Environments Hub**: Add secrets (or link global secrets) on the environment's **Secrets** tab
 - **Hosted Training**: Set `env_file` in your config (e.g., `env_file = ["secrets.env"]`)
 - **Local**: Export in your shell (e.g., `export OPENAI_API_KEY=...`)
 

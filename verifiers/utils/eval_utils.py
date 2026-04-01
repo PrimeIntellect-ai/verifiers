@@ -440,6 +440,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        "num_workers",
         "disable_env_server",
         # logging
         "verbose",
@@ -751,33 +752,47 @@ async def run_evaluation(
     try:
         if not config.disable_env_server:
             extra_env_kwargs = dict(config.extra_env_kwargs)
+            # resolve total concurrency
             if "concurrency" not in extra_env_kwargs:
                 if config.max_concurrent <= 0:
                     concurrency = config.num_examples * config.rollouts_per_example
                 else:
                     concurrency = config.max_concurrent
-
                 logger.info(f"Automatically determined {concurrency=}")
-                extra_env_kwargs["concurrency"] = concurrency
-
-            log_file = results_path / "eval.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            if config.debug:
-                await vf_env.start_server(
-                    extra_env_kwargs=extra_env_kwargs,
-                    log_level=get_log_level(config.verbose),
-                    log_file=str(log_file),
-                    log_file_level=get_log_level(config.verbose),
-                )
             else:
-                await vf_env.start_server(
-                    extra_env_kwargs=extra_env_kwargs,
-                    log_level="CRITICAL",  # disable console logging
-                    log_file=str(log_file),
-                    log_file_level=get_log_level(config.verbose),
-                )
+                concurrency = extra_env_kwargs["concurrency"]
+
+            # resolve num_workers
+            num_workers = config.num_workers
+            if num_workers == "auto":
+                num_workers = max(1, math.ceil(concurrency / 256))
+            else:
+                num_workers = int(num_workers)
+                if num_workers < 1:
+                    raise ValueError(f"num_workers must be >= 1, got {num_workers}")
+
+            # per-worker concurrency
+            per_worker = max(1, concurrency // num_workers)
+            extra_env_kwargs["concurrency"] = per_worker
+            logger.info(
+                f"Using {num_workers=} env server worker(s), "
+                f"per-worker concurrency: {per_worker} (total {concurrency})"
+            )
+
+            log_dir = str(results_path)
+            results_path.mkdir(parents=True, exist_ok=True)
+            await vf_env.start_server(
+                extra_env_kwargs=extra_env_kwargs,
+                num_workers=num_workers,
+                log_level=get_log_level(config.verbose),
+                log_dir=log_dir,
+                console_logging=config.debug,
+            )
             if on_log_file is not None:
-                on_log_file(log_file)
+                from verifiers.serve import EnvServer
+
+                for path in EnvServer.get_all_log_files(log_dir, num_workers):
+                    on_log_file(path)
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(

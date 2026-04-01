@@ -4,7 +4,7 @@ Covers:
 - Health-check state transitions (STARTUP -> HEALTHY -> UNHEALTHY)
 - Request retry on ServerError and recovery timeouts
 - Server startup waiting
-- Cancellation propagation (client -> server)
+- Cancellation propagation (client -> router -> worker)
 """
 
 import asyncio
@@ -15,16 +15,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
-from verifiers.utils.worker_utils import get_free_port_pair
-from verifiers.workers.client.zmq_env_client import ZMQEnvClient
-from verifiers.workers.server.zmq_env_server import ZMQEnvServer
-from verifiers.workers.types import (
+from verifiers.utils.serve_utils import get_free_port
+from verifiers.serve import (
     HealthRequest,
     HealthResponse,
     PendingRequest,
     RunRolloutRequest,
     RunRolloutResponse,
     ServerState,
+    ZMQEnvClient,
+    ZMQEnvServer,
 )
 
 
@@ -36,7 +36,7 @@ def make_client(address: str = "tcp://127.0.0.1:5555", **kwargs) -> ZMQEnvClient
 
 def make_mock_server(address: str) -> ZMQEnvServer:
     """Create a ZMQEnvServer with a mocked environment (no real env loading)."""
-    with patch("verifiers.workers.server.env_server.vf") as mock_vf:
+    with patch("verifiers.serve.server.env_server.vf") as mock_vf:
         mock_env = MagicMock()
         mock_env._teardown = AsyncMock()
         mock_vf.load_environment.return_value = mock_env
@@ -77,20 +77,22 @@ def make_pending_request(
 
 
 @contextlib.asynccontextmanager
-async def run_server_and_client(handle_run_rollout=None):
+async def run_server_and_client():
     """Start a mock ZMQ server and connected client, tearing both down on exit.
 
-    Args:
-        handle_run_rollout: Optional async callable to override the server's
-            ``handle_run_rollout`` method. Useful for injecting slow or
-            observable handlers in tests.
+    The router's worker spawning is mocked out so no subprocesses are created.
+    Instead, dispatch_request/forward_cancel are replaced with AsyncMock so tests can
+    observe request routing without needing real workers.
     """
-    port = get_free_port_pair()
+    port = get_free_port()
     address = f"tcp://127.0.0.1:{port}"
 
     server = make_mock_server(address)
-    if handle_run_rollout is not None:
-        server.handle_run_rollout = handle_run_rollout  # type: ignore[assignment]
+
+    # Mock out worker lifecycle — we don't want real subprocesses in unit tests
+    server.router.start_workers = MagicMock()
+    server.router.dispatch_request = AsyncMock()
+    server.router.forward_cancel = AsyncMock()
 
     stop_event = asyncio.Event()
     server_loop = asyncio.create_task(server.serve(stop_event=stop_event))
@@ -324,142 +326,83 @@ class TestRetryOnServerError:
             await client.close()
 
 
-class TestTaskCancellation:
-    """Tests that client-side cancellation propagates to the server.
+class TestCancelForwarding:
+    """Tests that client-side cancellation is forwarded through the router.
 
-    The client sends an empty-payload cancel signal over the existing ZMQ
-    wire format, and the server cancels the corresponding asyncio task.
+    With the multi-process architecture, the ZMQEnvServer receives cancel
+    signals from the client and forwards them via ``router.forward_cancel()``.
+    These tests verify the server correctly routes cancels to the router.
     """
 
     @pytest.mark.asyncio
-    async def test_cancelled_client_task_should_cancel_server_task_before_request_processing(
-        self,
-    ):
-        """Cancellation should still propagate before process_request enters its body."""
-        process_request_blocked = asyncio.Event()
-        original_process_request_entered = asyncio.Event()
-        server_task_cancelled = asyncio.Event()
-
+    async def test_cancel_signal_forwarded_to_router(self):
+        """Client cancellation sends empty payload, server calls router.forward_cancel."""
         async with run_server_and_client() as (server, client):
-            original_process_request = server.process_request
-
-            async def delayed_process_request(
-                client_id,
-                request_id_bytes,
-                payload_bytes,
-            ):
-                process_request_blocked.set()
-                try:
-                    await asyncio.Event().wait()
-                    original_process_request_entered.set()
-                    return await original_process_request(
-                        client_id,
-                        request_id_bytes,
-                        payload_bytes,
-                    )
-                except asyncio.CancelledError:
-                    server_task_cancelled.set()
-                    raise
-
-            server.process_request = delayed_process_request  # type: ignore[assignment]
-
+            # Send a request
             client_task = asyncio.create_task(
                 client.send_request(
                     make_rollout_request(), RunRolloutResponse, timeout=30
                 )
             )
 
-            await asyncio.wait_for(process_request_blocked.wait(), timeout=5)
-            assert len(server.request_tasks) == 1
-            assert not original_process_request_entered.is_set()
+            # Wait for dispatch to be called
+            await asyncio.sleep(0.3)
+            assert server.router.dispatch_request.call_count == 1
 
+            # Cancel on the client side — this sends an empty-payload frame
             client_task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await client_task
 
-            await asyncio.wait_for(server_task_cancelled.wait(), timeout=5)
-            assert not original_process_request_entered.is_set()
+            # Give the cancel signal time to propagate
+            await asyncio.sleep(0.3)
+
+            # The server should have forwarded the cancel to the router
+            assert server.router.forward_cancel.call_count == 1
+            call_args = server.router.forward_cancel.call_args
+            # forward_cancel(request_id, client_id)
+            assert isinstance(call_args[0][0], bytes)  # request_id
+            assert isinstance(call_args[0][1], bytes)  # client_id
 
     @pytest.mark.asyncio
-    async def test_cancelled_client_task_should_cancel_server_task(self):
-        """When the asyncio task awaiting send_request() is cancelled on the
-        client, the corresponding server-side task should also be cancelled
-        via the empty-payload cancel signal.
-        """
-        server_task_started = asyncio.Event()
-        server_task_cancelled = asyncio.Event()
-
-        async def slow_handle_run_rollout(request):
-            server_task_started.set()
-            try:
-                await asyncio.sleep(60)
-                return RunRolloutResponse(output=None)
-            except asyncio.CancelledError:
-                server_task_cancelled.set()
-                raise
-
-        async with run_server_and_client(slow_handle_run_rollout) as (server, client):
-            client_task = asyncio.create_task(
-                client.send_request(
-                    make_rollout_request(), RunRolloutResponse, timeout=30
-                )
-            )
-
-            # Wait for the server to actually start processing
-            await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.request_tasks) == 1
-
-            # Cancel on the client side
-            client_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await client_task
-
-            # Give the system time to propagate the cancellation
-            await asyncio.sleep(0.5)
-
-            # The server-side task SHOULD have been cancelled.
-            # This fails today because the client never tells the server.
-            assert server_task_cancelled.is_set(), (
-                "Server-side task was NOT cancelled even though the client "
-                "cancelled the request. The server is still consuming resources "
-                "for a request nobody is waiting for."
-            )
-
-    @pytest.mark.asyncio
-    async def test_client_timeout_should_cancel_server_task(self):
-        """When the client times out waiting for a response, the
-        corresponding server-side task should be cancelled via the
-        empty-payload cancel signal.
-        """
-        server_task_started = asyncio.Event()
-        server_task_cancelled = asyncio.Event()
-
-        async def slow_handle_run_rollout(request):
-            server_task_started.set()
-            try:
-                await asyncio.sleep(60)
-                return RunRolloutResponse(output=None)
-            except asyncio.CancelledError:
-                server_task_cancelled.set()
-                raise
-
-        async with run_server_and_client(slow_handle_run_rollout) as (server, client):
-            # Use a very short timeout so the client gives up quickly
+    async def test_timeout_sends_cancel_to_router(self):
+        """Client timeout sends cancel signal, server calls router.forward_cancel."""
+        async with run_server_and_client() as (server, client):
+            # Use a short timeout
             with pytest.raises(TimeoutError):
                 await client.send_request(
                     make_rollout_request(), RunRolloutResponse, timeout=0.5
                 )
 
-            # Confirm the server started processing
-            await asyncio.wait_for(server_task_started.wait(), timeout=5)
-            assert len(server.request_tasks) == 1
+            # Give the cancel signal time to propagate
+            await asyncio.sleep(0.3)
 
-            # Give the system time to propagate
-            await asyncio.sleep(0.5)
+            # Dispatch should have been called
+            assert server.router.dispatch_request.call_count == 1
 
-            # The server task SHOULD have been cancelled after client timeout
-            assert server_task_cancelled.is_set(), (
-                "Server-side task was NOT cancelled after client timeout. "
-                "The server continues processing a request that already "
-                "timed out on the client."
+            # The server should have forwarded the cancel to the router
+            assert server.router.forward_cancel.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatch_called_with_correct_frames(self):
+        """Requests are dispatched to the router with client_id, request_id, payload."""
+        async with run_server_and_client() as (server, client):
+            client_task = asyncio.create_task(
+                client.send_request(
+                    make_rollout_request(), RunRolloutResponse, timeout=30
+                )
             )
+
+            await asyncio.sleep(0.3)
+
+            assert server.router.dispatch_request.call_count == 1
+            call_args = server.router.dispatch_request.call_args
+            client_id, request_id, payload = call_args[0]
+            assert isinstance(client_id, bytes)
+            assert isinstance(request_id, bytes)
+            assert isinstance(payload, bytes)
+            assert len(payload) > 0  # non-empty payload = real request
+
+            client_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await client_task

@@ -32,9 +32,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         run: uv sync
@@ -48,6 +46,7 @@ jobs:
   test-envs:
     name: Environments
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
@@ -66,9 +65,7 @@ jobs:
           dir_names_max_depth: 1
           separator: ","
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
+        uses: astral-sh/setup-uv@v7
       - name: Install dependencies
         run: uv sync
 

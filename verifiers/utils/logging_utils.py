@@ -55,7 +55,8 @@ def setup_logging(
     log_format: str | None = None,
     date_format: str | None = None,
     log_file: str | None = None,
-    log_file_level: str | None = None,
+    console_logging: bool = True,
+    file_logging: bool = False,
     json_logging: bool = False,
 ) -> None:
     """
@@ -65,8 +66,9 @@ def setup_logging(
         level: The logging level to use. If None, logging is disabled. Defaults to "INFO".
         log_format: Custom log format string. If None, uses default format.
         date_format: Custom date format string. If None, uses default format.
-        log_file: Optional path to a log file. If specified, logs will be written to this file.
-        log_file_level: The logging level for the file handler. If None, uses the same level as console.
+        log_file: Path to a log file. Required when file_logging is True.
+        console_logging: Whether to log to stderr. Defaults to True.
+        file_logging: Whether to log to a file. Defaults to False.
         json_logging: If True, output logs as JSON. Defaults to False.
     """
     if json_logging:
@@ -87,25 +89,21 @@ def setup_logging(
         logger.propagate = False
         return
 
-    # set logger level to the minimum of console and file levels
-    # so messages can reach the more permissive handler
-    console_level = getattr(logging, level.upper())
-    file_level = (
-        getattr(logging, log_file_level.upper()) if log_file_level else console_level
-    )
-    logger.setLevel(min(console_level, file_level))
+    log_level = getattr(logging, level.upper())
+    logger.setLevel(log_level)
 
-    # add console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(console_level)
-    logger.addHandler(console_handler)
+    if console_logging:
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(log_level)
+        logger.addHandler(console_handler)
 
-    # add file handler if log_file is specified
-    if log_file is not None:
+    if file_logging:
+        if log_file is None:
+            raise ValueError("log_file must be specified when file_logging is True")
         file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(file_level)
+        file_handler.setLevel(log_level)
         logger.addHandler(file_handler)
 
     # prevent the logger from propagating messages to the root logger
@@ -118,10 +116,10 @@ def setup_logging(
         root.handlers = [
             h for h in root.handlers if not isinstance(h.formatter, JsonFormatter)
         ]
-        root.setLevel(console_level)
+        root.setLevel(log_level)
         root_handler = logging.StreamHandler(sys.stderr)
         root_handler.setFormatter(formatter)
-        root_handler.setLevel(console_level)
+        root_handler.setLevel(log_level)
         root.addHandler(root_handler)
 
 

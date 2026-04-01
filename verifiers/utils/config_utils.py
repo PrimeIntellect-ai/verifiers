@@ -10,7 +10,7 @@ class MissingKeyError(ValueError):
         msg = (
             f"Missing required environment variable(s): {key_list}\n\n"
             "To set these variables:\n"
-            "  - Environments Hub CI: Add secrets on the environment's Settings page\n"
+            "  - Environments Hub: On the environment's Secrets tab, add secrets or link global secrets\n"
             '  - Hosted Training: Set env_file in your config (e.g. env_file = ["secrets.env"])\n'
             "  - Local: Export in your shell (e.g. export OPENAI_API_KEY=...)"
         )

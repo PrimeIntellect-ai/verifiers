@@ -35,10 +35,12 @@ def load_environment(
     dataset_split: str = "train",
     num_train_examples: int = -1,
 ):
-    dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
+    def build_dataset():
+        return load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
+
     rubric = MathRubric()
     vf_env = DoubleCheckEnv(
-        dataset=dataset,
+        dataset=build_dataset,
         system_prompt=SIMPLE_PROMPT,
         few_shot=[],
         parser=rubric.parser,

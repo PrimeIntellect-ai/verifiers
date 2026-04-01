@@ -8,7 +8,7 @@ from verifiers.types import (
     SamplingArgs,
 )
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.workers.types import (
+from verifiers.serve.types import (
     HealthRequest,
     HealthResponse,
     RunGroupRequest,

@@ -87,10 +87,13 @@ class SentenceRepeaterEnv(vf.MultiTurnEnv):
 
 
 def load_environment(**kwargs) -> vf.Environment:
-    dataset: Dataset = load_dataset("agentlans/wikipedia-paragraphs", split="train")  # type: ignore
-    dataset = dataset.map(lambda x: {"sentences": get_sentences(x["text"])})
-    dataset = dataset.filter(lambda x: len(x["sentences"]) == 5)
-    dataset = dataset.map(get_sentence_questions)
+    def build_dataset():
+        dataset: Dataset = load_dataset("agentlans/wikipedia-paragraphs", split="train")  # type: ignore
+        dataset = dataset.map(lambda x: {"sentences": get_sentences(x["text"])})
+        dataset = dataset.filter(lambda x: len(x["sentences"]) == 5)
+        dataset = dataset.map(get_sentence_questions)
+        return dataset
+
     parser = vf.Parser()
 
     def compare_answers_reward_func(parser, completion, info, **kwargs) -> float:
@@ -113,7 +116,7 @@ def load_environment(**kwargs) -> vf.Environment:
     rubric = vf.Rubric(parser=parser, funcs=[compare_answers_reward_func])
 
     vf_env = SentenceRepeaterEnv(
-        dataset=dataset, parser=parser, rubric=rubric, **kwargs
+        dataset=build_dataset, parser=parser, rubric=rubric, **kwargs
     )
 
     return vf_env

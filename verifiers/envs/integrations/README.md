@@ -131,6 +131,8 @@ MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
 OPENAI_API_KEY              # For LLM judge evaluation
 ```
 
+Locally, export these in your shell. On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments), store credentials as **Secrets** on the environment ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets)); use **Variables** only for non-sensitive config. Details: [browser_env README](browser_env/README.md).
+
 ## OpenEnvEnv
 
 Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.

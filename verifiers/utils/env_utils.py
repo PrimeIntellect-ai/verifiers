@@ -4,6 +4,7 @@ import logging
 from typing import Callable
 
 from verifiers.envs.environment import Environment
+from verifiers.utils.config_utils import MissingKeyError
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
@@ -81,6 +82,8 @@ def load_environment(env_id: str, **env_args) -> Environment:
         raise ValueError(
             f"Could not import '{env_id}' environment. Ensure the package for the '{env_id}' environment is installed."
         ) from e
+    except MissingKeyError:
+        raise
     except Exception as e:
         logger.error(
             f"Failed to load environment {env_id} with args {env_args}: {str(e)}"

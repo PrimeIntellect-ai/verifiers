@@ -9,15 +9,17 @@ def load_environment(
     system_prompt: str
     | None = "Reverse the text character-by-character. Put your answer in <reversed_text> tags.",
 ) -> vf.Environment:
-    train_dataset = load_dataset(dataset_name, split=dataset_split).map(
-        lambda x: {
-            "question": x["prompt"],
-            "answer": x["prompt"][::-1],
-            "info": {},
-            "task": "reverse-text",
-        }
-    )
-    train_dataset = train_dataset.remove_columns(["prompt"])
+    def build_dataset():
+        train_dataset = load_dataset(dataset_name, split=dataset_split).map(
+            lambda x: {
+                "question": x["prompt"],
+                "answer": x["prompt"][::-1],
+                "info": {},
+                "task": "reverse-text",
+            }
+        )
+        train_dataset = train_dataset.remove_columns(["prompt"])
+        return train_dataset
 
     parser = vf.XMLParser(["reversed_text"], answer_field="reversed_text")
 
@@ -45,7 +47,7 @@ def load_environment(
     )
 
     vf_env = vf.SingleTurnEnv(
-        dataset=train_dataset,
+        dataset=build_dataset,
         system_prompt=system_prompt,
         parser=parser,
         rubric=rubric,

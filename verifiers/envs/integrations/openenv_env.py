@@ -163,10 +163,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self,
         address: str | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
+        num_workers: int = 1,
         # logging configs
         log_level: str | None = None,
-        log_file: str | None = None,
-        log_file_level: str | None = None,
+        log_dir: str | None = None,
+        console_logging: bool = True,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10m
@@ -175,9 +176,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         await super().start_server(
             address=address,
             extra_env_kwargs=extra_env_kwargs or {},
+            num_workers=num_workers,
             log_level=log_level,
-            log_file=log_file,
-            log_file_level=log_file_level,
+            log_dir=log_dir,
+            console_logging=console_logging,
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,

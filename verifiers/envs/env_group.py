@@ -11,7 +11,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
 )
-from verifiers.workers.client.env_client import EnvClient
+from verifiers.serve import EnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset
