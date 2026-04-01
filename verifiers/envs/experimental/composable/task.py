@@ -224,9 +224,19 @@ class TaskSet:
                     t0 = time.time()
                     try:
                         valid = await self.validate_instance(state)
-                        return {"index": i, "valid": valid, "elapsed": time.time() - t0, "error": None}
+                        return {
+                            "index": i,
+                            "valid": valid,
+                            "elapsed": time.time() - t0,
+                            "error": None,
+                        }
                     except Exception as e:
-                        return {"index": i, "valid": False, "elapsed": time.time() - t0, "error": str(e)}
+                        return {
+                            "index": i,
+                            "valid": False,
+                            "elapsed": time.time() - t0,
+                            "error": str(e),
+                        }
 
             return await asyncio.gather(*[_validate_simple(i) for i in range(total)])
 
@@ -336,7 +346,7 @@ class SandboxTaskSet(TaskSet):
 
     # -- Override these ------------------------------------------------------
 
-    def get_sandbox_spec(self, info: dict) -> SandboxSpec:
+    def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
         raise NotImplementedError
 
     def get_workdir(self, info: dict) -> str:
