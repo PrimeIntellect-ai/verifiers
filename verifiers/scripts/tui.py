@@ -4608,6 +4608,18 @@ class ViewRunScreen(Screen):
         info = record.get("info")
         if info not in (None, {}, ""):
             self._append_context_section(out, "Info", format_info_for_details(info))
+
+        state_columns = self.run.load_metadata().get("state_columns")
+        if isinstance(state_columns, list):
+            for column in state_columns:
+                if not isinstance(column, str) or not column:
+                    continue
+                value = record.get(column)
+                if value in (None, "", {}):
+                    continue
+                self._append_context_section(
+                    out, column, format_info_for_details(value)
+                )
         return out
 
     def _append_context_section(self, out: Text, title: str, value: Any) -> None:

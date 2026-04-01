@@ -128,6 +128,53 @@ def test_format_info_for_details_handles_non_serializable_data() -> None:
     assert "function" in rendered
 
 
+def test_view_run_screen_info_details_include_saved_state_columns(tmp_path) -> None:
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "num_examples": 1,
+                "rollouts_per_example": 1,
+                "state_columns": ["judge_response", "attempt_count"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "reward": 0.75,
+                "info": {"trace": "ok"},
+                "judge_response": {"winner": "assistant"},
+                "attempt_count": 3,
+                "prompt": [{"role": "user", "content": "Solve it"}],
+                "completion": [{"role": "assistant", "content": "Done"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    screen = ViewRunScreen(
+        RunInfo(
+            env_id="demo-env",
+            model="openai/gpt-5",
+            run_id="run-1",
+            path=run_dir,
+        )
+    )
+
+    rendered = screen._build_info_text(screen.records[0]).plain.rstrip()
+
+    assert "Info" in rendered
+    assert '"trace": "ok"' in rendered
+    assert "judge_response" in rendered
+    assert '"winner": "assistant"' in rendered
+    assert "attempt_count" in rendered
+    assert "\n3" in rendered
+
+
 def test_extract_numeric_metric_values_includes_metrics_and_reward_signals() -> None:
     record = {
         "metrics": {"judge": 0.25, "tool_calls": 3},
@@ -1344,6 +1391,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
                 "avg_reward": 0.75,
                 "num_examples": 1,
                 "rollouts_per_example": 1,
+                "state_columns": ["judge_response"],
             }
         ),
         encoding="utf-8",
@@ -1359,6 +1407,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
                 "token_usage": {"input_tokens": 123, "output_tokens": 45},
                 "timing": {"generation_ms": 12, "scoring_ms": 3, "total_ms": 15},
                 "info": {"trace": "ok"},
+                "judge_response": {"winner": "assistant"},
                 "prompt": [{"role": "user", "content": "Solve it"}],
                 "completion": [
                     {
@@ -1409,6 +1458,8 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
     assert "tool 1  search" in items["history"].body
     assert "Sunny" in items["history"].body
     assert "Tokens\ninput_tokens: 123" in items["details"].body
+    assert "judge_response" in items["details:details-info"].body
+    assert '"winner": "assistant"' in items["details:details-info"].body
 
 
 @pytest.mark.asyncio
