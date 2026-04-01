@@ -1197,7 +1197,7 @@ class RLMPromptBuilder:
     }
 
     MESSAGE_HISTORY_NOTE_PYTHON: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
 ```python
 import json
 history = [json.loads(line) for line in open(".messages")]
@@ -1205,116 +1205,37 @@ history = [json.loads(line) for line in open(".messages")]
 """
 
     MESSAGE_HISTORY_NOTE_BASH: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
 ```bash
 cat .messages  # one JSON object per line
 ```
 """
 
-    PYTHON_SYSTEM_PROMPT_STORE: dict[str, str] = {
-        "light": """You have the `call_python_repl` tool and a filesystem available to you.
+    PYTHON_BASE_PROMPT: str = """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
-""",
-        "medium": """You have the `call_python_repl` tool and a filesystem available to you.
+"""
 
-There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
-
-This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
-""",
-        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
-
-A filesystem is available; explore it as needed.
-
-## Critical: This is an ITERATIVE environment
-
-You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
-
-Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
-
-## Workflow
-
-**Step 1: Explore the filesystem**
-```python
-import os
-print(os.getcwd())
-print(os.listdir("."))
-```
-Wait for output. Now you know the actual format.
-
-**Step 2: Process and build your answer**
-```python
-answer["content"] = "your current best answer"
-```
-
-**Step 3: Verify and finalize (only after reviewing output)**
-```python
-print(f"My answer: {answer['content']}")
-answer["ready"] = True
-```
-
-## Important Rules
-
-1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
-2. **One step at a time** - make small tool calls, see output, then continue
-3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
-   Pass a list of strings only (no message dicts).
-""",
-    }
-
-    BASH_SYSTEM_PROMPT_STORE: dict[str, str] = {
-        "light": """You have the `call_bash_repl` tool and a filesystem available to you.
+    BASH_BASE_PROMPT: str = """You have the `call_bash_repl` tool and a filesystem available to you.
 
 In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
-""",
-        "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
+"""
 
-In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
-
-This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
-""",
-        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
-
-A filesystem is available; explore it as needed.
-
-## Critical: This is an ITERATIVE environment
-
-You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
-
-Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
-
-## Workflow
-
-**Step 1: Explore the filesystem**
-```bash
-pwd
-ls
-```
-Wait for output. Now you know the actual format.
-
-**Step 2: Build your answer**
-```bash
-export RLM_CONTENT="your current best answer"
-```
-
-**Step 3: Verify and finalize (only after reviewing output)**
-```bash
-printf "My answer: %s\\n" "$RLM_CONTENT"
-export RLM_READY=1
-```
-
-## Important Rules
-
-1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
-2. **One step at a time** - make small tool calls, see output, then continue
-3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
-   Pass a list of strings only (no message dicts).
-4. **Tool usage in Bash**:
-   - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
-   - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
-     (or provide the JSON via stdin).
-   - `llm_batch` accepts `--json` with `{"prompts":[...]}`
-""",
+    SUB_LLM_ROOT_INSTRUCTION_STORE: dict[str, str] = {
+        "light": (
+            "Make use of sub-LLMs via `llm_batch` whenever they could be useful."
+        ),
+        "medium": (
+            "Make use of sub-LLMs via `llm_batch` whenever they could be useful;"
+            " prefer calling them in parallel to calling them sequentially."
+        ),
+        "heavy": (
+            "\n## Sub-LLM Usage\n\n"
+            "- Use `llm_batch()` for semantic tasks — summarization,"
+            " understanding text, classification, etc.\n"
+            "- Pass a list of strings only (no message dicts).\n"
+            "- Prefer calling sub-LLMs in parallel to calling them sequentially."
+        ),
     }
 
     def __init__(
@@ -1331,6 +1252,7 @@ export RLM_READY=1
         sub_llm_max_turns: int,
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
+        enable_sub_llms: bool = True,
         allow_context_dropping: bool = False,
         min_turns_in_context: int = 3,
     ) -> None:
@@ -1345,16 +1267,17 @@ export RLM_READY=1
         self.sub_llm_max_turns = sub_llm_max_turns
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
+        self.enable_sub_llms = enable_sub_llms
         self.allow_context_dropping = allow_context_dropping
         self.min_turns_in_context = min_turns_in_context
 
     def build_base_system_prompt(self) -> str:
-        """Select the base system prompt from stores or custom override."""
+        """Select the base system prompt or custom override."""
         if self.custom_system_prompt:
             return self.custom_system_prompt
         if self.repl_language == "bash":
-            return self.BASH_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
-        return self.PYTHON_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
+            return self.BASH_BASE_PROMPT
+        return self.PYTHON_BASE_PROMPT
 
     def build_packages_documentation(self) -> str:
         """Generate markdown listing of pip packages available in the REPL."""
@@ -1378,20 +1301,32 @@ export RLM_READY=1
 
         return "\n".join(lines)
 
+    def build_sub_llm_documentation(self) -> str:
+        """Generate sub-LLM usage instructions for the root prompt.
+
+        Gated on ``enable_sub_llms``; verbosity controlled by
+        ``root_prompt_verbosity``.
+        """
+        if not self.enable_sub_llms:
+            return ""
+        return (
+            "\n"
+            + self.SUB_LLM_ROOT_INSTRUCTION_STORE[self.root_prompt_verbosity]
+            + "\n"
+        )
+
     def build_root_tools_documentation(self) -> str:
-        """Generate markdown docs for root REPL tools."""
+        """Generate markdown docs for REPL tools."""
         if not self.root_tool_defs:
             return ""
 
-        lines = ["\n## Root REPL Tools\n"]
+        lines = ["\n## REPL Tools\n"]
         if self.repl_language == "bash":
             lines.append(
-                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
+                "The following tools are available inside the Bash REPL as shell commands:\n"
             )
         else:
-            lines.append(
-                "The root model can call the following tools inside the Python REPL:\n"
-            )
+            lines.append("The following tools are available inside the Python REPL:\n")
 
         self._format_tool_docs_into(lines, self.root_tool_defs)
 
@@ -1404,17 +1339,18 @@ export RLM_READY=1
                 'structured args/kwargs, use `tool_name --json \'{"args": [...], '
                 '"kwargs": {...}}\'` or provide the JSON via stdin.'
             )
-            lines.append(
-                "For `llm_batch`, use positional string prompts or "
-                '`--json \'{"prompts": ["..."]}\'`.'
-            )
+            if self.enable_sub_llms:
+                lines.append(
+                    "For `llm_batch`, use positional string prompts or "
+                    '`--json \'{"prompts": ["..."]}\'`.'
+                )
         lines.append("")
 
         return "\n".join(lines)
 
     def build_sub_tools_documentation(self) -> str:
         """Generate markdown docs for sub-LLM tools."""
-        if not self.sub_tool_defs:
+        if not self.enable_sub_llms or not self.sub_tool_defs:
             return ""
 
         lines = ["\n## Sub-LLM Tools\n"]
@@ -1470,7 +1406,7 @@ export RLM_READY=1
 
     def build_sub_budget_note(self) -> str:
         """Return sub-LLM token budget note, or empty string."""
-        if self.sub_max_completion_tokens is None:
+        if not self.enable_sub_llms or self.sub_max_completion_tokens is None:
             return ""
         return (
             f"\nYou have a total budget of "
@@ -1483,6 +1419,7 @@ export RLM_READY=1
         body = (
             self.build_base_system_prompt()
             + self.build_packages_documentation()
+            + self.build_sub_llm_documentation()
             + self.build_root_tools_documentation()
             + self.build_sub_tools_documentation()
             + self.build_root_budget_note()
@@ -2328,7 +2265,12 @@ class RLMEnv(vf.StatefulToolEnv):
                    execution.  None (default) means unlimited.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
-        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "heavy"
+        root_prompt_verbosity: Verbosity of sub-LLM usage instructions in the root
+                   prompt; "light", "medium", or "heavy". Only has effect when
+                   enable_sub_llms=True.
+        enable_sub_llms: If True (default), the root model can call sub-LLMs via
+                   ``llm_batch()``. If False, ``llm_batch`` is not registered as a
+                   tool and all sub-LLM-related prompt sections are omitted.
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         system_prompt: Custom system prompt (default: RLM standard prompt)
@@ -2382,6 +2324,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sub_model: str | None = None,
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
+        enable_sub_llms: bool = True,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         system_prompt: str | None = None,
@@ -2426,6 +2369,7 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
+        self.enable_sub_llms = enable_sub_llms
         self.repl_language = repl_language
         self.sub_model = sub_model
         self.shared_tools = tools or []
@@ -2458,6 +2402,29 @@ class RLMEnv(vf.StatefulToolEnv):
                 UserWarning,
                 stacklevel=2,
             )
+        if not self.enable_sub_llms:
+            if sub_max_completion_tokens is not None:
+                logger.warning(
+                    "sub_max_completion_tokens is set but enable_sub_llms=False. "
+                    "The sub-LLM token budget has no effect."
+                )
+            if sub_model is not None:
+                logger.warning(
+                    "sub_model is set but enable_sub_llms=False. "
+                    "The sub-model setting has no effect."
+                )
+            if sub_tools:
+                logger.warning(
+                    "sub_tools are provided but enable_sub_llms=False. "
+                    "Sub-tools have no effect without llm_batch."
+                )
+            if root_prompt_verbosity != "light":
+                logger.warning(
+                    "root_prompt_verbosity='%s' but enable_sub_llms=False. "
+                    "Prompt verbosity only affects sub-LLM instructions, "
+                    "which are disabled.",
+                    root_prompt_verbosity,
+                )
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self._interception_bind_host = "127.0.0.1"
         self.sandbox_docker_image = sandbox_docker_image
@@ -2483,19 +2450,20 @@ class RLMEnv(vf.StatefulToolEnv):
             reraise=True,
         ).wraps
         fixed_root_tools = self._build_fixed_root_tools()
+        active_reserved = {_tool_display_name(t) for t in fixed_root_tools}
         self.root_tools, self.root_tool_map = _merge_tool_lists(
             fixed_tools=fixed_root_tools,
             shared_tools=self.shared_tools,
             role_tools=self.root_only_tools,
             context="root tools",
-            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+            reserved_names=active_reserved,
         )
         self.sub_tools, self.sub_tool_map = _merge_tool_lists(
             fixed_tools=[],
             shared_tools=self.shared_tools,
             role_tools=self.sub_only_tools,
             context="sub-LLM tools",
-            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+            reserved_names=active_reserved,
         )
         self.sub_tool_defs: list[vf.Tool] = [
             convert_func_to_tool_def(tool) for tool in self.sub_tools
@@ -2539,6 +2507,7 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_llm_max_turns=self.sub_llm_max_turns,
             root_tool_defs=self.root_tool_defs,
             sub_tool_defs=self.sub_tool_defs,
+            enable_sub_llms=self.enable_sub_llms,
             allow_context_dropping=self.allow_context_dropping,
             min_turns_in_context=self.min_turns_in_context,
         )
@@ -2592,26 +2561,29 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
+        tools: list[Callable] = []
 
-        async def llm_batch(prompts: list[str]) -> list[str]:
-            """
-            Call the sub-LLM on multiple prompts in parallel.
+        if self.enable_sub_llms:
 
-            - Input: a list of prompt strings.
-            - Output: a list of responses in the same order as the input prompts.
-            - Use this inside the REPL to get help on sub-tasks.
-            """
-            # Context is injected only when called via the REPL root-tool endpoint.
-            context = self._root_tool_context_var.get()
-            if context is None:
-                raise RuntimeError(
-                    "llm_batch called outside of a tool request context."
-                )
-            results, _ = await self._root_llm_batch(context, prompts)
-            return results
+            async def llm_batch(prompts: list[str]) -> list[str]:
+                """
+                Call the sub-LLM on multiple prompts in parallel.
 
-        llm_batch.__name__ = "llm_batch"
-        tools: list[Callable] = [llm_batch]
+                - Input: a list of prompt strings.
+                - Output: a list of responses in the same order as the input prompts.
+                - Use this inside the REPL to get help on sub-tasks.
+                """
+                # Context is injected only when called via the REPL root-tool endpoint.
+                context = self._root_tool_context_var.get()
+                if context is None:
+                    raise RuntimeError(
+                        "llm_batch called outside of a tool request context."
+                    )
+                results, _ = await self._root_llm_batch(context, prompts)
+                return results
+
+            llm_batch.__name__ = "llm_batch"
+            tools.append(llm_batch)
 
         if self.allow_context_dropping:
 
@@ -4021,23 +3993,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return output
 
     async def call_bash_repl(self, code: str, state: Any) -> str:
-        """
-        Execute Bash commands in a persistent REPL environment.
-
-        The Bash session maintains state across calls and provides access to:
-
-        - Files in the working directory.
-        - `RLM_CONTENT`: Your current best answer (string).
-        - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
-
-        - `llm_batch` and other root tools: available as shell commands.
-
-        Args:
-            code: Bash code to execute in the persistent REPL
-
-        Returns:
-            Raw execution output (stdout/stderr combined)
-        """
+        """Execute Bash commands in a persistent REPL environment."""
         return await self._call_repl(
             code,
             state,
@@ -4046,28 +4002,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
     async def call_python_repl(self, code: str, state: Any) -> str:
-        """
-        Execute Python code in a persistent REPL environment.
-
-        The REPL maintains state across calls and provides access to:
-
-        - Files in the working directory.
-
-        - `answer`: A dictionary for your final answer:
-          - `answer["content"]`: Your answer (string) - update this as you work
-          - `answer["ready"]`: Set to `True` to finish (terminates execution immediately)
-
-        - `llm_batch(prompts)`: Make sub-LLM calls for help with subtasks
-          - Takes a list of prompts, returns a list of answers (same order)
-          - Useful for semantic understanding, summarization, complex reasoning
-          - Prints metadata summary showing tokens and tool calls per sub-LLM
-
-        Args:
-            code: Python code to execute in the persistent REPL
-
-        Returns:
-            Execution output including stdout, stderr, and expression results
-        """
+        """Execute Python code in a persistent REPL environment."""
         return await self._call_repl(
             code,
             state,

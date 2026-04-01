@@ -459,28 +459,31 @@ class TestPromptVerbosity:
             (
                 "light",
                 [
-                    "You have the `call_python_repl` tool and a filesystem available to you."
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "Make use of sub-LLMs via `llm_batch`",
                 ],
                 [
-                    "This is an iterative environment.",
-                    "Critical: This is an ITERATIVE environment",
+                    "## Sub-LLM Usage",
                 ],
             ),
             (
                 "medium",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "This is an iterative environment.",
+                    "prefer calling them in parallel",
                 ],
-                ["Critical: This is an ITERATIVE environment"],
+                [
+                    "## Sub-LLM Usage",
+                ],
             ),
             (
                 "heavy",
                 [
-                    "iterative Python REPL where you explore data step by step.",
-                    "Critical: This is an ITERATIVE environment",
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "## Sub-LLM Usage",
+                    "Pass a list of strings only",
                 ],
-                ["This is an iterative environment."],
+                [],
             ),
         ],
     )
@@ -509,6 +512,30 @@ class TestPromptVerbosity:
                 assert snippet in prompt
             for snippet in unexpected_snippets:
                 assert snippet not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_enable_sub_llms_false_omits_sub_llm_docs(self):
+        """When enable_sub_llms=False, sub-LLM docs are absent from the prompt."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            enable_sub_llms=False,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "llm_batch" not in prompt
+            assert "sub-LLM" not in prompt
+            assert "You have the `call_python_repl` tool" in prompt
         finally:
             await env.cleanup_rlm_state(result)
 
@@ -943,10 +970,10 @@ class TestToolSplitConfiguration:
         result = await env.setup_state(state)
         try:
             prompt = result["rlm_system_prompt"]
-            assert "Root REPL Tools" in prompt
+            assert "REPL Tools" in prompt
             assert "Sub-LLM Tools" in prompt
 
-            root_index = prompt.find("Root REPL Tools")
+            root_index = prompt.find("REPL Tools")
             sub_index = prompt.find("Sub-LLM Tools")
             assert root_index != -1
             assert sub_index != -1
