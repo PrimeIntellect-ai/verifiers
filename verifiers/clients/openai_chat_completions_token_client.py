@@ -6,6 +6,7 @@ from openai.types.chat import ChatCompletion
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
+    OpenAIChatMessage,
     OpenAIChatMessages,
     OpenAIChatResponse,
     OpenAITool,
@@ -30,6 +31,21 @@ def _has_multimodal_content(messages) -> bool:
                 ):
                     return True
     return False
+
+
+def _get_role(msg) -> str | None:
+    return msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
+
+
+def _is_valid_env_tail(messages: list) -> bool:
+    """Validate that messages follow env response patterns:
+    all tool messages, with optionally a single user message last."""
+    if not messages:
+        return False
+    for msg in messages[:-1]:
+        if _get_role(msg) != "tool":
+            return False
+    return _get_role(messages[-1]) in ("tool", "user")
 
 
 # copy from vllm/entrypoints/openai/protocol.py
@@ -97,6 +113,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
+
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
             model=model,
@@ -121,13 +138,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         oai_tools: list[OpenAITool] | None,
     ) -> list[int] | None:
         """
-        Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
-        that this method is called *before* making the model response from
-        prompt_messages, i.e. the previous turn's prompt and completion do not yet
-        include the environment response and next turn's model response.
+        Build prompt_ids for the next turn by stitching engine tokens with
+        bridge tokens for the environment response.
 
-        Returns None when no trajectory step has a message-level prefix match with
-        prompt_messages.
+        The engine's prev_turn_ids are preserved exactly (no retokenization),
+        guaranteeing KV cache reuse via vLLM's prefix caching. Only the bridge
+        tokens (env response + generation prompt) are new.
+
+        Returns None to fall back to MITO when stitching is not possible.
         """
 
         def normalize_for_comparison(value: Any) -> Any:
@@ -142,12 +160,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 return [normalize_for_comparison(item) for item in value]
             return value
 
-        async def find_largest_prefix_match_tokens() -> list[int] | None:
-            """Scan trajectory backwards for the step whose messages form the longest
-            prefix of prompt_messages. Returns that step's token IDs, or None."""
+        async def find_largest_prefix_match() -> tuple[list[int], bool, int] | None:
+            """Scan trajectory backwards for the step whose messages form the
+            longest prefix of prompt_messages. Returns
+            (token_ids, is_truncated, prefix_len) or None."""
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
-            best_step_tokens = None
+            best_step = None
             for step in reversed(state["trajectory"]):
                 step_tokens = step["tokens"]
                 if step_tokens is None:
@@ -167,103 +186,99 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 if normalized_prompt_messages[:prefix_len] != normalized_step_messages:
                     continue
                 best_prefix_len = prefix_len
-                best_step_tokens = step_tokens
+                best_step = step
                 if best_prefix_len == len(normalized_prompt_messages):
                     break
 
-            if best_step_tokens is None:
+            if best_step is None:
                 return None
-            return best_step_tokens["prompt_ids"] + best_step_tokens["completion_ids"]
+            best_step_tokens = best_step["tokens"]
+            prev_turn_ids = (
+                best_step_tokens["prompt_ids"] + best_step_tokens["completion_ids"]
+            )
+            # Check both seq_len overflow (from token parsing) and max_tokens
+            # truncation (from vLLM finish_reason="length").
+            is_truncated = best_step_tokens.get("is_truncated", False) or (
+                best_step.get("response") is not None
+                and getattr(best_step["response"].message, "is_truncated", False)
+            )
+            return prev_turn_ids, is_truncated, best_prefix_len
 
-        prev_turn_ids = await find_largest_prefix_match_tokens()
-        if prev_turn_ids is None:
+        match = await find_largest_prefix_match()
+        if match is None:
             return None
 
-        def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
-            """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
+        prev_turn_ids, is_truncated, prefix_len = match
 
-            def find_last_index(lst: list[int], target: int) -> int:
-                for i in range(len(lst) - 1, -1, -1):
-                    if lst[i] == target:
-                        return i
-                raise ValueError
+        # Truncated completions have no stop token — can't reliably stitch.
+        if is_truncated:
+            self.logger.debug("TITO: truncated completion, falling back to MITO")
+            return None
 
-            try:
-                i = find_last_index(lst, value)
-                suffix_ids = lst[i + 1 :]
-                return suffix_ids
-            except ValueError:
-                # end of message token not found, so we don't need to add any suffix tokens
-                return []
+        # The env messages are everything after the prefix match.
+        env_messages: OpenAIChatMessages = list(prompt_messages[prefix_len:])
+        if not _is_valid_env_tail(env_messages):
+            return None
 
-        def find_largest_overlap(a: list[int], b: list[int]) -> int:
-            """Find the largest overlapping sequence between the end of a and beginning of b."""
-            if not a or not b:
-                return 0
+        # Extract the bridge tokens using a minimal dual-tokenization that
+        # avoids the problematic assistant message entirely. We tokenize:
+        #   (a) [dummy_assistant, env_messages...]  with gen=True
+        #   (b) [dummy_assistant]                   with gen=False
+        # The bridge = (a)[cut_point:] where cut_point accounts for the gap
+        # between the engine's stop token and the template's inter-turn separator.
+        #
+        # Using a dummy assistant message ensures the inter-turn separator between
+        # assistant and env response is correct, while avoiding template behaviors
+        # that depend on the assistant being the last message (e.g., Qwen3's
+        # context-dependent think block injection with add_generation_prompt=False).
+        dummy_assistant: OpenAIChatMessage = {"role": "assistant", "content": "x"}
 
-            max_possible = min(len(a), len(b))
-            for overlap_len in reversed(range(1, max_possible + 1)):
-                a_suffix = a[-overlap_len:]
-                b_prefix = b[:overlap_len]
-
-                if a_suffix == b_prefix:
-                    return overlap_len
-
-            return 0
-
-        # we add suffix_ids to prev_turn_ids. suffix_ids are tokens that are added
-        # by the chat template after messages, but not generated by the model, i.e.
-        # they will be part of messages_ids (from the chat template) but not of
-        # prev_turn_ids (from the engine). to not train OOD w.r.t. the chat
-        # template, we add these suffix tokens to prev_turn_ids. we compute the
-        # suffix_ids once, and cache them for future use. then, for each turn, we
-        # find the largest overlap between the end of prev_turn_ids and the
-        # beginning of the suffix_ids. this is to correctly handle truncated turns
-        # that did not produce message delimiting tokens.
-        if state.get("_cached_suffix_ids") is None:
-            dummy_content = "World!"
-            dummy_messages = cast(
-                OpenAIChatMessages,
-                [
-                    {"role": "user", "content": "Hello"},
-                    {"role": "assistant", "content": dummy_content},
-                ],
-            )
-            dummy_content_ids = await self.tokenize(
-                messages=dummy_content,
+        try:
+            bridge_full_ids = await self.tokenize(
+                messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
                 model=state["model"],
             )
-            dummy_messages_ids = await self.tokenize(
-                messages=dummy_messages,
+            bridge_base_ids = await self.tokenize(
+                messages=[dummy_assistant],
                 tools=oai_tools,
                 model=state["model"],
                 extra_kwargs=dict(add_generation_prompt=False),
             )
-            # these are typically chat template specific tokens, such as
-            # eom tokens, newlines, etc.
-            suffix_ids = compute_suffix_ids(dummy_messages_ids, dummy_content_ids[-1])
-            state["_cached_suffix_ids"] = suffix_ids
-        else:
-            suffix_ids = state["_cached_suffix_ids"]
-        overlap_len = find_largest_overlap(prev_turn_ids, suffix_ids)
-        prev_turn_ids += suffix_ids[overlap_len:]
+        except Exception:
+            self.logger.debug("TITO: bridge tokenization failed, falling back to MITO")
+            return None
 
-        # Tokenize the full prompt to derive env_response_ids by slicing off
-        # the known prefix.  Tokenizing message fragments in isolation fails
-        # with strict chat templates (e.g. MiniMax-M2.5) that reject tool
-        # messages without a preceding assistant message with tool_calls, or
-        # assistant messages with tool_calls not followed by tool messages.
-        full_ids = await self.tokenize(
-            messages=prompt_messages,
-            tools=oai_tools,
-            model=state["model"],
-        )
-        env_response_ids = full_ids[len(prev_turn_ids) :]
+        # Verify the base is a prefix of the full (sanity check)
+        if bridge_full_ids[: len(bridge_base_ids)] != bridge_base_ids:
+            self.logger.debug(
+                "TITO: bridge prefix property broken, falling back to MITO"
+            )
+            return None
 
-        prompt_ids = prev_turn_ids + env_response_ids
+        # The base ends at the template-rendered stop token + inter-turn separator.
+        # The engine's prev_turn_ids ends at just the stop token.
+        # The gap = tokens the template adds after the stop token (e.g., \n for Qwen).
+        # We include the gap in the bridge so it covers everything after the stop token.
+        #
+        # Find the gap by locating the stop token in bridge_base_ids.
+        # The stop token is the last completion_ids token from the matched step.
+        stop_token_id = prev_turn_ids[-1]
+        gap = 0
+        for i in range(len(bridge_base_ids) - 1, -1, -1):
+            if bridge_base_ids[i] == stop_token_id:
+                gap = len(bridge_base_ids) - i - 1
+                break
 
-        return prompt_ids
+        bridge_ids = bridge_full_ids[len(bridge_base_ids) - gap :]
+
+        # Handle stop tokens that double as role markers (e.g., GLM's <|observation|>):
+        # if the bridge starts with the stop token that's already at the end of
+        # prev_turn_ids, skip it to avoid duplication.
+        if bridge_ids and bridge_ids[0] == stop_token_id:
+            bridge_ids = bridge_ids[1:]
+
+        return prev_turn_ids + list(bridge_ids)
 
     async def tokenize(
         self,

@@ -229,10 +229,8 @@ def test_bulk_delete_failure(mixin):
 
 
 def test_run_background_job_success(mixin):
-    job = MagicMock()
     results = MagicMock(completed=True)
-    mixin.sandbox_client.start_background_job = AsyncMock(return_value=job)
-    mixin.sandbox_client.get_background_job = AsyncMock(return_value=results)
+    mixin.sandbox_client.run_background_job = AsyncMock(return_value=results)
 
     state = {"sandbox_id": "sb-1"}
     ret = asyncio.run(mixin.run_background_job(state, command="echo hi", timeout=10))
@@ -240,74 +238,35 @@ def test_run_background_job_success(mixin):
 
 
 def test_run_background_job_command_timeout(mixin):
-    mixin.sandbox_client.start_background_job = AsyncMock(
+    mixin.sandbox_client.run_background_job = AsyncMock(
         side_effect=CommandTimeoutError(sandbox_id="sb-1", command="cmd", timeout=5)
     )
 
     state = {"sandbox_id": "sb-1"}
-    with pytest.raises(vf.SandboxError):
-        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
-
-
-def test_run_background_job_oom_on_start(mixin):
-    mixin.sandbox_client.start_background_job = AsyncMock(
-        side_effect=SandboxOOMError(sandbox_id="sb-1")
-    )
-
-    state = {"sandbox_id": "sb-1"}
-    with pytest.raises(vf.SandboxError):
-        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
-    assert state["sandbox_oom"] is True
-
-
-def test_run_background_job_timeout_on_start(mixin):
-    mixin.sandbox_client.start_background_job = AsyncMock(
-        side_effect=SandboxTimeoutError(sandbox_id="sb-1")
-    )
-
-    state = {"sandbox_id": "sb-1"}
-    with pytest.raises(vf.SandboxError):
-        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
-    assert state["sandbox_timeout"] is True
-
-
-def test_run_background_job_oom_during_poll(mixin):
-    job = MagicMock()
-    mixin.sandbox_client.start_background_job = AsyncMock(return_value=job)
-    mixin.sandbox_client.get_background_job = AsyncMock(
-        side_effect=SandboxOOMError(sandbox_id="sb-1")
-    )
-
-    state = {"sandbox_id": "sb-1"}
-    with pytest.raises(vf.SandboxError):
-        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
-    assert state["sandbox_oom"] is True
-
-
-def test_run_background_job_timeout_during_poll(mixin):
-    job = MagicMock()
-    mixin.sandbox_client.start_background_job = AsyncMock(return_value=job)
-    mixin.sandbox_client.get_background_job = AsyncMock(
-        side_effect=SandboxTimeoutError(sandbox_id="sb-1")
-    )
-
-    state = {"sandbox_id": "sb-1"}
-    with pytest.raises(vf.SandboxError):
-        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
-    assert state["sandbox_timeout"] is True
-
-
-def test_run_background_job_poll_timeout(mixin):
-    job = MagicMock()
-    not_done = MagicMock(completed=False)
-    mixin.sandbox_client.start_background_job = AsyncMock(return_value=job)
-    mixin.sandbox_client.get_background_job = AsyncMock(return_value=not_done)
-
-    state = {"sandbox_id": "sb-1"}
     with pytest.raises(CommandTimeoutError):
-        asyncio.run(
-            mixin.run_background_job(state, command="cmd", timeout=0, poll_interval=1)
-        )
+        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
+
+
+def test_run_background_job_oom(mixin):
+    mixin.sandbox_client.run_background_job = AsyncMock(
+        side_effect=SandboxOOMError(sandbox_id="sb-1")
+    )
+
+    state = {"sandbox_id": "sb-1"}
+    with pytest.raises(vf.SandboxError):
+        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
+    assert state["sandbox_oom"] is True
+
+
+def test_run_background_job_sandbox_timeout(mixin):
+    mixin.sandbox_client.run_background_job = AsyncMock(
+        side_effect=SandboxTimeoutError(sandbox_id="sb-1")
+    )
+
+    state = {"sandbox_id": "sb-1"}
+    with pytest.raises(vf.SandboxError):
+        asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
+    assert state["sandbox_timeout"] is True
 
 
 # ── teardown_sandboxes ──────────────────────────────────────────────
