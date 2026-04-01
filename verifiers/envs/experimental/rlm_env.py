@@ -1215,19 +1215,17 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 """
 
     SUB_LLM_ROOT_INSTRUCTION_STORE: dict[str, str] = {
-        "light": (
-            "Make use of sub-LLMs via `llm_batch` whenever they could be useful."
-        ),
+        "light": ("Make use of `llm_batch` whenever it could be useful."),
         "medium": (
-            "Make use of sub-LLMs via `llm_batch` whenever they could be useful;"
-            " prefer calling them in parallel to calling them sequentially."
+            "Make use of `llm_batch` whenever it could be useful;"
+            " prefer calling in parallel to calling sequentially."
         ),
         "heavy": (
-            "\n## Sub-LLM Usage\n\n"
+            "\n## llm_batch Usage\n\n"
             "- Use `llm_batch()` for semantic tasks — summarization,"
             " understanding text, classification, etc.\n"
             "- Pass a list of strings only (no message dicts).\n"
-            "- Prefer calling sub-LLMs in parallel to calling them sequentially."
+            "- Prefer parallel calls to sequential ones."
         ),
     }
 
@@ -1346,16 +1344,14 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         if not self.enable_sub_llms or not self.sub_tool_defs:
             return ""
 
-        lines = ["\n## Sub-LLM Tools\n"]
-        lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
-        )
+        lines = ["\n## llm_batch Tools\n"]
+        lines.append("The `llm_batch()` calls have access to the following tools:\n")
 
         self._format_tool_docs_into(lines, self.sub_tool_defs)
 
         lines.append(
-            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
-            "tools autonomously."
+            "When delegating tasks via `llm_batch()`, these tools are used "
+            "autonomously."
         )
         lines.append(
             "You do NOT need to manage tool calls yourself - just describe the task "
@@ -2556,11 +2552,13 @@ class RLMEnv(vf.StatefulToolEnv):
 
             async def llm_batch(prompts: list[str]) -> list[str]:
                 """
-                Call the sub-LLM on multiple prompts in parallel.
+                Dispatch prompts to fresh instances of your own model in parallel.
+                Each call gets an independent context window — they cannot see
+                your conversation or each other's responses.
 
                 - Input: a list of prompt strings.
                 - Output: a list of responses in the same order as the input prompts.
-                - Use this inside the REPL to get help on sub-tasks.
+                - Use this inside the REPL to delegate sub-tasks.
                 """
                 # Context is injected only when called via the REPL root-tool endpoint.
                 context = self._root_tool_context_var.get()

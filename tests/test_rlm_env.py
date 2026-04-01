@@ -223,7 +223,7 @@ class TestGenerateSubToolsDocumentation:
 
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
         docs = rlm_env_with_sub_tools.prompt_builder.build_sub_tools_documentation()
-        assert "Sub-LLM Tools" in docs
+        assert "llm_batch Tools" in docs
         assert "sample_tool" in docs
         assert "another_tool" in docs
         assert "Add two numbers" in docs
@@ -460,27 +460,27 @@ class TestPromptVerbosity:
                 "light",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "Make use of sub-LLMs via `llm_batch`",
+                    "Make use of `llm_batch`",
                 ],
                 [
-                    "## Sub-LLM Usage",
+                    "## llm_batch Usage",
                 ],
             ),
             (
                 "medium",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "prefer calling them in parallel",
+                    "prefer calling in parallel",
                 ],
                 [
-                    "## Sub-LLM Usage",
+                    "## llm_batch Usage",
                 ],
             ),
             (
                 "heavy",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "## Sub-LLM Usage",
+                    "## llm_batch Usage",
                     "Pass a list of strings only",
                 ],
                 [],
@@ -969,10 +969,10 @@ class TestToolSplitConfiguration:
         try:
             prompt = result["rlm_system_prompt"]
             assert "REPL Tools" in prompt
-            assert "Sub-LLM Tools" in prompt
+            assert "llm_batch Tools" in prompt
 
             repl_index = prompt.find("REPL Tools")
-            sub_index = prompt.find("Sub-LLM Tools")
+            sub_index = prompt.find("llm_batch Tools")
             assert repl_index != -1
             assert sub_index != -1
             assert repl_index < sub_index
