@@ -205,49 +205,36 @@ class TaskSet:
         import logging
         import time
 
-        from prime_sandboxes import CreateSandboxRequest
-        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
-
         logger = logging.getLogger(__name__)
         ds = self.get_dataset()
         total = min(n, len(ds)) if n is not None else len(ds)
         is_sandbox = isinstance(self, SandboxTaskSet)
 
         if not is_sandbox:
-            # No sandbox needed — just run validate_instance on each
-            results: list[dict] = []
-            for i in range(total):
+            # No sandbox needed — run validate_instance concurrently
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _validate_simple(i: int) -> dict:
                 row = ds[i]
                 state: State = {  # type: ignore[assignment]
                     "info": row.get("info") or {},
                     "answer": row.get("answer", ""),
                 }
-                t0 = time.time()
-                try:
-                    valid = await self.validate_instance(state)
-                    results.append(
-                        {
-                            "index": i,
-                            "valid": valid,
-                            "elapsed": time.time() - t0,
-                            "error": None,
-                        }
-                    )
-                except Exception as e:
-                    results.append(
-                        {
-                            "index": i,
-                            "valid": False,
-                            "elapsed": time.time() - t0,
-                            "error": str(e),
-                        }
-                    )
-            return results
+                async with sem:
+                    t0 = time.time()
+                    try:
+                        valid = await self.validate_instance(state)
+                        return {"index": i, "valid": valid, "elapsed": time.time() - t0, "error": None}
+                    except Exception as e:
+                        return {"index": i, "valid": False, "elapsed": time.time() - t0, "error": str(e)}
 
-        # Sandbox path
-        client = ThreadedAsyncSandboxClient(
-            max_workers=min(max(1, concurrency // 8), 50)
-        )
+            return await asyncio.gather(*[_validate_simple(i) for i in range(total)])
+
+        # Sandbox path — lazy imports only needed here
+        from prime_sandboxes import CreateSandboxRequest
+        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+
+        client = ThreadedAsyncSandboxClient(max_workers=concurrency)
         sem = asyncio.Semaphore(concurrency)
         assert isinstance(self, SandboxTaskSet)
 
@@ -314,7 +301,8 @@ class TaskSet:
             client.teardown()
         elapsed = time.time() - t0
         passed = sum(1 for r in results if r["valid"])
-        logger.info(f"Validation: {passed}/{total} valid ({elapsed:.0f}s)")
+        rate = passed / total if total else 0
+        logger.info(f"Validation: {passed}/{total} valid ({rate:.1%}, {elapsed:.0f}s)")
         return results
 
     def __repr__(self) -> str:
