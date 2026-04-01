@@ -237,10 +237,28 @@ prime eval run math-python -n 500 -r 3 -s \
   --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
 ```
 
-The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
+The `--state-columns` flag, and the TOML `state_columns` field, save extra keys from rollout `state`. This is the path for persisting environment-specific metadata that you compute during a rollout.
+
+Store JSON-serializable values in `state` while the rollout is running, then list the keys you want to keep in `state_columns`. When results are saved, those values are written into each `results.jsonl` record and shown in `prime eval tui`.
+
+CLI example:
 
 ```bash
-prime eval run my-env -s -C "judge_response,parsed_answer"
+prime eval run my-env -s -C "judge_response,parsed_answer,judge_trace"
+```
+
+TOML example:
+
+```toml
+save_results = true
+state_columns = ["judge_trace"]  # global default for every [[eval]] below
+
+[[eval]]
+env_id = "my-env"
+
+[[eval]]
+env_id = "my-other-env"
+state_columns = ["judge_trace", "parsed_answer"]  # per-eval override
 ```
 
 ## Environment Defaults
@@ -316,6 +334,7 @@ Each `[[eval]]` section must contain an `env_id` field. All other fields are opt
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `state_columns` | array[string] | Extra rollout state keys to persist in saved outputs |
 
 Example with `env_args`:
 

@@ -236,11 +236,11 @@ Reward functions execute in the order they are added to the rubric. Since `state
 async def similarity_score(completion, answer, state) -> float:
     response = completion[-1]["content"]
     score = compute_similarity(response, answer)  # continuous 0-1
-    state["similarity"] = score
+    state["similarity_trace"] = {"response": response, "score": score}
     return score
 
 async def similarity_threshold(state) -> float:
-    return 1.0 if state["similarity"] > 0.8 else 0.0
+    return 1.0 if state["similarity_trace"]["score"] > 0.8 else 0.0
 
 rubric = vf.Rubric(
     funcs=[similarity_score, similarity_threshold],
@@ -249,6 +249,8 @@ rubric = vf.Rubric(
 ```
 
 This avoids redundant computation when multiple reward functions need access to the same derived value.
+
+You can use the same pattern to stash JSON-serializable objects in `state` anywhere during the rollout, including `setup_state`, `env_response`, or reward functions. To persist those values, add their keys to eval `state_columns`, either with `prime eval run ... -C similarity_trace` or with `state_columns = ["similarity_trace"]` in eval TOML. When results are saved, those fields are written to `results.jsonl` and shown in `prime eval tui`.
 
 ### Group-Based Reward Functions
 
