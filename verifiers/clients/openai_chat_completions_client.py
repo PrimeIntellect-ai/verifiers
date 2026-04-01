@@ -9,6 +9,7 @@ from openai import (
     AsyncOpenAI,
     AuthenticationError,
     BadRequestError,
+    InternalServerError,
     PermissionDeniedError,
 )
 from openai.types.chat import (
@@ -71,7 +72,7 @@ def handle_openai_overlong_prompt(func):
             return await func(*args, **kwargs)
         except (AuthenticationError, PermissionDeniedError):
             raise
-        except BadRequestError as e:
+        except (BadRequestError, InternalServerError) as e:
             error_text = e.response.text.lower()
             context_length_phrases = [
                 "this model's maximum context length is",

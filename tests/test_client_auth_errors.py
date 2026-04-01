@@ -4,6 +4,7 @@ from anthropic import AuthenticationError as AnthropicAuthenticationError
 from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import AuthenticationError as OpenAIAuthenticationError
 from openai import BadRequestError as OpenAIBadRequestError
+from openai import InternalServerError as OpenAIInternalServerError
 
 from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
@@ -182,6 +183,72 @@ async def test_openai_overlong_prompt_raises_overlong_error(error_message: str):
     client = OpenAIChatCompletionsClient(_OverlongOpenAIChatClient(error_message))
 
     with pytest.raises(OverlongPromptError):
+        await client.get_response(
+            prompt=[UserMessage(content="test prompt")],
+            model="gpt-test",
+            sampling_args={},
+        )
+
+
+# ---------------------------------------------------------------------------
+# vLLM-style InternalServerError for overlong prompts
+# ---------------------------------------------------------------------------
+
+
+def _make_openai_internal_server_error(message: str) -> OpenAIInternalServerError:
+    response = httpx.Response(
+        status_code=500,
+        request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
+        text=message,
+    )
+    return OpenAIInternalServerError(message, response=response, body=None)
+
+
+class _OverlongVLLMChatCompletions:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    async def create(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        raise _make_openai_internal_server_error(self._message)
+
+
+class _OverlongVLLMChatClient:
+    class _Chat:
+        def __init__(self, message: str) -> None:
+            self.completions = _OverlongVLLMChatCompletions(message)
+
+    def __init__(self, message: str) -> None:
+        self.chat = self._Chat(message)
+
+
+@pytest.mark.parametrize(
+    "error_message",
+    [
+        # Real vLLM error format
+        "The prompt is 32769 tokens, which exceeds the model's maximum context length of 32768 tokens.",
+        # Other context-length phrases that might come as 500s
+        "context length exceeded",
+    ],
+)
+@pytest.mark.asyncio
+async def test_vllm_internal_server_error_overlong_prompt(error_message: str):
+    """vLLM returns overlong-prompt errors as 500 InternalServerError, not 400."""
+    client = OpenAIChatCompletionsClient(_OverlongVLLMChatClient(error_message))
+
+    with pytest.raises(OverlongPromptError):
+        await client.get_response(
+            prompt=[UserMessage(content="test prompt")],
+            model="gpt-test",
+            sampling_args={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_vllm_non_overlong_internal_server_error_not_converted():
+    """A 500 that is NOT about context length should propagate as InternalServerError."""
+    client = OpenAIChatCompletionsClient(_OverlongVLLMChatClient("CUDA out of memory"))
+
+    with pytest.raises(OpenAIInternalServerError):
         await client.get_response(
             prompt=[UserMessage(content="test prompt")],
             model="gpt-test",
