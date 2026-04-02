@@ -281,6 +281,7 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_root_tool_non_llm_time_count", 0)
     state.setdefault("sub_llm_max_turns_reached_frac", 0.0)
     state.setdefault("_sub_llm_max_turns_reached_count", 0)
+    state.setdefault("_sub_llm_request_count", 0)
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -3193,13 +3194,13 @@ class RLMEnv(vf.StatefulToolEnv):
                 update_rlm_metrics_from_step(state_ref, trajectory_step)
 
         _ensure_rlm_metric_state(state_ref)
+        state_ref["_sub_llm_request_count"] += 1
         if max_turns_reached:
             state_ref["_sub_llm_max_turns_reached_count"] += 1
-        call_count = state_ref.get("sub_llm_call_count", 0)
-        if call_count > 0:
-            state_ref["sub_llm_max_turns_reached_frac"] = (
-                state_ref["_sub_llm_max_turns_reached_count"] / call_count
-            )
+        state_ref["sub_llm_max_turns_reached_frac"] = (
+            state_ref["_sub_llm_max_turns_reached_count"]
+            / state_ref["_sub_llm_request_count"]
+        )
 
         return {
             "choices": [{"message": {"content": boxed_content}}],
