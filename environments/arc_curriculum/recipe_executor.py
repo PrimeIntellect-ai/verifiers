@@ -104,10 +104,10 @@ ALL_OPS = BASE_OPS + POST_OPS
 def _curriculum_grid_dims(level, rng):
     """Grid sizes for curriculum levels. Monkey-patched onto generators at import."""
     if level == 1:
-        return rng.randint(3, 5), rng.randint(3, 5)
+        return rng.randint(2, 5), rng.randint(2, 5)
     if level == 2:
-        return rng.randint(6, 9), rng.randint(6, 9)
-    return rng.randint(10, 15), rng.randint(10, 15)
+        return rng.randint(5, 8), rng.randint(5, 8)
+    return rng.randint(8, 12), rng.randint(8, 12)
 
 
 # ─── Generator import ────────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ def build_generator_prompt(base_op: str) -> str:
         f"{base_op}: {desc}",
         "",
         "Choose difficulty settings:",
-        "  level: 1 = small (3-5), 2 = medium (6-9), 3 = large (10-15)",
+        "  level: 1 = small (2-5), 2 = medium (5-8), 3 = large (8-12)",
         "  seed: any integer",
         "",
         "Examples:",
