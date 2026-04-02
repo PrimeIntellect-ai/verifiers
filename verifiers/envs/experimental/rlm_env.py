@@ -279,6 +279,8 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_llm_batch_time_count", 0)
     state.setdefault("_root_tool_non_llm_total_time", 0.0)
     state.setdefault("_root_tool_non_llm_time_count", 0)
+    state.setdefault("sub_llm_max_turns_reached_frac", 0.0)
+    state.setdefault("_sub_llm_max_turns_reached_count", 0)
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -406,6 +408,7 @@ class RLMMonitorRubric(vf.Rubric):
         "root_tool_call_count",
         "llm_batch_mean_time_seconds",
         "root_tool_non_llm_mean_time_seconds",
+        "sub_llm_max_turns_reached_frac",
         "summarize_count",
         "summarize_total_turns_dropped",
         "summarize_total_chars_dropped",
@@ -778,38 +781,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 sys.stdout.write("\\n")
 
 
-    def _split_batch_lines(lines):
-        summary = []
-        per_item = {}
-        for line in lines:
-            text = str(line).strip()
-            if text.startswith("[") and "]:" in text:
-                idx_text = text[1 : text.index("]")]
-                if idx_text.isdigit():
-                    per_item[int(idx_text)] = text[text.index("]:") + 2 :].strip()
-                    continue
-            summary.append(text)
-        return summary, per_item
-
-
-    def _print_llm_batch_result(result_list, per_item_meta=None):
-        for index, item in enumerate(result_list):
-            if index > 0:
-                sys.stdout.write("\\n")
-            header = f"----- llm_batch[{index}]"
-            if per_item_meta and index in per_item_meta:
-                header = f"{header} ({per_item_meta[index]})"
-            sys.stdout.write(f"{header} -----\\n")
-            if not isinstance(item, str):
-                try:
-                    item = json.dumps(item)
-                except Exception:
-                    item = repr(item)
-            sys.stdout.write(item)
-            if not item.endswith("\\n"):
-                sys.stdout.write("\\n")
-
-
     def _load_json_payload(json_payload):
         raw = json_payload
         if raw is None and not sys.stdin.isatty():
@@ -928,16 +899,9 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result, print_lines = _call_root_tool(tool_name, (prompts,), {})
-            summary_lines, per_item = _split_batch_lines(print_lines)
-            if summary_lines:
-                _print_lines(summary_lines)
-            if isinstance(result, list):
-                _print_llm_batch_result(result, per_item_meta=per_item)
-            else:
-                if print_lines:
-                    _print_lines(print_lines)
-                _print_result(result)
+            result, _ = _call_root_tool(tool_name, (prompts,), {})
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.write("\\n")
             return
 
         if use_json:
@@ -2625,8 +2589,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     raise RuntimeError(
                         "llm_batch called outside of a tool request context."
                     )
-                results, _ = await self._root_llm_batch(context, prompts)
-                return results
+                return await self._root_llm_batch(context, prompts)
 
             llm_batch.__name__ = "llm_batch"
             tools.append(llm_batch)
@@ -2951,7 +2914,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self,
         context: dict[str, Any],
         prompts: list[Any],
-    ) -> tuple[list[str], list[str]]:
+    ) -> list[str]:
         """Run a batch of sub-LLM calls for root REPL usage."""
         if not isinstance(prompts, list):
             raise ValueError("llm_batch expects a list of prompts.")
@@ -2968,14 +2931,7 @@ class RLMEnv(vf.StatefulToolEnv):
             used = state_ref.get("sub_llm_completion_tokens", 0)
             if used >= self.sub_max_completion_tokens:
                 msg = self._sub_llm_budget_exhausted_message(state_ref)
-                contents = [msg] * len(prompts)
-                summary_lines = [
-                    f"llm_batch: {len(prompts)} call(s) skipped — "
-                    f"llm_batch token budget exhausted "
-                    f"({used}/{self.sub_max_completion_tokens} "
-                    f"completion tokens used)"
-                ]
-                return contents, summary_lines
+                return [msg] * len(prompts)
 
         rid = state_ref.get("rollout_id", "?")
 
@@ -3044,38 +3000,15 @@ class RLMEnv(vf.StatefulToolEnv):
             len(prompts),
             batch_id,
         )
-        summary_lines = [f"llm_batch: {len(prompts)} call(s)"]
         contents: list[str] = []
-        for index, result in enumerate(results):
+        for result in results:
             if not result:
                 contents.append("")
-                summary_lines.append(f"  [{index}]: error")
                 continue
             message = result.get("choices", [{}])[0].get("message", {})
             contents.append(message.get("content", ""))
-            meta = result.get("_rlm_metadata", {})
-            if meta.get("error"):
-                summary_lines.append(f"  [{index}]: error")
-                continue
-            prompt_tokens = meta.get("prompt_tokens", 0)
-            completion_tokens = meta.get("completion_tokens", 0)
-            tool_calls = meta.get("tool_call_count", 0)
-            max_turns = meta.get("max_turns_reached", False)
-            status = "⚠ max turns" if max_turns else "✓"
-            summary_lines.append(
-                f"  [{index}]: {prompt_tokens} prompt tokens, "
-                f"{completion_tokens} completion tokens, "
-                f"{tool_calls} tool calls {status}"
-            )
 
-        if self.sub_max_completion_tokens is not None:
-            used = state_ref.get("sub_llm_completion_tokens", 0)
-            budget = self.sub_max_completion_tokens
-            summary_lines.append(
-                f"  [{used}/{budget} llm_batch completion tokens used]"
-            )
-
-        return contents, summary_lines
+        return contents
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from worker code)
@@ -3259,17 +3192,17 @@ class RLMEnv(vf.StatefulToolEnv):
                 )
                 update_rlm_metrics_from_step(state_ref, trajectory_step)
 
-        metadata: dict[str, int | float | bool] = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "tool_call_count": tool_call_count,
-            "num_turns": num_turns,
-            "max_turns_reached": max_turns_reached,
-        }
+        _ensure_rlm_metric_state(state_ref)
+        if max_turns_reached:
+            state_ref["_sub_llm_max_turns_reached_count"] += 1
+        call_count = state_ref.get("sub_llm_call_count", 0)
+        if call_count > 0:
+            state_ref["sub_llm_max_turns_reached_frac"] = (
+                state_ref["_sub_llm_max_turns_reached_count"] / call_count
+            )
 
         return {
             "choices": [{"message": {"content": boxed_content}}],
-            "_rlm_metadata": metadata,
         }
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
@@ -3334,12 +3267,9 @@ class RLMEnv(vf.StatefulToolEnv):
                         "llm_batch does not accept extra keyword arguments: "
                         + ", ".join(sorted(kwargs))
                     )
-                result_value, print_lines = await self._root_llm_batch(
-                    root_tool_context, prompts
-                )
+                result_value = await self._root_llm_batch(root_tool_context, prompts)
             else:
                 result_value = await maybe_await(tool_func, *args, **kwargs)
-                print_lines = None
         except Exception as e:
             if self._should_stop_for_error(e):
                 state_ref["_rlm_stop_error"] = e
@@ -3351,11 +3281,7 @@ class RLMEnv(vf.StatefulToolEnv):
             self._root_tool_context_var.reset(token)
 
         result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
-
-        response_body: dict[str, Any] = {"result": result_payload}
-        if print_lines:
-            response_body["print_lines"] = print_lines
-        return web.json_response(response_body)
+        return web.json_response({"result": result_payload})
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
@@ -3871,11 +3797,6 @@ class RLMEnv(vf.StatefulToolEnv):
         output = self._maybe_add_context_warning(
             output, state, ready_instruction=ready_instruction
         )
-
-        if self.root_max_completion_tokens is not None:
-            used = state.get("root_llm_completion_tokens", 0)
-            budget = self.root_max_completion_tokens
-            output += f"\n[{used}/{budget} root completion tokens used]"
 
         return output
 
