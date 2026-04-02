@@ -43,7 +43,7 @@ from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.types import Messages, State
 
 from recipe_executor import (
-    BASE_OPS, POST_OPS, ALL_OPS,
+    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS,
     execute_recipe, parse_generator_output, generator_reward,
     build_generator_prompt, validate_task, OP_DESCRIPTIONS,
 )
@@ -677,13 +677,22 @@ class ArcCurriculumEnv(MultiAgentEnv):
 
 def load_and_prepare_dataset(
     num_examples: int | None = None,
+    levels: list[int] | None = None,
 ) -> Dataset:
-    """Build a dataset with one entry per base_op, cycled to fill num_examples.
+    """Build a dataset with one entry per base_op.
 
-    Each example specifies a base_op. The generator prompt asks it to
-    design a recipe for that specific operation.
+    Args:
+        num_examples: Limit to first N ops (for quick testing).
+        levels: Which op tiers to include. [1] = 13 L1 ops, [2] = 18 L2 ops,
+                [1,2] = all 31. Defaults to [1].
     """
-    ops = BASE_OPS[:num_examples] if num_examples and num_examples < len(BASE_OPS) else BASE_OPS
+    levels = levels or [1]
+    pool = []
+    if 1 in levels:
+        pool.extend(L1_OPS)
+    if 2 in levels:
+        pool.extend(L2_OPS)
+    ops = pool[:num_examples] if num_examples and num_examples < len(pool) else pool
     records = []
     for i, base_op in enumerate(ops):
         prompt_text = build_generator_prompt(base_op)
@@ -736,19 +745,20 @@ CODEGEN_SYSTEM_PROMPT = (
 GENERATOR_SYSTEM_PROMPT = (
     "You are a curriculum designer for an ARC-AGI puzzle solver. "
     "Output a single JSON recipe choosing difficulty settings for the given operation. "
-    'Format: {"base_op": "<name>", "post_ops": ["<op>", ...], '
-    '"level": <1-3>, "seed": <integer>}'
+    'Format: {"base_op": "<name>", "level": <1-3>, "seed": <integer>}'
 )
 
 
 def load_environment(
     num_examples: int | None = None,
+    levels: list[int] | None = None,
     actor_endpoints: dict[str, str] | None = None,
     **kwargs,
 ) -> ArcCurriculumEnv:
     """Entry point for vf-eval / prime-rl."""
     dataset = load_and_prepare_dataset(
         num_examples=num_examples,
+        levels=levels,
     )
     rubric = create_rubric()
 

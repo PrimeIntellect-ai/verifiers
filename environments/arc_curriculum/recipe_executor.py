@@ -79,11 +79,14 @@ POST_OPS = list(POST_TRANSFORMS.keys())
 
 # ─── Base ops (names of all 31 constructive generators) ──────────────────────
 
-BASE_OPS = [
+L1_OPS = [
     "color_replacement", "simple_rotation", "simple_reflection", "scaling_2x",
     "gravity_drop", "flood_fill", "boolean_and_or", "row_col_duplication",
     "solid_to_hollow", "histogram_rendering", "dimension_based_pattern",
     "connectivity_size_filter", "bounding_rect_fill",
+]
+
+L2_OPS = [
     "symmetry_completion", "border_drawing", "template_cloning", "shape_stamping",
     "object_extraction_recolor", "line_extension", "denoising", "interior_fill_multi",
     "crosshair_generation", "object_compaction", "fill_level_encoding",
@@ -91,6 +94,8 @@ BASE_OPS = [
     "value_proportional_expansion", "gap_and_beam", "missing_region_reconstruction",
     "noisy_grid_regularization",
 ]
+
+BASE_OPS = L1_OPS + L2_OPS
 
 ALL_OPS = BASE_OPS + POST_OPS
 
@@ -277,8 +282,8 @@ def build_generator_prompt(base_op: str) -> str:
     """Build the prompt for the curriculum generator LoRA.
 
     Each prompt specifies a single base_op. The generator chooses
-    difficulty settings (level, post_ops, seed). GRPO's 8 rollouts
-    per example naturally explore the difficulty space.
+    level and seed. GRPO's 8 rollouts per example naturally explore
+    the difficulty space.
     """
     desc = OP_DESCRIPTIONS.get(base_op, base_op)
 
@@ -288,22 +293,14 @@ def build_generator_prompt(base_op: str) -> str:
         "",
         "Choose difficulty settings:",
         "  level: 1 = small (3-5), 2 = medium (6-9), 3 = large (10-15)",
-        "  post_ops: optional transforms applied to the output:",
-    ]
-
-    for op in POST_OPS:
-        post_desc = OP_DESCRIPTIONS.get(op, "")
-        lines.append(f"    - {op}: {post_desc}")
-
-    lines.extend([
         "  seed: any integer",
         "",
         "Examples:",
         f'  {{"base_op": "{base_op}", "level": 1, "seed": 42}}',
-        f'  {{"base_op": "{base_op}", "post_ops": ["reflect_v"], "level": 2, "seed": 77}}',
-        f'  {{"base_op": "{base_op}", "post_ops": ["rotate_90", "gravity"], "level": 3, "seed": 200}}',
+        f'  {{"base_op": "{base_op}", "level": 2, "seed": 77}}',
+        f'  {{"base_op": "{base_op}", "level": 3, "seed": 200}}',
         "",
         "Output one JSON recipe:",
-    ])
+    ]
 
     return "\n".join(lines)
