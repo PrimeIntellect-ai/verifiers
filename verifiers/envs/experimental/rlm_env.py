@@ -3540,6 +3540,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
             # Initialize context dropping state
             state["_keep_from_assistant_index"] = 0
+            state["_summary_text"] = ""
 
             _ensure_rlm_metric_state(state)
 
