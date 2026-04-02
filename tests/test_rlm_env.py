@@ -2872,7 +2872,7 @@ class TestSummarizeTurns:
             warnings.simplefilter("ignore", UserWarning)
             return build_env(
                 dataset,
-                allow_context_dropping=True,
+                enable_summarization=True,
                 min_turns_in_context=3,
                 expose_message_history=False,
                 interception_url="http://test.invalid",
@@ -2883,7 +2883,7 @@ class TestSummarizeTurns:
         dataset = make_dataset({})
         return build_env(
             dataset,
-            allow_context_dropping=False,
+            enable_summarization=False,
             expose_message_history=False,
             interception_url="http://test.invalid",
         )
@@ -2971,10 +2971,10 @@ class TestSummarizeTurns:
 
     def test_warning_when_dropping_without_message_history(self):
         dataset = make_dataset({})
-        with pytest.warns(UserWarning, match="allow_context_dropping=True"):
+        with pytest.warns(UserWarning, match="enable_summarization=True"):
             build_env(
                 dataset,
-                allow_context_dropping=True,
+                enable_summarization=True,
                 expose_message_history=False,
                 interception_url="http://test.invalid",
             )
@@ -2987,7 +2987,7 @@ class TestSummarizeTurns:
             warnings.simplefilter("error")
             build_env(
                 dataset,
-                allow_context_dropping=True,
+                enable_summarization=True,
                 expose_message_history=True,
                 interception_url="http://test.invalid",
             )
@@ -3426,13 +3426,13 @@ class TestSummarizeTurns:
         assert result == messages
 
     def test_warn_when_dropping_without_message_history(self):
-        """Warning still fires when allow_context_dropping=True
+        """Warning still fires when enable_summarization=True
         but expose_message_history=False."""
         dataset = make_dataset({})
-        with pytest.warns(UserWarning, match="allow_context_dropping=True"):
+        with pytest.warns(UserWarning, match="enable_summarization=True"):
             build_env(
                 dataset,
-                allow_context_dropping=True,
+                enable_summarization=True,
                 expose_message_history=False,
                 interception_url="http://test.invalid",
             )

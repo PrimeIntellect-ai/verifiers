@@ -1253,7 +1253,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
         enable_sub_llms: bool = True,
-        allow_context_dropping: bool = False,
+        enable_summarization: bool = False,
         min_turns_in_context: int = 3,
     ) -> None:
         self.repl_language = repl_language
@@ -1268,7 +1268,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
         self.enable_sub_llms = enable_sub_llms
-        self.allow_context_dropping = allow_context_dropping
+        self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
 
     def build_base_system_prompt(self) -> str:
@@ -1379,7 +1379,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
     def build_context_dropping_note(self) -> str:
         """Return context-dropping documentation note, or empty string."""
-        if not self.allow_context_dropping:
+        if not self.enable_summarization:
             return ""
         return (
             "\n## Context Management\n\n"
@@ -2270,6 +2270,11 @@ class RLMEnv(vf.StatefulToolEnv):
         enable_sub_llms: If True (default), the root model can call sub-LLMs via
                    ``llm_batch()``. If False, ``llm_batch`` is not registered as a
                    tool and all sub-LLM-related prompt sections are omitted.
+        enable_summarization: If True, the root model gets a ``summarize_turns``
+                   tool to drop old conversation turns and replace them with a
+                   cumulative summary. Defaults to False.
+        min_turns_in_context: Minimum turns that must remain after summarization
+                   (default: 3). Only has effect when enable_summarization=True.
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         system_prompt: Custom system prompt (default: RLM standard prompt)
@@ -2324,6 +2329,8 @@ class RLMEnv(vf.StatefulToolEnv):
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         enable_sub_llms: bool = True,
+        enable_summarization: bool = False,
+        min_turns_in_context: int = 3,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         system_prompt: str | None = None,
@@ -2335,8 +2342,6 @@ class RLMEnv(vf.StatefulToolEnv):
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
         expose_message_history: bool = True,
-        allow_context_dropping: bool = False,
-        min_turns_in_context: int = 3,
         retain_filesystem_after_rollout: bool = False,
         sandbox_docker_image: str = "python:3.11-slim",
         sandbox_cpu_cores: int = 1,
@@ -2389,13 +2394,13 @@ class RLMEnv(vf.StatefulToolEnv):
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
         self.expose_message_history = expose_message_history
-        self.allow_context_dropping = allow_context_dropping
+        self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
-        if self.allow_context_dropping and not self.expose_message_history:
+        if self.enable_summarization and not self.expose_message_history:
             import warnings
 
             warnings.warn(
-                "allow_context_dropping=True but expose_message_history=False. "
+                "enable_summarization=True but expose_message_history=False. "
                 "The model won't be able to read dropped context from .messages. "
                 "Consider setting expose_message_history=True.",
                 UserWarning,
@@ -2505,7 +2510,7 @@ class RLMEnv(vf.StatefulToolEnv):
             root_tool_defs=self.root_tool_defs,
             sub_tool_defs=self.sub_tool_defs,
             enable_sub_llms=self.enable_sub_llms,
-            allow_context_dropping=self.allow_context_dropping,
+            enable_summarization=self.enable_summarization,
             min_turns_in_context=self.min_turns_in_context,
         )
 
@@ -2516,7 +2521,7 @@ class RLMEnv(vf.StatefulToolEnv):
             self.add_tool(self.call_python_repl, args_to_skip=["state"])
 
         # Add summarize_turns as a standard tool (not a REPL tool)
-        if self.allow_context_dropping:
+        if self.enable_summarization:
             self.add_tool(self.summarize_turns, args_to_skip=["state"])
 
     def get_sandbox_request(self, state: State) -> CreateSandboxRequest:
