@@ -71,6 +71,17 @@ If you want to move `latest`, rerun the same source revision with the `latest` t
 ./build-and-push.sh latest
 ```
 
+To run the image directly in a Prime sandbox, include the server-side OpenAI key:
+
+```bash
+prime sandbox create your-user/cua-server:bb-project-id-optional-20260326 \
+  --start-command "./cua-server-linux-x64" \
+  --env CUA_SERVER_PORT=3000 \
+  --secret OPENAI_API_KEY="$OPENAI_API_KEY"
+```
+
+`OPENAI_API_KEY` is required by the server process when creating Stagehand-backed sessions. `BROWSERBASE_API_KEY` and the optional Browserbase project id are provided per request to `POST /sessions`, not as sandbox environment variables.
+
 ## Architecture
 
 ```
@@ -85,10 +96,13 @@ npm install @browserbasehq/stagehand fastify
 
 ## Environment Variables
 
+Server process variables:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CUA_SERVER_PORT` | `3000` | Server port |
 | `CUA_SERVER_HOST` | `0.0.0.0` | Server host |
+| `OPENAI_API_KEY` | None | Required when creating sessions; Stagehand uses it internally inside the CUA server |
 
 ## API Endpoints
 
@@ -115,7 +129,7 @@ POST /sessions
 Content-Type: application/json
 
 {
-  "env": "LOCAL",           // or "BROWSERBASE"
+  "env": "BROWSERBASE",           // or "LOCAL"
   "browserbaseApiKey": "...", // required for BROWSERBASE sessions
   "browserbaseProjectId": "...", // optional; Browserbase default project is used when omitted
   "viewport": {
@@ -216,8 +230,14 @@ Returns:
 ## Example Usage
 
 ```bash
-# Create a session
-SESSION=$(curl -s -X POST http://localhost:3000/sessions | jq -r '.sessionId')
+# Create a Browserbase-backed session
+SESSION=$(curl -s -X POST http://localhost:3000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "env": "BROWSERBASE",
+    "browserbaseApiKey": "'"$BROWSERBASE_API_KEY"'",
+    "browserbaseProjectId": "'"$BROWSERBASE_PROJECT_ID"'"
+  }' | jq -r '.sessionId')
 
 # Navigate to a website
 curl -X POST http://localhost:3000/sessions/$SESSION/action \

@@ -34,9 +34,9 @@ When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]
 | `BROWSERBASE_API_KEY` | Yes | Browserbase API key |
 | `BROWSERBASE_PROJECT_ID` | No | Optional Browserbase project id. If omitted, Browserbase uses the account default project |
 | `MODEL_API_KEY` | DOM only | Stagehand’s LLM, unless `proxy_model_to_stagehand=True` (then the rollout client supplies the key) |
-| `OPENAI_API_KEY` (or your judge provider) | If you use `JudgeRubric` / LLM judges | Not used by `BrowserEnv` itself |
+| `OPENAI_API_KEY` | CUA mode and/or LLM judges | In CUA mode, the server needs it for internal Stagehand session creation; for judges, use your provider’s API key as usual |
 
-Override names with `browserbase_api_key_var` and `model_api_key_var` if needed. For an LLM judge, set the provider’s API key env (often `OPENAI_API_KEY`) in the same places as the other variables—locally or on the environment—see [Browser environments](https://docs.primeintellect.ai/guides/browser-environments) for judge-oriented examples.
+Override names with `browserbase_api_key_var` and `model_api_key_var` if needed. For CUA mode, `BrowserEnv` forwards `OPENAI_API_KEY` into the sandboxed CUA server in the normal `prime eval run` flow. If you run the image manually with `prime sandbox create`, `docker run`, or `pnpm dev`, you must inject `OPENAI_API_KEY` into the server process yourself. For judge-only use, set the provider’s API key env in the same places as the other variables—see [Browser environments](https://docs.primeintellect.ai/guides/browser-environments) for judge-oriented examples.
 
 ### Local development
 
@@ -45,6 +45,7 @@ Shell exports for local runs (e.g. `prime eval run`):
 ```bash
 export BROWSERBASE_API_KEY="your-api-key"
 # Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
+export OPENAI_API_KEY="your-openai-key"   # Required for CUA mode
 ```
 
 For DOM mode (default Stagehand routing), also:
@@ -141,6 +142,8 @@ CUA execution options:
 3. **Manual local server** (`use_sandbox=False`): local development/debugging
 
 The default prebuilt image is `browserbase/cua-server:latest`. If you publish a custom image through Prime Images, pass the fully qualified ref returned by `prime images push` as `prebuilt_image`.
+
+If you run that image directly instead of through `BrowserEnv`, include `OPENAI_API_KEY` in the server process and pass Browserbase credentials in the `POST /sessions` payload.
 
 ## Example Environments
 

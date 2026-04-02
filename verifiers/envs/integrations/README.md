@@ -128,10 +128,10 @@ pnpm dev
 BROWSERBASE_API_KEY         # Browserbase cloud API key
 BROWSERBASE_PROJECT_ID      # Optional Browserbase cloud project
 MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
-OPENAI_API_KEY              # For LLM judge evaluation
+OPENAI_API_KEY              # Required for CUA server session creation and for LLM judge evaluation
 ```
 
-Locally, export these in your shell. On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments), store credentials as **Secrets** on the environment ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets)); use **Variables** only for non-sensitive config. Details: [browser_env README](browser_env/README.md).
+Locally, export these in your shell. On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments), store credentials as **Secrets** on the environment ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets)); use **Variables** only for non-sensitive config. For CUA mode, `OPENAI_API_KEY` must be visible to the CUA server process itself; the normal `BrowserEnv` sandbox flow forwards it automatically, but manual `prime sandbox create` or local `pnpm dev` flows must inject it explicitly. Details: [browser_env README](browser_env/README.md).
 
 ## OpenEnvEnv
 

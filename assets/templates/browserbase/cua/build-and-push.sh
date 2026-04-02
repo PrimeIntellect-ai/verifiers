@@ -54,7 +54,16 @@ const items = Array.isArray(data) ? data : data.items || data.data || data.image
 
 function extractRef(item) {
   if (!item || typeof item !== "object") return null;
-  for (const key of ["image", "ref", "name", "image_ref"]) {
+  for (const key of ["displayRef", "fullImagePath"]) {
+    const value = item[key];
+    if (typeof value === "string" && value) return value;
+  }
+  const imageName = item.imageName;
+  const imageTag = item.imageTag;
+  if (typeof imageName === "string" && imageName) {
+    return typeof imageTag === "string" && imageTag ? `${imageName}:${imageTag}` : imageName;
+  }
+  for (const key of ["image", "image_reference", "image_ref", "name", "ref"]) {
     const value = item[key];
     if (typeof value === "string" && value) return value;
   }
@@ -69,13 +78,26 @@ function extractRef(item) {
   return null;
 }
 
+function extractTimestamp(item) {
+  if (!item || typeof item !== "object") return 0;
+  const raw = item.pushedAt || item.createdAt || item.updatedAt || item.created_at || item.updated_at;
+  if (typeof raw !== "string" || !raw) return 0;
+  const timestamp = Date.parse(raw);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+const matches = [];
 for (const item of items) {
   const ref = extractRef(item);
   if (!ref) continue;
   if (ref === requested || ref.endsWith(`/${requested}`) || ref.endsWith(requested)) {
-    process.stdout.write(ref);
-    process.exit(0);
+    matches.push({ ref, timestamp: extractTimestamp(item) });
   }
+}
+
+matches.sort((a, b) => b.timestamp - a.timestamp);
+if (matches.length > 0) {
+  process.stdout.write(matches[0].ref);
 }
 ' || true
 }
@@ -99,7 +121,16 @@ const items = Array.isArray(data) ? data : data.items || data.data || data.image
 
 function extractRef(item) {
   if (!item || typeof item !== "object") return null;
-  for (const key of ["image", "ref", "name", "image_ref"]) {
+  for (const key of ["displayRef", "fullImagePath"]) {
+    const value = item[key];
+    if (typeof value === "string" && value) return value;
+  }
+  const imageName = item.imageName;
+  const imageTag = item.imageTag;
+  if (typeof imageName === "string" && imageName) {
+    return typeof imageTag === "string" && imageTag ? `${imageName}:${imageTag}` : imageName;
+  }
+  for (const key of ["image", "image_reference", "image_ref", "name", "ref"]) {
     const value = item[key];
     if (typeof value === "string" && value) return value;
   }
@@ -114,12 +145,27 @@ function extractRef(item) {
   return null;
 }
 
+function extractTimestamp(item) {
+  if (!item || typeof item !== "object") return 0;
+  const raw = item.pushedAt || item.createdAt || item.updatedAt || item.created_at || item.updated_at;
+  if (typeof raw !== "string" || !raw) return 0;
+  const timestamp = Date.parse(raw);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+const matches = [];
 for (const item of items) {
   const ref = extractRef(item);
   if (ref !== target) continue;
   const status = item.status || item.state || "";
-  if (status) process.stdout.write(String(status));
-  process.exit(0);
+  if (status) {
+    matches.push({ status: String(status), timestamp: extractTimestamp(item) });
+  }
+}
+
+matches.sort((a, b) => b.timestamp - a.timestamp);
+if (matches.length > 0) {
+  process.stdout.write(matches[0].status);
 }
 ' || true
 }

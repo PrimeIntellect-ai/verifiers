@@ -34,12 +34,11 @@ uv pip install -e ./environments/browser_cua_example
 export BROWSERBASE_API_KEY="your-api-key"
 # Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
 
-# API key for agent model
+# API key used by the CUA server's internal Stagehand session creation
 export OPENAI_API_KEY="your-openai-key"
 ```
 
-<!-- TODO: Update this section when MODEL_API_KEY support is added to CUA server -->
-Note: When running in manual server mode, ensure `OPENAI_API_KEY` is set in the terminal where the CUA server runs (Stagehand requires it internally).
+`OPENAI_API_KEY` must be available to the CUA server process itself. In the normal `prime eval run` flow, `BrowserEnv` forwards it into the sandbox automatically. If you run the server manually with `pnpm dev`, `docker run`, or `prime sandbox create`, you must inject `OPENAI_API_KEY` yourself into that server process.
 
 ## Usage
 
@@ -65,6 +64,8 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 ```
 
 This is the recommended approach for production use. Startup is ~5-10 seconds compared to ~30-60 seconds with binary upload.
+
+The prebuilt image path still requires `OPENAI_API_KEY` in the rollout environment, because `BrowserEnv` forwards it to the sandboxed CUA server for Stagehand session creation.
 
 ### Binary Upload Mode (Custom Server)
 
@@ -137,6 +138,15 @@ cd assets/templates/browserbase/cua
 ```
 
 The script prints the fully qualified Prime image ref when the build finishes, for example `your-user/cua-server:bb-project-id-optional-20260326`.
+
+If you run the image directly outside `BrowserEnv`, include the OpenAI secret on sandbox creation:
+
+```bash
+prime sandbox create your-user/cua-server:bb-project-id-optional-20260326 \
+  --start-command "./cua-server-linux-x64" \
+  --env CUA_SERVER_PORT=3000 \
+  --secret OPENAI_API_KEY="$OPENAI_API_KEY"
+```
 
 Then use your custom image:
 ```bash
