@@ -4158,43 +4158,47 @@ class RLMEnv(vf.StatefulToolEnv):
             keep_from = assistant_indices[keep_from_assistant_index]
             remaining = list(messages[keep_from:])
 
-        # Inject summary into the first remaining assistant message
+        # Inject or replace summary in the first remaining assistant message
         if summary_text and remaining:
             first_asst = remaining[0]
             summary_block = f"<SUMMARY>\n{summary_text}\n</SUMMARY>\n\n"
             content = getattr(first_asst, "content", None)
             if isinstance(content, str):
-                # Skip injection if summary is already present (idempotency)
-                if "<SUMMARY>" not in content:
-                    remaining[0] = AssistantMessage(
-                        content=summary_block + content,
-                        tool_calls=getattr(first_asst, "tool_calls", None),
-                        reasoning_content=getattr(
-                            first_asst, "reasoning_content", None
-                        ),
-                        thinking_blocks=getattr(first_asst, "thinking_blocks", None),
-                    )
-            elif isinstance(content, list):
-                # Check idempotency for list content
-                has_summary = any(
-                    isinstance(part, dict)
-                    and part.get("type") == "text"
-                    and "<SUMMARY>" in str(part.get("text", ""))
-                    for part in content
+                # Strip any existing summary block before prepending the new one
+                content = re.sub(
+                    r"<SUMMARY>\n.*?\n</SUMMARY>\n\n",
+                    "",
+                    content,
+                    count=1,
+                    flags=re.DOTALL,
                 )
-                if not has_summary:
-                    new_content = [
-                        {"type": "text", "text": summary_block},
-                        *content,
-                    ]
-                    remaining[0] = AssistantMessage(
-                        content=new_content,
-                        tool_calls=getattr(first_asst, "tool_calls", None),
-                        reasoning_content=getattr(
-                            first_asst, "reasoning_content", None
-                        ),
-                        thinking_blocks=getattr(first_asst, "thinking_blocks", None),
+                remaining[0] = AssistantMessage(
+                    content=summary_block + content,
+                    tool_calls=getattr(first_asst, "tool_calls", None),
+                    reasoning_content=getattr(first_asst, "reasoning_content", None),
+                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
+                )
+            elif isinstance(content, list):
+                # Remove any existing summary text block, then prepend new one
+                filtered = [
+                    part
+                    for part in content
+                    if not (
+                        isinstance(part, dict)
+                        and part.get("type") == "text"
+                        and "<SUMMARY>" in str(part.get("text", ""))
                     )
+                ]
+                new_content = [
+                    {"type": "text", "text": summary_block},
+                    *filtered,
+                ]
+                remaining[0] = AssistantMessage(
+                    content=new_content,
+                    tool_calls=getattr(first_asst, "tool_calls", None),
+                    reasoning_content=getattr(first_asst, "reasoning_content", None),
+                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
+                )
 
         return preamble + remaining
 

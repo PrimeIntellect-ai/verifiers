@@ -3194,8 +3194,8 @@ class TestSummarizeTurns:
         assert "<SUMMARY>" in result[2].content
         assert "response 1" in result[2].content
 
-    def test_summary_injection_idempotent(self, env_with_summarize):
-        """Applying context dropping twice doesn't double-inject the summary."""
+    def test_summary_injection_replaces_stale_summary(self, env_with_summarize):
+        """A second call with updated summary replaces the old <SUMMARY> block."""
         messages = [
             UserMessage(content="scaffolded prompt"),
             vf.AssistantMessage(content="response 0"),
@@ -3206,18 +3206,24 @@ class TestSummarizeTurns:
             vf.ToolMessage(tool_call_id="t2", content="tool 2"),
         ]
 
-        summary_text = "[Turns 1-2] summary"
+        # First call: inject summary v1
         result1 = env_with_summarize._apply_context_dropping(
-            messages, 2, summary_text=summary_text
+            messages, 2, summary_text="[Turns 1-2] old summary"
         )
-        # Apply again on already-truncated result (same index >= remaining count)
+        assert "<SUMMARY>" in result1[1].content
+        assert "old summary" in result1[1].content
+
+        # Second call on already-truncated result with updated summary
         result2 = env_with_summarize._apply_context_dropping(
-            result1, 2, summary_text=summary_text
+            result1, 2, summary_text="[Turns 1-2] old summary\n[Turns 3-4] new summary"
         )
 
-        # Should not double-inject
-        content = result2[1].content if len(result2) > 1 else ""
-        assert content.count("<SUMMARY>") <= 1
+        # Should have exactly one <SUMMARY> block with the updated content
+        content = result2[1].content
+        assert content.count("<SUMMARY>") == 1
+        assert "new summary" in content
+        # Old-only text should not appear separately (it's part of the cumulative)
+        assert "response 2" in content
 
     def test_summary_injection_with_list_content(self, env_with_summarize):
         """If assistant message content is a list, summary is prepended as text block."""
