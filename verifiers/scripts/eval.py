@@ -21,9 +21,11 @@ from verifiers import setup_logging
 from verifiers.types import (
     ClientConfig,
     ClientType,
+    Endpoint,
     EndpointClientConfig,
     EvalConfig,
     EvalRunConfig,
+    _validate_extra_headers_value,
 )
 from verifiers.utils.eval_utils import (
     get_log_level,
@@ -580,7 +582,13 @@ def main():
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
         raw_provider = raw.get("provider")
-        raw_headers = raw.get("header")
+        raw_header_list = raw.get("header")
+        raw_headers = raw.get("headers")
+        api_key_override = raw_api_key_var is not None
+        api_base_url_override = raw_api_base_url is not None
+        client_type_override = raw_client_type is not None
+        endpoint_group: list[Endpoint] | None = None
+        resolved_endpoint_id: str | None = None
 
         if offline_mode is not None:
             conflicting_flags = {
@@ -590,6 +598,7 @@ def main():
                 "api_key_var": "--api-key-var",
                 "api_base_url": "--api-base-url",
                 "header": "--header",
+                "headers": "headers",
                 "sampling_args": "--sampling-args",
                 "max_tokens": "--max-tokens",
                 "temperature": "--temperature",
@@ -671,12 +680,6 @@ def main():
             # Provider resolution:
             #   - model IN registry:  registry -> provider overrides -> CLI overrides
             #   - model NOT in registry: provider (default: prime) -> CLI overrides
-            api_key_override = raw_api_key_var is not None
-            api_base_url_override = raw_api_base_url is not None
-            client_type_override = raw_client_type is not None
-            endpoint_group: list[dict[str, str]] | None = None
-            resolved_endpoint_id: str | None = None
-
             if endpoint_lookup_id in endpoints:
                 endpoint_group = endpoints[endpoint_lookup_id]
                 resolved_endpoint_id = endpoint_lookup_id
@@ -768,16 +771,35 @@ def main():
             raw_temp = raw.get("temperature")
             if raw_temp is not None and "temperature" not in merged_sampling_args:
                 merged_sampling_args["temperature"] = raw_temp
-            # Build headers
-            merged_headers: dict[str, str] = {}
-            for h in raw_headers or []:
+            # Build headers: registry < [[eval]] headers table < header list / --header
+            eval_headers_table: dict[str, str] = {}
+            if raw_headers is not None:
+                eval_headers_table = _validate_extra_headers_value(raw_headers)
+
+            eval_headers_from_list: dict[str, str] = {}
+            for h in raw_header_list or []:
+                if not isinstance(h, str):
+                    raise ValueError(
+                        f"Each 'header' entry must be a string 'Name: Value', got: {h!r}"
+                    )
                 if ":" not in h:
                     raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
                 k, v = h.split(":", 1)
                 k, v = k.strip(), v.strip()
                 if not k:
                     raise ValueError("--header name cannot be empty")
-                merged_headers[k] = v
+                eval_headers_from_list[k] = v
+
+            eval_headers_merged = {**eval_headers_table, **eval_headers_from_list}
+
+            registry_headers_base: dict[str, str] = {}
+            if endpoint_group is not None:
+                registry_headers_base = dict(endpoint_group[0].get("extra_headers", {}))
+
+            merged_headers: dict[str, str] = {
+                **registry_headers_base,
+                **eval_headers_merged,
+            }
 
             primary_api_base_url = api_base_url
             if not isinstance(primary_api_base_url, str):
@@ -800,7 +822,10 @@ def main():
                             else endpoint["key"]
                         ),
                         api_base_url=endpoint["url"],
-                        extra_headers=merged_headers,
+                        extra_headers={
+                            **dict(endpoint.get("extra_headers", {})),
+                            **eval_headers_merged,
+                        },
                     )
                     for endpoint in endpoint_group
                 ]

@@ -41,6 +41,8 @@ prime env install math-python --from-repo
 - `MultiTurnEnv` for custom interaction loops.
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
+- `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
+- `ComposableEnv` (with `TaskSet`/`SandboxTaskSet` + `Harness`) for separating *what to solve* from *how to solve it*. Define a `TaskSet` (dataset, instructions, sandbox spec, rubric) and a `Harness` (install script, run command, system prompt), wire them together with zero subclassing. Use `SandboxTaskSet` when tasks need sandboxes with per-instance images/resources.
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 

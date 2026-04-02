@@ -223,7 +223,7 @@ class TestGenerateSubToolsDocumentation:
 
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
         docs = rlm_env_with_sub_tools.prompt_builder.build_sub_tools_documentation()
-        assert "Sub-LLM Tools" in docs
+        assert "llm_batch Tools" in docs
         assert "sample_tool" in docs
         assert "another_tool" in docs
         assert "Add two numbers" in docs
@@ -445,8 +445,8 @@ class TestBashPrompt:
         result = await env.setup_state(state)
         try:
             prompt = result["rlm_system_prompt"]
-            assert "RLM_READY" in prompt
-            assert "RLM_CONTENT" in prompt
+            assert "ANSWER_READY" in prompt
+            assert "ANSWER_CONTENT" in prompt
         finally:
             await env.cleanup_rlm_state(result)
 
@@ -459,28 +459,31 @@ class TestPromptVerbosity:
             (
                 "light",
                 [
-                    "You have the `call_python_repl` tool and a filesystem available to you."
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "Make use of `llm_batch`",
                 ],
                 [
-                    "This is an iterative environment.",
-                    "Critical: This is an ITERATIVE environment",
+                    "## llm_batch Usage",
                 ],
             ),
             (
                 "medium",
                 [
                     "You have the `call_python_repl` tool and a filesystem available to you.",
-                    "This is an iterative environment.",
+                    "prefer calling in parallel",
                 ],
-                ["Critical: This is an ITERATIVE environment"],
+                [
+                    "## llm_batch Usage",
+                ],
             ),
             (
                 "heavy",
                 [
-                    "iterative Python REPL where you explore data step by step.",
-                    "Critical: This is an ITERATIVE environment",
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "## llm_batch Usage",
+                    "Pass a list of strings only",
                 ],
-                ["This is an iterative environment."],
+                [],
             ),
         ],
     )
@@ -509,6 +512,30 @@ class TestPromptVerbosity:
                 assert snippet in prompt
             for snippet in unexpected_snippets:
                 assert snippet not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_enable_sub_llms_false_omits_sub_llm_docs(self):
+        """When enable_sub_llms=False, sub-LLM docs are absent from the prompt."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            repl_language="python",
+            enable_sub_llms=False,
+            interception_url="http://test.invalid",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "llm_batch" not in prompt
+            assert "sub-LLM" not in prompt
+            assert "You have the `call_python_repl` tool" in prompt
         finally:
             await env.cleanup_rlm_state(result)
 
@@ -872,7 +899,7 @@ class TestRLMEnvInitialization:
 
 
 class TestToolSplitConfiguration:
-    def test_tool_name_collision_raises(self):
+    def test_repl_tool_name_collision_raises(self):
         def tool_a() -> str:
             return "a"
 
@@ -883,7 +910,7 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         with pytest.raises(ValueError, match="collision"):
-            build_env(dataset, tools=[tool_a, tool_b])
+            build_env(dataset, root_tools=[tool_a, tool_b])
 
     def test_fixed_tool_override_raises(self):
         def llm_batch() -> str:  # pragma: no cover - name collision test
@@ -891,37 +918,36 @@ class TestToolSplitConfiguration:
 
         dataset = make_dataset({})
         with pytest.raises(ValueError, match="llm_batch"):
-            build_env(dataset, tools=[llm_batch])
+            build_env(dataset, root_tools=[llm_batch])
 
-    def test_tools_not_exposed_as_environment_tool_defs(self):
-        def shared_tool() -> str:
-            return "shared"
+    def test_standard_tools_exposed_repl_tools_not(self):
+        def standard_tool() -> str:
+            return "standard"
 
-        def root_tool() -> str:
-            return "root"
+        def repl_tool() -> str:
+            return "repl"
 
         def sub_tool() -> str:
             return "sub"
 
         dataset = make_dataset({})
         env = build_env(
-            dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
+            dataset,
+            tools=[standard_tool],
+            root_tools=[repl_tool],
+            sub_tools=[sub_tool],
         )
 
         tool_names = {tool.name for tool in env.tool_defs}
-        assert "shared_tool" not in tool_names
-        assert "root_tool" not in tool_names
+        assert "standard_tool" in tool_names
+        assert "repl_tool" not in tool_names
         assert "sub_tool" not in tool_names
 
     @pytest.mark.asyncio
-    async def test_root_and_sub_tools_documented_and_ordered(self):
-        def shared_tool() -> str:
-            """Shared tool."""
-            return "shared"
-
-        def root_tool() -> str:
-            """Root-only tool."""
-            return "root"
+    async def test_repl_and_sub_tools_documented_and_ordered(self):
+        def repl_tool() -> str:
+            """REPL-only tool."""
+            return "repl"
 
         def sub_tool() -> str:
             """Sub-only tool."""
@@ -930,8 +956,7 @@ class TestToolSplitConfiguration:
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            tools=[shared_tool],
-            root_tools=[root_tool],
+            root_tools=[repl_tool],
             sub_tools=[sub_tool],
             interception_url="http://test.invalid",
         )
@@ -943,34 +968,29 @@ class TestToolSplitConfiguration:
         result = await env.setup_state(state)
         try:
             prompt = result["rlm_system_prompt"]
-            assert "Root REPL Tools" in prompt
-            assert "Sub-LLM Tools" in prompt
+            assert "REPL Tools" in prompt
+            assert "llm_batch Tools" in prompt
 
-            root_index = prompt.find("Root REPL Tools")
-            sub_index = prompt.find("Sub-LLM Tools")
-            assert root_index != -1
+            repl_index = prompt.find("REPL Tools")
+            sub_index = prompt.find("llm_batch Tools")
+            assert repl_index != -1
             assert sub_index != -1
-            assert root_index < sub_index
+            assert repl_index < sub_index
 
-            root_section = prompt[root_index:sub_index]
+            repl_section = prompt[repl_index:sub_index]
             sub_section = prompt[sub_index:]
 
-            assert "llm_batch" in root_section
-            assert root_section.find("llm_batch") < root_section.find("shared_tool")
-            assert root_section.find("shared_tool") < root_section.find("root_tool")
+            assert "llm_batch" in repl_section
+            assert repl_section.find("llm_batch") < repl_section.find("repl_tool")
 
-            assert "shared_tool" in sub_section
             assert "sub_tool" in sub_section
-            assert "root_tool" not in sub_section
-            assert sub_section.find("shared_tool") < sub_section.find("sub_tool")
+            assert "repl_tool" not in sub_section
 
-            assert result["rlm_shared_tools"] == ["shared_tool"]
             assert result["rlm_root_tools"] == [
                 "llm_batch",
-                "shared_tool",
-                "root_tool",
+                "repl_tool",
             ]
-            assert result["rlm_sub_tools"] == ["shared_tool", "sub_tool"]
+            assert result["rlm_sub_tools"] == ["sub_tool"]
         finally:
             await env.cleanup_rlm_state(result)
 
@@ -1076,7 +1096,7 @@ class TestContextLimitWarning:
         assert "8,000" in output
         assert "10,000" in output
         assert "80%" in output
-        assert "RLM_READY=1" in output
+        assert "ANSWER_READY=1" in output
         assert state["context_warning_sent"] is True
 
 
@@ -2219,7 +2239,7 @@ class TestSubLLMCompletionTokenBudget:
             _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
 
         # Summary should include budget info
-        budget_line = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        budget_line = [s for s in summary_lines if "llm_batch completion tokens" in s]
         assert len(budget_line) == 1
         assert "/10000" in budget_line[0]
 
@@ -2256,7 +2276,7 @@ class TestSubLLMCompletionTokenBudget:
         ):
             _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
 
-        budget_lines = [s for s in summary_lines if "sub-LLM completion tokens" in s]
+        budget_lines = [s for s in summary_lines if "llm_batch completion tokens" in s]
         assert len(budget_lines) == 0
 
     @pytest.mark.asyncio
@@ -2418,25 +2438,25 @@ class TestRootLLMMaxCompletionTokens:
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
         assert rlm_env.root_max_completion_tokens is None
-        state = {"main_rlm_completion_tokens": 999999}
+        state = {"root_llm_completion_tokens": 999999}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 500}
+        state = {"root_llm_completion_tokens": 500}
         assert rlm_env._is_root_budget_exhausted(state) is False
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 1000}
+        state = {"root_llm_completion_tokens": 1000}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
         rlm_env.root_max_completion_tokens = 1000
-        state = {"main_rlm_completion_tokens": 1500}
+        state = {"root_llm_completion_tokens": 1500}
         assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
@@ -2456,7 +2476,7 @@ class TestRootLLMMaxCompletionTokens:
         state = {
             "trajectory": [],
             "context_warning_sent": False,
-            "main_rlm_completion_tokens": 1200,
+            "root_llm_completion_tokens": 1200,
         }
         output = await rlm_env.call_python_repl("print('test')", state)
 
@@ -2479,7 +2499,7 @@ class TestRootLLMMaxCompletionTokens:
         state = {
             "trajectory": [],
             "context_warning_sent": False,
-            "main_rlm_completion_tokens": 1200,
+            "root_llm_completion_tokens": 1200,
         }
         output = await rlm_env.call_python_repl("print('test')", state)
 
@@ -2538,7 +2558,7 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env.root_max_completion_tokens = 1000
         rlm_env._executor.read_answer = AsyncMock(return_value="my answer")
 
-        state = {"main_rlm_completion_tokens": 1500, "rollout_id": "test"}
+        state = {"root_llm_completion_tokens": 1500, "rollout_id": "test"}
         fake_tool_messages = [MagicMock()]
 
         with patch(
@@ -2557,7 +2577,7 @@ class TestRootLLMMaxCompletionTokens:
         final_env_response."""
         rlm_env.root_max_completion_tokens = 1000
 
-        state = {"main_rlm_completion_tokens": 500}
+        state = {"root_llm_completion_tokens": 500}
         fake_tool_messages = [MagicMock()]
 
         with patch(
@@ -2576,7 +2596,7 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env.root_max_completion_tokens = 1000
 
         state = {
-            "main_rlm_completion_tokens": 500,
+            "root_llm_completion_tokens": 500,
             "final_answer": "already set",
         }
         fake_tool_messages = [MagicMock()]
@@ -3119,10 +3139,10 @@ class TestContextDropping:
 
         await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
 
-        assert state["context_drop_count"] == 1
-        assert state["context_total_turns_dropped"] == 2
-        assert state["context_drop_mean_remaining_turns"] == 4.0  # 6 - 2
-        assert state["context_drop_mean_turns_between"] == 0.0  # only 1 drop
+        assert state["compaction_count"] == 1
+        assert state["compaction_total_turns_dropped"] == 2
+        assert state["compaction_mean_remaining_turns"] == 4.0  # 6 - 2
+        assert state["compaction_mean_turns_between"] == 0.0  # only 1 drop
 
     @pytest.mark.asyncio
     async def test_cumulative_drop_metrics(self, env_with_dropping):
@@ -3132,8 +3152,8 @@ class TestContextDropping:
 
         # Drop 2 at turn 10: 10 visible -> 8 remaining
         await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
-        assert state["context_drop_count"] == 1
-        assert state["context_drop_mean_remaining_turns"] == 8.0
+        assert state["compaction_count"] == 1
+        assert state["compaction_mean_remaining_turns"] == 8.0
 
         # Simulate 3 more main turns (total 13 in trajectory)
         for i in range(3):
@@ -3153,12 +3173,12 @@ class TestContextDropping:
 
         # Drop 3 at turn 13: 13-2=11 visible -> 8 remaining
         await env_with_dropping._handle_remove_conversation_turns(state, 3, "")
-        assert state["context_drop_count"] == 2
-        assert state["context_total_turns_dropped"] == 5
+        assert state["compaction_count"] == 2
+        assert state["compaction_total_turns_dropped"] == 5
         # mean remaining: (8 + 8) / 2 = 8.0
-        assert state["context_drop_mean_remaining_turns"] == 8.0
+        assert state["compaction_mean_remaining_turns"] == 8.0
         # turns between: [13 - 10] = [3], mean = 3.0
-        assert state["context_drop_mean_turns_between"] == 3.0
+        assert state["compaction_mean_turns_between"] == 3.0
 
     @pytest.mark.asyncio
     async def test_failed_drop_does_not_update_metrics(self, env_with_dropping):
@@ -3168,5 +3188,5 @@ class TestContextDropping:
         # Try to drop 5 (exceeds limit)
         await env_with_dropping._handle_remove_conversation_turns(state, 5, "")
 
-        assert state.get("context_drop_count", 0) == 0
-        assert state.get("context_total_turns_dropped", 0) == 0
+        assert state.get("compaction_count", 0) == 0
+        assert state.get("compaction_total_turns_dropped", 0) == 0

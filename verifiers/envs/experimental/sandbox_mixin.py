@@ -16,6 +16,7 @@ from prime_sandboxes import (
     CreateSandboxRequest,
     DownloadTimeoutError,
     SandboxClient,
+    SandboxFileNotFoundError,
     SandboxOOMError,
     SandboxTimeoutError,
     UploadTimeoutError,
@@ -233,16 +234,14 @@ class SandboxMixin:
     ):
         """Run a command as a background job and poll until completion or timeout."""
         sandbox_id = state["sandbox_id"]
-        start_job = self.with_retry(self.sandbox_client.start_background_job)
-        get_job = self.with_retry(self.sandbox_client.get_background_job)
-
         try:
-            job = await start_job(
-                sandbox_id=sandbox_id, command=command, working_dir=working_dir
+            return await self.sandbox_client.run_background_job(
+                sandbox_id=sandbox_id,
+                command=command,
+                timeout=timeout,
+                working_dir=working_dir,
+                poll_interval=poll_interval,
             )
-        except (CommandTimeoutError, httpx.ReadTimeout) as e:
-            self.logger.error(f"Failed to start background job: {repr(e)}")
-            raise vf.SandboxError() from e
         except SandboxOOMError as e:
             state["sandbox_oom"] = True
             self.logger.error(f"Sandbox OOM during background job: {repr(e)}")
@@ -251,28 +250,6 @@ class SandboxMixin:
             state["sandbox_timeout"] = True
             self.logger.error(f"Sandbox timeout during background job: {repr(e)}")
             raise vf.SandboxError() from e
-
-        try:
-            for elapsed in range(0, timeout + poll_interval, poll_interval):
-                results = await get_job(sandbox_id, job)
-                if results.completed:
-                    return results
-                self.logger.debug(
-                    f"{sandbox_id=}: Polling job... {elapsed} / {timeout} seconds elapsed"
-                )
-                await asyncio.sleep(poll_interval)
-        except SandboxOOMError as e:
-            state["sandbox_oom"] = True
-            self.logger.error(f"Sandbox OOM during polling: {repr(e)}")
-            raise vf.SandboxError() from e
-        except SandboxTimeoutError as e:
-            state["sandbox_timeout"] = True
-            self.logger.error(f"Sandbox timeout during polling: {repr(e)}")
-            raise vf.SandboxError() from e
-
-        raise CommandTimeoutError(
-            sandbox_id=sandbox_id, command=command, timeout=timeout
-        )
 
     async def upload_file(
         self,
@@ -317,13 +294,11 @@ class SandboxMixin:
     ) -> str | None:
         """Read a file from the sandbox, returning its contents or None on failure."""
         try:
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                f"cat {remote_path}",
-                timeout=timeout,
+            result = await self.sandbox_client.read_file(
+                sandbox_id, remote_path, timeout=timeout
             )
-            if result.exit_code == 0:
-                return result.stdout or ""
+            return result.content
+        except SandboxFileNotFoundError:
             return None
         except Exception as e:
             self.logger.warning(

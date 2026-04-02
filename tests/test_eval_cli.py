@@ -42,6 +42,7 @@ def run_cli(make_metadata, make_state, make_input):
             "header": None,
             "prepared_completions": None,
             "use_ground_truth_as_completion": False,
+            "headers": None,
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
@@ -320,6 +321,87 @@ def test_cli_offline_flags_are_mutually_exclusive(monkeypatch, run_cli):
                 "use_ground_truth_as_completion": True,
             },
         )
+
+
+def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "headers": {"X-A": "a", "X-B": "b"},
+            "header": ["X-B: override", "X-C: c"],
+        },
+        endpoints={},
+    )
+
+    assert captured["configs"][0].client_config.extra_headers == {
+        "X-A": "a",
+        "X-B": "override",
+        "X-C": "c",
+    }
+
+
+def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_cli):
+    cfg = tmp_path / "eval.toml"
+    cfg.write_text(
+        "[[eval]]\n"
+        'env_id = "env1"\n'
+        'model = "gpt-5-mini"\n'
+        'headers = { "X-Table" = "t" }\n'
+        'header = [ "X-List: l", "X-Table: override" ]\n',
+        encoding="utf-8",
+    )
+    captured = run_cli(
+        monkeypatch,
+        {"env_id_or_config": str(cfg)},
+        endpoints={
+            "gpt-5-mini": [
+                {
+                    "model": "gpt-5-mini",
+                    "url": "https://a.example/v1",
+                    "key": "OPENAI_API_KEY",
+                    "extra_headers": {"X-Reg": "r"},
+                }
+            ]
+        },
+    )
+
+    assert captured["configs"][0].client_config.extra_headers == {
+        "X-Reg": "r",
+        "X-Table": "override",
+        "X-List": "l",
+    }
+
+
+def test_cli_multi_variant_preserves_per_row_registry_headers(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "gpt-5-mini",
+            "api_key_var": None,
+            "api_base_url": None,
+            "header": ["X-Eval: e"],
+        },
+        endpoints={
+            "gpt-5-mini": [
+                {
+                    "model": "gpt-5-mini",
+                    "url": "https://a.example/v1",
+                    "key": "OPENAI_API_KEY",
+                    "extra_headers": {"X-Row": "a"},
+                },
+                {
+                    "model": "gpt-5-mini",
+                    "url": "https://b.example/v1",
+                    "key": "OPENAI_API_KEY",
+                    "extra_headers": {"X-Row": "b"},
+                },
+            ]
+        },
+    )
+
+    cfgs = captured["configs"][0].client_config.endpoint_configs
+    assert cfgs[0].extra_headers == {"X-Row": "a", "X-Eval": "e"}
+    assert cfgs[1].extra_headers == {"X-Row": "b", "X-Eval": "e"}
 
 
 def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_cli):

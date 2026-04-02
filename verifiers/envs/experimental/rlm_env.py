@@ -122,7 +122,6 @@ def _dedupe_tools(
 def _merge_tool_lists(
     *,
     fixed_tools: list[Callable],
-    shared_tools: list[Callable],
     role_tools: list[Callable],
     context: str,
     reserved_names: set[str],
@@ -133,12 +132,6 @@ def _merge_tool_lists(
         reserved_names=set(),
     )
     merged = list(fixed)
-    deduped_shared, _ = _dedupe_tools(
-        shared_tools,
-        context=f"{context} shared tools",
-        reserved_names=reserved_names,
-    )
-    merged.extend(deduped_shared)
     deduped_role, _ = _dedupe_tools(
         role_tools,
         context=f"{context} tools",
@@ -270,9 +263,9 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("sub_llm_max_batch_size", 0)
     state.setdefault("sub_llm_mean_batch_size", 0.0)
 
-    state.setdefault("main_rlm_turns", 0)
-    state.setdefault("main_rlm_prompt_tokens", 0)
-    state.setdefault("main_rlm_completion_tokens", 0)
+    state.setdefault("root_llm_turns", 0)
+    state.setdefault("root_llm_prompt_tokens", 0)
+    state.setdefault("root_llm_completion_tokens", 0)
 
     state.setdefault("repl_total_time_seconds", 0.0)
     state.setdefault("repl_call_count", 0)
@@ -287,12 +280,12 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_drop_sequence", 0)
     state.setdefault("_keep_from_assistant_index", 0)
 
-    state.setdefault("context_drop_count", 0)
-    state.setdefault("context_total_turns_dropped", 0)
-    state.setdefault("context_drop_mean_remaining_turns", 0.0)
-    state.setdefault("context_drop_mean_turns_between", 0.0)
-    state.setdefault("_context_drop_remaining_turns_list", [])
-    state.setdefault("_context_drop_at_main_turns", [])
+    state.setdefault("compaction_count", 0)
+    state.setdefault("compaction_total_turns_dropped", 0)
+    state.setdefault("compaction_mean_remaining_turns", 0.0)
+    state.setdefault("compaction_mean_turns_between", 0.0)
+    state.setdefault("_compaction_remaining_turns_list", [])
+    state.setdefault("_compaction_at_root_llm_turns", [])
 
 
 def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
@@ -349,9 +342,9 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
             state["sub_llm_max_batch_size"] = 0
             state["sub_llm_mean_batch_size"] = 0.0
     else:
-        state["main_rlm_turns"] += 1
-        state["main_rlm_prompt_tokens"] += prompt_tokens
-        state["main_rlm_completion_tokens"] += completion_tokens
+        state["root_llm_turns"] += 1
+        state["root_llm_prompt_tokens"] += prompt_tokens
+        state["root_llm_completion_tokens"] += completion_tokens
 
 
 def _update_root_tool_metrics(state: State, tool_name: str) -> None:
@@ -372,17 +365,17 @@ class RLMMonitorRubric(vf.Rubric):
         "sub_llm_batch_count",
         "sub_llm_max_batch_size",
         "sub_llm_mean_batch_size",
-        "main_rlm_turns",
-        "main_rlm_prompt_tokens",
-        "main_rlm_completion_tokens",
+        "root_llm_turns",
+        "root_llm_prompt_tokens",
+        "root_llm_completion_tokens",
         "repl_total_time_seconds",
         "repl_call_count",
         "repl_mean_time_seconds",
         "root_tool_call_count",
-        "context_drop_count",
-        "context_total_turns_dropped",
-        "context_drop_mean_remaining_turns",
-        "context_drop_mean_turns_between",
+        "compaction_count",
+        "compaction_total_turns_dropped",
+        "compaction_mean_remaining_turns",
+        "compaction_mean_turns_between",
     ]
 
     def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
@@ -1035,16 +1028,16 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
         pwd_marker = f"__RLM_PWD__{marker}__"
 
         bash_script = (
-            f'cd "${{RLM_PWD:-$PWD}}"\\n'
-            f'export RLM_READY="${{RLM_READY:-}}"\\n'
-            f'export RLM_CONTENT="${{RLM_CONTENT-}}"\\n'
+            f'cd "${{REPL_PWD:-$PWD}}"\\n'
+            f'export ANSWER_READY="${{ANSWER_READY:-}}"\\n'
+            f'export ANSWER_CONTENT="${{ANSWER_CONTENT-}}"\\n'
             f"{TOOL_DEF_SCRIPT}\\n"
             f"(\\n"
             f"trap '"
             f'__RLM_STATUS=$?; '
             f'printf "\\n{end_marker}__%s\\n" "$__RLM_STATUS"; '
-            f'printf "{env_marker}__%s__" "${{RLM_READY:-}}"; '
-            f'printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n"; '
+            f'printf "{env_marker}__%s__" "${{ANSWER_READY:-}}"; '
+            f'printf "%s" "${{ANSWER_CONTENT-}}" | base64 | tr -d "\\n"; '
             f'printf "\\n{pwd_marker}__%s\\n" "$PWD"'
             f"' EXIT\\n"
             f"{code}\\n"
@@ -1054,9 +1047,9 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
         env = os.environ.copy()
         env.update(
             {
-                "RLM_READY": "1" if state.get("ready") else "",
-                "RLM_CONTENT": state.get("content", ""),
-                "RLM_PWD": state.get("cwd", ""),
+                "ANSWER_READY": "1" if state.get("ready") else "",
+                "ANSWER_CONTENT": state.get("content", ""),
+                "REPL_PWD": state.get("cwd", ""),
                 "RLM_ROOT_TOOL_HELPER": helper_path,
                 "RLM_ROOT_TOOL_PYTHON": sys.executable,
             }
@@ -1197,7 +1190,7 @@ class RLMPromptBuilder:
     }
 
     MESSAGE_HISTORY_NOTE_PYTHON: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
 ```python
 import json
 history = [json.loads(line) for line in open(".messages")]
@@ -1205,116 +1198,35 @@ history = [json.loads(line) for line in open(".messages")]
 """
 
     MESSAGE_HISTORY_NOTE_BASH: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it to forward context to sub-LLMs, e.g.:
+The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
 ```bash
 cat .messages  # one JSON object per line
 ```
 """
 
-    PYTHON_SYSTEM_PROMPT_STORE: dict[str, str] = {
-        "light": """You have the `call_python_repl` tool and a filesystem available to you.
+    PYTHON_BASE_PROMPT: str = """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
-""",
-        "medium": """You have the `call_python_repl` tool and a filesystem available to you.
+"""
 
-There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
+    BASH_BASE_PROMPT: str = """You have the `call_bash_repl` tool and a filesystem available to you.
 
-This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
-""",
-        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
+In the end, the `ANSWER_CONTENT` environment variable must contain your answer. When the final answer is set, call `export ANSWER_READY=1`.
+"""
 
-A filesystem is available; explore it as needed.
-
-## Critical: This is an ITERATIVE environment
-
-You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
-
-Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
-
-## Workflow
-
-**Step 1: Explore the filesystem**
-```python
-import os
-print(os.getcwd())
-print(os.listdir("."))
-```
-Wait for output. Now you know the actual format.
-
-**Step 2: Process and build your answer**
-```python
-answer["content"] = "your current best answer"
-```
-
-**Step 3: Verify and finalize (only after reviewing output)**
-```python
-print(f"My answer: {answer['content']}")
-answer["ready"] = True
-```
-
-## Important Rules
-
-1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
-2. **One step at a time** - make small tool calls, see output, then continue
-3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
-   Pass a list of strings only (no message dicts).
-""",
-    }
-
-    BASH_SYSTEM_PROMPT_STORE: dict[str, str] = {
-        "light": """You have the `call_bash_repl` tool and a filesystem available to you.
-
-In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
-""",
-        "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
-
-In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
-
-This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
-""",
-        "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
-
-A filesystem is available; explore it as needed.
-
-## Critical: This is an ITERATIVE environment
-
-You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
-
-Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
-
-## Workflow
-
-**Step 1: Explore the filesystem**
-```bash
-pwd
-ls
-```
-Wait for output. Now you know the actual format.
-
-**Step 2: Build your answer**
-```bash
-export RLM_CONTENT="your current best answer"
-```
-
-**Step 3: Verify and finalize (only after reviewing output)**
-```bash
-printf "My answer: %s\\n" "$RLM_CONTENT"
-export RLM_READY=1
-```
-
-## Important Rules
-
-1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
-2. **One step at a time** - make small tool calls, see output, then continue
-3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
-   Pass a list of strings only (no message dicts).
-4. **Tool usage in Bash**:
-   - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
-   - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
-     (or provide the JSON via stdin).
-   - `llm_batch` accepts `--json` with `{"prompts":[...]}`
-""",
+    SUB_LLM_ROOT_INSTRUCTION_STORE: dict[str, str] = {
+        "light": ("Make use of `llm_batch` whenever it could be useful."),
+        "medium": (
+            "Make use of `llm_batch` whenever it could be useful;"
+            " prefer calling in parallel to calling sequentially."
+        ),
+        "heavy": (
+            "\n## llm_batch Usage\n\n"
+            "- Use `llm_batch()` for semantic tasks — summarization,"
+            " understanding text, classification, etc.\n"
+            "- Pass a list of strings only (no message dicts).\n"
+            "- Prefer parallel calls to sequential ones."
+        ),
     }
 
     def __init__(
@@ -1331,6 +1243,7 @@ export RLM_READY=1
         sub_llm_max_turns: int,
         root_tool_defs: list[vf.Tool],
         sub_tool_defs: list[vf.Tool],
+        enable_sub_llms: bool = True,
         allow_context_dropping: bool = False,
         min_turns_in_context: int = 3,
     ) -> None:
@@ -1345,16 +1258,17 @@ export RLM_READY=1
         self.sub_llm_max_turns = sub_llm_max_turns
         self.root_tool_defs = root_tool_defs
         self.sub_tool_defs = sub_tool_defs
+        self.enable_sub_llms = enable_sub_llms
         self.allow_context_dropping = allow_context_dropping
         self.min_turns_in_context = min_turns_in_context
 
     def build_base_system_prompt(self) -> str:
-        """Select the base system prompt from stores or custom override."""
+        """Select the base system prompt or custom override."""
         if self.custom_system_prompt:
             return self.custom_system_prompt
         if self.repl_language == "bash":
-            return self.BASH_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
-        return self.PYTHON_SYSTEM_PROMPT_STORE[self.root_prompt_verbosity]
+            return self.BASH_BASE_PROMPT
+        return self.PYTHON_BASE_PROMPT
 
     def build_packages_documentation(self) -> str:
         """Generate markdown listing of pip packages available in the REPL."""
@@ -1378,20 +1292,32 @@ export RLM_READY=1
 
         return "\n".join(lines)
 
+    def build_sub_llm_documentation(self) -> str:
+        """Generate sub-LLM usage instructions for the root prompt.
+
+        Gated on ``enable_sub_llms``; verbosity controlled by
+        ``root_prompt_verbosity``.
+        """
+        if not self.enable_sub_llms:
+            return ""
+        return (
+            "\n"
+            + self.SUB_LLM_ROOT_INSTRUCTION_STORE[self.root_prompt_verbosity]
+            + "\n"
+        )
+
     def build_root_tools_documentation(self) -> str:
-        """Generate markdown docs for root REPL tools."""
+        """Generate markdown docs for REPL tools."""
         if not self.root_tool_defs:
             return ""
 
-        lines = ["\n## Root REPL Tools\n"]
+        lines = ["\n## REPL Tools\n"]
         if self.repl_language == "bash":
             lines.append(
-                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
+                "The following tools are available inside the Bash REPL as shell commands:\n"
             )
         else:
-            lines.append(
-                "The root model can call the following tools inside the Python REPL:\n"
-            )
+            lines.append("The following tools are available inside the Python REPL:\n")
 
         self._format_tool_docs_into(lines, self.root_tool_defs)
 
@@ -1404,29 +1330,28 @@ export RLM_READY=1
                 'structured args/kwargs, use `tool_name --json \'{"args": [...], '
                 '"kwargs": {...}}\'` or provide the JSON via stdin.'
             )
-            lines.append(
-                "For `llm_batch`, use positional string prompts or "
-                '`--json \'{"prompts": ["..."]}\'`.'
-            )
+            if self.enable_sub_llms:
+                lines.append(
+                    "For `llm_batch`, use positional string prompts or "
+                    '`--json \'{"prompts": ["..."]}\'`.'
+                )
         lines.append("")
 
         return "\n".join(lines)
 
     def build_sub_tools_documentation(self) -> str:
         """Generate markdown docs for sub-LLM tools."""
-        if not self.sub_tool_defs:
+        if not self.enable_sub_llms or not self.sub_tool_defs:
             return ""
 
-        lines = ["\n## Sub-LLM Tools\n"]
-        lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
-        )
+        lines = ["\n## llm_batch Tools\n"]
+        lines.append("The `llm_batch()` calls have access to the following tools:\n")
 
         self._format_tool_docs_into(lines, self.sub_tool_defs)
 
         lines.append(
-            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
-            "tools autonomously."
+            "When delegating tasks via `llm_batch()`, these tools are used "
+            "autonomously."
         )
         lines.append(
             "You do NOT need to manage tool calls yourself - just describe the task "
@@ -1470,12 +1395,12 @@ export RLM_READY=1
 
     def build_sub_budget_note(self) -> str:
         """Return sub-LLM token budget note, or empty string."""
-        if self.sub_max_completion_tokens is None:
+        if not self.enable_sub_llms or self.sub_max_completion_tokens is None:
             return ""
         return (
             f"\nYou have a total budget of "
             f"{self.sub_max_completion_tokens} completion tokens "
-            f"across all sub-LLM calls via llm_batch().\n"
+            f"across all llm_batch() calls.\n"
         )
 
     def build_system_prompt(self) -> str:
@@ -1483,6 +1408,7 @@ export RLM_READY=1
         body = (
             self.build_base_system_prompt()
             + self.build_packages_documentation()
+            + self.build_sub_llm_documentation()
             + self.build_root_tools_documentation()
             + self.build_sub_tools_documentation()
             + self.build_root_budget_note()
@@ -1490,7 +1416,7 @@ export RLM_READY=1
             + self.build_message_history_note()
             + self.build_context_dropping_note()
         )
-        return "<RLM_SCAFFOLDING>\n" + body + "\n</RLM_SCAFFOLDING>\n\n"
+        return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
 
     def build_sub_llm_system_prompt(self) -> str:
         """Build the system prompt prepended to every sub-LLM call."""
@@ -1515,7 +1441,7 @@ export RLM_READY=1
             content = msg_mut.get("content")
             if isinstance(content, str) or content is None:
                 text = content or ""
-                if text.startswith("<RLM_SCAFFOLDING>"):
+                if text.startswith("<SCAFFOLDING>"):
                     return
                 msg_mut["content"] = scaffold + text
             elif isinstance(content, list):
@@ -1523,7 +1449,7 @@ export RLM_READY=1
                     content
                     and isinstance(content[0], dict)
                     and content[0].get("type") == "text"
-                    and str(content[0].get("text", "")).startswith("<RLM_SCAFFOLDING>")
+                    and str(content[0].get("text", "")).startswith("<SCAFFOLDING>")
                 ):
                     return
                 msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
@@ -2302,16 +2228,14 @@ class RLMEnv(vf.StatefulToolEnv):
 
     Args:
         max_turns: Maximum number of root-model turns (default: 50).
-        tools: List of tools shared by both the root REPL and sub-LLMs.
-                   These are added first in the tool documentation order.
-        root_tools: List of tools available only to the root REPL.
-                   The root model can call these inside the REPL as Python functions.
+        tools: List of standard tools given directly to the root LLM via
+                   normal tool calling (alongside the REPL tool). These are NOT
+                   available inside the REPL or to sub-LLMs.
+        root_tools: List of tools available only inside the REPL. The root
+                   model can call these as Python functions (or shell commands
+                   in bash mode) within REPL code. They are proxied via HTTP.
         sub_tools: List of tools available only to sub-LLMs.
                    Sub-LLMs access these via standard tool calling.
-        (Ordering) The root tool list is: fixed tools (e.g. llm_batch), then `tools`,
-                   then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
-                   Each list is deduplicated by tool name. If two different tools
-                   share a name within a list, initialization raises an error.
         sub_llm_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         sub_max_completion_tokens: Total completion-token budget shared across all
                    sub-LLM calls in a rollout.  When set, the environment tracks
@@ -2328,7 +2252,12 @@ class RLMEnv(vf.StatefulToolEnv):
                    execution.  None (default) means unlimited.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
-        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "heavy"
+        root_prompt_verbosity: Verbosity of sub-LLM usage instructions in the root
+                   prompt; "light", "medium", or "heavy". Only has effect when
+                   enable_sub_llms=True.
+        enable_sub_llms: If True (default), the root model can call sub-LLMs via
+                   ``llm_batch()``. If False, ``llm_batch`` is not registered as a
+                   tool and all sub-LLM-related prompt sections are omitted.
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         system_prompt: Custom system prompt (default: RLM standard prompt)
@@ -2382,6 +2311,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sub_model: str | None = None,
         sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
+        enable_sub_llms: bool = True,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         system_prompt: str | None = None,
@@ -2426,10 +2356,11 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
+        self.enable_sub_llms = enable_sub_llms
         self.repl_language = repl_language
         self.sub_model = sub_model
-        self.shared_tools = tools or []
-        self.root_only_tools = root_tools or []
+        self.standard_tools = tools or []
+        self.repl_tools = root_tools or []
         self.sub_only_tools = sub_tools or []
         self.sub_llm_max_turns = sub_llm_max_turns
         self.sub_max_completion_tokens = sub_max_completion_tokens
@@ -2458,6 +2389,29 @@ class RLMEnv(vf.StatefulToolEnv):
                 UserWarning,
                 stacklevel=2,
             )
+        if not self.enable_sub_llms:
+            if sub_max_completion_tokens is not None:
+                logger.warning(
+                    "sub_max_completion_tokens is set but enable_sub_llms=False. "
+                    "The sub-LLM token budget has no effect."
+                )
+            if sub_model is not None:
+                logger.warning(
+                    "sub_model is set but enable_sub_llms=False. "
+                    "The sub-model setting has no effect."
+                )
+            if sub_tools:
+                logger.warning(
+                    "sub_tools are provided but enable_sub_llms=False. "
+                    "Sub-tools have no effect without llm_batch."
+                )
+            if root_prompt_verbosity != "light":
+                logger.warning(
+                    "root_prompt_verbosity='%s' but enable_sub_llms=False. "
+                    "Prompt verbosity only affects sub-LLM instructions, "
+                    "which are disabled.",
+                    root_prompt_verbosity,
+                )
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self._interception_bind_host = "127.0.0.1"
         self.sandbox_docker_image = sandbox_docker_image
@@ -2483,19 +2437,18 @@ class RLMEnv(vf.StatefulToolEnv):
             reraise=True,
         ).wraps
         fixed_root_tools = self._build_fixed_root_tools()
+        active_reserved = {_tool_display_name(t) for t in fixed_root_tools}
         self.root_tools, self.root_tool_map = _merge_tool_lists(
             fixed_tools=fixed_root_tools,
-            shared_tools=self.shared_tools,
-            role_tools=self.root_only_tools,
+            role_tools=self.repl_tools,
             context="root tools",
-            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+            reserved_names=active_reserved,
         )
         self.sub_tools, self.sub_tool_map = _merge_tool_lists(
             fixed_tools=[],
-            shared_tools=self.shared_tools,
             role_tools=self.sub_only_tools,
             context="sub-LLM tools",
-            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+            reserved_names=active_reserved,
         )
         self.sub_tool_defs: list[vf.Tool] = [
             convert_func_to_tool_def(tool) for tool in self.sub_tools
@@ -2521,7 +2474,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
         super().__init__(
-            tools=[],
+            tools=self.standard_tools,
             max_turns=max_turns,
             **kwargs,
         )
@@ -2539,6 +2492,7 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_llm_max_turns=self.sub_llm_max_turns,
             root_tool_defs=self.root_tool_defs,
             sub_tool_defs=self.sub_tool_defs,
+            enable_sub_llms=self.enable_sub_llms,
             allow_context_dropping=self.allow_context_dropping,
             min_turns_in_context=self.min_turns_in_context,
         )
@@ -2592,26 +2546,31 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
+        tools: list[Callable] = []
 
-        async def llm_batch(prompts: list[str]) -> list[str]:
-            """
-            Call the sub-LLM on multiple prompts in parallel.
+        if self.enable_sub_llms:
 
-            - Input: a list of prompt strings.
-            - Output: a list of responses in the same order as the input prompts.
-            - Use this inside the REPL to get help on sub-tasks.
-            """
-            # Context is injected only when called via the REPL root-tool endpoint.
-            context = self._root_tool_context_var.get()
-            if context is None:
-                raise RuntimeError(
-                    "llm_batch called outside of a tool request context."
-                )
-            results, _ = await self._root_llm_batch(context, prompts)
-            return results
+            async def llm_batch(prompts: list[str]) -> list[str]:
+                """
+                Dispatch prompts to fresh instances of your own model in parallel.
+                Each call gets an independent context window — they cannot see
+                your conversation or each other's responses.
 
-        llm_batch.__name__ = "llm_batch"
-        tools: list[Callable] = [llm_batch]
+                - Input: a list of prompt strings.
+                - Output: a list of responses in the same order as the input prompts.
+                - Use this inside the REPL to delegate sub-tasks.
+                """
+                # Context is injected only when called via the REPL root-tool endpoint.
+                context = self._root_tool_context_var.get()
+                if context is None:
+                    raise RuntimeError(
+                        "llm_batch called outside of a tool request context."
+                    )
+                results, _ = await self._root_llm_batch(context, prompts)
+                return results
+
+            llm_batch.__name__ = "llm_batch"
+            tools.append(llm_batch)
 
         if self.allow_context_dropping:
 
@@ -2708,20 +2667,20 @@ class RLMEnv(vf.StatefulToolEnv):
 
         # Update context dropping metrics
         _ensure_rlm_metric_state(state)
-        state["context_drop_count"] += 1
-        state["context_total_turns_dropped"] = state["_dropped_turns_count"]
+        state["compaction_count"] += 1
+        state["compaction_total_turns_dropped"] = state["_dropped_turns_count"]
 
-        remaining_list: list[int] = state["_context_drop_remaining_turns_list"]
+        remaining_list: list[int] = state["_compaction_remaining_turns_list"]
         remaining_list.append(new_visible)
-        state["context_drop_mean_remaining_turns"] = sum(remaining_list) / len(
+        state["compaction_mean_remaining_turns"] = sum(remaining_list) / len(
             remaining_list
         )
 
-        at_turns: list[int] = state["_context_drop_at_main_turns"]
+        at_turns: list[int] = state["_compaction_at_root_llm_turns"]
         at_turns.append(main_turn)
         if len(at_turns) >= 2:
             gaps = [at_turns[i] - at_turns[i - 1] for i in range(1, len(at_turns))]
-            state["context_drop_mean_turns_between"] = sum(gaps) / len(gaps)
+            state["compaction_mean_turns_between"] = sum(gaps) / len(gaps)
 
         await self._upload_summary(state, n_turns, summary, new_visible)
 
@@ -3074,9 +3033,9 @@ class RLMEnv(vf.StatefulToolEnv):
         used = state_ref.get("sub_llm_completion_tokens", 0)
         budget = self.sub_max_completion_tokens
         return (
-            f"Sub-LLM token budget exhausted "
+            f"llm_batch token budget exhausted "
             f"(used {used}/{budget} completion tokens). "
-            f"No further sub-LLM calls are available. "
+            f"No further llm_batch calls are available. "
             f"Finalize your answer with the information you have."
         )
 
@@ -3104,7 +3063,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 contents = [msg] * len(prompts)
                 summary_lines = [
                     f"llm_batch: {len(prompts)} call(s) skipped — "
-                    f"sub-LLM token budget exhausted "
+                    f"llm_batch token budget exhausted "
                     f"({used}/{self.sub_max_completion_tokens} "
                     f"completion tokens used)"
                 ]
@@ -3212,7 +3171,9 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.sub_max_completion_tokens is not None:
             used = state_ref.get("sub_llm_completion_tokens", 0)
             budget = self.sub_max_completion_tokens
-            summary_lines.append(f"  [{used}/{budget} sub-LLM completion tokens used]")
+            summary_lines.append(
+                f"  [{used}/{budget} llm_batch completion tokens used]"
+            )
 
         return contents, summary_lines
 
@@ -3297,9 +3258,9 @@ class RLMEnv(vf.StatefulToolEnv):
                         {
                             "message": {
                                 "content": (
-                                    f"Sub-LLM token budget exhausted "
+                                    f"llm_batch token budget exhausted "
                                     f"(used {used}/{budget} completion tokens). "
-                                    f"No further sub-LLM calls are available. "
+                                    f"No further llm_batch calls are available. "
                                     f"Finalize your answer with the information you have."
                                 )
                             }
@@ -3688,12 +3649,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 self.retain_filesystem_after_rollout
             )
             state["rlm_system_prompt"] = self.prompt_builder.build_system_prompt()
-            deduped_shared, _ = _dedupe_tools(
-                self.shared_tools, context="shared tools", reserved_names=set()
-            )
-            state["rlm_shared_tools"] = [
-                _tool_display_name(tool) for tool in deduped_shared
-            ]
             state["rlm_root_tools"] = [
                 _tool_display_name(tool) for tool in self.root_tools
             ]
@@ -4014,60 +3969,23 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         if self.root_max_completion_tokens is not None:
-            used = state.get("main_rlm_completion_tokens", 0)
+            used = state.get("root_llm_completion_tokens", 0)
             budget = self.root_max_completion_tokens
             output += f"\n[{used}/{budget} root completion tokens used]"
 
         return output
 
     async def call_bash_repl(self, code: str, state: Any) -> str:
-        """
-        Execute Bash commands in a persistent REPL environment.
-
-        The Bash session maintains state across calls and provides access to:
-
-        - Files in the working directory.
-        - `RLM_CONTENT`: Your current best answer (string).
-        - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
-
-        - `llm_batch` and other root tools: available as shell commands.
-
-        Args:
-            code: Bash code to execute in the persistent REPL
-
-        Returns:
-            Raw execution output (stdout/stderr combined)
-        """
+        """Execute Bash commands in a persistent REPL environment."""
         return await self._call_repl(
             code,
             state,
-            ready_instruction="Please finalize your answer soon by setting RLM_READY=1.",
+            ready_instruction="Please finalize your answer soon by setting ANSWER_READY=1.",
             append_execution_time=False,
         )
 
     async def call_python_repl(self, code: str, state: Any) -> str:
-        """
-        Execute Python code in a persistent REPL environment.
-
-        The REPL maintains state across calls and provides access to:
-
-        - Files in the working directory.
-
-        - `answer`: A dictionary for your final answer:
-          - `answer["content"]`: Your answer (string) - update this as you work
-          - `answer["ready"]`: Set to `True` to finish (terminates execution immediately)
-
-        - `llm_batch(prompts)`: Make sub-LLM calls for help with subtasks
-          - Takes a list of prompts, returns a list of answers (same order)
-          - Useful for semantic understanding, summarization, complex reasoning
-          - Prints metadata summary showing tokens and tool calls per sub-LLM
-
-        Args:
-            code: Python code to execute in the persistent REPL
-
-        Returns:
-            Execution output including stdout, stderr, and expression results
-        """
+        """Execute Python code in a persistent REPL environment."""
         return await self._call_repl(
             code,
             state,
@@ -4200,7 +4118,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Check if root model completion token budget is exhausted."""
         if self.root_max_completion_tokens is None:
             return False
-        used = state.get("main_rlm_completion_tokens", 0)
+        used = state.get("root_llm_completion_tokens", 0)
         return used >= self.root_max_completion_tokens
 
     # =========================================================================
