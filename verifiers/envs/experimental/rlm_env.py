@@ -3980,29 +3980,61 @@ class RLMEnv(vf.StatefulToolEnv):
         return state["_summary_text"]
 
     def _compute_dropped_chars(self, state: State, keep_from: int, n_turns: int) -> int:
-        """Compute the total character length of messages being dropped."""
-        trajectory = state.get("trajectory", [])
-        main_id = state.get("trajectory_id")
-        # Collect main-model steps
-        main_steps = [s for s in trajectory if s.get("trajectory_id") == main_id]
+        """Compute the total character length of messages being dropped.
+
+        Uses the same assistant-index logic as ``_apply_context_dropping`` to
+        identify which messages would be removed, then sums the char length of
+        all content (including tool call arguments and tool responses).
+        """
+        last_main = self._last_main_trajectory_step(state)
+        if last_main is None:
+            return 0
+        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+
+        assistant_indices = [
+            i
+            for i, msg in enumerate(messages)
+            if getattr(msg, "role", None) == "assistant"
+            or (isinstance(msg, dict) and msg.get("role") == "assistant")
+        ]
+        if not assistant_indices or keep_from >= len(assistant_indices):
+            return 0
+
+        # Messages being dropped: from the first assistant message up to (but
+        # not including) the keep_from-th assistant message.
+        drop_start = assistant_indices[0]
+        new_end = keep_from + n_turns
+        if new_end >= len(assistant_indices):
+            drop_end = len(messages)
+        else:
+            drop_end = assistant_indices[new_end]
+        # But we only want the newly dropped messages (keep_from..new_end),
+        # not previously dropped ones.
+        if keep_from < len(assistant_indices):
+            drop_start = assistant_indices[keep_from]
+        else:
+            return 0
 
         total_chars = 0
-        for i in range(keep_from, min(keep_from + n_turns, len(main_steps))):
-            step = main_steps[i]
-            for msg in step.get("completion", []):
-                content = getattr(msg, "content", None)
-                if content is None:
-                    continue
-                if isinstance(content, str):
-                    total_chars += len(content)
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict):
-                            total_chars += len(str(part.get("text", "")))
-                        else:
-                            total_chars += len(str(part))
-                else:
-                    total_chars += len(str(content))
+        for msg in messages[drop_start:drop_end]:
+            content = getattr(msg, "content", None)
+            if content is None:
+                # Count tool call arguments for assistant messages
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
+                        total_chars += len(getattr(tc, "arguments", "") or "")
+                continue
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        total_chars += len(str(part.get("text", "")))
+                    else:
+                        total_chars += len(str(part))
+            else:
+                total_chars += len(str(content))
         return total_chars
 
     def _last_main_trajectory_step(self, state: State) -> TrajectoryStep | None:
