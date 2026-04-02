@@ -4016,19 +4016,23 @@ class RLMEnv(vf.StatefulToolEnv):
     def _compute_dropped_tokens(
         self, state: State, keep_from: int, n_turns: int
     ) -> int:
-        """Compute tokens dropped using per-turn prompt_tokens deltas."""
+        """Compute tokens dropped using per-turn prompt_tokens deltas.
+
+        ``per_turn[i]`` is the prompt_tokens reported by the API for main turn
+        *i*.  The tokens contributed by turns ``[start, end)`` are approximated
+        as ``per_turn[end] - per_turn[start]`` (the growth in prompt size across
+        those turns).  If ``end`` is out of range we return 0 — this shouldn't
+        happen in practice because ``min_turns_in_context >= 1`` guarantees at
+        least one turn remains after the dropped range.
+        """
         per_turn = state.get("_per_turn_prompt_tokens", [])
         if not per_turn:
             return 0
-        # The tokens contributed by turns [keep_from, keep_from+n_turns) is
-        # approximately prompt_tokens[keep_from+n_turns] - prompt_tokens[keep_from].
         start_idx = keep_from
         end_idx = keep_from + n_turns
-        if start_idx >= len(per_turn):
+        if start_idx >= len(per_turn) or end_idx > len(per_turn):
             return 0
-        start_tokens = per_turn[start_idx]
-        end_tokens = per_turn[min(end_idx, len(per_turn) - 1)]
-        return max(0, end_tokens - start_tokens)
+        return max(0, per_turn[end_idx] - per_turn[start_idx])
 
     def _last_main_trajectory_step(self, state: State) -> TrajectoryStep | None:
         """Find the last trajectory step belonging to the main (root) model."""
