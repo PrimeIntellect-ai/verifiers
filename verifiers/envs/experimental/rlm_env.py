@@ -4030,7 +4030,7 @@ class RLMEnv(vf.StatefulToolEnv):
             return 0
         start_idx = keep_from
         end_idx = keep_from + n_turns
-        if start_idx >= len(per_turn) or end_idx > len(per_turn):
+        if start_idx >= len(per_turn) or end_idx >= len(per_turn):
             return 0
         return max(0, per_turn[end_idx] - per_turn[start_idx])
 
