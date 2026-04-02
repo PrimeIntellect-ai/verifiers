@@ -2909,9 +2909,7 @@ class TestSummarizeTurns:
         state = {
             "trajectory_id": trajectory_id,
             "trajectory": trajectory,
-            "_dropped_turns_count": dropped,
             "_keep_from_assistant_index": dropped,
-            "_drop_sequence": 0,
             "_summary_text": "",
             "rollout_id": "test_rollout",
         }
@@ -3017,9 +3015,8 @@ class TestSummarizeTurns:
             n_turns=2, summary="explored dataset", state=state
         )
 
-        assert state["_dropped_turns_count"] == 2
+        assert state["summarize_total_turns_dropped"] == 2
         assert state["_keep_from_assistant_index"] == 2
-        assert state["_drop_sequence"] == 1
         assert "[Turns 1-2]" in result
         assert "explored dataset" in result
         assert state["_summary_text"] == result
@@ -3033,7 +3030,7 @@ class TestSummarizeTurns:
         )
 
         # 6 visible - 3 min = 3 droppable
-        assert state["_dropped_turns_count"] == 3
+        assert state["summarize_total_turns_dropped"] == 3
         assert state["_keep_from_assistant_index"] == 3
         assert "[Turns 1-3]" in result
 
@@ -3045,7 +3042,7 @@ class TestSummarizeTurns:
             n_turns=4, summary="too many", state=state
         )
 
-        assert state["_dropped_turns_count"] == 0
+        assert state["summarize_total_turns_dropped"] == 0
         assert "Cannot drop" in result
         assert state["_summary_text"] == ""
 
@@ -3057,7 +3054,7 @@ class TestSummarizeTurns:
             n_turns=0, summary="nothing", state=state
         )
 
-        assert state["_dropped_turns_count"] == 0
+        assert state["summarize_total_turns_dropped"] == 0
         assert "Nothing to drop" in result
         assert state["_summary_text"] == ""
 

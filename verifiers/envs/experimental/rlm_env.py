@@ -276,8 +276,6 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
 
-    state.setdefault("_dropped_turns_count", 0)
-    state.setdefault("_drop_sequence", 0)
     state.setdefault("_keep_from_assistant_index", 0)
     state.setdefault("_summary_text", "")
 
@@ -3541,8 +3539,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state["_messages_uploaded_count"] = 0
 
             # Initialize context dropping state
-            state["_dropped_turns_count"] = 0
-            state["_drop_sequence"] = 0
             state["_keep_from_assistant_index"] = 0
 
             _ensure_rlm_metric_state(state)
@@ -3928,17 +3924,14 @@ class RLMEnv(vf.StatefulToolEnv):
 
         # Update state
         state["_keep_from_assistant_index"] = keep_from + n_turns
-        state["_dropped_turns_count"] = state.get("_dropped_turns_count", 0) + n_turns
-        state["_drop_sequence"] = state.get("_drop_sequence", 0) + 1
         new_visible = visible_turns - n_turns
 
         # Append to cumulative summary
         section = f"[Turns {range_start}-{range_end}] {summary}"
         prev_summary = state.get("_summary_text", "")
-        if prev_summary:
-            state["_summary_text"] = prev_summary + "\n" + section
-        else:
-            state["_summary_text"] = section
+        state["_summary_text"] = (
+            f"{prev_summary}\n{section}" if prev_summary else section
+        )
 
         logger.debug(
             "[%s] main turn %d: summarize_turns: %d turn(s) dropped "
@@ -3953,7 +3946,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         # Update metrics
         state["summarize_count"] += 1
-        state["summarize_total_turns_dropped"] = state["_dropped_turns_count"]
+        state["summarize_total_turns_dropped"] += n_turns
         state["summarize_total_chars_dropped"] += chars_dropped
         state["summarize_summary_length_chars"] = len(state["_summary_text"])
         if state["summarize_summary_length_chars"] > 0:
@@ -4143,20 +4136,15 @@ class RLMEnv(vf.StatefulToolEnv):
         if not assistant_indices:
             return messages
 
-        if keep_from_assistant_index >= len(assistant_indices):
-            # Already truncated past the index — no more turns to drop.
-            # But still inject summary into the first remaining assistant
-            # message if needed (the index may exceed the count because
-            # prior context dropping already removed those turns from the
-            # stored prompt).
-            preamble = list(messages[: assistant_indices[0]])
-            remaining = list(messages[assistant_indices[0] :])
+        # Preserve everything before the first assistant message (system msgs,
+        # scaffolded user msg, etc.), then keep from the target turn onward.
+        # If the index exceeds available assistants (prior dropping already
+        # truncated the stored prompt), keep all remaining messages.
+        preamble = list(messages[: assistant_indices[0]])
+        if keep_from_assistant_index < len(assistant_indices):
+            remaining = list(messages[assistant_indices[keep_from_assistant_index] :])
         else:
-            # Preserve everything before the first assistant message (system msgs,
-            # scaffolded user msg, etc.), then keep from the target turn onward.
-            preamble = list(messages[: assistant_indices[0]])
-            keep_from = assistant_indices[keep_from_assistant_index]
-            remaining = list(messages[keep_from:])
+            remaining = list(messages[assistant_indices[0] :])
 
         # Inject or replace summary in the first remaining assistant message
         if summary_text and remaining:
