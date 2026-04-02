@@ -272,6 +272,13 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("repl_mean_time_seconds", 0.0)
     state.setdefault("root_tool_call_count", 0)
     state.setdefault("root_tool_calls", {})
+    state.setdefault("root_tool_times", {})
+    state.setdefault("llm_batch_mean_time_seconds", 0.0)
+    state.setdefault("root_tool_non_llm_mean_time_seconds", 0.0)
+    state.setdefault("_llm_batch_total_time", 0.0)
+    state.setdefault("_llm_batch_time_count", 0)
+    state.setdefault("_root_tool_non_llm_total_time", 0.0)
+    state.setdefault("_root_tool_non_llm_time_count", 0)
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -358,6 +365,28 @@ def _update_root_tool_metrics(state: State, tool_name: str) -> None:
     state["root_tool_calls"] = tool_calls
 
 
+def _update_root_tool_time_metrics(
+    state: State, tool_name: str, elapsed_seconds: float
+) -> None:
+    _ensure_rlm_metric_state(state)
+    tool_times: dict[str, float] = state.get("root_tool_times", {})
+    tool_times[tool_name] = tool_times.get(tool_name, 0.0) + elapsed_seconds
+    state["root_tool_times"] = tool_times
+    if tool_name == "llm_batch":
+        state["_llm_batch_total_time"] += elapsed_seconds
+        state["_llm_batch_time_count"] += 1
+        state["llm_batch_mean_time_seconds"] = (
+            state["_llm_batch_total_time"] / state["_llm_batch_time_count"]
+        )
+    else:
+        state["_root_tool_non_llm_total_time"] += elapsed_seconds
+        state["_root_tool_non_llm_time_count"] += 1
+        state["root_tool_non_llm_mean_time_seconds"] = (
+            state["_root_tool_non_llm_total_time"]
+            / state["_root_tool_non_llm_time_count"]
+        )
+
+
 class RLMMonitorRubric(vf.Rubric):
     _SIMPLE_METRICS = [
         "sub_llm_call_count",
@@ -375,6 +404,8 @@ class RLMMonitorRubric(vf.Rubric):
         "repl_call_count",
         "repl_mean_time_seconds",
         "root_tool_call_count",
+        "llm_batch_mean_time_seconds",
+        "root_tool_non_llm_mean_time_seconds",
         "summarize_count",
         "summarize_total_turns_dropped",
         "summarize_total_chars_dropped",
@@ -393,6 +424,7 @@ class RLMMonitorRubric(vf.Rubric):
             self.add_metric(metric_fn)
         for tool_name in root_tool_names or []:
             self.add_metric(self._make_root_tool_metric(tool_name))
+            self.add_metric(self._make_root_tool_time_metric(tool_name))
 
     def _make_state_metric(self, key: str):
         async def metric(state: State):
@@ -409,6 +441,14 @@ class RLMMonitorRubric(vf.Rubric):
 
         root_tool_metric.__name__ = f"{tool_name}_root_calls"
         return root_tool_metric
+
+    def _make_root_tool_time_metric(self, tool_name: str):
+        async def root_tool_time_metric(state: State) -> float:
+            tool_times: dict[str, float] = state.get("root_tool_times", {})
+            return float(tool_times.get(tool_name, 0.0))
+
+        root_tool_time_metric.__name__ = f"{tool_name}_root_time_seconds"
+        return root_tool_time_metric
 
 
 class SubLLMTurn(TypedDict):
@@ -2963,7 +3003,6 @@ class RLMEnv(vf.StatefulToolEnv):
         async def _call_one(index: int, prompt: Any) -> None:
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
-                start_time = perf_counter()
                 try:
                     messages = _coerce_prompt_messages(prompt, index)
                     response_dict = await self._run_sub_llm_request(
@@ -2975,21 +3014,15 @@ class RLMEnv(vf.StatefulToolEnv):
                         request_id=request_id,
                         parent_turn=parent_turn,
                     )
-                    elapsed = perf_counter() - start_time
-                    response_dict.setdefault("_rlm_metadata", {})["elapsed_seconds"] = (
-                        elapsed
-                    )
                 except Exception as exc:
                     if self._should_stop_for_error(exc):
                         raise
-                    elapsed = perf_counter() - start_time
                     response_dict = {
                         "choices": [
                             {"message": {"content": f"Error in sub-LLM call: {exc}"}}
                         ],
                         "_rlm_metadata": {
                             "error": True,
-                            "elapsed_seconds": elapsed,
                         },
                     }
                 results[index] = response_dict
@@ -3011,19 +3044,18 @@ class RLMEnv(vf.StatefulToolEnv):
             len(prompts),
             batch_id,
         )
-        summary_lines = [f"llm_batch: {len(prompts)} call(s) in {batch_elapsed:.2f}s"]
+        summary_lines = [f"llm_batch: {len(prompts)} call(s)"]
         contents: list[str] = []
         for index, result in enumerate(results):
             if not result:
                 contents.append("")
-                summary_lines.append(f"  [{index}]: error (0.00s)")
+                summary_lines.append(f"  [{index}]: error")
                 continue
             message = result.get("choices", [{}])[0].get("message", {})
             contents.append(message.get("content", ""))
             meta = result.get("_rlm_metadata", {})
-            elapsed = meta.get("elapsed_seconds", 0.0)
             if meta.get("error"):
-                summary_lines.append(f"  [{index}]: error ({elapsed:.2f}s)")
+                summary_lines.append(f"  [{index}]: error")
                 continue
             prompt_tokens = meta.get("prompt_tokens", 0)
             completion_tokens = meta.get("completion_tokens", 0)
@@ -3033,7 +3065,7 @@ class RLMEnv(vf.StatefulToolEnv):
             summary_lines.append(
                 f"  [{index}]: {prompt_tokens} prompt tokens, "
                 f"{completion_tokens} completion tokens, "
-                f"{tool_calls} tool calls, {elapsed:.2f}s {status}"
+                f"{tool_calls} tool calls {status}"
             )
 
         if self.sub_max_completion_tokens is not None:
@@ -3114,7 +3146,6 @@ class RLMEnv(vf.StatefulToolEnv):
         batch_id: str,
         request_id: str,
         parent_turn: int,
-        elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
         # Budget gate: refuse new sub-LLM calls when token budget is exhausted.
         if self.sub_max_completion_tokens is not None:
@@ -3235,8 +3266,6 @@ class RLMEnv(vf.StatefulToolEnv):
             "num_turns": num_turns,
             "max_turns_reached": max_turns_reached,
         }
-        if elapsed_seconds is not None:
-            metadata["elapsed_seconds"] = elapsed_seconds
 
         return {
             "choices": [{"message": {"content": boxed_content}}],
@@ -3285,6 +3314,7 @@ class RLMEnv(vf.StatefulToolEnv):
             "parent_turn": parent_turn,
         }
         token = self._root_tool_context_var.set(root_tool_context)
+        tool_start = perf_counter()
         try:
             _update_root_tool_metrics(state_ref, tool_name)
             tool_func = self.root_tool_map[tool_name]
@@ -3315,6 +3345,9 @@ class RLMEnv(vf.StatefulToolEnv):
                 state_ref["_rlm_stop_error"] = e
             return web.json_response({"error": str(e)}, status=500)
         finally:
+            _update_root_tool_time_metrics(
+                state_ref, tool_name, perf_counter() - tool_start
+            )
             self._root_tool_context_var.reset(token)
 
         result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
@@ -3793,7 +3826,6 @@ class RLMEnv(vf.StatefulToolEnv):
         state: Any,
         *,
         ready_instruction: str,
-        append_execution_time: bool,
     ) -> str:
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
@@ -3822,16 +3854,7 @@ class RLMEnv(vf.StatefulToolEnv):
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
-        state.setdefault("tool_call_timings", []).append(
-            {
-                "turn": state.get("turn", 0),
-                "execution_seconds": execution_time,
-            }
-        )
         _update_rlm_repl_metrics(state, execution_time)
-
-        if append_execution_time:
-            output += f"\n[Execution time: {execution_time:.2f}s]"
 
         answer = result.get("answer", {})
         answer_ready = answer.get("ready", False)
@@ -3862,7 +3885,6 @@ class RLMEnv(vf.StatefulToolEnv):
             code,
             state,
             ready_instruction="Please finalize your answer soon by setting ANSWER_READY=1.",
-            append_execution_time=False,
         )
 
     async def call_python_repl(self, code: str, state: Any) -> str:
@@ -3871,7 +3893,6 @@ class RLMEnv(vf.StatefulToolEnv):
             code,
             state,
             ready_instruction="Please finalize your answer soon by setting answer['ready'] = True.",
-            append_execution_time=True,
         )
 
     async def summarize_turns(self, n_turns: int, summary: str, state: Any) -> str:
