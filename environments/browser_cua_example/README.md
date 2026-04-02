@@ -56,9 +56,9 @@ prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_prebuilt_imag
 prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": false}'
 ```
 
-### Pre-built Docker Image (Default, Fastest)
+### Pre-built Prime Image (Default, Fastest)
 
-By default, CUA mode uses a pre-built Docker image (`deepdream19/cua-server:latest`) for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
+By default, CUA mode uses the shared Prime image `browserbase/cua-server:latest` for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
 
 ```bash
 prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
@@ -112,8 +112,8 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 | `max_turns` | `15` | Maximum conversation turns (recommended: 50 for complex tasks) |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
 | `use_sandbox` | `True` | Auto-deploy CUA server to sandbox |
-| `use_prebuilt_image` | `True` | Use pre-built Docker image (fastest startup) |
-| `prebuilt_image` | `"deepdream19/cua-server:latest"` | Docker image to use when `use_prebuilt_image=True` |
+| `use_prebuilt_image` | `True` | Use pre-built Prime image (fastest startup) |
+| `prebuilt_image` | `"browserbase/cua-server:latest"` | Prime image to use when `use_prebuilt_image=True` |
 | `server_url` | `"http://localhost:3000"` | CUA server URL (only used when `use_sandbox=False`) |
 | `viewport_width` | `1024` | Browser viewport width |
 | `viewport_height` | `768` | Browser viewport height |
@@ -127,23 +127,27 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 | **Binary upload** | `use_prebuilt_image=false` | ~30-60s | Custom server version |
 | **Manual server** | `use_sandbox=false` | Instant | Local development |
 
-## Building a Custom Docker Image
+## Building a Custom Prime Image
 
 To build and push a custom CUA server image:
 
 ```bash
 cd assets/templates/browserbase/cua
 ./build-and-push.sh bb-project-id-optional-20260326
-DOCKERHUB_USER=myuser ./build-and-push.sh bb-project-id-optional-20260326
-DOCKERHUB_USER=myuser PUSH_LATEST=true ./build-and-push.sh bb-project-id-optional-20260326
 ```
+
+The script prints the fully qualified Prime image ref when the build finishes, for example `your-user/cua-server:bb-project-id-optional-20260326`.
 
 Then use your custom image:
 ```bash
-prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:bb-project-id-optional-20260326"}'
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "your-user/cua-server:bb-project-id-optional-20260326"}'
 ```
 
-Use the versioned tag first for validation. Only set `PUSH_LATEST=true` once you want `latest` to move as well.
+Use the versioned tag first for validation. Once you want to move `latest`, rerun the script from the same source revision:
+
+```bash
+./build-and-push.sh latest
+```
 
 ## DOM vs CUA Mode Comparison
 

@@ -75,7 +75,7 @@ Controls how Stagehand's internal LLM calls (for `observe`, `act`, `extract`) ar
 
 ### CUA Mode Options
 
-CUA mode automatically deploys the CUA server to Browserbase sandboxes using a pre-built Docker image. **No manual setup is required** - just set your environment variables and run.
+CUA mode automatically deploys the CUA server to Browserbase sandboxes using a pre-built Prime image. **No manual setup is required** - just set your environment variables and run.
 
 #### Execution Modes
 
@@ -87,7 +87,7 @@ CUA mode automatically deploys the CUA server to Browserbase sandboxes using a p
 
 #### Default Behavior
 
-By default, CUA mode uses the pre-built Docker image (`deepdream19/cua-server:latest`) which is automatically deployed to Browserbase sandboxes:
+By default, CUA mode uses the shared Prime image `browserbase/cua-server:latest`, which is automatically deployed to Browserbase sandboxes:
 
 ```python
 env = BrowserEnv(
@@ -110,7 +110,7 @@ env = BrowserEnv(
     dataset=dataset,
     rubric=rubric,
     use_sandbox=False,  # Disable automatic sandbox deployment
-    cua_server_url="http://localhost:3001",  # Point to local server
+    server_url="http://localhost:3001",  # Point to local server
 )
 ```
 
@@ -119,7 +119,7 @@ To start the server locally:
 ```bash
 cd assets/templates/browserbase/cua
 pnpm install
-./start.sh
+pnpm dev
 ```
 
 ### Environment Variables

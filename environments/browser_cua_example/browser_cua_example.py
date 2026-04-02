@@ -7,7 +7,7 @@ for vision-based browser control.
 CUA mode uses screenshots and vision models to interact with the browser,
 providing low-level primitives like click, scroll, and type_text.
 
-By default, CUA mode uses a pre-built Docker image (deepdream19/cua-server:latest)
+By default, CUA mode uses the shared Prime image (browserbase/cua-server:latest)
 for fastest startup (~5-10s). No manual server setup is required.
 
 Usage:
@@ -18,7 +18,7 @@ Usage:
     prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_prebuilt_image": false}'
 
     # Manual mode (for local development)
-    cd assets/templates/browserbase/cua && ./start.sh
+    cd assets/templates/browserbase/cua && pnpm dev
     prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_sandbox": false}'
 """
 
@@ -135,7 +135,7 @@ def load_environment(
     use_binary: bool = True,
     # Pre-built image configuration (default - fastest startup)
     use_prebuilt_image: bool = True,
-    prebuilt_image: str = "deepdream19/cua-server:latest",
+    prebuilt_image: str = "browserbase/cua-server:latest",
     **kwargs,
 ) -> vf.Environment:
     """
@@ -145,12 +145,12 @@ def load_environment(
     BrowserEnv with CUA mode for vision-based browser control.
 
     Execution modes (from fastest to most flexible):
-    1. Pre-built image (default): Uses deepdream19/cua-server:latest
+    1. Pre-built image (default): Uses browserbase/cua-server:latest
        Fastest startup (~5-10s). No binary upload needed.
     2. Binary upload (use_prebuilt_image=False): Builds/uploads binary
        Slower startup (~30-60s). Use for custom server versions.
     3. Manual server (use_sandbox=False): Connect to local server
-       For development: cd cua-server && ./start.sh
+       For development: cd assets/templates/browserbase/cua && pnpm dev
 
     Available tools in CUA mode:
     - click(x, y, button): Click at coordinates
@@ -179,8 +179,8 @@ def load_environment(
         cpu_cores: CPU cores for sandbox (default: 2)
         memory_gb: Memory in GB for sandbox (default: 4)
         use_binary: Use pre-built SEA binary when use_prebuilt_image=False (default: True)
-        use_prebuilt_image: Use pre-built Docker image for fastest startup (default: True)
-        prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
+        use_prebuilt_image: Use pre-built Prime image for fastest startup (default: True)
+        prebuilt_image: Prime image to use (default: browserbase/cua-server:latest)
         **kwargs: Additional arguments passed to BrowserEnv
 
     Returns:

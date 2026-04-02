@@ -2,15 +2,16 @@
 
 A Fastify server that exposes Stagehand's Computer Use Agent (CUA) browser primitives as REST endpoints, enabling external agents to control browser sessions remotely.
 
-> **Note**: This server is automatically deployed to sandbox containers when using `BrowserEnv` with `mode="cua"` and `use_sandbox=True` (the default). You typically don't need to run this server manually unless you're doing local development.
+> **Note**: This server is automatically started in sandbox containers when using `BrowserEnv` with `mode="cua"` and `use_sandbox=True` (the default). The shared default image is `browserbase/cua-server:latest`. You typically don't need to run this server manually unless you're doing local development or publishing a custom image.
 
 ## Automatic Sandbox Deployment
 
 When using `BrowserEnv(mode="cua")`, the server is automatically:
-1. Uploaded to a sandbox container
-2. Started via `setup.sh`
-3. Accessed via curl commands inside the sandbox
-4. Cleaned up when the rollout completes
+1. Started from the shared Prime image (`browserbase/cua-server:latest`)
+2. Accessed via curl commands inside the sandbox
+3. Cleaned up when the rollout completes
+
+If you disable `use_prebuilt_image`, BrowserEnv falls back to uploading the SEA binary into a sandbox at rollout time.
 
 ```python
 # This automatically deploys the CUA server to a sandbox
@@ -53,21 +54,21 @@ env = BrowserEnv(
 Build a local runtime image from this template:
 
 ```bash
-pnpm install
-pnpm build:binary:docker
 docker build --platform linux/amd64 -f Dockerfile.runtime -t cua-server:local .
 ```
 
-Publish a versioned tag without changing `latest`:
+Publish a versioned tag to Prime Images:
 
 ```bash
-DOCKERHUB_USER=myuser ./build-and-push.sh bb-project-id-optional-20260326
+./build-and-push.sh bb-project-id-optional-20260326
 ```
 
-Promote that tag to `latest` only when you explicitly want the shared default image to change:
+The script waits for the remote build to finish and prints the fully qualified Prime image ref to use in `prebuilt_image`, for example `your-user/cua-server:bb-project-id-optional-20260326`.
+
+If you want to move `latest`, rerun the same source revision with the `latest` tag:
 
 ```bash
-DOCKERHUB_USER=myuser PUSH_LATEST=true ./build-and-push.sh bb-project-id-optional-20260326
+./build-and-push.sh latest
 ```
 
 ## Architecture

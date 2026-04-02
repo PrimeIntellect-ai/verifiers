@@ -134,6 +134,60 @@ class TestCUAModeInit:
                 assert isinstance(env._mode_impl, CUAMode)
                 assert env._mode_impl._execution_mode == "local"
 
+    def test_sandbox_mode_uses_prime_default_prebuilt_image(self):
+        """Test sandbox mode defaults to the shared Prime prebuilt image."""
+        from verifiers.envs.integrations.browser_env.modes import cua_mode
+
+        mock_request = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(cua_mode, "SANDBOX_AVAILABLE", True):
+                with patch.object(
+                    cua_mode,
+                    "CreateSandboxRequest",
+                    return_value=mock_request,
+                ) as mock_request_cls:
+                    mode = cua_mode.CUAMode(execution_mode="sandbox")
+
+        assert mode._sandbox_request is mock_request
+        mock_request_cls.assert_called_once_with(
+            name="cua-server",
+            docker_image="browserbase/cua-server:latest",
+            start_command="./cua-server-linux-x64",
+            cpu_cores=2,
+            memory_gb=4,
+            disk_size_gb=10,
+            gpu_count=0,
+            timeout_minutes=60,
+            environment_vars={
+                "CUA_SERVER_PORT": "3000",
+                "CUA_SERVER_HOST": "0.0.0.0",
+            },
+        )
+
+    def test_sandbox_mode_respects_explicit_prebuilt_image_override(self):
+        """Test sandbox mode passes explicit prebuilt image overrides through."""
+        from verifiers.envs.integrations.browser_env.modes import cua_mode
+
+        mock_request = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(cua_mode, "SANDBOX_AVAILABLE", True):
+                with patch.object(
+                    cua_mode,
+                    "CreateSandboxRequest",
+                    return_value=mock_request,
+                ) as mock_request_cls:
+                    mode = cua_mode.CUAMode(
+                        execution_mode="sandbox",
+                        prebuilt_image="custom-owner/cua-server:test-tag",
+                    )
+
+        assert mode._sandbox_request is mock_request
+        assert mock_request_cls.call_args.kwargs["docker_image"] == (
+            "custom-owner/cua-server:test-tag"
+        )
+
 
 class TestCUASandboxModeBackwardsCompat:
     """Tests for backwards compatibility with CUASandboxMode."""

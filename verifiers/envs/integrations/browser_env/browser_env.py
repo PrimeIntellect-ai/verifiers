@@ -24,7 +24,7 @@ class BrowserEnv(vf.StatefulToolEnv):
         - "cua": Vision-based primitives via CUA server (click, scroll, type_text)
 
     CUA Mode Execution Options (from fastest to most flexible):
-        1. Pre-built Docker image (default): Uses deepdream19/cua-server:latest
+        1. Pre-built image (default): Uses browserbase/cua-server:latest
            No binary upload or dependency installation needed. Fastest startup.
         2. Binary upload (use_prebuilt_image=False): Builds/uploads SEA binary to sandbox.
            Useful if you need a custom server version.
@@ -78,7 +78,7 @@ class BrowserEnv(vf.StatefulToolEnv):
         use_binary: bool = True,
         # Pre-built image configuration (default - fastest startup, skips binary upload)
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "deepdream19/cua-server:latest",
+        prebuilt_image: str = "browserbase/cua-server:latest",
         # Error handling
         stop_errors: list[type[Exception]] | None = None,
         # Common
@@ -114,8 +114,8 @@ class BrowserEnv(vf.StatefulToolEnv):
             sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
             sandbox_timeout_per_command_seconds: Command timeout in sandbox (default: 60)
             use_binary: Use pre-built SEA binary when use_prebuilt_image=False (default: True)
-            use_prebuilt_image: Use pre-built Docker image for fastest startup (default: True)
-            prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
+            use_prebuilt_image: Use pre-built Prime image for fastest startup (default: True)
+            prebuilt_image: Prime image to use (default: browserbase/cua-server:latest)
             stop_errors: List of exception types that should trigger cleanup (default: [vf.SandboxError])
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
