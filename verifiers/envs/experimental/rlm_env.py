@@ -294,7 +294,6 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("summarize_mean_turns_between", 0.0)
     state.setdefault("_summarize_remaining_turns_list", [])
     state.setdefault("_summarize_at_root_llm_turns", [])
-    state.setdefault("_summarize_tokens_dropped_list", [])
 
 
 def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
@@ -3970,8 +3969,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state["summarize_total_turns_dropped"] / state["summarize_count"]
         )
 
-        tokens_list: list[int] = state["_summarize_tokens_dropped_list"]
-        tokens_list.append(tokens_dropped)
         state["summarize_mean_tokens_dropped_per_call"] = (
             state["summarize_total_tokens_dropped"] / state["summarize_count"]
         )
@@ -4044,8 +4041,9 @@ class RLMEnv(vf.StatefulToolEnv):
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
         # Track per-turn prompt_tokens for main-model steps only
-        is_sub_llm = bool((trajectory_step.get("extras") or {}).get("is_sub_llm_call"))
-        if not is_sub_llm:
+        # Use trajectory_id match (consistent with _main_turn_count)
+        is_main = trajectory_step.get("trajectory_id") == state.get("trajectory_id")
+        if is_main:
             response = trajectory_step.get("response")
             usage = getattr(response, "usage", None) if response else None
             prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)

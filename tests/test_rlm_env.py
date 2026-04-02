@@ -2946,8 +2946,6 @@ class TestSummarizeTurns:
 
     def test_tool_registered_as_standard_tool_when_enabled(self, env_with_summarize):
         """summarize_turns should be a standard tool, not a root-REPL tool."""
-        tool_names = [t.__name__ for t in env_with_summarize.standard_tools]
-        # It's added via add_tool, so check the env's tool definitions
         tool_def_names = [td.name for td in env_with_summarize.tool_defs]
         assert "summarize_turns" in tool_def_names
 
