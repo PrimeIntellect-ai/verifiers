@@ -29,6 +29,7 @@ from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     extract_usage_tokens,
     load_outputs,
+    load_prepared_outputs,
     make_serializable,
     save_new_outputs,
     states_to_outputs,
@@ -455,6 +456,63 @@ class TestLoadOutputs:
 
         with pytest.raises(json.JSONDecodeError):
             load_outputs(results_path)
+
+
+class TestLoadPreparedOutputs:
+    def test_loads_from_results_directory(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        (results_path / "results.jsonl").write_text(
+            json.dumps({"example_id": 0, "completion": "ok"}) + "\n",
+            encoding="utf-8",
+        )
+        (results_path / "metadata.json").write_text(
+            json.dumps({"model": "prepared-model"}),
+            encoding="utf-8",
+        )
+
+        outputs, metadata = load_prepared_outputs(results_path)
+
+        assert len(outputs) == 1
+        assert outputs[0]["example_id"] == 0
+        assert metadata == {"model": "prepared-model"}
+
+    def test_loads_from_standalone_jsonl(self, tmp_path: Path):
+        outputs_path = tmp_path / "prepared.jsonl"
+        outputs_path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"example_id": 0, "completion": "a"}),
+                    json.dumps({"example_id": 1, "completion": "b"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        outputs, metadata = load_prepared_outputs(outputs_path)
+
+        assert metadata is None
+        assert [output["example_id"] for output in outputs] == [0, 1]
+
+    def test_standalone_jsonl_ignores_malformed_trailing_line(self, tmp_path: Path):
+        outputs_path = tmp_path / "prepared.jsonl"
+        outputs_path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"example_id": 0, "completion": "a"}),
+                    '{"example_id": 1, "completion": "broken"',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        outputs, metadata = load_prepared_outputs(outputs_path)
+
+        assert metadata is None
+        assert len(outputs) == 1
+        assert outputs[0]["example_id"] == 0
 
 
 class TestSaveNewOutputs:

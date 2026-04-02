@@ -400,8 +400,13 @@ class GenerateOutputsBuilder:
 
 
 def load_outputs(results_path: Path) -> list[RolloutOutput]:
-    """Load outputs from disk."""
+    """Load outputs from a results directory."""
     outputs_path = results_path / "results.jsonl"
+    return _load_outputs_file(outputs_path)
+
+
+def _load_outputs_file(outputs_path: Path) -> list[RolloutOutput]:
+    """Load rollout outputs from a JSONL file."""
     outputs: list[RolloutOutput] = []
 
     with open(outputs_path, "r") as f:
@@ -428,6 +433,30 @@ def load_outputs(results_path: Path) -> list[RolloutOutput]:
             break
 
     return outputs
+
+
+def load_prepared_outputs(
+    path: Path,
+) -> tuple[list[RolloutOutput], dict[str, Any] | None]:
+    """Load prepared rollout outputs from a results directory or JSONL file."""
+    if path.is_dir():
+        outputs = load_outputs(path)
+        metadata_path = path / "metadata.json"
+        metadata: dict[str, Any] | None = None
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata_raw = json.load(f)
+            if not isinstance(metadata_raw, dict):
+                raise ValueError(
+                    f"Prepared metadata at {metadata_path} must be a JSON object."
+                )
+            metadata = cast(dict[str, Any], metadata_raw)
+        return outputs, metadata
+
+    if path.is_file():
+        return _load_outputs_file(path), None
+
+    raise FileNotFoundError(f"Prepared completions path does not exist: {path}")
 
 
 def validate_resume_metadata(

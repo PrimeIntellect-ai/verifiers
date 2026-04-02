@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, TypeVar, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -41,8 +41,10 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.save_utils import load_prepared_outputs
 
 logger = logging.getLogger(__name__)
+RolloutLikeT = TypeVar("RolloutLikeT", bound=Mapping[str, Any])
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -428,6 +430,8 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "prepared_completions",
+        "use_ground_truth_as_completion",
         # logging
         "verbose",
         "debug",
@@ -491,7 +495,7 @@ def load_toml_config(path: Path) -> list[dict]:
                 "All eval configs (including expanded ablations) must have an env_id"
             )
 
-    # Resolve endpoints_path relative to the config file location
+    # Resolve config file paths relative to the config file location
     for merged in merged_eval_list:
         endpoints_path = merged.get("endpoints_path")
         if isinstance(endpoints_path, str):
@@ -500,13 +504,22 @@ def load_toml_config(path: Path) -> list[dict]:
                 merged["endpoints_path"] = str(
                     (path.parent / endpoints_path_obj).resolve()
                 )
+        prepared_completions = merged.get("prepared_completions")
+        if isinstance(prepared_completions, str):
+            prepared_path_obj = Path(prepared_completions)
+            if not prepared_path_obj.is_absolute():
+                merged["prepared_completions"] = str(
+                    (path.parent / prepared_path_obj).resolve()
+                )
 
     return merged_eval_list
 
 
 def filter_inputs(
-    inputs: list[RolloutInput], outputs: list[RolloutOutput], rollouts_per_example: int
-) -> list[RolloutInput]:
+    inputs: list[RolloutLikeT],
+    outputs: list[RolloutOutput],
+    rollouts_per_example: int,
+) -> list[RolloutLikeT]:
     """Filter inputs based on the number of rollouts per example."""
     inputs_by_example_id, outputs_by_example_id = defaultdict(list), defaultdict(list)
     for input in inputs:
@@ -514,7 +527,7 @@ def filter_inputs(
     for output in outputs:
         outputs_by_example_id[output["example_id"]].append(output)
 
-    filtered_inputs: list[RolloutInput] = []
+    filtered_inputs: list[RolloutLikeT] = []
     for example_id in inputs_by_example_id.keys():
         example_inputs = inputs_by_example_id[example_id]
         example_outputs = outputs_by_example_id[example_id]
@@ -722,8 +735,11 @@ async def run_evaluation(
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
+    offline_mode = config.offline_mode
     maybe_suppress_logs = (
-        log_level(logging.CRITICAL) if not config.disable_env_server else nullcontext()
+        log_level(logging.CRITICAL)
+        if not config.disable_env_server and offline_mode is None
+        else nullcontext()
     )
     with maybe_suppress_logs:
         vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -736,7 +752,7 @@ async def run_evaluation(
     results_path = config.resume_path or get_eval_results_path(config)
 
     try:
-        if not config.disable_env_server:
+        if not config.disable_env_server and offline_mode is None:
             extra_env_kwargs = dict(config.extra_env_kwargs)
             # resolve total concurrency
             if "concurrency" not in extra_env_kwargs:
@@ -801,26 +817,55 @@ async def run_evaluation(
                     effective_group_max_concurrent, config.num_examples
                 )
 
-        outputs = await vf_env.evaluate(
-            client=config.client_config,
-            model=config.model,
-            sampling_args=config.sampling_args,
-            num_examples=config.num_examples,
-            rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_group_max_concurrent,
-            results_path=results_path,
-            state_columns=config.state_columns,
-            save_results=config.save_results,
-            push_to_hf_hub=config.save_to_hf_hub,
-            hf_hub_dataset_name=config.hf_hub_dataset_name,
-            independent_scoring=config.independent_scoring,
-            max_retries=config.max_retries,
-            on_start=on_start,
-            on_progress=on_progress,
-            on_log=on_log,
-        )
+        if offline_mode is None:
+            outputs = await vf_env.evaluate(
+                client=config.client_config,
+                model=config.model,
+                sampling_args=config.sampling_args,
+                num_examples=config.num_examples,
+                rollouts_per_example=config.rollouts_per_example,
+                max_concurrent=effective_group_max_concurrent,
+                results_path=results_path,
+                state_columns=config.state_columns,
+                save_results=config.save_results,
+                push_to_hf_hub=config.save_to_hf_hub,
+                hf_hub_dataset_name=config.hf_hub_dataset_name,
+                independent_scoring=config.independent_scoring,
+                max_retries=config.max_retries,
+                on_start=on_start,
+                on_progress=on_progress,
+                on_log=on_log,
+            )
+        else:
+            prepared_outputs = None
+            if offline_mode == "prepared_completions":
+                prepared_path = config.prepared_completions_path
+                if prepared_path is None:
+                    raise ValueError(
+                        "prepared_completions_path is required for offline prepared-completions mode."
+                    )
+                prepared_outputs, _ = load_prepared_outputs(prepared_path)
+
+            outputs = await vf_env._evaluate_offline(
+                model=config.model,
+                num_examples=config.num_examples,
+                rollouts_per_example=config.rollouts_per_example,
+                prepared_outputs=prepared_outputs,
+                use_ground_truth_as_completion=(offline_mode == "ground_truth"),
+                max_concurrent=effective_group_max_concurrent,
+                results_path=results_path,
+                state_columns=config.state_columns,
+                save_results=config.save_results,
+                push_to_hf_hub=config.save_to_hf_hub,
+                hf_hub_dataset_name=config.hf_hub_dataset_name,
+                independent_scoring=config.independent_scoring,
+                max_retries=config.max_retries,
+                on_start=on_start,
+                on_progress=on_progress,
+                on_log=on_log,
+            )
     finally:
-        if not config.disable_env_server:
+        if not config.disable_env_server and offline_mode is None:
             await vf_env.stop_server()
 
     return outputs

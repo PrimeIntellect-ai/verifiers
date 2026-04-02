@@ -37,6 +37,7 @@ ClientType = Literal[
     "openai_chat_completions_token",
     "anthropic_messages",
 ]
+OfflineMode = Literal["prepared_completions", "ground_truth"]
 MessageType = Literal["chat", "completion"]  # deprecated
 
 
@@ -500,6 +501,8 @@ class EvalConfig(BaseModel):
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
+    offline_mode: OfflineMode | None = None
+    prepared_completions_path: Path | None = None
     num_workers: int | str = "auto"
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}

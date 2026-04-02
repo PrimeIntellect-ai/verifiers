@@ -319,6 +319,14 @@ class EnvGroup(vf.Environment):
         env = self.get_env_for_task(input["task"])
         return await env.rollout(input, client, model, sampling_args)
 
+    def _build_offline_state(
+        self,
+        input: RolloutInput,
+        model: str,
+    ) -> vf.State:
+        env = self.get_env_for_task(input["task"])
+        return env._build_offline_state(input, model)
+
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
 

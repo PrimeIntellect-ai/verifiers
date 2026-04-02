@@ -90,18 +90,38 @@ class DummyEnvironment(Environment):
         return state
 
 
+class TrackingPreparedRubric(Rubric):
+    def __init__(self):
+        super().__init__()
+        self.rollout_calls = 0
+        self.group_calls = 0
+
+    async def score_rollout(self, state):
+        self.rollout_calls += 1
+        parser = self.parser
+        parsed = parser.parse_answer(state["completion"]) or ""
+        state["reward"] = 1.0 if parsed == state.get("answer", "") else 0.0
+        state["metrics"] = {"copied_state": 1.0 if state.get("foo") == "bar" else 0.0}
+
+    async def score_group(self, states):
+        self.group_calls += 1
+        for state in states:
+            await self.score_rollout(state)
+
+
 @pytest.fixture
 def make_dummy_env():
     def _make_dummy_env(
         mock_client, dataset: Dataset | None = None, **kwargs
     ) -> DummyEnvironment:
         dataset = dataset or Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
+        rubric = kwargs.pop("rubric", Rubric())
         return DummyEnvironment(
             client=mock_client,
             model="test-model",
             dataset=dataset,
             parser=Parser(),
-            rubric=Rubric(),
+            rubric=rubric,
             **kwargs,
         )
 
@@ -311,6 +331,112 @@ async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_in
     states = outputs["outputs"]
     assert len(states) == 1
     assert states[0].get("completion") is not None
+
+
+@pytest.mark.asyncio
+async def test_evaluate_offline_prepared_outputs_recomputes_reward_and_preserves_usage(
+    mock_client, make_dummy_env, make_output
+):
+    rubric = TrackingPreparedRubric()
+    env = make_dummy_env(mock_client, rubric=rubric)
+    eval_input = env.get_eval_dataset(n=1).to_list()[0]
+
+    outputs = await env._evaluate_offline(
+        model="offline/prepared-completions",
+        num_examples=1,
+        rollouts_per_example=1,
+        prepared_outputs=[
+            make_output(
+                example_id=eval_input["example_id"],
+                task=eval_input["task"],
+                prompt=eval_input["prompt"],
+                completion="a1",
+                answer="a1",
+                info=eval_input.get("info", {}),
+                reward=0.0,
+                metrics={"old_metric": 0.0},
+                token_usage={"input_tokens": 3.0, "output_tokens": 2.0},
+                foo="bar",
+            )
+        ],
+        state_columns=["foo"],
+    )
+
+    assert mock_client.call_count == 0
+    assert rubric.rollout_calls == 1
+    assert outputs["outputs"][0]["reward"] == 1.0
+    assert outputs["outputs"][0]["metrics"]["copied_state"] == 1.0
+    assert outputs["outputs"][0]["token_usage"] == {
+        "input_tokens": 3.0,
+        "output_tokens": 2.0,
+    }
+    assert outputs["outputs"][0]["foo"] == "bar"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_offline_ground_truth_uses_answer_without_inference(
+    mock_client, make_dummy_env
+):
+    rubric = TrackingPreparedRubric()
+    env = make_dummy_env(mock_client, rubric=rubric)
+
+    outputs = await env._evaluate_offline(
+        model="offline/ground-truth",
+        num_examples=1,
+        rollouts_per_example=1,
+        use_ground_truth_as_completion=True,
+    )
+
+    assert mock_client.call_count == 0
+    assert rubric.rollout_calls == 1
+    assert outputs["outputs"][0]["reward"] == 1.0
+    completion = outputs["outputs"][0]["completion"]
+    assert completion is not None
+    assert len(completion) == 1
+    assert getattr(completion[0], "role", None) == "assistant"
+    assert getattr(completion[0], "content", None) == "a1"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_offline_grouped_scoring_uses_score_group(
+    mock_client, make_dummy_env, make_output
+):
+    rubric = TrackingPreparedRubric()
+    env = make_dummy_env(mock_client, rubric=rubric)
+    eval_input = env.get_eval_dataset(n=1).to_list()[0]
+
+    outputs = await env._evaluate_offline(
+        model="offline/prepared-completions",
+        num_examples=1,
+        rollouts_per_example=2,
+        prepared_outputs=[
+            make_output(
+                example_id=eval_input["example_id"],
+                task=eval_input["task"],
+                prompt=eval_input["prompt"],
+                completion="a1",
+                answer="a1",
+                info=eval_input.get("info", {}),
+                reward=0.0,
+                metrics={},
+            ),
+            make_output(
+                example_id=eval_input["example_id"],
+                task=eval_input["task"],
+                prompt=eval_input["prompt"],
+                completion="wrong",
+                answer="a1",
+                info=eval_input.get("info", {}),
+                reward=1.0,
+                metrics={},
+            ),
+        ],
+        independent_scoring=False,
+    )
+
+    assert rubric.group_calls == 1
+    assert rubric.rollout_calls == 2
+    assert [output["reward"] for output in outputs["outputs"]] == [1.0, 0.0]
 
 
 @pytest.mark.asyncio

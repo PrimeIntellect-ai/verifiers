@@ -40,6 +40,8 @@ def run_cli(make_metadata, make_state, make_input):
             "api_key_var": "OPENAI_API_KEY",
             "api_base_url": "https://api.openai.com/v1",
             "header": None,
+            "prepared_completions": None,
+            "use_ground_truth_as_completion": False,
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
@@ -227,6 +229,97 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     sa = captured["sampling_args"]
     assert sa["max_tokens"] == 100
     assert "temperature" not in sa
+
+
+def test_cli_prepared_completions_infers_offline_defaults(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "load_prepared_outputs",
+        lambda path: (
+            [
+                {"example_id": 0, "completion": "a"},
+                {"example_id": 0, "completion": "b"},
+                {"example_id": 1, "completion": "c"},
+                {"example_id": 1, "completion": "d"},
+            ],
+            {"model": "prepared-model"},
+        ),
+    )
+
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": None,
+            "prepared_completions": "/tmp/prepared.jsonl",
+            "api_key_var": None,
+            "api_base_url": None,
+            "max_tokens": None,
+            "temperature": None,
+            "num_examples": None,
+            "rollouts_per_example": None,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.offline_mode == "prepared_completions"
+    assert config.prepared_completions_path == Path("/tmp/prepared.jsonl")
+    assert config.model == "prepared-model"
+    assert config.num_examples == 2
+    assert config.rollouts_per_example == 2
+    assert config.client_config.api_base_url == "offline://local"
+    assert config.sampling_args == {}
+
+
+def test_cli_ground_truth_defaults_to_single_rollout(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": None,
+            "use_ground_truth_as_completion": True,
+            "api_key_var": None,
+            "api_base_url": None,
+            "max_tokens": None,
+            "temperature": None,
+            "num_examples": None,
+            "rollouts_per_example": None,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.offline_mode == "ground_truth"
+    assert config.model == "offline/ground-truth"
+    assert config.rollouts_per_example == 1
+    assert config.client_config.api_base_url == "offline://local"
+    assert config.sampling_args == {}
+
+
+def test_cli_offline_mode_rejects_generation_flags(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "load_prepared_outputs",
+        lambda path: ([{"example_id": 0, "completion": "a"}], None),
+    )
+    with pytest.raises(
+        ValueError, match="--provider cannot be used with offline evaluation"
+    ):
+        run_cli(
+            monkeypatch,
+            {
+                "prepared_completions": "/tmp/prepared.jsonl",
+                "provider": "openai",
+            },
+        )
+
+
+def test_cli_offline_flags_are_mutually_exclusive(monkeypatch, run_cli):
+    with pytest.raises(ValueError, match="Cannot use both '--prepared-completions'"):
+        run_cli(
+            monkeypatch,
+            {
+                "prepared_completions": "/tmp/prepared.jsonl",
+                "use_ground_truth_as_completion": True,
+            },
+        )
 
 
 def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_cli):
@@ -812,6 +905,21 @@ def test_load_toml_config_resolves_endpoints_path_relative_to_config():
         result = load_toml_config(config_path)
         expected = str((config_dir / "../endpoints.toml").resolve())
         assert result[0]["endpoints_path"] == expected
+
+
+def test_load_toml_config_resolves_prepared_completions_relative_to_config():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        config_dir = Path(tmp_dir) / "configs" / "eval"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / "bench.toml"
+        config_path.write_text(
+            '[[eval]]\nenv_id = "env1"\nprepared_completions = "../prepared/results.jsonl"\n',
+            encoding="utf-8",
+        )
+
+        result = load_toml_config(config_path)
+        expected = str((config_dir / "../prepared/results.jsonl").resolve())
+        assert result[0]["prepared_completions"] == expected
 
 
 def test_cli_resume_explicit_path(monkeypatch, run_cli, tmp_path: Path):

@@ -4,7 +4,13 @@ Covers:
 - print_results indexing with multiple rollouts per example
 """
 
-from verifiers.types import GenerateOutputs
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+import verifiers.utils.eval_utils as eval_utils
+from verifiers.types import ClientConfig, EvalConfig, GenerateOutputs
 from verifiers.utils.save_utils import states_to_outputs
 
 
@@ -136,3 +142,117 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     assert "Usage:" in captured.out
     assert "input_tokens (avg): 8.000" in captured.out
     assert "output_tokens (avg): 3.000" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_offline_prepared_routes_without_env_server(
+    monkeypatch, tmp_path, make_metadata
+):
+    expected_outputs: GenerateOutputs = {
+        "outputs": [],
+        "metadata": make_metadata(path_to_save=tmp_path / "results"),
+    }
+
+    fake_env = Mock()
+    fake_env.set_kwargs = Mock()
+    fake_env.start_server = AsyncMock()
+    fake_env.stop_server = AsyncMock()
+    fake_env.evaluate = AsyncMock()
+    fake_env._evaluate_offline = AsyncMock(return_value=expected_outputs)
+
+    monkeypatch.setattr(eval_utils.vf, "load_environment", lambda **kwargs: fake_env)
+    monkeypatch.setattr(
+        eval_utils,
+        "load_prepared_outputs",
+        lambda path: ([{"example_id": 0, "completion": "ok"}], {"model": "prepared"}),
+    )
+
+    config = EvalConfig(
+        env_id="dummy-env",
+        env_args={},
+        env_dir_path=str(tmp_path),
+        output_dir=str(tmp_path),
+        model="prepared-model",
+        client_config=ClientConfig(
+            api_base_url="offline://local",
+            api_key_var="OFFLINE_UNUSED",
+        ),
+        sampling_args={},
+        num_examples=1,
+        rollouts_per_example=1,
+        max_concurrent=4,
+        offline_mode="prepared_completions",
+        prepared_completions_path=Path("/tmp/prepared.jsonl"),
+        disable_env_server=False,
+    )
+
+    outputs = await eval_utils.run_evaluation(config)
+
+    assert outputs == expected_outputs
+    fake_env.set_kwargs.assert_not_called()
+    fake_env.start_server.assert_not_awaited()
+    fake_env.stop_server.assert_not_awaited()
+    fake_env.evaluate.assert_not_awaited()
+    fake_env._evaluate_offline.assert_awaited_once()
+    assert fake_env._evaluate_offline.await_args.kwargs["prepared_outputs"] == [
+        {"example_id": 0, "completion": "ok"}
+    ]
+    assert (
+        fake_env._evaluate_offline.await_args.kwargs["use_ground_truth_as_completion"]
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_offline_ground_truth_skips_prepared_loading(
+    monkeypatch, tmp_path, make_metadata
+):
+    expected_outputs: GenerateOutputs = {
+        "outputs": [],
+        "metadata": make_metadata(path_to_save=tmp_path / "results"),
+    }
+
+    fake_env = Mock()
+    fake_env.set_kwargs = Mock()
+    fake_env.start_server = AsyncMock()
+    fake_env.stop_server = AsyncMock()
+    fake_env.evaluate = AsyncMock()
+    fake_env._evaluate_offline = AsyncMock(return_value=expected_outputs)
+
+    monkeypatch.setattr(eval_utils.vf, "load_environment", lambda **kwargs: fake_env)
+
+    def fail_load_prepared_outputs(path):
+        raise AssertionError("load_prepared_outputs should not be called")
+
+    monkeypatch.setattr(eval_utils, "load_prepared_outputs", fail_load_prepared_outputs)
+
+    config = EvalConfig(
+        env_id="dummy-env",
+        env_args={},
+        env_dir_path=str(tmp_path),
+        output_dir=str(tmp_path),
+        model="offline/ground-truth",
+        client_config=ClientConfig(
+            api_base_url="offline://local",
+            api_key_var="OFFLINE_UNUSED",
+        ),
+        sampling_args={},
+        num_examples=2,
+        rollouts_per_example=1,
+        max_concurrent=4,
+        offline_mode="ground_truth",
+        disable_env_server=False,
+    )
+
+    outputs = await eval_utils.run_evaluation(config)
+
+    assert outputs == expected_outputs
+    fake_env.start_server.assert_not_awaited()
+    fake_env.stop_server.assert_not_awaited()
+    fake_env.evaluate.assert_not_awaited()
+    fake_env._evaluate_offline.assert_awaited_once()
+    assert fake_env._evaluate_offline.await_args.kwargs["prepared_outputs"] is None
+    assert (
+        fake_env._evaluate_offline.await_args.kwargs["use_ground_truth_as_completion"]
+        is True
+    )

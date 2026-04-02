@@ -13,6 +13,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,6 +35,7 @@ from verifiers.utils.eval_utils import (
 )
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.utils.save_utils import load_prepared_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,10 @@ DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+OFFLINE_PREPARED_MODEL = "offline/prepared-completions"
+OFFLINE_GROUND_TRUTH_MODEL = "offline/ground-truth"
+OFFLINE_API_BASE_URL = "offline://local"
+OFFLINE_API_KEY_VAR = "OFFLINE_UNUSED"
 
 # Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
 PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
@@ -145,6 +151,44 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     return defaults
 
 
+def _infer_prepared_rollouts_per_example(
+    prepared_outputs: list[dict[str, Any]],
+) -> int:
+    """Infer a uniform rollouts-per-example count from prepared outputs."""
+    if not prepared_outputs:
+        raise ValueError("Prepared completions are empty.")
+
+    outputs_by_example_id: dict[int, int] = defaultdict(int)
+    for output in prepared_outputs:
+        if "example_id" not in output:
+            raise ValueError(
+                "Prepared completions must include 'example_id' on every row."
+            )
+        example_id = output["example_id"]
+        if not isinstance(example_id, int):
+            raise ValueError(
+                "Prepared completion 'example_id' values must be integers."
+            )
+        outputs_by_example_id[example_id] += 1
+
+    rollout_counts = set(outputs_by_example_id.values())
+    if len(rollout_counts) != 1:
+        raise ValueError(
+            "Prepared completions must have a uniform number of rollouts per "
+            "example in offline mode."
+        )
+    return next(iter(rollout_counts))
+
+
+def _infer_prepared_num_examples(prepared_outputs: list[dict[str, Any]]) -> int:
+    if not prepared_outputs:
+        raise ValueError("Prepared completions are empty.")
+    example_ids = {output.get("example_id") for output in prepared_outputs}
+    if None in example_ids:
+        raise ValueError("Prepared completions must include 'example_id' on every row.")
+    return len(example_ids)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -190,7 +234,7 @@ def main():
         "--model",
         "-m",
         type=str,
-        default=DEFAULT_MODEL,
+        default=None,
         help="Name of model to evaluate",
     )
     parser.add_argument(
@@ -224,6 +268,24 @@ def main():
         action="append",
         default=None,
         help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
+    )
+    parser.add_argument(
+        "--prepared-completions",
+        type=str,
+        default=None,
+        help=(
+            "Path to prepared rollout outputs (results directory or JSONL file) to "
+            "score offline without running inference"
+        ),
+    )
+    parser.add_argument(
+        "--use-ground-truth-as-completion",
+        default=False,
+        action="store_true",
+        help=(
+            "Score the dataset's ground-truth answer as the completion without "
+            "running inference"
+        ),
     )
     parser.add_argument(
         "--num-examples",
@@ -404,212 +466,353 @@ def main():
     def build_eval_config(raw: dict) -> EvalConfig:
         """Build EvalConfig from a raw config dict."""
         env_id = raw["env_id"]
+        prepared_completions = raw.get("prepared_completions")
+        use_ground_truth_as_completion = bool(
+            raw.get("use_ground_truth_as_completion", False)
+        )
+        if prepared_completions is not None and use_ground_truth_as_completion:
+            raise ValueError(
+                "Cannot use both '--prepared-completions' and "
+                "'--use-ground-truth-as-completion'."
+            )
+
+        offline_mode = None
+        prepared_completions_path: Path | None = None
+        inferred_prepared_num_examples: int | None = None
+        inferred_prepared_rollouts: int | None = None
+        prepared_metadata: dict[str, Any] | None = None
+        if prepared_completions is not None:
+            offline_mode = "prepared_completions"
+            prepared_completions_path = Path(prepared_completions)
+            prepared_outputs, prepared_metadata = load_prepared_outputs(
+                prepared_completions_path
+            )
+            inferred_prepared_num_examples = _infer_prepared_num_examples(
+                prepared_outputs
+            )
+            inferred_prepared_rollouts = _infer_prepared_rollouts_per_example(
+                prepared_outputs
+            )
+        elif use_ground_truth_as_completion:
+            offline_mode = "ground_truth"
 
         # Resolve num_examples and rollouts_per_example with env defaults
         env_defaults = get_env_eval_defaults(env_id)
         raw_num_examples = raw.get("num_examples")
         raw_rollouts = raw.get("rollouts_per_example")
 
-        num_examples = (
-            raw_num_examples
-            if raw_num_examples is not None
-            else env_defaults.get("num_examples", DEFAULT_NUM_EXAMPLES)
-        )
-        rollouts_per_example = (
-            raw_rollouts
-            if raw_rollouts is not None
-            else env_defaults.get("rollouts_per_example", DEFAULT_ROLLOUTS_PER_EXAMPLE)
-        )
-
-        if raw_num_examples is None:
-            source = (
-                "pyproject.toml" if "num_examples" in env_defaults else "global default"
+        if offline_mode == "prepared_completions":
+            assert inferred_prepared_num_examples is not None
+            assert inferred_prepared_rollouts is not None
+            num_examples = (
+                raw_num_examples
+                if raw_num_examples is not None
+                else inferred_prepared_num_examples
             )
-            logger.debug(f"Using num_examples={num_examples} from {source}")
-        if raw_rollouts is None:
-            source = (
-                "pyproject.toml"
-                if "rollouts_per_example" in env_defaults
-                else "global default"
+            rollouts_per_example = (
+                raw_rollouts if raw_rollouts is not None else inferred_prepared_rollouts
             )
+            if rollouts_per_example != inferred_prepared_rollouts:
+                raise ValueError(
+                    "Prepared completions imply "
+                    f"rollouts_per_example={inferred_prepared_rollouts}, but "
+                    f"{rollouts_per_example} was requested."
+                )
             logger.debug(
-                f"Using rollouts_per_example={rollouts_per_example} from {source}"
+                "Using offline prepared completions with %s examples and %s rollouts "
+                "per example",
+                num_examples,
+                rollouts_per_example,
+            )
+        elif offline_mode == "ground_truth":
+            num_examples = (
+                raw_num_examples
+                if raw_num_examples is not None
+                else env_defaults.get("num_examples", DEFAULT_NUM_EXAMPLES)
+            )
+            rollouts_per_example = raw_rollouts if raw_rollouts is not None else 1
+            if rollouts_per_example != 1:
+                raise ValueError(
+                    "--use-ground-truth-as-completion only supports "
+                    "rollouts_per_example=1."
+                )
+            if raw_num_examples is None:
+                source = (
+                    "pyproject.toml"
+                    if "num_examples" in env_defaults
+                    else "global default"
+                )
+                logger.debug(f"Using num_examples={num_examples} from {source}")
+        else:
+            num_examples = (
+                raw_num_examples
+                if raw_num_examples is not None
+                else env_defaults.get("num_examples", DEFAULT_NUM_EXAMPLES)
+            )
+            rollouts_per_example = (
+                raw_rollouts
+                if raw_rollouts is not None
+                else env_defaults.get(
+                    "rollouts_per_example", DEFAULT_ROLLOUTS_PER_EXAMPLE
+                )
             )
 
-        # Resolve model and endpoint config
-        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
-        endpoints = load_endpoints(endpoints_path)
+            if raw_num_examples is None:
+                source = (
+                    "pyproject.toml"
+                    if "num_examples" in env_defaults
+                    else "global default"
+                )
+                logger.debug(f"Using num_examples={num_examples} from {source}")
+            if raw_rollouts is None:
+                source = (
+                    "pyproject.toml"
+                    if "rollouts_per_example" in env_defaults
+                    else "global default"
+                )
+                logger.debug(
+                    f"Using rollouts_per_example={rollouts_per_example} from {source}"
+                )
 
-        raw_endpoint_id = raw.get("endpoint_id")
         raw_model_field = raw.get("model")
-        if raw_endpoint_id is not None and raw_model_field is not None:
-            raise ValueError(
-                "Cannot set both 'endpoint_id' and 'model' in eval config; choose one."
-            )
-        if raw_endpoint_id is not None and not isinstance(raw_endpoint_id, str):
-            raise ValueError("'endpoint_id' must be a string when provided.")
-        if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
-            raise ValueError("'endpoint_id' must be a non-empty string when provided.")
-        resolved_endpoints_file = resolve_endpoints_file(str(endpoints_path))
-        if raw_endpoint_id is not None and (
-            resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml"
-        ):
-            raise ValueError(
-                "'endpoint_id' is only supported with TOML endpoint registries. "
-                "Set endpoints_path to an endpoints.toml file."
-            )
-
-        raw_model = raw_model_field if raw_model_field is not None else DEFAULT_MODEL
-        endpoint_lookup_id = (
-            raw_endpoint_id if raw_endpoint_id is not None else raw_model
-        )
+        raw_endpoint_id = raw.get("endpoint_id")
         raw_client_type = raw.get("api_client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
-        if isinstance(raw_api_base_url, list):
-            raise ValueError(
-                "api_base_url lists are no longer supported. "
-                "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
-            )
-
-        # Provider resolution:
-        #   - model IN registry:  registry -> provider overrides -> CLI overrides
-        #   - model NOT in registry: provider (default: prime) -> CLI overrides
         raw_provider = raw.get("provider")
-        api_key_override = raw_api_key_var is not None
-        api_base_url_override = raw_api_base_url is not None
-        client_type_override = raw_client_type is not None
-        endpoint_group: list[dict[str, str]] | None = None
-        resolved_endpoint_id: str | None = None
+        raw_headers = raw.get("header")
 
-        if endpoint_lookup_id in endpoints:
-            endpoint_group = endpoints[endpoint_lookup_id]
-            resolved_endpoint_id = endpoint_lookup_id
-            endpoint = endpoint_group[0]
+        if offline_mode is not None:
+            conflicting_flags = {
+                "provider": "--provider",
+                "endpoint_id": "endpoint_id",
+                "api_client_type": "--api-client-type",
+                "api_key_var": "--api-key-var",
+                "api_base_url": "--api-base-url",
+                "header": "--header",
+                "sampling_args": "--sampling-args",
+                "max_tokens": "--max-tokens",
+                "temperature": "--temperature",
+            }
+            for field_name, display_name in conflicting_flags.items():
+                value = raw.get(field_name)
+                if value not in (None, False, [], {}):
+                    raise ValueError(
+                        f"{display_name} cannot be used with offline evaluation."
+                    )
 
-            # Start from registry values
-            api_key_var = endpoint["key"]
-            api_base_url = endpoint["url"]
-            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
-
-            endpoint_models = {entry["model"] for entry in endpoint_group}
-            if len(endpoint_models) > 1:
+            if raw_api_base_url is not None and isinstance(raw_api_base_url, list):
                 raise ValueError(
-                    f"Endpoint alias '{endpoint_lookup_id}' maps to multiple model ids {sorted(endpoint_models)}, "
-                    "which is not yet supported by EvalConfig."
+                    "api_base_url lists are no longer supported. "
+                    "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
                 )
-            model = endpoint["model"]
 
-            # Provider overrides registry
-            if raw_provider is not None:
-                provider_cfg = PROVIDER_CONFIGS[raw_provider]
-                api_key_var = provider_cfg["key"]
-                api_base_url = provider_cfg["url"]
-                if "client_type" in provider_cfg:
-                    client_type = provider_cfg["client_type"]
-
-            # CLI overrides provider / registry
-            if api_key_override:
-                api_key_var = raw_api_key_var
-            if api_base_url_override:
-                api_base_url = raw_api_base_url
-            if client_type_override:
-                client_type = raw_client_type
-
-            if (
-                api_key_override
-                or api_base_url_override
-                or client_type_override
-                or raw_provider is not None
-            ):
-                logger.debug(
-                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
-                    model,
-                    "override" if api_key_override or raw_provider else "registry",
-                    "override" if api_base_url_override or raw_provider else "registry",
-                    "override" if client_type_override or raw_provider else "registry",
+            if raw_endpoint_id is not None and raw_model_field is not None:
+                raise ValueError(
+                    "Cannot set both 'endpoint_id' and 'model' in eval config; choose one."
                 )
+
+            if offline_mode == "prepared_completions":
+                inferred_model = None
+                if prepared_metadata is not None:
+                    metadata_model = prepared_metadata.get("model")
+                    if isinstance(metadata_model, str) and metadata_model:
+                        inferred_model = metadata_model
+                model = raw_model_field or inferred_model or OFFLINE_PREPARED_MODEL
             else:
-                logger.debug(
-                    "Using endpoint configuration for model '%s' from registry (%d endpoint variant(s))",
-                    model,
-                    len(endpoint_group),
-                )
+                model = raw_model_field or OFFLINE_GROUND_TRUTH_MODEL
+
+            client_config = ClientConfig(
+                client_type=cast(ClientType, DEFAULT_CLIENT_TYPE),
+                api_key_var=OFFLINE_API_KEY_VAR,
+                api_base_url=OFFLINE_API_BASE_URL,
+                endpoint_configs=[],
+                extra_headers={},
+            )
+            merged_sampling_args = {}
+            resolved_endpoint_id = None
         else:
-            if raw_endpoint_id is not None:
+            # Resolve model and endpoint config
+            endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
+            endpoints = load_endpoints(endpoints_path)
+
+            if raw_endpoint_id is not None and raw_model_field is not None:
                 raise ValueError(
-                    f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
+                    "Cannot set both 'endpoint_id' and 'model' in eval config; choose one."
                 )
-            # Fall back to provider (default: prime)
-            provider_cfg = PROVIDER_CONFIGS[raw_provider or DEFAULT_PROVIDER]
-            logger.debug(
-                "Model '%s' not found in endpoint registry, using provider '%s'",
-                raw_model,
-                raw_provider or DEFAULT_PROVIDER,
-            )
-            model = raw_model
-            api_key_var = raw_api_key_var if api_key_override else provider_cfg["key"]
-            api_base_url = (
-                raw_api_base_url if api_base_url_override else provider_cfg["url"]
-            )
-            client_type = (
-                raw_client_type
-                if client_type_override
-                else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
-            )
-
-        # Merge sampling args
-        merged_sampling_args: dict = {}
-        if raw.get("sampling_args") is not None:
-            merged_sampling_args.update(raw["sampling_args"])
-        if "max_tokens" not in merged_sampling_args:
-            merged_sampling_args["max_tokens"] = raw.get("max_tokens")
-        raw_temp = raw.get("temperature")
-        if raw_temp is not None and "temperature" not in merged_sampling_args:
-            merged_sampling_args["temperature"] = raw_temp
-        # Build headers
-        merged_headers: dict[str, str] = {}
-        for h in raw.get("header") or []:
-            if ":" not in h:
-                raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
-            k, v = h.split(":", 1)
-            k, v = k.strip(), v.strip()
-            if not k:
-                raise ValueError("--header name cannot be empty")
-            merged_headers[k] = v
-
-        primary_api_base_url = api_base_url
-        if not isinstance(primary_api_base_url, str):
-            raise ValueError("api_base_url must be a single string URL")
-        assert api_key_var is not None
-        resolved_api_key_var = api_key_var
-
-        endpoint_configs: list[EndpointClientConfig] = []
-        if (
-            endpoint_group is not None
-            and not api_base_url_override
-            and raw_provider is None
-            and len(endpoint_group) > 1
-        ):
-            endpoint_configs = [
-                EndpointClientConfig(
-                    api_key_var=(
-                        resolved_api_key_var if api_key_override else endpoint["key"]
-                    ),
-                    api_base_url=endpoint["url"],
-                    extra_headers=merged_headers,
+            if raw_endpoint_id is not None and not isinstance(raw_endpoint_id, str):
+                raise ValueError("'endpoint_id' must be a string when provided.")
+            if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
+                raise ValueError(
+                    "'endpoint_id' must be a non-empty string when provided."
                 )
-                for endpoint in endpoint_group
-            ]
+            resolved_endpoints_file = resolve_endpoints_file(str(endpoints_path))
+            if raw_endpoint_id is not None and (
+                resolved_endpoints_file is None
+                or resolved_endpoints_file.suffix != ".toml"
+            ):
+                raise ValueError(
+                    "'endpoint_id' is only supported with TOML endpoint registries. "
+                    "Set endpoints_path to an endpoints.toml file."
+                )
 
-        assert primary_api_base_url is not None
-        client_config = ClientConfig(
-            client_type=cast(ClientType, client_type),
-            api_key_var=resolved_api_key_var,
-            api_base_url=primary_api_base_url,
-            endpoint_configs=endpoint_configs,
-            extra_headers=merged_headers,
-        )
+            raw_model = (
+                raw_model_field if raw_model_field is not None else DEFAULT_MODEL
+            )
+            endpoint_lookup_id = (
+                raw_endpoint_id if raw_endpoint_id is not None else raw_model
+            )
+            if isinstance(raw_api_base_url, list):
+                raise ValueError(
+                    "api_base_url lists are no longer supported. "
+                    "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
+                )
+
+            # Provider resolution:
+            #   - model IN registry:  registry -> provider overrides -> CLI overrides
+            #   - model NOT in registry: provider (default: prime) -> CLI overrides
+            api_key_override = raw_api_key_var is not None
+            api_base_url_override = raw_api_base_url is not None
+            client_type_override = raw_client_type is not None
+            endpoint_group: list[dict[str, str]] | None = None
+            resolved_endpoint_id: str | None = None
+
+            if endpoint_lookup_id in endpoints:
+                endpoint_group = endpoints[endpoint_lookup_id]
+                resolved_endpoint_id = endpoint_lookup_id
+                endpoint = endpoint_group[0]
+
+                # Start from registry values
+                api_key_var = endpoint["key"]
+                api_base_url = endpoint["url"]
+                client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
+
+                endpoint_models = {entry["model"] for entry in endpoint_group}
+                if len(endpoint_models) > 1:
+                    raise ValueError(
+                        f"Endpoint alias '{endpoint_lookup_id}' maps to multiple model ids {sorted(endpoint_models)}, "
+                        "which is not yet supported by EvalConfig."
+                    )
+                model = endpoint["model"]
+
+                # Provider overrides registry
+                if raw_provider is not None:
+                    provider_cfg = PROVIDER_CONFIGS[raw_provider]
+                    api_key_var = provider_cfg["key"]
+                    api_base_url = provider_cfg["url"]
+                    if "client_type" in provider_cfg:
+                        client_type = provider_cfg["client_type"]
+
+                # CLI overrides provider / registry
+                if api_key_override:
+                    api_key_var = raw_api_key_var
+                if api_base_url_override:
+                    api_base_url = raw_api_base_url
+                if client_type_override:
+                    client_type = raw_client_type
+
+                if (
+                    api_key_override
+                    or api_base_url_override
+                    or client_type_override
+                    or raw_provider is not None
+                ):
+                    logger.debug(
+                        "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
+                        model,
+                        "override" if api_key_override or raw_provider else "registry",
+                        "override"
+                        if api_base_url_override or raw_provider
+                        else "registry",
+                        "override"
+                        if client_type_override or raw_provider
+                        else "registry",
+                    )
+                else:
+                    logger.debug(
+                        "Using endpoint configuration for model '%s' from registry (%d endpoint variant(s))",
+                        model,
+                        len(endpoint_group),
+                    )
+            else:
+                if raw_endpoint_id is not None:
+                    raise ValueError(
+                        f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
+                    )
+                # Fall back to provider (default: prime)
+                provider_cfg = PROVIDER_CONFIGS[raw_provider or DEFAULT_PROVIDER]
+                logger.debug(
+                    "Model '%s' not found in endpoint registry, using provider '%s'",
+                    raw_model,
+                    raw_provider or DEFAULT_PROVIDER,
+                )
+                model = raw_model
+                api_key_var = (
+                    raw_api_key_var if api_key_override else provider_cfg["key"]
+                )
+                api_base_url = (
+                    raw_api_base_url if api_base_url_override else provider_cfg["url"]
+                )
+                client_type = (
+                    raw_client_type
+                    if client_type_override
+                    else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
+                )
+
+            # Merge sampling args
+            merged_sampling_args: dict = {}
+            if raw.get("sampling_args") is not None:
+                merged_sampling_args.update(raw["sampling_args"])
+            if "max_tokens" not in merged_sampling_args:
+                merged_sampling_args["max_tokens"] = raw.get("max_tokens")
+            raw_temp = raw.get("temperature")
+            if raw_temp is not None and "temperature" not in merged_sampling_args:
+                merged_sampling_args["temperature"] = raw_temp
+            # Build headers
+            merged_headers: dict[str, str] = {}
+            for h in raw_headers or []:
+                if ":" not in h:
+                    raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
+                k, v = h.split(":", 1)
+                k, v = k.strip(), v.strip()
+                if not k:
+                    raise ValueError("--header name cannot be empty")
+                merged_headers[k] = v
+
+            primary_api_base_url = api_base_url
+            if not isinstance(primary_api_base_url, str):
+                raise ValueError("api_base_url must be a single string URL")
+            assert api_key_var is not None
+            resolved_api_key_var = api_key_var
+
+            endpoint_configs: list[EndpointClientConfig] = []
+            if (
+                endpoint_group is not None
+                and not api_base_url_override
+                and raw_provider is None
+                and len(endpoint_group) > 1
+            ):
+                endpoint_configs = [
+                    EndpointClientConfig(
+                        api_key_var=(
+                            resolved_api_key_var
+                            if api_key_override
+                            else endpoint["key"]
+                        ),
+                        api_base_url=endpoint["url"],
+                        extra_headers=merged_headers,
+                    )
+                    for endpoint in endpoint_group
+                ]
+
+            assert primary_api_base_url is not None
+            client_config = ClientConfig(
+                client_type=cast(ClientType, client_type),
+                api_key_var=resolved_api_key_var,
+                api_base_url=primary_api_base_url,
+                endpoint_configs=endpoint_configs,
+                extra_headers=merged_headers,
+            )
 
         # Backward-compatible TOML field: resume_path
         if raw.get("resume") is None and raw.get("resume_path") is not None:
@@ -659,6 +862,8 @@ def main():
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
+            offline_mode=offline_mode,
+            prepared_completions_path=prepared_completions_path,
             max_retries=raw.get("max_retries", 0),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
