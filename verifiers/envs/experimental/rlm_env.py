@@ -280,15 +280,12 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_drop_sequence", 0)
     state.setdefault("_keep_from_assistant_index", 0)
     state.setdefault("_summary_text", "")
-    state.setdefault("_per_turn_prompt_tokens", [])
 
     state.setdefault("summarize_count", 0)
     state.setdefault("summarize_total_turns_dropped", 0)
-    state.setdefault("summarize_total_tokens_dropped", 0)
     state.setdefault("summarize_total_chars_dropped", 0)
     state.setdefault("summarize_summary_length_chars", 0)
     state.setdefault("summarize_char_compression_ratio", 0.0)
-    state.setdefault("summarize_mean_tokens_dropped_per_call", 0.0)
     state.setdefault("summarize_mean_turns_per_call", 0.0)
     state.setdefault("summarize_mean_remaining_turns", 0.0)
     state.setdefault("summarize_mean_turns_between", 0.0)
@@ -382,11 +379,9 @@ class RLMMonitorRubric(vf.Rubric):
         "root_tool_call_count",
         "summarize_count",
         "summarize_total_turns_dropped",
-        "summarize_total_tokens_dropped",
         "summarize_total_chars_dropped",
         "summarize_summary_length_chars",
         "summarize_char_compression_ratio",
-        "summarize_mean_tokens_dropped_per_call",
         "summarize_mean_turns_per_call",
         "summarize_mean_remaining_turns",
         "summarize_mean_turns_between",
@@ -3926,9 +3921,6 @@ class RLMEnv(vf.StatefulToolEnv):
         # Compute chars of dropped messages
         chars_dropped = self._compute_dropped_chars(state, keep_from, n_turns)
 
-        # Compute tokens dropped from per-turn prompt_tokens
-        tokens_dropped = self._compute_dropped_tokens(state, keep_from, n_turns)
-
         # Update state
         state["_keep_from_assistant_index"] = keep_from + n_turns
         state["_dropped_turns_count"] = state.get("_dropped_turns_count", 0) + n_turns
@@ -3957,7 +3949,6 @@ class RLMEnv(vf.StatefulToolEnv):
         # Update metrics
         state["summarize_count"] += 1
         state["summarize_total_turns_dropped"] = state["_dropped_turns_count"]
-        state["summarize_total_tokens_dropped"] += tokens_dropped
         state["summarize_total_chars_dropped"] += chars_dropped
         state["summarize_summary_length_chars"] = len(state["_summary_text"])
         if state["summarize_summary_length_chars"] > 0:
@@ -3967,10 +3958,6 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         state["summarize_mean_turns_per_call"] = (
             state["summarize_total_turns_dropped"] / state["summarize_count"]
-        )
-
-        state["summarize_mean_tokens_dropped_per_call"] = (
-            state["summarize_total_tokens_dropped"] / state["summarize_count"]
         )
 
         remaining_list: list[int] = state["_summarize_remaining_turns_list"]
@@ -4013,27 +4000,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     total_chars += len(str(content))
         return total_chars
 
-    def _compute_dropped_tokens(
-        self, state: State, keep_from: int, n_turns: int
-    ) -> int:
-        """Compute tokens dropped using per-turn prompt_tokens deltas.
-
-        ``per_turn[i]`` is the prompt_tokens reported by the API for main turn
-        *i*.  The tokens contributed by turns ``[start, end)`` are approximated
-        as ``per_turn[end] - per_turn[start]`` (the growth in prompt size across
-        those turns).  If ``end`` is out of range we return 0 — this shouldn't
-        happen in practice because ``min_turns_in_context >= 1`` guarantees at
-        least one turn remains after the dropped range.
-        """
-        per_turn = state.get("_per_turn_prompt_tokens", [])
-        if not per_turn:
-            return 0
-        start_idx = keep_from
-        end_idx = keep_from + n_turns
-        if start_idx >= len(per_turn) or end_idx >= len(per_turn):
-            return 0
-        return max(0, per_turn[end_idx] - per_turn[start_idx])
-
     def _last_main_trajectory_step(self, state: State) -> TrajectoryStep | None:
         """Find the last trajectory step belonging to the main (root) model."""
         main_id = state.get("trajectory_id")
@@ -4044,14 +4010,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
-        # Track per-turn prompt_tokens for main-model steps only
-        # Use trajectory_id match (consistent with _main_turn_count)
-        is_main = trajectory_step.get("trajectory_id") == state.get("trajectory_id")
-        if is_main:
-            response = trajectory_step.get("response")
-            usage = getattr(response, "usage", None) if response else None
-            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-            state.setdefault("_per_turn_prompt_tokens", []).append(prompt_tokens)
         await super().add_trajectory_step(state, trajectory_step)
 
     async def add_model_response(

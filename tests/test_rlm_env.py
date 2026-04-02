@@ -2888,38 +2888,17 @@ class TestSummarizeTurns:
             interception_url="http://test.invalid",
         )
 
-    def _make_state(
-        self,
-        main_turns: int,
-        dropped: int = 0,
-        *,
-        per_turn_prompt_tokens: list[int] | None = None,
-    ) -> dict:
-        """Build a minimal state with the given number of main turns.
-
-        If *per_turn_prompt_tokens* is provided it is used directly;
-        otherwise a default list is generated with 100-token increments
-        so that token-delta calculations work predictably.
-        """
+    def _make_state(self, main_turns: int, dropped: int = 0) -> dict:
+        """Build a minimal state with the given number of main turns."""
         trajectory_id = "main_id"
         trajectory = []
-        if per_turn_prompt_tokens is None:
-            per_turn_prompt_tokens = [100 * (i + 1) for i in range(main_turns)]
         for i in range(main_turns):
-            prompt_tokens = (
-                per_turn_prompt_tokens[i] if i < len(per_turn_prompt_tokens) else 0
-            )
-            usage = MagicMock()
-            usage.prompt_tokens = prompt_tokens
-            usage.completion_tokens = 50
-            response = MagicMock()
-            response.usage = usage
             trajectory.append(
                 {
                     "trajectory_id": trajectory_id,
                     "prompt": [{"role": "user", "content": f"turn {i}"}],
                     "completion": [vf.AssistantMessage(content=f"response {i}")],
-                    "response": response,
+                    "response": None,
                     "tokens": None,
                     "reward": None,
                     "advantage": None,
@@ -2934,7 +2913,6 @@ class TestSummarizeTurns:
             "_keep_from_assistant_index": dropped,
             "_drop_sequence": 0,
             "_summary_text": "",
-            "_per_turn_prompt_tokens": list(per_turn_prompt_tokens[:main_turns]),
             "rollout_id": "test_rollout",
         }
         rlm_module._ensure_rlm_metric_state(state)
@@ -3355,17 +3333,12 @@ class TestSummarizeTurns:
 
         # Simulate 3 more main turns (total 13 in trajectory)
         for i in range(3):
-            usage = MagicMock()
-            usage.prompt_tokens = 100 * (10 + i + 1)
-            usage.completion_tokens = 50
-            response = MagicMock()
-            response.usage = usage
             state["trajectory"].append(
                 {
                     "trajectory_id": state["trajectory_id"],
                     "prompt": [{"role": "user", "content": f"extra {i}"}],
                     "completion": [vf.AssistantMessage(content=f"extra resp {i}")],
-                    "response": response,
+                    "response": None,
                     "tokens": None,
                     "reward": None,
                     "advantage": None,
@@ -3373,7 +3346,6 @@ class TestSummarizeTurns:
                     "extras": None,
                 }
             )
-            state["_per_turn_prompt_tokens"].append(usage.prompt_tokens)
 
         # Drop 3 at turn 13: 13-2=11 visible -> 8 remaining
         await env_with_summarize.summarize_turns(
@@ -3416,119 +3388,6 @@ class TestSummarizeTurns:
             state["summarize_total_chars_dropped"]
             / state["summarize_summary_length_chars"]
         )
-
-    @pytest.mark.asyncio
-    async def test_tokens_dropped_tracking(self, env_with_summarize):
-        # Explicit token schedule: turns have prompt_tokens [100, 200, 300, 400, 500, 600]
-        token_schedule = [100, 200, 300, 400, 500, 600]
-        state = self._make_state(main_turns=6, per_turn_prompt_tokens=token_schedule)
-
-        # Drop turns 1-2 (indices 0-1): tokens = prompt_tokens[2] - prompt_tokens[0] = 300 - 100 = 200
-        await env_with_summarize.summarize_turns(
-            n_turns=2, summary="first two", state=state
-        )
-
-        assert state["summarize_total_tokens_dropped"] == 200
-        assert state["summarize_mean_tokens_dropped_per_call"] == 200.0
-
-    @pytest.mark.asyncio
-    async def test_mean_tokens_dropped_per_call(self, env_with_summarize):
-        token_schedule = [100, 200, 300, 400, 500, 600, 700, 800]
-        state = self._make_state(main_turns=8, per_turn_prompt_tokens=token_schedule)
-
-        # Drop 1 turn: tokens = prompt_tokens[1] - prompt_tokens[0] = 100
-        await env_with_summarize.summarize_turns(
-            n_turns=1, summary="first", state=state
-        )
-        assert state["summarize_total_tokens_dropped"] == 100
-        assert state["summarize_mean_tokens_dropped_per_call"] == 100.0
-
-        # Drop 2 more turns: tokens = prompt_tokens[3] - prompt_tokens[1] = 200
-        await env_with_summarize.summarize_turns(
-            n_turns=2, summary="second", state=state
-        )
-        assert state["summarize_total_tokens_dropped"] == 300
-        assert state["summarize_mean_tokens_dropped_per_call"] == 150.0
-
-    # =====================================================================
-    # Per-turn prompt token tracking
-    # =====================================================================
-
-    @pytest.mark.asyncio
-    async def test_per_turn_prompt_tokens_recorded(self, env_with_summarize):
-        """After adding a main-model trajectory step, _per_turn_prompt_tokens is appended."""
-        usage = MagicMock()
-        usage.prompt_tokens = 42
-        usage.completion_tokens = 10
-        usage.reasoning_tokens = 0
-        usage.total_tokens = 52
-        response = MagicMock()
-        response.usage = usage
-        response.message = MagicMock()
-        response.message.content = "hello"
-        response.message.tool_calls = None
-        response.message.is_truncated = False
-
-        state = {
-            "trajectory_id": "main",
-            "trajectory": [],
-            "_per_turn_prompt_tokens": [],
-        }
-        rlm_module._ensure_rlm_metric_state(state)
-
-        step = {
-            "prompt": [UserMessage(content="q")],
-            "completion": [vf.AssistantMessage(content="a")],
-            "response": response,
-            "tokens": None,
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": "main",
-            "extras": {},
-        }
-        await env_with_summarize.add_trajectory_step(state, step)
-
-        assert state["_per_turn_prompt_tokens"] == [42]
-
-    @pytest.mark.asyncio
-    async def test_sub_llm_steps_not_tracked_in_per_turn_tokens(
-        self, env_with_summarize
-    ):
-        """Sub-LLM trajectory steps should NOT append to _per_turn_prompt_tokens."""
-        usage = MagicMock()
-        usage.prompt_tokens = 99
-        usage.completion_tokens = 10
-        usage.reasoning_tokens = 0
-        usage.total_tokens = 109
-        response = MagicMock()
-        response.usage = usage
-        response.message = MagicMock()
-        response.message.content = "sub response"
-        response.message.tool_calls = None
-        response.message.is_truncated = False
-
-        state = {
-            "trajectory_id": "main",
-            "trajectory": [],
-            "_per_turn_prompt_tokens": [],
-        }
-        rlm_module._ensure_rlm_metric_state(state)
-
-        sub_step = {
-            "prompt": [UserMessage(content="sub q")],
-            "completion": [vf.AssistantMessage(content="sub a")],
-            "response": response,
-            "tokens": None,
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": "sub_batch_123",  # different from main
-            "extras": {"is_sub_llm_call": True},
-        }
-        await env_with_summarize.add_trajectory_step(state, sub_step)
-
-        assert state["_per_turn_prompt_tokens"] == []
 
     # =====================================================================
     # Edge cases
