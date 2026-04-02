@@ -3924,7 +3924,7 @@ class RLMEnv(vf.StatefulToolEnv):
         range_end = keep_from + n_turns
 
         # Compute chars of dropped messages
-        chars_dropped = self._compute_dropped_chars(state, keep_from, n_turns)
+        chars_dropped = self._compute_dropped_chars(state, n_turns)
 
         # Update state
         state["_keep_from_assistant_index"] = keep_from + n_turns
@@ -3979,12 +3979,13 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return state["_summary_text"]
 
-    def _compute_dropped_chars(self, state: State, keep_from: int, n_turns: int) -> int:
+    def _compute_dropped_chars(self, state: State, n_turns: int) -> int:
         """Compute the total character length of messages being dropped.
 
-        Uses the same assistant-index logic as ``_apply_context_dropping`` to
-        identify which messages would be removed, then sums the char length of
-        all content (including tool call arguments and tool responses).
+        The last trajectory step's prompt already has prior context dropping
+        applied, so the first ``n_turns`` assistant messages (and their
+        following tool messages) in that prompt are exactly the ones being
+        removed by this call.
         """
         last_main = self._last_main_trajectory_step(state)
         if last_main is None:
@@ -3997,23 +3998,16 @@ class RLMEnv(vf.StatefulToolEnv):
             if getattr(msg, "role", None) == "assistant"
             or (isinstance(msg, dict) and msg.get("role") == "assistant")
         ]
-        if not assistant_indices or keep_from >= len(assistant_indices):
+        if not assistant_indices or n_turns <= 0:
             return 0
 
-        # Messages being dropped: from the first assistant message up to (but
-        # not including) the keep_from-th assistant message.
+        # Drop the first n_turns assistant messages (relative to the current
+        # already-truncated view).
         drop_start = assistant_indices[0]
-        new_end = keep_from + n_turns
-        if new_end >= len(assistant_indices):
+        if n_turns >= len(assistant_indices):
             drop_end = len(messages)
         else:
-            drop_end = assistant_indices[new_end]
-        # But we only want the newly dropped messages (keep_from..new_end),
-        # not previously dropped ones.
-        if keep_from < len(assistant_indices):
-            drop_start = assistant_indices[keep_from]
-        else:
-            return 0
+            drop_end = assistant_indices[n_turns]
 
         total_chars = 0
         for msg in messages[drop_start:drop_end]:
