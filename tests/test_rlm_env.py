@@ -2856,13 +2856,15 @@ class TestFilesystemProvisioning:
 
 
 # =============================================================================
-# Context Dropping
+# Summarize Turns (context dropping overhaul)
 # =============================================================================
 
 
-class TestContextDropping:
+class TestSummarizeTurns:
+    """Tests for the summarize_turns tool (replaces old remove_conversation_turns)."""
+
     @pytest.fixture
-    def env_with_dropping(self) -> RLMEnv:
+    def env_with_summarize(self) -> RLMEnv:
         dataset = make_dataset({})
         import warnings
 
@@ -2877,7 +2879,7 @@ class TestContextDropping:
             )
 
     @pytest.fixture
-    def env_without_dropping(self) -> RLMEnv:
+    def env_without_summarize(self) -> RLMEnv:
         dataset = make_dataset({})
         return build_env(
             dataset,
@@ -2886,20 +2888,105 @@ class TestContextDropping:
             interception_url="http://test.invalid",
         )
 
-    # -- Tool registration --
+    def _make_state(
+        self,
+        main_turns: int,
+        dropped: int = 0,
+        *,
+        per_turn_prompt_tokens: list[int] | None = None,
+    ) -> dict:
+        """Build a minimal state with the given number of main turns.
 
-    def test_tool_registered_when_enabled(self, env_with_dropping):
-        assert "remove_conversation_turns" in env_with_dropping.root_tool_names
+        If *per_turn_prompt_tokens* is provided it is used directly;
+        otherwise a default list is generated with 100-token increments
+        so that token-delta calculations work predictably.
+        """
+        trajectory_id = "main_id"
+        trajectory = []
+        if per_turn_prompt_tokens is None:
+            per_turn_prompt_tokens = [100 * (i + 1) for i in range(main_turns)]
+        for i in range(main_turns):
+            prompt_tokens = (
+                per_turn_prompt_tokens[i] if i < len(per_turn_prompt_tokens) else 0
+            )
+            usage = MagicMock()
+            usage.prompt_tokens = prompt_tokens
+            usage.completion_tokens = 50
+            response = MagicMock()
+            response.usage = usage
+            trajectory.append(
+                {
+                    "trajectory_id": trajectory_id,
+                    "prompt": [{"role": "user", "content": f"turn {i}"}],
+                    "completion": [vf.AssistantMessage(content=f"response {i}")],
+                    "response": response,
+                    "tokens": None,
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": False,
+                    "extras": None,
+                }
+            )
+        state = {
+            "trajectory_id": trajectory_id,
+            "trajectory": trajectory,
+            "_dropped_turns_count": dropped,
+            "_keep_from_assistant_index": dropped,
+            "_drop_sequence": 0,
+            "_summary_text": "",
+            "_per_turn_prompt_tokens": list(per_turn_prompt_tokens[:main_turns]),
+            "rollout_id": "test_rollout",
+        }
+        rlm_module._ensure_rlm_metric_state(state)
+        return state
 
-    def test_tool_not_registered_when_disabled(self, env_without_dropping):
-        assert "remove_conversation_turns" not in env_without_dropping.root_tool_names
+    # =====================================================================
+    # Tool registration
+    # =====================================================================
 
-    def test_tool_name_reserved(self):
-        from verifiers.envs.experimental.rlm_env import _FIXED_REPL_TOOL_NAMES
+    def test_tool_registered_as_standard_tool_when_enabled(self, env_with_summarize):
+        """summarize_turns should be a standard tool, not a root-REPL tool."""
+        tool_names = [t.__name__ for t in env_with_summarize.standard_tools]
+        # It's added via add_tool, so check the env's tool definitions
+        tool_def_names = [td.name for td in env_with_summarize.tool_defs]
+        assert "summarize_turns" in tool_def_names
 
-        assert "remove_conversation_turns" in _FIXED_REPL_TOOL_NAMES
+    def test_tool_not_in_root_tools(self, env_with_summarize):
+        """summarize_turns must NOT appear in root_tool_names (REPL tools)."""
+        assert "summarize_turns" not in env_with_summarize.root_tool_names
 
-    # -- Default changes --
+    def test_tool_not_registered_when_disabled(self, env_without_summarize):
+        tool_def_names = [td.name for td in env_without_summarize.tool_defs]
+        assert "summarize_turns" not in tool_def_names
+
+    def test_repl_tool_still_registered(self, env_with_summarize):
+        """The REPL tool must still be present alongside summarize_turns."""
+        tool_def_names = [td.name for td in env_with_summarize.tool_defs]
+        assert any(
+            name in tool_def_names for name in ("call_python_repl", "call_bash_repl")
+        )
+
+    def test_old_tool_name_not_registered(self, env_with_summarize):
+        """remove_conversation_turns should no longer exist anywhere."""
+        tool_def_names = [td.name for td in env_with_summarize.tool_defs]
+        assert "remove_conversation_turns" not in tool_def_names
+        assert "remove_conversation_turns" not in env_with_summarize.root_tool_names
+
+    # =====================================================================
+    # State injection
+    # =====================================================================
+
+    def test_update_tool_args_injects_state(self, env_with_summarize):
+        state = self._make_state(main_turns=3)
+        args = {"n_turns": 1, "summary": "test"}
+        result = env_with_summarize.update_tool_args("summarize_turns", args, [], state)
+        assert result["state"] is state
+        assert result["n_turns"] == 1
+        assert result["summary"] == "test"
+
+    # =====================================================================
+    # Default configuration
+    # =====================================================================
 
     def test_expose_message_history_defaults_to_true(self):
         dataset = make_dataset({})
@@ -2929,114 +3016,128 @@ class TestContextDropping:
                 interception_url="http://test.invalid",
             )
 
-    # -- System prompt --
+    # =====================================================================
+    # System prompt
+    # =====================================================================
 
-    def test_system_prompt_includes_note_when_enabled(self, env_with_dropping):
-        prompt = env_with_dropping.prompt_builder.build_system_prompt()
-        assert "remove_conversation_turns" in prompt
-        assert "min_turns_in_context" not in prompt or "3" in prompt
+    def test_system_prompt_includes_note_when_enabled(self, env_with_summarize):
+        prompt = env_with_summarize.prompt_builder.build_system_prompt()
+        assert "summarize_turns" in prompt
+        assert "<SUMMARY>" in prompt
 
-    def test_system_prompt_excludes_note_when_disabled(self, env_without_dropping):
-        prompt = env_without_dropping.prompt_builder.build_system_prompt()
-        assert "remove_conversation_turns" not in prompt
+    def test_system_prompt_excludes_note_when_disabled(self, env_without_summarize):
+        prompt = env_without_summarize.prompt_builder.build_system_prompt()
+        assert "summarize_turns" not in prompt
 
-    # -- _handle_remove_conversation_turns --
-
-    def _make_state(self, main_turns: int, dropped: int = 0) -> dict:
-        """Build a minimal state with the given number of main turns."""
-        trajectory_id = "main_id"
-        trajectory = []
-        for i in range(main_turns):
-            trajectory.append(
-                {
-                    "trajectory_id": trajectory_id,
-                    "prompt": [{"role": "user", "content": f"turn {i}"}],
-                    "completion": [{"role": "assistant", "content": f"response {i}"}],
-                    "response": None,
-                    "tokens": None,
-                    "reward": None,
-                    "advantage": None,
-                    "is_truncated": False,
-                    "extras": None,
-                }
-            )
-        return {
-            "trajectory_id": trajectory_id,
-            "trajectory": trajectory,
-            "_dropped_turns_count": dropped,
-            "_keep_from_assistant_index": dropped,
-            "_drop_sequence": 0,
-            "rollout_id": "test_rollout",
-        }
+    # =====================================================================
+    # Basic summarize_turns behavior
+    # =====================================================================
 
     @pytest.mark.asyncio
-    async def test_basic_drop(self, env_with_dropping):
+    async def test_basic_summarize(self, env_with_summarize):
         state = self._make_state(main_turns=6)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        result = await env_with_dropping._handle_remove_conversation_turns(
-            state, 2, "dropped first two"
+        result = await env_with_summarize.summarize_turns(
+            n_turns=2, summary="explored dataset", state=state
         )
 
         assert state["_dropped_turns_count"] == 2
         assert state["_keep_from_assistant_index"] == 2
         assert state["_drop_sequence"] == 1
-        assert "Dropped 2" in result
-        assert "dropped first two" in result
+        assert "[Turns 1-2]" in result
+        assert "explored dataset" in result
+        assert state["_summary_text"] == result
 
     @pytest.mark.asyncio
-    async def test_drop_minus_one(self, env_with_dropping):
+    async def test_summarize_minus_one(self, env_with_summarize):
         state = self._make_state(main_turns=6)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        result = await env_with_dropping._handle_remove_conversation_turns(
-            state, -1, ""
+        result = await env_with_summarize.summarize_turns(
+            n_turns=-1, summary="everything so far", state=state
         )
 
         # 6 visible - 3 min = 3 droppable
         assert state["_dropped_turns_count"] == 3
         assert state["_keep_from_assistant_index"] == 3
-        assert "Dropped 3" in result
+        assert "[Turns 1-3]" in result
 
     @pytest.mark.asyncio
-    async def test_drop_exceeds_limit(self, env_with_dropping):
+    async def test_summarize_exceeds_limit(self, env_with_summarize):
         state = self._make_state(main_turns=5)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        result = await env_with_dropping._handle_remove_conversation_turns(state, 4, "")
+        result = await env_with_summarize.summarize_turns(
+            n_turns=4, summary="too many", state=state
+        )
 
         assert state["_dropped_turns_count"] == 0
         assert "Cannot drop" in result
-        env_with_dropping._upload_summary.assert_not_awaited()
+        assert state["_summary_text"] == ""
 
     @pytest.mark.asyncio
-    async def test_drop_zero(self, env_with_dropping):
+    async def test_summarize_zero(self, env_with_summarize):
         state = self._make_state(main_turns=5)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        result = await env_with_dropping._handle_remove_conversation_turns(state, 0, "")
+        result = await env_with_summarize.summarize_turns(
+            n_turns=0, summary="nothing", state=state
+        )
 
         assert state["_dropped_turns_count"] == 0
         assert "Nothing to drop" in result
+        assert state["_summary_text"] == ""
+
+    # =====================================================================
+    # Cumulative summary
+    # =====================================================================
 
     @pytest.mark.asyncio
-    async def test_cumulative_drops(self, env_with_dropping):
+    async def test_cumulative_summary_text(self, env_with_summarize):
         state = self._make_state(main_turns=8)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        await env_with_dropping._handle_remove_conversation_turns(state, 1, "first")
-        assert state["_dropped_turns_count"] == 1
-        assert state["_keep_from_assistant_index"] == 1
-        assert state["_drop_sequence"] == 1
+        result1 = await env_with_summarize.summarize_turns(
+            n_turns=1, summary="first batch", state=state
+        )
+        assert "[Turns 1-1]" in result1
+        assert "first batch" in result1
 
-        await env_with_dropping._handle_remove_conversation_turns(state, 2, "second")
-        assert state["_dropped_turns_count"] == 3
-        assert state["_keep_from_assistant_index"] == 3
-        assert state["_drop_sequence"] == 2
+        result2 = await env_with_summarize.summarize_turns(
+            n_turns=2, summary="second batch", state=state
+        )
+        # Cumulative: contains both sections
+        assert "[Turns 1-1]" in result2
+        assert "first batch" in result2
+        assert "[Turns 2-3]" in result2
+        assert "second batch" in result2
+        assert state["_summary_text"] == result2
 
-    # -- _apply_context_dropping --
+    @pytest.mark.asyncio
+    async def test_summary_returned_as_tool_output(self, env_with_summarize):
+        state = self._make_state(main_turns=6)
 
-    def test_apply_preserves_scaffolded_message(self, env_with_dropping):
+        result = await env_with_summarize.summarize_turns(
+            n_turns=2, summary="my summary", state=state
+        )
+
+        # Return value IS the full cumulative summary
+        assert result == state["_summary_text"]
+
+    @pytest.mark.asyncio
+    async def test_multiline_summary(self, env_with_summarize):
+        state = self._make_state(main_turns=6)
+
+        multiline = "explored the dataset\nfound 3 CSV files\neach has ~10k rows"
+        result = await env_with_summarize.summarize_turns(
+            n_turns=2, summary=multiline, state=state
+        )
+
+        assert "explored the dataset" in result
+        assert "found 3 CSV files" in result
+        assert "each has ~10k rows" in result
+
+    # =====================================================================
+    # Summary injection into messages (_apply_context_dropping)
+    # =====================================================================
+
+    def test_summary_prepended_to_first_assistant_message(self, env_with_summarize):
         messages = [
             UserMessage(content="scaffolded prompt"),
             vf.AssistantMessage(content="response 0"),
@@ -3047,54 +3148,56 @@ class TestContextDropping:
             vf.ToolMessage(tool_call_id="t2", content="tool 2"),
         ]
 
-        result = env_with_dropping._apply_context_dropping(messages, 2)
+        summary_text = "[Turns 1-2] explored dataset"
+        result = env_with_summarize._apply_context_dropping(
+            messages, 2, summary_text=summary_text
+        )
 
+        # preamble (user) + asst_2 + tool_2
         assert result[0].content == "scaffolded prompt"
-        assert len(result) == 3  # scaffolded + asst_2 + tool_2
-        assert result[1].content == "response 2"
+        assert len(result) == 3
+        # First remaining assistant message should have summary prepended
+        assert result[1].content.startswith("<SUMMARY>")
+        assert "[Turns 1-2] explored dataset" in result[1].content
+        assert "</SUMMARY>" in result[1].content
+        assert "response 2" in result[1].content
 
-    def test_apply_zero_is_noop(self, env_with_dropping):
+    def test_summary_not_injected_when_empty(self, env_with_summarize):
         messages = [
-            UserMessage(content="scaffolded"),
-            vf.AssistantMessage(content="r0"),
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content="response 0"),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
         ]
-        result = env_with_dropping._apply_context_dropping(messages, 0)
-        assert result == messages
 
-    def test_apply_drop_all_returns_unchanged(self, env_with_dropping):
-        """Dropping more than available turns returns messages unchanged."""
-        messages = [
-            UserMessage(content="scaffolded"),
-            vf.AssistantMessage(content="r0"),
-            vf.ToolMessage(tool_call_id="t0", content="t0"),
-        ]
-        result = env_with_dropping._apply_context_dropping(messages, 5)
-        assert result == messages
+        result = env_with_summarize._apply_context_dropping(
+            messages, 0, summary_text=""
+        )
 
-    def test_apply_is_idempotent(self, env_with_dropping):
-        """Applying the same keep_from_assistant_index twice gives the same result."""
+        assert result == messages
+        # No SUMMARY tags anywhere
+        for msg in result:
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            assert "<SUMMARY>" not in content
+
+    def test_summary_injection_preserves_preamble(self, env_with_summarize):
         messages = [
             UserMessage(content="scaffolded prompt"),
             vf.AssistantMessage(content="response 0"),
             vf.ToolMessage(tool_call_id="t0", content="tool 0"),
             vf.AssistantMessage(content="response 1"),
             vf.ToolMessage(tool_call_id="t1", content="tool 1"),
-            vf.AssistantMessage(content="response 2"),
-            vf.ToolMessage(tool_call_id="t2", content="tool 2"),
         ]
 
-        # First application: drop first 2 turns
-        result1 = env_with_dropping._apply_context_dropping(messages, 2)
-        assert len(result1) == 3  # scaffolded + asst_2 + tool_2
+        summary_text = "[Turns 1-1] first turn summary"
+        result = env_with_summarize._apply_context_dropping(
+            messages, 1, summary_text=summary_text
+        )
 
-        # Second application on already-truncated result: same index, no further dropping
-        result2 = env_with_dropping._apply_context_dropping(result1, 2)
-        assert len(result2) == 3  # unchanged — only 1 assistant msg, index 2 >= count
-        assert result2[0].content == "scaffolded prompt"
-        assert result2[1].content == "response 2"
+        assert len(result) == 3  # user + asst_1 + tool_1
+        assert result[0].content == "scaffolded prompt"
+        assert "<SUMMARY>" not in result[0].content
 
-    def test_apply_preserves_system_message_preamble(self, env_with_dropping):
-        """System message + scaffolded user message are both preserved."""
+    def test_summary_injection_with_system_message_preamble(self, env_with_summarize):
         messages = [
             vf.SystemMessage(content="system instructions"),
             UserMessage(content="scaffolded prompt"),
@@ -3104,65 +3207,167 @@ class TestContextDropping:
             vf.ToolMessage(tool_call_id="t1", content="tool 1"),
         ]
 
-        result = env_with_dropping._apply_context_dropping(messages, 1)
+        summary_text = "[Turns 1-1] summary"
+        result = env_with_summarize._apply_context_dropping(
+            messages, 1, summary_text=summary_text
+        )
 
         assert len(result) == 4  # system + user + asst_1 + tool_1
         assert result[0].content == "system instructions"
         assert result[1].content == "scaffolded prompt"
-        assert result[2].content == "response 1"
+        assert "<SUMMARY>" in result[2].content
+        assert "response 1" in result[2].content
 
-    # -- _upload_summary --
+    def test_summary_injection_idempotent(self, env_with_summarize):
+        """Applying context dropping twice doesn't double-inject the summary."""
+        messages = [
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content="response 0"),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+            vf.AssistantMessage(content="response 1"),
+            vf.ToolMessage(tool_call_id="t1", content="tool 1"),
+            vf.AssistantMessage(content="response 2"),
+            vf.ToolMessage(tool_call_id="t2", content="tool 2"),
+        ]
+
+        summary_text = "[Turns 1-2] summary"
+        result1 = env_with_summarize._apply_context_dropping(
+            messages, 2, summary_text=summary_text
+        )
+        # Apply again on already-truncated result (same index >= remaining count)
+        result2 = env_with_summarize._apply_context_dropping(
+            result1, 2, summary_text=summary_text
+        )
+
+        # Should not double-inject
+        content = result2[1].content if len(result2) > 1 else ""
+        assert content.count("<SUMMARY>") <= 1
+
+    def test_summary_injection_with_list_content(self, env_with_summarize):
+        """If assistant message content is a list, summary is prepended as text block."""
+        messages = [
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(content=[{"type": "text", "text": "response 0"}]),
+            vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+            vf.AssistantMessage(content=[{"type": "text", "text": "response 1"}]),
+            vf.ToolMessage(tool_call_id="t1", content="tool 1"),
+        ]
+
+        summary_text = "[Turns 1-1] summary"
+        result = env_with_summarize._apply_context_dropping(
+            messages, 1, summary_text=summary_text
+        )
+
+        # First remaining assistant message content should be a list
+        # with summary prepended as a text block
+        asst_content = result[1].content
+        assert isinstance(asst_content, list)
+        assert asst_content[0]["type"] == "text"
+        assert "<SUMMARY>" in asst_content[0]["text"]
+        assert "summary" in asst_content[0]["text"]
+
+    def test_apply_zero_is_noop(self, env_with_summarize):
+        messages = [
+            UserMessage(content="scaffolded"),
+            vf.AssistantMessage(content="r0"),
+        ]
+        result = env_with_summarize._apply_context_dropping(
+            messages, 0, summary_text=""
+        )
+        assert result == messages
+
+    def test_apply_drop_all_returns_unchanged(self, env_with_summarize):
+        """Dropping more than available turns returns messages unchanged."""
+        messages = [
+            UserMessage(content="scaffolded"),
+            vf.AssistantMessage(content="r0"),
+            vf.ToolMessage(tool_call_id="t0", content="t0"),
+        ]
+        result = env_with_summarize._apply_context_dropping(
+            messages, 5, summary_text="[Turns 1-5] summary"
+        )
+        assert result == messages
+
+    # =====================================================================
+    # .messages file unaffected
+    # =====================================================================
+
+    def test_message_history_excludes_summaries(self, env_with_summarize):
+        """_build_message_history returns uncompacted history without <SUMMARY> tags."""
+        trajectory_id = "main_traj"
+        state = {
+            "trajectory_id": trajectory_id,
+            "trajectory": [
+                {
+                    "prompt": [
+                        UserMessage(content="scaffolded prompt"),
+                    ],
+                    "completion": [
+                        vf.AssistantMessage(content="response 0"),
+                        vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+                        vf.AssistantMessage(content="response 1"),
+                    ],
+                    "response": None,
+                    "tokens": None,
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": False,
+                    "trajectory_id": trajectory_id,
+                    "extras": {},
+                }
+            ],
+            "_summary_text": "[Turns 1-1] some summary",
+            "_keep_from_assistant_index": 1,
+        }
+
+        history = env_with_summarize._build_message_history(state)
+
+        for entry in history:
+            content = entry.get("content", "")
+            if isinstance(content, str):
+                assert "<SUMMARY>" not in content
+
+    # =====================================================================
+    # Metrics
+    # =====================================================================
 
     @pytest.mark.asyncio
-    async def test_upload_summary(self, env_with_dropping):
-        state = self._make_state(main_turns=5)
-
-        session = MagicMock()
-        session.sandbox_id = "sbx_test"
-        session.sandbox_fs_root = "/tmp/rlm_test/rlm_fs"
-        env_with_dropping._executor._get_session = MagicMock(return_value=session)
-        env_with_dropping._executor._execute_sandbox_command = AsyncMock()
-
-        await env_with_dropping._upload_summary(state, 2, "test summary", 3)
-
-        env_with_dropping._executor._execute_sandbox_command.assert_awaited_once()
-        cmd = env_with_dropping._executor._execute_sandbox_command.call_args[0][1]
-        assert ".summaries" in cmd
-        assert "base64" in cmd
-
-    # -- Metrics --
-
-    @pytest.mark.asyncio
-    async def test_basic_drop_metrics(self, env_with_dropping):
+    async def test_basic_metrics(self, env_with_summarize):
         state = self._make_state(main_turns=6)
-        env_with_dropping._upload_summary = AsyncMock()
 
-        await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
+        await env_with_summarize.summarize_turns(n_turns=2, summary="test", state=state)
 
-        assert state["compaction_count"] == 1
-        assert state["compaction_total_turns_dropped"] == 2
-        assert state["compaction_mean_remaining_turns"] == 4.0  # 6 - 2
-        assert state["compaction_mean_turns_between"] == 0.0  # only 1 drop
+        assert state["summarize_count"] == 1
+        assert state["summarize_total_turns_dropped"] == 2
+        assert state["summarize_mean_remaining_turns"] == 4.0  # 6 - 2
+        assert state["summarize_mean_turns_between"] == 0.0  # only 1 call
+        assert state["summarize_mean_turns_per_call"] == 2.0
 
     @pytest.mark.asyncio
-    async def test_cumulative_drop_metrics(self, env_with_dropping):
+    async def test_cumulative_metrics(self, env_with_summarize):
         # 10 turns, min_turns_in_context=3
         state = self._make_state(main_turns=10)
-        env_with_dropping._upload_summary = AsyncMock()
 
         # Drop 2 at turn 10: 10 visible -> 8 remaining
-        await env_with_dropping._handle_remove_conversation_turns(state, 2, "")
-        assert state["compaction_count"] == 1
-        assert state["compaction_mean_remaining_turns"] == 8.0
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="batch 1", state=state
+        )
+        assert state["summarize_count"] == 1
+        assert state["summarize_mean_remaining_turns"] == 8.0
 
         # Simulate 3 more main turns (total 13 in trajectory)
         for i in range(3):
+            usage = MagicMock()
+            usage.prompt_tokens = 100 * (10 + i + 1)
+            usage.completion_tokens = 50
+            response = MagicMock()
+            response.usage = usage
             state["trajectory"].append(
                 {
                     "trajectory_id": state["trajectory_id"],
                     "prompt": [{"role": "user", "content": f"extra {i}"}],
-                    "completion": [{"role": "assistant", "content": f"extra resp {i}"}],
-                    "response": None,
+                    "completion": [vf.AssistantMessage(content=f"extra resp {i}")],
+                    "response": response,
                     "tokens": None,
                     "reward": None,
                     "advantage": None,
@@ -3170,23 +3375,203 @@ class TestContextDropping:
                     "extras": None,
                 }
             )
+            state["_per_turn_prompt_tokens"].append(usage.prompt_tokens)
 
         # Drop 3 at turn 13: 13-2=11 visible -> 8 remaining
-        await env_with_dropping._handle_remove_conversation_turns(state, 3, "")
-        assert state["compaction_count"] == 2
-        assert state["compaction_total_turns_dropped"] == 5
+        await env_with_summarize.summarize_turns(
+            n_turns=3, summary="batch 2", state=state
+        )
+        assert state["summarize_count"] == 2
+        assert state["summarize_total_turns_dropped"] == 5
         # mean remaining: (8 + 8) / 2 = 8.0
-        assert state["compaction_mean_remaining_turns"] == 8.0
+        assert state["summarize_mean_remaining_turns"] == 8.0
         # turns between: [13 - 10] = [3], mean = 3.0
-        assert state["compaction_mean_turns_between"] == 3.0
+        assert state["summarize_mean_turns_between"] == 3.0
+        # mean turns per call: (2 + 3) / 2 = 2.5
+        assert state["summarize_mean_turns_per_call"] == 2.5
 
     @pytest.mark.asyncio
-    async def test_failed_drop_does_not_update_metrics(self, env_with_dropping):
+    async def test_failed_summarize_no_metrics(self, env_with_summarize):
         state = self._make_state(main_turns=4)
-        env_with_dropping._upload_summary = AsyncMock()
 
         # Try to drop 5 (exceeds limit)
-        await env_with_dropping._handle_remove_conversation_turns(state, 5, "")
+        await env_with_summarize.summarize_turns(
+            n_turns=5, summary="too many", state=state
+        )
 
-        assert state.get("compaction_count", 0) == 0
-        assert state.get("compaction_total_turns_dropped", 0) == 0
+        assert state.get("summarize_count", 0) == 0
+        assert state.get("summarize_total_turns_dropped", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_char_compression_ratio(self, env_with_summarize):
+        state = self._make_state(main_turns=6)
+
+        # The dropped messages have known content lengths (from _make_state:
+        # completion content is "response 0", "response 1" etc.)
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="short", state=state
+        )
+
+        assert state["summarize_total_chars_dropped"] > 0
+        assert state["summarize_summary_length_chars"] == len(state["_summary_text"])
+        assert state["summarize_char_compression_ratio"] == pytest.approx(
+            state["summarize_total_chars_dropped"]
+            / state["summarize_summary_length_chars"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_tokens_dropped_tracking(self, env_with_summarize):
+        # Explicit token schedule: turns have prompt_tokens [100, 200, 300, 400, 500, 600]
+        token_schedule = [100, 200, 300, 400, 500, 600]
+        state = self._make_state(main_turns=6, per_turn_prompt_tokens=token_schedule)
+
+        # Drop turns 1-2 (indices 0-1): tokens = prompt_tokens[2] - prompt_tokens[0] = 300 - 100 = 200
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="first two", state=state
+        )
+
+        assert state["summarize_total_tokens_dropped"] == 200
+        assert state["summarize_mean_tokens_dropped_per_call"] == 200.0
+
+    @pytest.mark.asyncio
+    async def test_mean_tokens_dropped_per_call(self, env_with_summarize):
+        token_schedule = [100, 200, 300, 400, 500, 600, 700, 800]
+        state = self._make_state(main_turns=8, per_turn_prompt_tokens=token_schedule)
+
+        # Drop 1 turn: tokens = prompt_tokens[1] - prompt_tokens[0] = 100
+        await env_with_summarize.summarize_turns(
+            n_turns=1, summary="first", state=state
+        )
+        assert state["summarize_total_tokens_dropped"] == 100
+        assert state["summarize_mean_tokens_dropped_per_call"] == 100.0
+
+        # Drop 2 more turns: tokens = prompt_tokens[3] - prompt_tokens[1] = 200
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="second", state=state
+        )
+        assert state["summarize_total_tokens_dropped"] == 300
+        assert state["summarize_mean_tokens_dropped_per_call"] == 150.0
+
+    # =====================================================================
+    # Per-turn prompt token tracking
+    # =====================================================================
+
+    @pytest.mark.asyncio
+    async def test_per_turn_prompt_tokens_recorded(self, env_with_summarize):
+        """After adding a main-model trajectory step, _per_turn_prompt_tokens is appended."""
+        usage = MagicMock()
+        usage.prompt_tokens = 42
+        usage.completion_tokens = 10
+        usage.reasoning_tokens = 0
+        usage.total_tokens = 52
+        response = MagicMock()
+        response.usage = usage
+        response.message = MagicMock()
+        response.message.content = "hello"
+        response.message.tool_calls = None
+        response.message.is_truncated = False
+
+        state = {
+            "trajectory_id": "main",
+            "trajectory": [],
+            "_per_turn_prompt_tokens": [],
+        }
+        rlm_module._ensure_rlm_metric_state(state)
+
+        step = {
+            "prompt": [UserMessage(content="q")],
+            "completion": [vf.AssistantMessage(content="a")],
+            "response": response,
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": "main",
+            "extras": {},
+        }
+        await env_with_summarize.add_trajectory_step(state, step)
+
+        assert state["_per_turn_prompt_tokens"] == [42]
+
+    @pytest.mark.asyncio
+    async def test_sub_llm_steps_not_tracked_in_per_turn_tokens(
+        self, env_with_summarize
+    ):
+        """Sub-LLM trajectory steps should NOT append to _per_turn_prompt_tokens."""
+        usage = MagicMock()
+        usage.prompt_tokens = 99
+        usage.completion_tokens = 10
+        usage.reasoning_tokens = 0
+        usage.total_tokens = 109
+        response = MagicMock()
+        response.usage = usage
+        response.message = MagicMock()
+        response.message.content = "sub response"
+        response.message.tool_calls = None
+        response.message.is_truncated = False
+
+        state = {
+            "trajectory_id": "main",
+            "trajectory": [],
+            "_per_turn_prompt_tokens": [],
+        }
+        rlm_module._ensure_rlm_metric_state(state)
+
+        sub_step = {
+            "prompt": [UserMessage(content="sub q")],
+            "completion": [vf.AssistantMessage(content="sub a")],
+            "response": response,
+            "tokens": None,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": "sub_batch_123",  # different from main
+            "extras": {"is_sub_llm_call": True},
+        }
+        await env_with_summarize.add_trajectory_step(state, sub_step)
+
+        assert state["_per_turn_prompt_tokens"] == []
+
+    # =====================================================================
+    # Edge cases
+    # =====================================================================
+
+    def test_summary_with_no_remaining_assistant_messages(self, env_with_summarize):
+        """If no assistant messages remain after dropping, summary is not injected
+        (graceful degradation — shouldn't happen with min_turns_in_context)."""
+        messages = [
+            UserMessage(content="scaffolded"),
+        ]
+
+        summary_text = "[Turns 1-1] summary"
+        result = env_with_summarize._apply_context_dropping(
+            messages, 0, summary_text=summary_text
+        )
+
+        # No assistant message to inject into — messages returned as-is
+        assert len(result) == 1
+        assert result[0].content == "scaffolded"
+
+    def test_apply_context_dropping_zero_keep_from_no_summary(self, env_with_summarize):
+        """No dropping + no summary = messages unchanged."""
+        messages = [
+            UserMessage(content="scaffolded"),
+            vf.AssistantMessage(content="r0"),
+            vf.ToolMessage(tool_call_id="t0", content="t0"),
+        ]
+        result = env_with_summarize._apply_context_dropping(
+            messages, 0, summary_text=""
+        )
+        assert result == messages
+
+    def test_warn_when_dropping_without_message_history(self):
+        """Warning still fires when allow_context_dropping=True
+        but expose_message_history=False."""
+        dataset = make_dataset({})
+        with pytest.warns(UserWarning, match="allow_context_dropping=True"):
+            build_env(
+                dataset,
+                allow_context_dropping=True,
+                expose_message_history=False,
+                interception_url="http://test.invalid",
+            )
