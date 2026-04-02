@@ -57,7 +57,7 @@ prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": fal
 
 ### Pre-built Prime Image (Default, Fastest)
 
-By default, CUA mode uses the shared Prime image `browserbase/cua-server:latest` for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
+By default, if you do not override `prebuilt_image`, CUA mode uses the repo default `browserbase/cua-server:latest` for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
 
 ```bash
 prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
@@ -137,12 +137,12 @@ cd assets/templates/browserbase/cua
 ./build-and-push.sh bb-project-id-optional-20260326
 ```
 
-The script prints the fully qualified Prime image ref when the build finishes, for example `your-user/cua-server:bb-project-id-optional-20260326`.
+The script prints the fully qualified Prime image ref when the build finishes, for example `your-user/cua-server:bb-project-id-optional-20260326` or `team-<team-id>/cua-server:bb-project-id-optional-20260326`, depending on your active Prime context.
 
 If you run the image directly outside `BrowserEnv`, include the OpenAI secret on sandbox creation:
 
 ```bash
-prime sandbox create your-user/cua-server:bb-project-id-optional-20260326 \
+prime sandbox create team-<team-id>/cua-server:bb-project-id-optional-20260326 \
   --start-command "./cua-server-linux-x64" \
   --env CUA_SERVER_PORT=3000 \
   --secret OPENAI_API_KEY="$OPENAI_API_KEY"
@@ -150,7 +150,7 @@ prime sandbox create your-user/cua-server:bb-project-id-optional-20260326 \
 
 Then use your custom image:
 ```bash
-prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "your-user/cua-server:bb-project-id-optional-20260326"}'
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "team-<team-id>/cua-server:bb-project-id-optional-20260326"}'
 ```
 
 Use the versioned tag first for validation. Once you want to move `latest`, rerun the script from the same source revision:

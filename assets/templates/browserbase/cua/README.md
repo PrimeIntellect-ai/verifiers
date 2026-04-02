@@ -2,12 +2,12 @@
 
 A Fastify server that exposes Stagehand's Computer Use Agent (CUA) browser primitives as REST endpoints, enabling external agents to control browser sessions remotely.
 
-> **Note**: This server is automatically started in sandbox containers when using `BrowserEnv` with `mode="cua"` and `use_sandbox=True` (the default). The shared default image is `browserbase/cua-server:latest`. You typically don't need to run this server manually unless you're doing local development or publishing a custom image.
+> **Note**: When `BrowserEnv` runs with `mode="cua"` and `use_sandbox=True` (the default), it starts whichever image is configured in `prebuilt_image`. The repo default is `browserbase/cua-server:latest`. If you publish your own image with `prime images push`, Prime stores it under your active personal or team context, for example `team-<team-id>/cua-server:<tag>`, and you pass that fully qualified ref via `prebuilt_image`.
 
 ## Automatic Sandbox Deployment
 
 When using `BrowserEnv(mode="cua")`, the server is automatically:
-1. Started from the shared Prime image (`browserbase/cua-server:latest`)
+1. Started from `prebuilt_image` (default: `browserbase/cua-server:latest`)
 2. Accessed via curl commands inside the sandbox
 3. Cleaned up when the rollout completes
 
@@ -63,7 +63,7 @@ Publish a versioned tag to Prime Images:
 ./build-and-push.sh bb-project-id-optional-20260326
 ```
 
-The script waits for the remote build to finish and prints the fully qualified Prime image ref to use in `prebuilt_image`, for example `your-user/cua-server:bb-project-id-optional-20260326`.
+The script waits for the remote build to finish and prints the fully qualified Prime image ref to use in `prebuilt_image`, for example `your-user/cua-server:bb-project-id-optional-20260326` or `team-<team-id>/cua-server:bb-project-id-optional-20260326`, depending on your active Prime context.
 
 If you want to move `latest`, rerun the same source revision with the `latest` tag:
 
@@ -74,7 +74,7 @@ If you want to move `latest`, rerun the same source revision with the `latest` t
 To run the image directly in a Prime sandbox, include the server-side OpenAI key:
 
 ```bash
-prime sandbox create your-user/cua-server:bb-project-id-optional-20260326 \
+prime sandbox create team-<team-id>/cua-server:bb-project-id-optional-20260326 \
   --start-command "./cua-server-linux-x64" \
   --env CUA_SERVER_PORT=3000 \
   --secret OPENAI_API_KEY="$OPENAI_API_KEY"

@@ -141,7 +141,7 @@ CUA execution options:
 2. **Binary upload** (`use_prebuilt_image=False`): custom server workflows
 3. **Manual local server** (`use_sandbox=False`): local development/debugging
 
-The default prebuilt image is `browserbase/cua-server:latest`. If you publish a custom image through Prime Images, pass the fully qualified ref returned by `prime images push` as `prebuilt_image`.
+The default `prebuilt_image` is `browserbase/cua-server:latest`. If you publish a custom image through Prime Images, Prime places it in your active personal or team context, so pass the fully qualified ref returned by `prime images push` as `prebuilt_image`, for example `team-<team-id>/cua-server:<tag>`.
 
 If you run that image directly instead of through `BrowserEnv`, include `OPENAI_API_KEY` in the server process and pass Browserbase credentials in the `POST /sessions` payload.
 

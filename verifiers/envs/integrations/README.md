@@ -87,7 +87,7 @@ CUA mode automatically deploys the CUA server to Browserbase sandboxes using a p
 
 #### Default Behavior
 
-By default, CUA mode uses the shared Prime image `browserbase/cua-server:latest`, which is automatically deployed to Browserbase sandboxes:
+By default, CUA mode uses the repo default `browserbase/cua-server:latest`, which is automatically deployed to Browserbase sandboxes unless you override `prebuilt_image` with your own fully qualified Prime image ref:
 
 ```python
 env = BrowserEnv(
