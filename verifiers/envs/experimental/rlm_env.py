@@ -3723,8 +3723,16 @@ class RLMEnv(vf.StatefulToolEnv):
     # Message History Upload
     # =========================================================================
 
+    _SUMMARY_BLOCK_RE = re.compile(r"<SUMMARY>\n.*?\n</SUMMARY>\n\n", re.DOTALL)
+
     def _build_message_history(self, state: State) -> list[dict[str, Any]]:
-        """Build the full serialized message history from the trajectory."""
+        """Build the serialized message history from the trajectory.
+
+        Reads from the last main trajectory step (which has the full
+        cumulative conversation in its prompt) and strips any injected
+        ``<SUMMARY>`` blocks so that ``.messages`` reflects the raw
+        conversation without summarization artifacts.
+        """
         last_main = self._last_main_trajectory_step(state)
         if last_main is None:
             return []
@@ -3732,9 +3740,15 @@ class RLMEnv(vf.StatefulToolEnv):
         serialized: list[dict[str, Any]] = []
         for msg in messages:
             if hasattr(msg, "model_dump"):
-                serialized.append(msg.model_dump(exclude_none=True))
+                entry = msg.model_dump(exclude_none=True)
             elif isinstance(msg, dict):
-                serialized.append(dict(msg))
+                entry = dict(msg)
+            else:
+                continue
+            content = entry.get("content")
+            if isinstance(content, str) and "<SUMMARY>" in content:
+                entry["content"] = self._SUMMARY_BLOCK_RE.sub("", content)
+            serialized.append(entry)
         return serialized
 
     async def _upload_message_history(self, state: State) -> None:
