@@ -4113,13 +4113,19 @@ class RLMEnv(vf.StatefulToolEnv):
             return messages
 
         if keep_from_assistant_index >= len(assistant_indices):
-            return messages
-
-        # Preserve everything before the first assistant message (system msgs,
-        # scaffolded user msg, etc.), then keep from the target turn onward.
-        preamble = list(messages[: assistant_indices[0]])
-        keep_from = assistant_indices[keep_from_assistant_index]
-        remaining = list(messages[keep_from:])
+            # Already truncated past the index — no more turns to drop.
+            # But still inject summary into the first remaining assistant
+            # message if needed (the index may exceed the count because
+            # prior context dropping already removed those turns from the
+            # stored prompt).
+            preamble = list(messages[: assistant_indices[0]])
+            remaining = list(messages[assistant_indices[0] :])
+        else:
+            # Preserve everything before the first assistant message (system msgs,
+            # scaffolded user msg, etc.), then keep from the target turn onward.
+            preamble = list(messages[: assistant_indices[0]])
+            keep_from = assistant_indices[keep_from_assistant_index]
+            remaining = list(messages[keep_from:])
 
         # Inject summary into the first remaining assistant message
         if summary_text and remaining:

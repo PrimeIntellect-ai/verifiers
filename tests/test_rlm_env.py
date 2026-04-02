@@ -3252,8 +3252,9 @@ class TestSummarizeTurns:
         )
         assert result == messages
 
-    def test_apply_drop_all_returns_unchanged(self, env_with_summarize):
-        """Dropping more than available turns returns messages unchanged."""
+    def test_apply_drop_all_still_injects_summary(self, env_with_summarize):
+        """When keep_from exceeds available turns, no further dropping occurs
+        but the summary is still injected into the first assistant message."""
         messages = [
             UserMessage(content="scaffolded"),
             vf.AssistantMessage(content="r0"),
@@ -3262,7 +3263,10 @@ class TestSummarizeTurns:
         result = env_with_summarize._apply_context_dropping(
             messages, 5, summary_text="[Turns 1-5] summary"
         )
-        assert result == messages
+        assert len(result) == 3
+        assert result[0].content == "scaffolded"
+        assert "<SUMMARY>" in result[1].content
+        assert "r0" in result[1].content
 
     # =====================================================================
     # .messages file unaffected
