@@ -3,17 +3,15 @@
 Takes JSON recipes from the curriculum generator LoRA and produces
 ARC tasks by calling existing generators and applying compositions.
 
-The generator receives a prompt specifying ONE base_op and outputs a
-single recipe choosing level, post_ops, and seed. GRPO's rollout
-mechanism (rollouts_per_example=8) naturally produces 8 difficulty
-variations per base_op.
+The generator receives a prompt specifying ONE base_op and outputs
+a difficulty level (1-3). The seed is fixed externally so GRPO
+compares level choices directly.
 
 Recipe format:
     {
-        "base_op": "gravity_drop",      # required: one of 31 generators
-        "post_ops": ["rotate_90"],      # optional: transforms applied to outputs
-        "level": 2,                     # optional: grid size tier (1, 2, or 3)
-        "seed": 42                      # optional: task seed (random if omitted)
+        "base_op": "gravity_drop",      # set by the pipeline
+        "level": 2,                     # chosen by the generator (1, 2, or 3)
+        "seed": 42                      # fixed externally
     }
 """
 
@@ -161,6 +159,9 @@ def validate_task(task: dict) -> bool:
 
 # ─── Recipe execution ────────────────────────────────────────────────────────
 
+FIXED_SEED = 1337
+
+
 def execute_recipe(recipe: dict) -> dict | None:
     """Execute a recipe to produce an ARC task.
 
@@ -175,7 +176,7 @@ def execute_recipe(recipe: dict) -> dict | None:
     level = recipe.get("level", 2)
     if level not in (1, 2, 3):
         level = 2
-    seed = recipe.get("seed", random.randint(0, 999999))
+    seed = recipe.get("seed", FIXED_SEED)
     post_ops = recipe.get("post_ops", [])
 
     for op in post_ops:
@@ -199,7 +200,10 @@ def execute_recipe(recipe: dict) -> dict | None:
 
 
 def parse_generator_output(response_text: str) -> dict | None:
-    """Parse the generator LoRA's response text into a recipe dict."""
+    """Parse the generator LoRA's response text into a recipe dict.
+
+    Accepts either {"level": N} or a bare integer 1-3.
+    """
     match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
     if match:
         try:
@@ -213,6 +217,11 @@ def parse_generator_output(response_text: str) -> dict | None:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
+
+    # Fallback: bare integer level
+    match = re.search(r"\b([123])\b", response_text)
+    if match:
+        return {"level": int(match.group(1))}
 
     return None
 
@@ -282,20 +291,18 @@ def build_generator_prompt(base_op: str) -> str:
     """Build the prompt for the curriculum generator LoRA.
 
     Each prompt specifies a single base_op. The generator chooses
-    level and seed. GRPO's 8 rollouts per example naturally explore
-    the difficulty space.
+    only the difficulty level. Seed is fixed externally.
+    GRPO's 8 rollouts per example explore the level space.
     """
     desc = OP_DESCRIPTIONS.get(base_op, base_op)
 
     lines = [
-        f"Design a task recipe using the {base_op} operation.",
+        f"Choose a difficulty level for the {base_op} operation.",
         f"{base_op}: {desc}",
         "",
-        "Choose difficulty settings:",
-        "  level: 1 = small grids (2-5), 2 = medium grids (5-8), 3 = large grids (8-12)",
-        "  seed: any integer (controls randomization)",
+        "Levels: 1 = small grids (2-5), 2 = medium grids (5-8), 3 = large grids (8-12)",
         "",
-        f'{{"base_op": "{base_op}", "level": <int 1-3>, "seed": <int>}}',
+        '{"level": <int 1-3>}',
     ]
 
     return "\n".join(lines)

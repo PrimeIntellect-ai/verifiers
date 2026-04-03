@@ -40,7 +40,7 @@ from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.types import Messages, State
 
 from recipe_executor import (
-    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS,
+    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS, FIXED_SEED,
     execute_recipe, parse_generator_output, generator_reward,
     build_generator_prompt, validate_task, OP_DESCRIPTIONS,
 )
@@ -637,8 +637,9 @@ class ArcCurriculumEnv(MultiAgentEnv):
             print(f"[arc_curriculum] generator: invalid JSON for {target_base_op}", flush=True)
             return
 
-        # Force base_op to match the prompt's target
+        # Force base_op and fixed seed
         recipe["base_op"] = target_base_op
+        recipe["seed"] = FIXED_SEED
 
         task = execute_recipe(recipe)
         if task is None:
@@ -649,7 +650,8 @@ class ArcCurriculumEnv(MultiAgentEnv):
         state["extras"]["recipe_valid"] = True
         state["extras"]["recipe"] = recipe
         state["extras"]["generated_task_type"] = target_base_op
-        task_id = f"gen_{target_base_op}_{recipe.get('seed', 0)}"
+        level = recipe.get("level", 2)
+        task_id = f"gen_{target_base_op}_L{level}"
 
         print(
             f"[arc_curriculum] generator: recipe={json.dumps(recipe)}",
@@ -774,8 +776,8 @@ CODEGEN_SYSTEM_PROMPT = (
 
 GENERATOR_SYSTEM_PROMPT = (
     "You are a curriculum designer for an ARC-AGI puzzle solver. "
-    "Output a single JSON recipe choosing difficulty settings for the given operation. "
-    'Format: {"base_op": "<name>", "level": <1-3>, "seed": <integer>}'
+    "Choose a difficulty level for the given operation. "
+    'Output: {"level": <1-3>}'
 )
 
 
@@ -804,6 +806,7 @@ def load_environment(
         system_prompt=GENERATOR_SYSTEM_PROMPT,
         is_trainable=True,
         model="Qwen/Qwen3-4B-Instruct-2507",
+        sampling_args={"temperature": 1.2},
     )
     codegen_v1b_agent = Agent(
         id="codegen_v1b",
