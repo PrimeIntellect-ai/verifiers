@@ -353,8 +353,9 @@ class TestEnvGroup:
 
         assert env_group.get_env_for_task("math") == env1
         assert env_group.get_env_for_task("code") == env2
-        # Unknown task returns first environment as fallback
-        assert env_group.get_env_for_task("unknown") == env1
+        # Unknown task raises ValueError instead of silently falling back
+        with pytest.raises(ValueError, match="No environment found for task 'unknown'"):
+            env_group.get_env_for_task("unknown")
 
     @pytest.mark.asyncio
     async def test_env_group_generate(self, mock_client, make_input):
@@ -509,3 +510,169 @@ class TestEnvGroup:
         assert tasks_from_iteration[1] == "math"
         assert tasks_from_iteration[2] == "code"
         assert tasks_from_iteration[3] == "code"
+
+    def test_nested_env_group_preserves_inner_tasks(self, mock_client):
+        """Test that wrapping an EnvGroup inside another preserves inner task names."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        outer_group = EnvGroup(envs=[inner_group], env_names=["my_envs"])
+
+        # Inner task names should be preserved in the dataset
+        dataset = outer_group.get_dataset()
+        tasks = dataset["task"]
+        assert "math" in tasks
+        assert "code" in tasks
+        assert "my_envs" not in tasks
+
+        # Outer env_map should route inner task names to the inner group
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group
+
+        # Stale outer name should be removed from env_map
+        with pytest.raises(ValueError, match="No environment found for task 'my_envs'"):
+            outer_group.get_env_for_task("my_envs")
+
+    def test_nested_env_group_with_flat_env(self, mock_client):
+        """Test EnvGroup with a mix of nested EnvGroup and flat environments."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        env_writing = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q3"], "answer": ["a3"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        outer_group = EnvGroup(
+            envs=[inner_group, env_writing], env_names=["grouped", "writing"]
+        )
+
+        dataset = outer_group.get_dataset()
+        tasks = dataset["task"]
+
+        # Inner group tasks preserved, flat env gets its outer name
+        assert "math" in tasks
+        assert "code" in tasks
+        assert "writing" in tasks
+        assert "grouped" not in tasks
+
+        # Routing works for all tasks
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group
+        assert outer_group.get_env_for_task("writing") == env_writing
+
+    def test_nested_env_group_eval_only(self, mock_client):
+        """Test nested EnvGroup with eval-only datasets registers inner task names."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        outer_group = EnvGroup(envs=[inner_group], env_names=["my_envs"])
+
+        # Inner task names should be registered even though there's no train dataset
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group
+
+        # Eval dataset should preserve inner task names
+        eval_dataset = outer_group.get_eval_dataset()
+        assert eval_dataset is not None
+        tasks = eval_dataset["task"]
+        assert "math" in tasks
+        assert "code" in tasks
+
+    def test_deeply_nested_env_group(self, mock_client):
+        """Test 3+ levels of nesting routes to the correct intermediate EnvGroup."""
+        env_a = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_b = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_a, env_b], env_names=["a", "b"])
+        mid_group = EnvGroup(envs=[inner_group], env_names=["inner"])
+        outer_group = EnvGroup(envs=[mid_group], env_names=["mid"])
+
+        # Task names from the leaf level should propagate through all nesting levels
+        dataset = outer_group.get_dataset()
+        tasks = dataset["task"]
+        assert "a" in tasks
+        assert "b" in tasks
+        assert "inner" not in tasks
+        assert "mid" not in tasks
+
+        # Routing goes to the correct intermediate group
+        assert outer_group.get_env_for_task("a") == mid_group
+        assert outer_group.get_env_for_task("b") == mid_group
+
+    def test_nested_env_group_outer_name_matches_inner_task(self, mock_client):
+        """Test that outer name matching an inner task name is not removed from env_map."""
+        env_math = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env_code = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env_math, env_code], env_names=["math", "code"])
+
+        # Outer name "math" intentionally matches an inner task name
+        outer_group = EnvGroup(envs=[inner_group], env_names=["math"])
+
+        # "math" should still be routable since it's a valid inner task
+        assert outer_group.get_env_for_task("math") == inner_group
+        assert outer_group.get_env_for_task("code") == inner_group
