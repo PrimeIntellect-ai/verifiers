@@ -292,15 +292,10 @@ def build_generator_prompt(base_op: str) -> str:
         f"{base_op}: {desc}",
         "",
         "Choose difficulty settings:",
-        "  level: 1 = small (2-5), 2 = medium (5-8), 3 = large (8-12)",
-        "  seed: any integer",
+        "  level: 1 = small grids (2-5), 2 = medium grids (5-8), 3 = large grids (8-12)",
+        "  seed: any integer (controls randomization)",
         "",
-        "Examples:",
-        f'  {{"base_op": "{base_op}", "level": 1, "seed": 42}}',
-        f'  {{"base_op": "{base_op}", "level": 2, "seed": 77}}',
-        f'  {{"base_op": "{base_op}", "level": 3, "seed": 200}}',
-        "",
-        "Output one JSON recipe:",
+        f'{{"base_op": "{base_op}", "level": <int 1-3>, "seed": <int>}}',
     ]
 
     return "\n".join(lines)
