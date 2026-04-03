@@ -45,7 +45,7 @@ def verify_response(
         )
         elapsed = time.perf_counter() - start
         return float(is_correct), elapsed
-    except BaseException:
+    except Exception:
         elapsed = time.perf_counter() - start
         return 0.0, elapsed
 
