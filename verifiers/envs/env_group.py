@@ -134,7 +134,7 @@ class EnvGroup(vf.Environment):
         self,
         envs: list[vf.Environment],
         env_names: list[str] | None = None,
-        map_kwargs: dict = {},
+        map_kwargs: dict | None = None,
         **kwargs,
     ):
         """
@@ -148,6 +148,7 @@ class EnvGroup(vf.Environment):
         """
         from datasets import concatenate_datasets
 
+        map_kwargs = map_kwargs or {}
         if not envs:
             raise ValueError("EnvGroup requires at least one environment")
 
@@ -219,11 +220,12 @@ class EnvGroup(vf.Environment):
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
-        map_kwargs: dict = {},
+        map_kwargs: dict | None = None,
     ) -> Dataset:
         """
         Ensure unique example_ids and mapped tasks across concatenated datasets.
         """
+        map_kwargs = map_kwargs or {}
         # use parent's prompt handling
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
@@ -248,11 +250,12 @@ class EnvGroup(vf.Environment):
         return dataset
 
     def _format_completion_dataset(
-        self, dataset: Dataset, map_kwargs: dict = {}
+        self, dataset: Dataset, map_kwargs: dict | None = None
     ) -> Dataset:
         """
         Ensure unique example_ids and mapped tasks across concatenated datasets.
         """
+        map_kwargs = map_kwargs or {}
         # ensure unique example_ids across concatenated datasets
         if "example_id" in dataset.column_names:
             dataset = dataset.remove_columns(["example_id"])

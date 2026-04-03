@@ -28,11 +28,12 @@ def format_dataset(
     few_shot: Messages | None = None,
     question_key: str = "question",
     answer_key: str = "answer",
-    map_kwargs: dict = {},
+    map_kwargs: dict | None = None,
 ) -> Dataset:
     """
     Create `example_id` and `prompt` columns if not present.
     """
+    map_kwargs = map_kwargs or {}
     # if "id" column is present and not int, rename it to "src_id"
     if "example_id" in dataset.column_names and not isinstance(
         dataset["example_id"][0], int

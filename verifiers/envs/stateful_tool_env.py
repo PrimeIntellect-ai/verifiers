@@ -66,7 +66,7 @@ class StatefulToolEnv(vf.ToolEnv):
         self.skipped_args: dict[str, list[str]] = {}
         self.max_turns: int = max_turns
 
-    def add_tool(self, tool: Callable, args_to_skip: list[str] = []):
+    def add_tool(self, tool: Callable, args_to_skip: list[str] | None = None):
         """Add a tool, optionally hiding arguments from the agent's view.
 
         Skipped args are removed from the schema shown to the agent but can be
@@ -75,6 +75,7 @@ class StatefulToolEnv(vf.ToolEnv):
 
         Assumes all non-skipped args use standard JSON types (no remaining $ref/$defs).
         """
+        args_to_skip = args_to_skip or []
         self.tools.append(tool)
         tool_def = convert_func_to_tool_def(filter_signature(tool, args_to_skip))
         params = tool_def.parameters
