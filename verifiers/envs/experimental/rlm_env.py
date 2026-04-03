@@ -2352,8 +2352,8 @@ class RLMEnv(vf.StatefulToolEnv):
             summarize_total_turns_dropped: Total turns dropped across all calls.
             summarize_total_chars_dropped: Total characters dropped.
             summarize_summary_length_chars: Current cumulative summary length.
-            summarize_char_compression_ratio: Ratio of dropped chars to summary
-                length.
+            summarize_char_compression_ratio: Ratio of summary length to dropped
+                chars (lower = better compression, 0.0 = no summarization).
             summarize_mean_turns_per_call: Mean turns dropped per call.
             summarize_mean_remaining_turns: Mean visible turns remaining after
                 each call.
@@ -3964,10 +3964,10 @@ class RLMEnv(vf.StatefulToolEnv):
         state["summarize_total_turns_dropped"] += n_turns
         state["summarize_total_chars_dropped"] += chars_dropped
         state["summarize_summary_length_chars"] = len(state["_summary_text"])
-        if state["summarize_summary_length_chars"] > 0:
+        if state["summarize_total_chars_dropped"] > 0:
             state["summarize_char_compression_ratio"] = (
-                state["summarize_total_chars_dropped"]
-                / state["summarize_summary_length_chars"]
+                state["summarize_summary_length_chars"]
+                / state["summarize_total_chars_dropped"]
             )
         state["summarize_mean_turns_per_call"] = (
             state["summarize_total_turns_dropped"] / state["summarize_count"]

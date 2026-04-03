@@ -3244,8 +3244,8 @@ class TestSummarizeTurns:
         assert state["summarize_total_chars_dropped"] > 0
         assert state["summarize_summary_length_chars"] == len(state["_summary_text"])
         assert state["summarize_char_compression_ratio"] == pytest.approx(
-            state["summarize_total_chars_dropped"]
-            / state["summarize_summary_length_chars"]
+            state["summarize_summary_length_chars"]
+            / state["summarize_total_chars_dropped"]
         )
 
     # =====================================================================
