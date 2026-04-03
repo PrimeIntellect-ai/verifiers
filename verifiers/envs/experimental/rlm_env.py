@@ -3337,7 +3337,7 @@ class RLMEnv(vf.StatefulToolEnv):
         try:
             json.dumps(result_value)
             response_body["result"] = result_value
-        except TypeError:
+        except (TypeError, ValueError):
             response_body["result_repr"] = repr(result_value)
         return web.json_response(response_body)
 
