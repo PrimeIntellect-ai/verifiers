@@ -6,6 +6,7 @@ from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, State
 from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.client_utils import build_prime_headers
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \
 and a response, determine if the response is correct.
@@ -39,7 +40,14 @@ class JudgeRubric(Rubric):
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
     ):
         super().__init__(parser=parser)
-        self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
+        if judge_client is not None:
+            self.judge_client = judge_client
+        else:
+            headers, api_key = build_prime_headers()
+            self.judge_client = AsyncOpenAI(
+                api_key=api_key or "EMPTY",
+                default_headers=headers if headers else None,
+            )
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
         self.judge_sampling_args = judge_sampling_args or {}
