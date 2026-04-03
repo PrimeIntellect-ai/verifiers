@@ -1,12 +1,10 @@
 """Tests for the RLMEnv class (filesystem-based, local-only)."""
 
 import ast
-import base64
 import contextlib
 import io
 import json
 import os
-import pickle
 import shutil
 from pathlib import Path
 from typing import Any
@@ -656,7 +654,6 @@ class TestBashToolHelper:
         stderr_buffer = io.StringIO()
         env = {
             "RLM_ROOT_TOOL_URL": "http://example.invalid/",
-            "RLM_ROOT_TOOL_SERIALIZATION": "pickle",
         }
         captured_payload: dict | None = None
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -664,12 +661,10 @@ class TestBashToolHelper:
             def _capture_request(req, timeout=300):
                 nonlocal captured_payload
                 data = json.loads(req.data.decode("utf-8"))
-                args = list(pickle.loads(base64.b64decode(data["args"])))
-                kwargs = pickle.loads(base64.b64decode(data["kwargs"]))
                 captured_payload = {
                     "tool_name": data.get("tool_name"),
-                    "args": args,
-                    "kwargs": kwargs,
+                    "args": data.get("args"),
+                    "kwargs": data.get("kwargs"),
                 }
                 return response
 
@@ -678,7 +673,7 @@ class TestBashToolHelper:
             response.__exit__.return_value = None
             if response_data is None:
                 response_data = {
-                    "result": base64.b64encode(pickle.dumps(["ok"])).decode("ascii"),
+                    "result": ["ok"],
                     "error": None,
                 }
             response.read.return_value = json.dumps(response_data).encode("utf-8")
@@ -814,9 +809,7 @@ class TestBashToolHelper:
     def test_llm_batch_output_headers_with_metadata(self):
         payload = json.dumps({"prompts": ["one", "two"]})
         response_data = {
-            "result": base64.b64encode(pickle.dumps(["first", "second"])).decode(
-                "ascii"
-            ),
+            "result": ["first", "second"],
             "error": None,
             "print_lines": [
                 "llm_batch: 2 call(s) in 0.10s",
@@ -1273,13 +1266,13 @@ class TestLLMBatchPromptValidation:
 
 
 # =============================================================================
-# 9. Root Tool Serialization (pickle)
+# 9. Root Tool Serialization (json)
 # =============================================================================
 
 
 class TestRootToolSerialization:
     @pytest.mark.asyncio
-    async def test_root_tool_request_uses_pickle(self):
+    async def test_root_tool_request_uses_json(self):
         def echo_tool(value):
             return value
 
@@ -1296,17 +1289,14 @@ class TestRootToolSerialization:
         }
 
         payload = {"value": 123}
-        args_payload = base64.b64encode(pickle.dumps((payload,))).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps({})).decode("ascii")
-
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
         mock_request.json = AsyncMock(
             return_value={
                 "tool_name": "echo_tool",
-                "serialization": "pickle",
-                "args": args_payload,
-                "kwargs": kwargs_payload,
+                "serialization": "json",
+                "args": [payload],
+                "kwargs": {},
             }
         )
 
@@ -1314,9 +1304,7 @@ class TestRootToolSerialization:
         assert response.status == 200
 
         response_data = json.loads(response.text)
-        result_payload = response_data["result"]
-        decoded = pickle.loads(base64.b64decode(result_payload))
-        assert decoded == payload
+        assert response_data["result"] == payload
 
 
 # =============================================================================
