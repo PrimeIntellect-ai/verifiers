@@ -3111,10 +3111,12 @@ class ViewRunScreen(Screen):
         sampling_args = meta.get("sampling_args", {})
         usage_items: List[Tuple[str, str]] = []
         if isinstance(usage, dict):
-            prefill = usage.get("cumulative_prefill_tokens") or usage.get(
-                "input_tokens"
-            )
-            decode = usage.get("cumulative_decode_tokens") or usage.get("output_tokens")
+            prefill = usage.get("cumulative_prefill_tokens")
+            if prefill is None:
+                prefill = usage.get("input_tokens")
+            decode = usage.get("cumulative_decode_tokens")
+            if decode is None:
+                decode = usage.get("output_tokens")
             if prefill is not None:
                 usage_items.append(("Avg prefill tokens", format_numeric(prefill)))
             if decode is not None:
@@ -4583,12 +4585,12 @@ class ViewRunScreen(Screen):
         token_usage = record.get("token_usage")
         if isinstance(token_usage, dict):
             usage_lines = []
-            prefill = token_usage.get("cumulative_prefill_tokens") or token_usage.get(
-                "input_tokens"
-            )
-            decode = token_usage.get("cumulative_decode_tokens") or token_usage.get(
-                "output_tokens"
-            )
+            prefill = token_usage.get("cumulative_prefill_tokens")
+            if prefill is None:
+                prefill = token_usage.get("input_tokens")
+            decode = token_usage.get("cumulative_decode_tokens")
+            if decode is None:
+                decode = token_usage.get("output_tokens")
             if prefill is not None:
                 usage_lines.append(f"prefill_tokens: {format_numeric(prefill)}")
             if decode is not None:
