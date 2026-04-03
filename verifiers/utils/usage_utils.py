@@ -168,7 +168,7 @@ def compute_context_token_metrics(
         longest_context_non_completion_tokens: Non-model tokens in context
             (total context minus completion tokens).
     """
-    _zero = {
+    _zero: dict[str, float] = {
         "longest_context_completion_tokens": 0,
         "longest_context_non_completion_tokens": 0,
     }
