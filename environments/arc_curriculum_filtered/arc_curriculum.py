@@ -776,8 +776,8 @@ CODEGEN_SYSTEM_PROMPT = (
 
 GENERATOR_SYSTEM_PROMPT = (
     "You are a curriculum designer for an ARC-AGI puzzle solver. "
-    "Choose a difficulty level for the given operation. "
-    'Output: {"level": <1-3>}'
+    "Choose a setting for the given operation. "
+    'Output: {"level": "A"}, {"level": "B"}, or {"level": "C"}'
 )
 
 

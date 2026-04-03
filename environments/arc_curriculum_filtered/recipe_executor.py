@@ -199,26 +199,45 @@ def execute_recipe(recipe: dict) -> dict | None:
     return task
 
 
+def _normalize_level(raw) -> int | None:
+    """Convert level value (A/B/C or 1/2/3) to integer 1-3."""
+    if isinstance(raw, str) and raw.upper() in LEVEL_MAP:
+        return LEVEL_MAP[raw.upper()]
+    if isinstance(raw, int) and raw in (1, 2, 3):
+        return raw
+    return None
+
+
 def parse_generator_output(response_text: str) -> dict | None:
     """Parse the generator LoRA's response text into a recipe dict.
 
-    Accepts either {"level": N} or a bare integer 1-3.
+    Accepts {"level": "A"}, {"level": 1}, or bare A/B/C.
     """
     match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1))
+            parsed = json.loads(match.group(1))
+            lvl = _normalize_level(parsed.get("level"))
+            if lvl:
+                return {"level": lvl}
         except json.JSONDecodeError:
             pass
 
     match = re.search(r"\{[^{}]*\}", response_text)
     if match:
         try:
-            return json.loads(match.group())
+            parsed = json.loads(match.group())
+            lvl = _normalize_level(parsed.get("level"))
+            if lvl:
+                return {"level": lvl}
         except json.JSONDecodeError:
             pass
 
-    # Fallback: bare integer level
+    # Fallback: bare letter or digit
+    match = re.search(r"\b([ABCabc])\b", response_text)
+    if match:
+        return {"level": LEVEL_MAP[match.group(1).upper()]}
+
     match = re.search(r"\b([123])\b", response_text)
     if match:
         return {"level": int(match.group(1))}
@@ -287,22 +306,23 @@ OP_DESCRIPTIONS = {
 }
 
 
+LEVEL_MAP = {"A": 1, "B": 2, "C": 3}
+
+
 def build_generator_prompt(base_op: str) -> str:
     """Build the prompt for the curriculum generator LoRA.
 
     Each prompt specifies a single base_op. The generator chooses
-    only the difficulty level. Seed is fixed externally.
-    GRPO's 8 rollouts per example explore the level space.
+    a level label (A, B, or C). Labels are opaque — the model
+    must learn which works best through reward signal alone.
     """
     desc = OP_DESCRIPTIONS.get(base_op, base_op)
 
     lines = [
-        f"Choose a difficulty level for the {base_op} operation.",
+        f"Choose a setting for the {base_op} operation.",
         f"{base_op}: {desc}",
         "",
-        "Levels: 1 = small grids (2-5), 2 = medium grids (5-8), 3 = large grids (8-12)",
-        "",
-        '{"level": <int 1-3>}',
+        'Output one of: {"level": "A"}, {"level": "B"}, or {"level": "C"}',
     ]
 
     return "\n".join(lines)
