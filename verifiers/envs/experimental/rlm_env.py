@@ -3086,8 +3086,16 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
     async def _get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                logger.warning(
+                    "Tunnel process died, recreating. frpc output:\n%s",
+                    "\n".join(self._tunnel.recent_output),
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
