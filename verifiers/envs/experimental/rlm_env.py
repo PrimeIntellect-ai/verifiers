@@ -3339,8 +3339,6 @@ class RLMEnv(vf.StatefulToolEnv):
             response_body["result"] = result_value
         except TypeError:
             response_body["result_repr"] = repr(result_value)
-        if print_lines:
-            response_body["print_lines"] = print_lines
         return web.json_response(response_body)
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
