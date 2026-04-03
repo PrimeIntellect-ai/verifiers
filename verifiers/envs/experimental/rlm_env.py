@@ -1383,22 +1383,12 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         return self.MESSAGE_HISTORY_NOTE_PYTHON
 
     def build_context_dropping_note(self) -> str:
-        """Return context-dropping documentation note, or empty string."""
-        if not self.enable_summarization:
-            return ""
-        return (
-            "\n## Context Management\n\n"
-            "You have a `summarize_turns` tool to drop old conversation turns "
-            "from context and replace them with a summary.\n"
-            f"- At least {self.min_turns_in_context} turns must remain in context.\n"
-            "- Use `n_turns=-1` to drop the maximum possible.\n"
-            "- Provide a `summary` describing the key findings and state from "
-            "the dropped turns.\n"
-            "- Summaries are cumulative: each call appends to the previous summary.\n"
-            "- The full summary is returned as the tool output and injected into "
-            "the first assistant message as a `<SUMMARY>` block.\n"
-            "- Dropped turns are still accessible via the `.messages` file.\n"
-        )
+        """Return context-dropping documentation note, or empty string.
+
+        Currently returns empty — the ``summarize_turns`` tool docstring and
+        rejection messages provide all necessary information to the model.
+        """
+        return ""
 
     def build_root_budget_note(self) -> str:
         """Return root-model token budget note, or empty string."""
