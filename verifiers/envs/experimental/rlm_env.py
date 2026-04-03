@@ -291,6 +291,7 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_summary_text", "")
 
     state.setdefault("summarize_count", 0)
+    state.setdefault("summarize_rejected_count", 0)
     state.setdefault("summarize_total_turns_dropped", 0)
     state.setdefault("summarize_total_chars_dropped", 0)
     state.setdefault("summarize_summary_length_chars", 0)
@@ -413,6 +414,7 @@ class RLMMonitorRubric(vf.Rubric):
         "sub_llm_max_turns_reached_frac",
         "max_turns_in_context_stopped",
         "summarize_count",
+        "summarize_rejected_count",
         "summarize_total_turns_dropped",
         "summarize_total_chars_dropped",
         "summarize_summary_length_chars",
@@ -2344,7 +2346,9 @@ class RLMEnv(vf.StatefulToolEnv):
             root_tool_non_llm_mean_time_seconds: Mean wall-clock time per
                 non-llm_batch root tool call.
         Summarization:
-            summarize_count: Number of summarize_turns calls.
+            summarize_count: Number of successful summarize_turns calls.
+            summarize_rejected_count: Number of rejected summarize_turns calls
+                (nothing to drop or requested more than allowed).
             summarize_total_turns_dropped: Total turns dropped across all calls.
             summarize_total_chars_dropped: Total characters dropped.
             summarize_summary_length_chars: Current cumulative summary length.
@@ -3901,6 +3905,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 n_turns,
                 visible_turns,
             )
+            state["summarize_rejected_count"] += 1
             return (
                 f"Nothing to drop (n_turns={n_turns}). "
                 f"Currently {visible_turns} turn(s) visible in context."
@@ -3917,6 +3922,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 visible_turns,
                 self.min_turns_in_context,
             )
+            state["summarize_rejected_count"] += 1
             return (
                 f"Cannot drop {n_turns} turn(s). "
                 f"You have {visible_turns} turn(s) visible in context and "
