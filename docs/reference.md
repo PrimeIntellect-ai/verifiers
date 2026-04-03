@@ -275,6 +275,7 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
         pass_threshold: float = 0.5,
+        state_columns: list[str] | None = None,
         **kwargs,
     ): ...
 ```
