@@ -3460,10 +3460,7 @@ class RLMEnv(vf.StatefulToolEnv):
             updated_args = dict(tool_args)
             updated_args["state"] = state
             return updated_args
-        else:
-            return super().update_tool_args(
-                tool_name, tool_args, messages, state, **kwargs
-            )
+        return tool_args
 
     async def _setup_interception_and_register(
         self, state: State, rollout_id: str
