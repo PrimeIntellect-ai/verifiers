@@ -353,14 +353,22 @@ class EvalDisplay(BaseDisplay):
         return make_aligned_row(metrics_text, error_text)
 
     def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
-        """Create a tokens row with input/output values."""
-        tokens_text = make_kv_line(
-            {
-                "input": format_numeric(usage.get("input_tokens", 0.0)),
-                "output": format_numeric(usage.get("output_tokens", 0.0)),
-            }
-        )
-        return make_aligned_row(tokens_text, Text())
+        """Create a tokens row with prefill/decode and context values."""
+        kv: dict[str, object] = {
+            "prefill": format_numeric(
+                usage.get("cumulative_prefill_tokens") or usage.get("input_tokens", 0.0)
+            ),
+            "decode": format_numeric(
+                usage.get("cumulative_decode_tokens") or usage.get("output_tokens", 0.0)
+            ),
+        }
+        ctx_non_completion = usage.get("longest_context_non_completion_tokens")
+        ctx_completion = usage.get("longest_context_completion_tokens")
+        if ctx_non_completion is not None:
+            kv["ctx non-completion"] = format_numeric(ctx_non_completion)
+        if ctx_completion is not None:
+            kv["ctx completion"] = format_numeric(ctx_completion)
+        return make_aligned_row(make_kv_line(kv), Text())
 
     @staticmethod
     def _format_client_target(config: EvalConfig) -> str:
@@ -942,8 +950,8 @@ class EvalDisplay(BaseDisplay):
             for env_state in self.state.envs.values()
         )
         if show_usage:
-            table.add_column("input", justify="center")
-            table.add_column("output", justify="center")
+            table.add_column("prefill", justify="center")
+            table.add_column("decode", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
@@ -964,16 +972,22 @@ class EvalDisplay(BaseDisplay):
             rollouts_str = str(config.rollouts_per_example)
 
             reward = f"{env_state.reward:.3f}"
-            input_tokens = None
-            output_tokens = None
+            prefill_tokens = None
+            decode_tokens = None
             usage = None
             if env_state.results is not None:
                 usage = env_state.results["metadata"].get("usage")
             else:
                 usage = env_state.usage
             if usage is not None:
-                input_tokens = format_numeric(usage.get("input_tokens", 0.0))
-                output_tokens = format_numeric(usage.get("output_tokens", 0.0))
+                prefill_tokens = format_numeric(
+                    usage.get("cumulative_prefill_tokens")
+                    or usage.get("input_tokens", 0.0)
+                )
+                decode_tokens = format_numeric(
+                    usage.get("cumulative_decode_tokens")
+                    or usage.get("output_tokens", 0.0)
+                )
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -990,7 +1004,7 @@ class EvalDisplay(BaseDisplay):
 
             row = [config.env_id, status, examples_str, rollouts_str, reward]
             if show_usage:
-                row.extend([input_tokens or "-", output_tokens or "-"])
+                row.extend([prefill_tokens or "-", decode_tokens or "-"])
             row.extend([error_str, time_str])
             table.add_row(*row)
 

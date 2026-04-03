@@ -207,12 +207,12 @@ def state_to_output(
             "cumulative_prefill_tokens": usage.get("input_tokens", 0.0),
             "cumulative_decode_tokens": usage.get("output_tokens", 0.0),
         }
-        # Add context token metrics if per-turn data is available
-        tracker = state.get("usage_tracker")
-        if isinstance(tracker, StateUsageTracker) and tracker.per_turn:
+        # Add context token metrics from trajectory
+        trajectory = state.get("trajectory", [])
+        if trajectory:
             from verifiers.utils.usage_utils import compute_context_token_metrics
 
-            token_usage.update(compute_context_token_metrics(tracker))
+            token_usage.update(compute_context_token_metrics(trajectory))
         output["token_usage"] = token_usage  # type: ignore[assignment]
 
     # sanitize messages (handle None for error cases)

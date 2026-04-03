@@ -240,8 +240,6 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
     usage = output["token_usage"]
     assert usage["cumulative_prefill_tokens"] == 5.0
     assert usage["cumulative_decode_tokens"] == 4.0
-    assert usage["longest_context_completion_tokens"] == 4
-    assert usage["longest_context_non_completion_tokens"] == 5
 
 
 @pytest.mark.asyncio

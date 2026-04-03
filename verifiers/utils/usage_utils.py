@@ -56,13 +56,7 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
 class StateUsageTracker:
     """Accumulates token usage and exposes a read-only live usage mapping."""
 
-    __slots__ = (
-        "_usage_seen",
-        "_usage_totals",
-        "_usage_view",
-        "_per_turn",
-        "_branch_points",
-    )
+    __slots__ = ("_usage_seen", "_usage_totals", "_usage_view")
 
     def __init__(self) -> None:
         self._usage_seen = False
@@ -71,24 +65,10 @@ class StateUsageTracker:
             "output_tokens": 0.0,
         }
         self._usage_view = MappingProxyType(self._usage_totals)
-        self._per_turn: list[tuple[int, int]] = []
-        self._branch_points: list[int] = []
 
     @property
     def usage(self) -> Mapping[str, float]:
         return self._usage_view
-
-    @property
-    def per_turn(self) -> list[tuple[int, int]]:
-        return self._per_turn
-
-    @property
-    def branch_points(self) -> list[int]:
-        return self._branch_points
-
-    def mark_branch(self) -> None:
-        """Record the current turn index as a branch point (e.g. after summarization)."""
-        self._branch_points.append(len(self._per_turn))
 
     def increment(
         self,
@@ -110,7 +90,6 @@ class StateUsageTracker:
         if getattr(response, "usage", None) is None:
             return
         input_tokens, output_tokens = extract_usage_tokens(response)
-        self._per_turn.append((input_tokens, output_tokens))
         self.increment(input_tokens, output_tokens, mark_seen=True)
 
     def snapshot(self) -> TokenUsage | None:
@@ -123,41 +102,67 @@ class StateUsageTracker:
 
 
 def compute_context_token_metrics(
-    tracker: StateUsageTracker,
+    trajectory: list,
 ) -> dict[str, float]:
-    """Compute branch-aware context token metrics from per-turn data.
+    """Compute context token metrics from the trajectory.
+
+    Counts assistant messages in the last trajectory step's prompt to
+    determine how many prior completions are still in context. This
+    handles summarization/context-dropping automatically — dropped turns
+    are simply absent from the prompt.
 
     Returns a dict with:
-        longest_context_completion_tokens: Model-generated tokens in the
-            longest branch.
-        longest_context_non_completion_tokens: Non-model tokens in the
-            longest branch.
+        longest_context_completion_tokens: Model-generated tokens still
+            in context (sum of completion_tokens for in-context turns).
+        longest_context_non_completion_tokens: Non-model tokens in context
+            (total context minus completion tokens).
     """
-    per_turn = tracker.per_turn
-    if not per_turn:
+    if not trajectory:
         return {
             "longest_context_completion_tokens": 0,
             "longest_context_non_completion_tokens": 0,
         }
 
-    # Split turns into branches at each branch point
-    branch_starts = [0] + sorted(tracker.branch_points)
-    branch_ends = sorted(tracker.branch_points) + [len(per_turn)]
+    last_step = trajectory[-1]
+    last_response = last_step.get("response")
+    if last_response is None:
+        return {
+            "longest_context_completion_tokens": 0,
+            "longest_context_non_completion_tokens": 0,
+        }
 
-    best_total = 0
-    best_completion = 0
-    for start, end in zip(branch_starts, branch_ends):
-        branch = per_turn[start:end]
-        if not branch:
+    # The last step's prompt contains all messages currently in context.
+    # Count assistant messages in the prompt — each one is a prior turn's
+    # completion that's still in context.
+    prompt_messages = last_step.get("prompt", [])
+    assistant_count_in_prompt = sum(
+        1
+        for msg in prompt_messages
+        if (getattr(msg, "role", None) == "assistant")
+        or (isinstance(msg, dict) and msg.get("role") == "assistant")
+    )
+
+    # Collect completion_tokens from the last N+1 steps (N prior turns
+    # in the prompt + the last step's own completion).
+    # The most recent steps are the ones in context.
+    steps_in_context = assistant_count_in_prompt + 1
+    context_steps = trajectory[-steps_in_context:]
+
+    context_completion = 0
+    for step in context_steps:
+        response = step.get("response")
+        if response is None:
             continue
-        last_prompt, last_completion = branch[-1]
-        branch_total = last_prompt + last_completion
-        branch_completion = sum(ct for _, ct in branch)
-        if branch_total > best_total:
-            best_total = branch_total
-            best_completion = branch_completion
+        _, completion_tokens = extract_usage_tokens(response)
+        context_completion += completion_tokens
+
+    # Total context = last step's prompt_tokens + completion_tokens
+    last_prompt_tokens, last_completion_tokens = extract_usage_tokens(last_response)
+    context_total = last_prompt_tokens + last_completion_tokens
 
     return {
-        "longest_context_completion_tokens": best_completion,
-        "longest_context_non_completion_tokens": best_total - best_completion,
+        "longest_context_completion_tokens": context_completion,
+        "longest_context_non_completion_tokens": max(
+            0, context_total - context_completion
+        ),
     }

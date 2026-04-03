@@ -3937,11 +3937,6 @@ class RLMEnv(vf.StatefulToolEnv):
         # Compute chars of dropped messages
         chars_dropped = self._compute_dropped_chars(state, n_turns)
 
-        # Mark branch point for context token metrics
-        tracker = state.get("usage_tracker")
-        if tracker is not None:
-            tracker.mark_branch()
-
         # Update state
         state["_keep_from_assistant_index"] = keep_from + n_turns
         new_visible = visible_turns - n_turns
