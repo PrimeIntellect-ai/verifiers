@@ -576,9 +576,6 @@ def _build_python_worker_script_template() -> str:
             "    )",
             "    resp.raise_for_status()",
             "    data = resp.json()",
-            '    if data.get("print_lines"):',
-            '        for line in data["print_lines"]:',
-            "            print(line)",
             '    if data.get("error"):',
             '        raise RuntimeError(data["error"])',
             '    if "result" in data:',
@@ -754,8 +751,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         result = response_data.get("result")
         if "result" not in response_data:
             result = response_data.get("result_repr")
-        print_lines = response_data.get("print_lines") or []
-        return result, print_lines
+        return result
 
 
     def _print_result(result):
@@ -770,14 +766,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         except Exception:
             sys.stdout.write(repr(result))
             sys.stdout.write("\\n")
-
-
-    def _print_lines(lines):
-        for line in lines:
-            text = str(line)
-            sys.stdout.write(text)
-            if not text.endswith("\\n"):
-                sys.stdout.write("\\n")
 
 
     def _load_json_payload(json_payload):
@@ -898,7 +886,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result, _ = _call_root_tool(tool_name, (prompts,), {})
+            result = _call_root_tool(tool_name, (prompts,), {})
             sys.stdout.write(json.dumps(result))
             sys.stdout.write("\\n")
             return
@@ -908,18 +896,14 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 raise RuntimeError("--json does not accept extra args.")
             data = _load_json_payload(json_payload)
             parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
-            result, print_lines = _call_root_tool(
+            result = _call_root_tool(
                 tool_name, tuple(parsed_args), parsed_kwargs
             )
-            if print_lines:
-                _print_lines(print_lines)
             _print_result(result)
             return
 
         parsed_args = tuple(_decode_arg(arg) for arg in args)
-        result, print_lines = _call_root_tool(tool_name, parsed_args, {})
-        if print_lines:
-            _print_lines(print_lines)
+        result = _call_root_tool(tool_name, parsed_args, {})
         _print_result(result)
 
 
