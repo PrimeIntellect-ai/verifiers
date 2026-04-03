@@ -26,7 +26,6 @@ import contextvars
 import json
 import logging
 import os
-import pickle
 import re
 import shlex
 import shutil
@@ -515,12 +514,10 @@ def _build_python_worker_script_template() -> str:
     lines: list[str] = [
         "",
         "import ast",
-        "import base64",
         "import contextlib",
         "import io",
         "import json",
         "import os",
-        "import pickle",
         "import sys",
     ]
 
@@ -566,12 +563,10 @@ def _build_python_worker_script_template() -> str:
             "    if not ROOT_TOOL_URL:",
             '        raise RuntimeError("Root tool URL not configured")',
             "",
-            '    args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")',
-            '    kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")',
             f"    payload = {dict_open}",
             '        "tool_name": tool_name,',
-            '        "args": args_payload,',
-            '        "kwargs": kwargs_payload,',
+            '        "args": list(args),',
+            '        "kwargs": kwargs,',
             f"    {dict_close}",
             "",
             "    resp = requests.post(",
@@ -581,12 +576,11 @@ def _build_python_worker_script_template() -> str:
             "    )",
             "    resp.raise_for_status()",
             "    data = resp.json()",
-            '    if data.get("print_lines"):',
-            '        for line in data["print_lines"]:',
-            "            print(line)",
             '    if data.get("error"):',
             '        raise RuntimeError(data["error"])',
-            '    return pickle.loads(base64.b64decode(data.get("result", "")))',
+            '    if "result" in data:',
+            '        return data["result"]',
+            '    return data.get("result_repr")',
             "",
             "def _make_root_tool(name: str):",
             "    def _tool(*args, **kwargs):",
@@ -699,10 +693,8 @@ def _build_python_worker_script_template() -> str:
 
 _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     """
-    import base64
     import json
     import os
-    import pickle
     import sys
     import urllib.error
     import urllib.request
@@ -725,12 +717,10 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         if not ROOT_TOOL_URL:
             raise RuntimeError("Root tool URL not configured")
 
-        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
         payload = {
             "tool_name": tool_name,
-            "args": args_payload,
-            "kwargs": kwargs_payload,
+            "args": list(args),
+            "kwargs": kwargs,
         }
 
         data = json.dumps(payload).encode("utf-8")
@@ -758,10 +748,10 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         if response_data.get("error"):
             raise RuntimeError(response_data["error"])
 
-        result_payload = response_data.get("result", "")
-        result = pickle.loads(base64.b64decode(result_payload))
-        print_lines = response_data.get("print_lines") or []
-        return result, print_lines
+        result = response_data.get("result")
+        if "result" not in response_data:
+            result = response_data.get("result_repr")
+        return result
 
 
     def _print_result(result):
@@ -776,14 +766,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         except Exception:
             sys.stdout.write(repr(result))
             sys.stdout.write("\\n")
-
-
-    def _print_lines(lines):
-        for line in lines:
-            text = str(line)
-            sys.stdout.write(text)
-            if not text.endswith("\\n"):
-                sys.stdout.write("\\n")
 
 
     def _load_json_payload(json_payload):
@@ -904,7 +886,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result, _ = _call_root_tool(tool_name, (prompts,), {})
+            result = _call_root_tool(tool_name, (prompts,), {})
             sys.stdout.write(json.dumps(result))
             sys.stdout.write("\\n")
             return
@@ -914,18 +896,14 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 raise RuntimeError("--json does not accept extra args.")
             data = _load_json_payload(json_payload)
             parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
-            result, print_lines = _call_root_tool(
+            result = _call_root_tool(
                 tool_name, tuple(parsed_args), parsed_kwargs
             )
-            if print_lines:
-                _print_lines(print_lines)
             _print_result(result)
             return
 
         parsed_args = tuple(_decode_arg(arg) for arg in args)
-        result, print_lines = _call_root_tool(tool_name, parsed_args, {})
-        if print_lines:
-            _print_lines(print_lines)
+        result = _call_root_tool(tool_name, parsed_args, {})
         _print_result(result)
 
 
@@ -3108,8 +3086,16 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
     async def _get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                logger.warning(
+                    "Tunnel process died, recreating. frpc output:\n%s",
+                    "\n".join(self._tunnel.recent_output),
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
@@ -3285,15 +3271,16 @@ class RLMEnv(vf.StatefulToolEnv):
         if state_ref is None:
             return web.json_response({"error": "State not available"}, status=500)
 
-        try:
-            args = pickle.loads(base64.b64decode(request_body.get("args", "")))
-            kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
-            if not isinstance(args, tuple):
-                raise ValueError("Pickle args payload must be a tuple.")
-            if not isinstance(kwargs, dict):
-                raise ValueError("Pickle kwargs payload must be a dict.")
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=400)
+        args_raw = request_body.get("args", [])
+        kwargs_raw = request_body.get("kwargs", {})
+        if not isinstance(args_raw, list):
+            return web.json_response({"error": "args must be a JSON array"}, status=400)
+        if not isinstance(kwargs_raw, dict):
+            return web.json_response(
+                {"error": "kwargs must be a JSON object"}, status=400
+            )
+        args = tuple(args_raw)
+        kwargs = kwargs_raw
 
         parent_turn = context.get("current_turn", 0)
         root_tool_context = {
@@ -3336,8 +3323,13 @@ class RLMEnv(vf.StatefulToolEnv):
             )
             self._root_tool_context_var.reset(token)
 
-        result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
-        return web.json_response({"result": result_payload})
+        response_body: dict[str, Any] = {}
+        try:
+            json.dumps(result_value)
+            response_body["result"] = result_value
+        except (TypeError, ValueError):
+            response_body["result_repr"] = repr(result_value)
+        return web.json_response(response_body)
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
@@ -3460,10 +3452,7 @@ class RLMEnv(vf.StatefulToolEnv):
             updated_args = dict(tool_args)
             updated_args["state"] = state
             return updated_args
-        else:
-            return super().update_tool_args(
-                tool_name, tool_args, messages, state, **kwargs
-            )
+        return tool_args
 
     async def _setup_interception_and_register(
         self, state: State, rollout_id: str
