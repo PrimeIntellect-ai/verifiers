@@ -514,7 +514,6 @@ def _build_python_worker_script_template() -> str:
     lines: list[str] = [
         "",
         "import ast",
-        "import base64",
         "import contextlib",
         "import io",
         "import json",
@@ -697,7 +696,6 @@ def _build_python_worker_script_template() -> str:
 
 _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     """
-    import base64
     import json
     import os
     import sys
