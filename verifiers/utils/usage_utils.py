@@ -56,7 +56,13 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
 class StateUsageTracker:
     """Accumulates token usage and exposes a read-only live usage mapping."""
 
-    __slots__ = ("_usage_seen", "_usage_totals", "_usage_view")
+    __slots__ = (
+        "_usage_seen",
+        "_usage_totals",
+        "_usage_view",
+        "_per_turn",
+        "_branch_points",
+    )
 
     def __init__(self) -> None:
         self._usage_seen = False
@@ -65,10 +71,24 @@ class StateUsageTracker:
             "output_tokens": 0.0,
         }
         self._usage_view = MappingProxyType(self._usage_totals)
+        self._per_turn: list[tuple[int, int]] = []
+        self._branch_points: list[int] = []
 
     @property
     def usage(self) -> Mapping[str, float]:
         return self._usage_view
+
+    @property
+    def per_turn(self) -> list[tuple[int, int]]:
+        return self._per_turn
+
+    @property
+    def branch_points(self) -> list[int]:
+        return self._branch_points
+
+    def mark_branch(self) -> None:
+        """Record the current turn index as a branch point (e.g. after summarization)."""
+        self._branch_points.append(len(self._per_turn))
 
     def increment(
         self,
@@ -90,6 +110,7 @@ class StateUsageTracker:
         if getattr(response, "usage", None) is None:
             return
         input_tokens, output_tokens = extract_usage_tokens(response)
+        self._per_turn.append((input_tokens, output_tokens))
         self.increment(input_tokens, output_tokens, mark_seen=True)
 
     def snapshot(self) -> TokenUsage | None:
@@ -99,3 +120,44 @@ class StateUsageTracker:
             "input_tokens": self._usage_totals["input_tokens"],
             "output_tokens": self._usage_totals["output_tokens"],
         }
+
+
+def compute_context_token_metrics(
+    tracker: StateUsageTracker,
+) -> dict[str, float]:
+    """Compute branch-aware context token metrics from per-turn data.
+
+    Returns a dict with:
+        longest_context_completion_tokens: Model-generated tokens in the
+            longest branch.
+        longest_context_non_completion_tokens: Non-model tokens in the
+            longest branch.
+    """
+    per_turn = tracker.per_turn
+    if not per_turn:
+        return {
+            "longest_context_completion_tokens": 0,
+            "longest_context_non_completion_tokens": 0,
+        }
+
+    # Split turns into branches at each branch point
+    branch_starts = [0] + sorted(tracker.branch_points)
+    branch_ends = sorted(tracker.branch_points) + [len(per_turn)]
+
+    best_total = 0
+    best_completion = 0
+    for start, end in zip(branch_starts, branch_ends):
+        branch = per_turn[start:end]
+        if not branch:
+            continue
+        last_prompt, last_completion = branch[-1]
+        branch_total = last_prompt + last_completion
+        branch_completion = sum(ct for _, ct in branch)
+        if branch_total > best_total:
+            best_total = branch_total
+            best_completion = branch_completion
+
+    return {
+        "longest_context_completion_tokens": best_completion,
+        "longest_context_non_completion_tokens": best_total - best_completion,
+    }

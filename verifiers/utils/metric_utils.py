@@ -69,23 +69,55 @@ class ErrorRateMetric(MeanMetric):
 
 
 class InputTokensMetric(MeanMetric):
-    """Mean input tokens per output (skips outputs without token_usage)."""
+    """Mean cumulative prefill tokens per output (skips outputs without token_usage)."""
 
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
         if isinstance(usage, dict):
-            return float(usage.get("input_tokens", 0.0))
+            value = usage.get("cumulative_prefill_tokens") or usage.get("input_tokens")
+            if value is not None:
+                return float(value)
         return None
 
 
 class OutputTokensMetric(MeanMetric):
-    """Mean output tokens per output (skips outputs without token_usage)."""
+    """Mean cumulative decode tokens per output (skips outputs without token_usage)."""
 
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
         if isinstance(usage, dict):
-            return float(usage.get("output_tokens", 0.0))
+            value = usage.get("cumulative_decode_tokens") or usage.get("output_tokens")
+            if value is not None:
+                return float(value)
         return None
+
+
+def _make_token_usage_metric(key: str, doc: str) -> type:
+    """Create a MeanMetric subclass that extracts a key from token_usage."""
+
+    class _Metric(MeanMetric):
+        __doc__ = doc
+
+        def extract(self, output: RolloutOutput) -> float | None:
+            usage = output.get("token_usage")
+            if isinstance(usage, dict) and key in usage:
+                return float(usage[key])
+            return None
+
+    _Metric.__name__ = _Metric.__qualname__ = (
+        "".join(part.capitalize() for part in key.split("_")) + "Metric"
+    )
+    return _Metric
+
+
+LongestContextCompletionTokensMetric = _make_token_usage_metric(
+    "longest_context_completion_tokens",
+    "Mean completion tokens in longest context branch per output.",
+)
+LongestContextNonCompletionTokensMetric = _make_token_usage_metric(
+    "longest_context_non_completion_tokens",
+    "Mean non-completion tokens in longest context branch per output.",
+)
 
 
 class EnvMetrics:

@@ -203,9 +203,13 @@ class TrajectoryStepTokens(TypedDict):
     routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
 
 
-class TokenUsage(TypedDict):
+class TokenUsage(TypedDict, total=False):
     input_tokens: float
     output_tokens: float
+    cumulative_prefill_tokens: float
+    cumulative_decode_tokens: float
+    longest_context_completion_tokens: float
+    longest_context_non_completion_tokens: float
 
 
 class VersionInfo(TypedDict):

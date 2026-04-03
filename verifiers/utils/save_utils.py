@@ -30,6 +30,8 @@ from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
     InputTokensMetric,
+    LongestContextCompletionTokensMetric,
+    LongestContextNonCompletionTokensMetric,
     OutputTokensMetric,
     PassAtKMetric,
     RewardMetric,
@@ -200,7 +202,18 @@ def state_to_output(
                 "output_tokens": float(output_tokens),
             }
     if usage is not None:
-        output["token_usage"] = usage
+        # Build token_usage with meaningful names
+        token_usage: dict[str, float] = {
+            "cumulative_prefill_tokens": usage.get("input_tokens", 0.0),
+            "cumulative_decode_tokens": usage.get("output_tokens", 0.0),
+        }
+        # Add context token metrics if per-turn data is available
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker) and tracker.per_turn:
+            from verifiers.utils.usage_utils import compute_context_token_metrics
+
+            token_usage.update(compute_context_token_metrics(tracker))
+        output["token_usage"] = token_usage  # type: ignore[assignment]
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
@@ -291,6 +304,8 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.longest_context_completion = LongestContextCompletionTokensMetric()
+        self.longest_context_non_completion = LongestContextNonCompletionTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
 
         # Tools tracking
@@ -339,6 +354,8 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.longest_context_completion.add_outputs(new_outputs)
+        self.longest_context_non_completion.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
 
         for output in new_outputs:
@@ -357,10 +374,17 @@ class GenerateOutputsBuilder:
 
         usage: TokenUsage | None = None
         if self.input_tokens.count > 0:
-            usage = {
-                "input_tokens": self.input_tokens.compute(),
-                "output_tokens": self.output_tokens.compute(),
-            }
+            usage = TokenUsage(
+                cumulative_prefill_tokens=self.input_tokens.compute(),
+                cumulative_decode_tokens=self.output_tokens.compute(),
+            )
+            if self.longest_context_completion.count > 0:
+                usage["longest_context_completion_tokens"] = (
+                    self.longest_context_completion.compute()
+                )
+                usage["longest_context_non_completion_tokens"] = (
+                    self.longest_context_non_completion.compute()
+                )
 
         return GenerateMetadata(
             env_id=self.env_id,
