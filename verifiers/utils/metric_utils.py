@@ -74,7 +74,9 @@ class InputTokensMetric(MeanMetric):
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
         if isinstance(usage, dict):
-            value = usage.get("cumulative_prefill_tokens") or usage.get("input_tokens")
+            value = usage.get("cumulative_prefill_tokens")
+            if value is None:
+                value = usage.get("input_tokens")
             if value is not None:
                 return float(value)
         return None
@@ -86,7 +88,9 @@ class OutputTokensMetric(MeanMetric):
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
         if isinstance(usage, dict):
-            value = usage.get("cumulative_decode_tokens") or usage.get("output_tokens")
+            value = usage.get("cumulative_decode_tokens")
+            if value is None:
+                value = usage.get("output_tokens")
             if value is not None:
                 return float(value)
         return None

@@ -354,13 +354,15 @@ class EvalDisplay(BaseDisplay):
 
     def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with prefill/decode and context values."""
+        prefill = usage.get("cumulative_prefill_tokens")
+        if prefill is None:
+            prefill = usage.get("input_tokens", 0.0)
+        decode = usage.get("cumulative_decode_tokens")
+        if decode is None:
+            decode = usage.get("output_tokens", 0.0)
         kv: dict[str, object] = {
-            "prefill": format_numeric(
-                usage.get("cumulative_prefill_tokens") or usage.get("input_tokens", 0.0)
-            ),
-            "decode": format_numeric(
-                usage.get("cumulative_decode_tokens") or usage.get("output_tokens", 0.0)
-            ),
+            "prefill": format_numeric(prefill),
+            "decode": format_numeric(decode),
         }
         ctx_non_completion = usage.get("longest_context_non_completion_tokens")
         ctx_completion = usage.get("longest_context_completion_tokens")
@@ -980,14 +982,14 @@ class EvalDisplay(BaseDisplay):
             else:
                 usage = env_state.usage
             if usage is not None:
-                prefill_tokens = format_numeric(
-                    usage.get("cumulative_prefill_tokens")
-                    or usage.get("input_tokens", 0.0)
-                )
-                decode_tokens = format_numeric(
-                    usage.get("cumulative_decode_tokens")
-                    or usage.get("output_tokens", 0.0)
-                )
+                prefill = usage.get("cumulative_prefill_tokens")
+                if prefill is None:
+                    prefill = usage.get("input_tokens", 0.0)
+                decode = usage.get("cumulative_decode_tokens")
+                if decode is None:
+                    decode = usage.get("output_tokens", 0.0)
+                prefill_tokens = format_numeric(prefill)
+                decode_tokens = format_numeric(decode)
 
             # error rate with color coding
             error_rate = env_state.error_rate

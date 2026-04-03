@@ -210,6 +210,14 @@ class VersionInfo(TypedDict):
     env_version: str | None
     env_commit: str | None
 
+class TokenUsage(TypedDict, total=False):
+    input_tokens: float  # legacy name for cumulative_prefill_tokens
+    output_tokens: float  # legacy name for cumulative_decode_tokens
+    cumulative_prefill_tokens: float  # total prefill tokens across all turns
+    cumulative_decode_tokens: float  # total decode tokens across all turns
+    longest_context_completion_tokens: float  # completion tokens in longest context branch
+    longest_context_non_completion_tokens: float  # non-completion tokens in longest context branch
+
 class GenerateMetadata(TypedDict):
     env_id: str
     env_args: dict
@@ -236,6 +244,8 @@ class GenerateMetadata(TypedDict):
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
 
 `version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
+
+`usage` aggregates token usage across all rollouts. All fields in `TokenUsage` are optional. The new naming convention (`cumulative_prefill_tokens`, `cumulative_decode_tokens`) is preferred; legacy field names (`input_tokens`, `output_tokens`) are supported for backward compatibility.
 
 ### RolloutScore / RolloutScores
 
