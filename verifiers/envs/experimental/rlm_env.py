@@ -278,6 +278,10 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_llm_batch_time_count", 0)
     state.setdefault("_root_tool_non_llm_total_time", 0.0)
     state.setdefault("_root_tool_non_llm_time_count", 0)
+    state.setdefault("sub_llm_max_turns_reached_frac", 0.0)
+    state.setdefault("_sub_llm_max_turns_reached_count", 0)
+    state.setdefault("_sub_llm_request_count", 0)
+    state.setdefault("max_turns_in_context_stopped", False)
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -286,6 +290,7 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_summary_text", "")
 
     state.setdefault("summarize_count", 0)
+    state.setdefault("summarize_rejected_count", 0)
     state.setdefault("summarize_total_turns_dropped", 0)
     state.setdefault("summarize_total_chars_dropped", 0)
     state.setdefault("summarize_summary_length_chars", 0)
@@ -405,7 +410,10 @@ class RLMMonitorRubric(vf.Rubric):
         "root_tool_call_count",
         "llm_batch_mean_time_seconds",
         "root_tool_non_llm_mean_time_seconds",
+        "sub_llm_max_turns_reached_frac",
+        "max_turns_in_context_stopped",
         "summarize_count",
+        "summarize_rejected_count",
         "summarize_total_turns_dropped",
         "summarize_total_chars_dropped",
         "summarize_summary_length_chars",
@@ -774,38 +782,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 sys.stdout.write("\\n")
 
 
-    def _split_batch_lines(lines):
-        summary = []
-        per_item = {}
-        for line in lines:
-            text = str(line).strip()
-            if text.startswith("[") and "]:" in text:
-                idx_text = text[1 : text.index("]")]
-                if idx_text.isdigit():
-                    per_item[int(idx_text)] = text[text.index("]:") + 2 :].strip()
-                    continue
-            summary.append(text)
-        return summary, per_item
-
-
-    def _print_llm_batch_result(result_list, per_item_meta=None):
-        for index, item in enumerate(result_list):
-            if index > 0:
-                sys.stdout.write("\\n")
-            header = f"----- llm_batch[{index}]"
-            if per_item_meta and index in per_item_meta:
-                header = f"{header} ({per_item_meta[index]})"
-            sys.stdout.write(f"{header} -----\\n")
-            if not isinstance(item, str):
-                try:
-                    item = json.dumps(item)
-                except Exception:
-                    item = repr(item)
-            sys.stdout.write(item)
-            if not item.endswith("\\n"):
-                sys.stdout.write("\\n")
-
-
     def _load_json_payload(json_payload):
         raw = json_payload
         if raw is None and not sys.stdin.isatty():
@@ -924,16 +900,9 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result, print_lines = _call_root_tool(tool_name, (prompts,), {})
-            summary_lines, per_item = _split_batch_lines(print_lines)
-            if summary_lines:
-                _print_lines(summary_lines)
-            if isinstance(result, list):
-                _print_llm_batch_result(result, per_item_meta=per_item)
-            else:
-                if print_lines:
-                    _print_lines(print_lines)
-                _print_result(result)
+            result, _ = _call_root_tool(tool_name, (prompts,), {})
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.write("\\n")
             return
 
         if use_json:
@@ -1412,22 +1381,12 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         return self.MESSAGE_HISTORY_NOTE_PYTHON
 
     def build_context_dropping_note(self) -> str:
-        """Return context-dropping documentation note, or empty string."""
-        if not self.enable_summarization:
-            return ""
-        return (
-            "\n## Context Management\n\n"
-            "You have a `summarize_turns` tool to drop old conversation turns "
-            "from context and replace them with a summary.\n"
-            f"- At least {self.min_turns_in_context} turns must remain in context.\n"
-            "- Use `n_turns=-1` to drop the maximum possible.\n"
-            "- Provide a `summary` describing the key findings and state from "
-            "the dropped turns.\n"
-            "- Summaries are cumulative: each call appends to the previous summary.\n"
-            "- The full summary is returned as the tool output and injected into "
-            "the first assistant message as a `<SUMMARY>` block.\n"
-            "- Dropped turns are still accessible via the `.messages` file.\n"
-        )
+        """Return context-dropping documentation note, or empty string.
+
+        Currently returns empty — the ``summarize_turns`` tool docstring and
+        rejection messages provide all necessary information to the model.
+        """
+        return ""
 
     def build_root_budget_note(self) -> str:
         """Return root-model token budget note, or empty string."""
@@ -2287,15 +2246,13 @@ class RLMEnv(vf.StatefulToolEnv):
                    sub-LLM calls in a rollout.  When set, the environment tracks
                    cumulative sub-LLM completion tokens and refuses new calls once
                    the budget is reached.  The root model is informed of the budget
-                   in its system prompt and in the per-batch summary printed after
-                   each llm_batch() call.  None (default) means unlimited.
+                   in its system prompt.  None (default) means unlimited.
         root_max_completion_tokens: Total completion-token budget for the root
                    model across the full rollout.  When set, the environment tracks
                    cumulative root-model completion tokens and stops the rollout
                    once the budget is reached, reading the current answer before
                    halting.  The root model is informed of the budget in its system
-                   prompt and in the per-REPL-call footer appended after each code
-                   execution.  None (default) means unlimited.
+                   prompt.  None (default) means unlimited.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "heavy"
         root_prompt_verbosity: Verbosity of sub-LLM usage instructions in the root
@@ -2309,6 +2266,11 @@ class RLMEnv(vf.StatefulToolEnv):
                    cumulative summary. Defaults to False.
         min_turns_in_context: Minimum turns that must remain after summarization
                    (default: 3). Only has effect when enable_summarization=True.
+        max_turns_in_context: Maximum number of visible turns in context before
+                   the rollout is stopped. Without summarization this behaves
+                   identically to max_turns. With summarization it limits how
+                   many turns remain after compaction. None (default) means no
+                   limit beyond max_turns.
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         system_prompt: Custom system prompt (default: RLM standard prompt)
@@ -2348,6 +2310,54 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_connections: Max HTTP connections for the sandbox client
         sandbox_client_max_keepalive_connections: Max keepalive connections for the sandbox client
         **kwargs: Additional arguments passed to StatefulToolEnv
+
+    Metrics (exposed via ``RLMMonitorRubric``):
+        Root model:
+            root_llm_turns: Number of root-model trajectory steps.
+            root_llm_prompt_tokens: Cumulative prompt tokens for root model.
+            root_llm_completion_tokens: Cumulative completion tokens for root model.
+        Sub-LLM:
+            sub_llm_call_count: Number of individual sub-LLM calls (unique
+                batch_id:request_id pairs).
+            sub_llm_total_turns: Total turns across all sub-LLM calls (including
+                multi-turn tool-calling loops).
+            sub_llm_prompt_tokens: Cumulative prompt tokens across all sub-LLM calls.
+            sub_llm_completion_tokens: Cumulative completion tokens across all
+                sub-LLM calls.
+            sub_llm_total_tool_calls: Total tool calls made by sub-LLMs.
+            sub_llm_batch_count: Number of distinct llm_batch() invocations.
+            sub_llm_max_batch_size: Largest batch size in a single llm_batch() call.
+            sub_llm_mean_batch_size: Mean batch size across llm_batch() calls.
+            sub_llm_max_turns_reached_frac: Fraction of sub-LLM requests that
+                exhausted their turn limit.
+        REPL:
+            repl_total_time_seconds: Total wall-clock time in REPL executions.
+            repl_call_count: Number of REPL tool calls.
+            repl_mean_time_seconds: Mean wall-clock time per REPL call.
+        Root tools (called from within REPL):
+            root_tool_call_count: Total number of root tool calls.
+            {tool_name}_root_calls: Per-tool call count.
+            {tool_name}_root_time_seconds: Per-tool cumulative wall-clock time.
+            llm_batch_mean_time_seconds: Mean wall-clock time per llm_batch() call.
+            root_tool_non_llm_mean_time_seconds: Mean wall-clock time per
+                non-llm_batch root tool call.
+        Summarization:
+            summarize_count: Number of successful summarize_turns calls.
+            summarize_rejected_count: Number of rejected summarize_turns calls
+                (nothing to drop or requested more than allowed).
+            summarize_total_turns_dropped: Total turns dropped across all calls.
+            summarize_total_chars_dropped: Total characters dropped.
+            summarize_summary_length_chars: Current cumulative summary length.
+            summarize_char_compression_ratio: Ratio of summary length to dropped
+                chars (lower = better compression, 0.0 = no summarization).
+            summarize_mean_turns_per_call: Mean turns dropped per call.
+            summarize_mean_remaining_turns: Mean visible turns remaining after
+                each call.
+            summarize_mean_turns_between: Mean root-model turns between
+                consecutive summarize calls.
+        Stop conditions:
+            max_turns_in_context_stopped: True if the rollout was stopped by
+                the max_turns_in_context limit.
     """
 
     def __init__(
@@ -2365,6 +2375,7 @@ class RLMEnv(vf.StatefulToolEnv):
         enable_sub_llms: bool = True,
         enable_summarization: bool = False,
         min_turns_in_context: int = 3,
+        max_turns_in_context: int | None = None,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         system_prompt: str | None = None,
@@ -2430,6 +2441,15 @@ class RLMEnv(vf.StatefulToolEnv):
         self.expose_message_history = expose_message_history
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
+        self.max_turns_in_context = max_turns_in_context
+        if max_turns_in_context is not None and max_turns_in_context > max_turns:
+            logger.warning(
+                "max_turns_in_context=%d > max_turns=%d. "
+                "max_turns will always trigger first, making "
+                "max_turns_in_context ineffective.",
+                max_turns_in_context,
+                max_turns,
+            )
         if self.enable_summarization and not self.expose_message_history:
             import warnings
 
@@ -2621,8 +2641,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     raise RuntimeError(
                         "llm_batch called outside of a tool request context."
                     )
-                results, _ = await self._root_llm_batch(context, prompts)
-                return results
+                return await self._root_llm_batch(context, prompts)
 
             llm_batch.__name__ = "llm_batch"
             tools.append(llm_batch)
@@ -2947,7 +2966,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self,
         context: dict[str, Any],
         prompts: list[Any],
-    ) -> tuple[list[str], list[str]]:
+    ) -> list[str]:
         """Run a batch of sub-LLM calls for root REPL usage."""
         if not isinstance(prompts, list):
             raise ValueError("llm_batch expects a list of prompts.")
@@ -2964,14 +2983,7 @@ class RLMEnv(vf.StatefulToolEnv):
             used = state_ref.get("sub_llm_completion_tokens", 0)
             if used >= self.sub_max_completion_tokens:
                 msg = self._sub_llm_budget_exhausted_message(state_ref)
-                contents = [msg] * len(prompts)
-                summary_lines = [
-                    f"llm_batch: {len(prompts)} call(s) skipped — "
-                    f"llm_batch token budget exhausted "
-                    f"({used}/{self.sub_max_completion_tokens} "
-                    f"completion tokens used)"
-                ]
-                return contents, summary_lines
+                return [msg] * len(prompts)
 
         rid = state_ref.get("rollout_id", "?")
 
@@ -3040,38 +3052,15 @@ class RLMEnv(vf.StatefulToolEnv):
             len(prompts),
             batch_id,
         )
-        summary_lines = [f"llm_batch: {len(prompts)} call(s)"]
         contents: list[str] = []
-        for index, result in enumerate(results):
+        for result in results:
             if not result:
                 contents.append("")
-                summary_lines.append(f"  [{index}]: error")
                 continue
             message = result.get("choices", [{}])[0].get("message", {})
             contents.append(message.get("content", ""))
-            meta = result.get("_rlm_metadata", {})
-            if meta.get("error"):
-                summary_lines.append(f"  [{index}]: error")
-                continue
-            prompt_tokens = meta.get("prompt_tokens", 0)
-            completion_tokens = meta.get("completion_tokens", 0)
-            tool_calls = meta.get("tool_call_count", 0)
-            max_turns = meta.get("max_turns_reached", False)
-            status = "⚠ max turns" if max_turns else "✓"
-            summary_lines.append(
-                f"  [{index}]: {prompt_tokens} prompt tokens, "
-                f"{completion_tokens} completion tokens, "
-                f"{tool_calls} tool calls {status}"
-            )
 
-        if self.sub_max_completion_tokens is not None:
-            used = state_ref.get("sub_llm_completion_tokens", 0)
-            budget = self.sub_max_completion_tokens
-            summary_lines.append(
-                f"  [{used}/{budget} llm_batch completion tokens used]"
-            )
-
-        return contents, summary_lines
+        return contents
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from worker code)
@@ -3255,17 +3244,17 @@ class RLMEnv(vf.StatefulToolEnv):
                 )
                 update_rlm_metrics_from_step(state_ref, trajectory_step)
 
-        metadata: dict[str, int | float | bool] = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "tool_call_count": tool_call_count,
-            "num_turns": num_turns,
-            "max_turns_reached": max_turns_reached,
-        }
+        _ensure_rlm_metric_state(state_ref)
+        state_ref["_sub_llm_request_count"] += 1
+        if max_turns_reached:
+            state_ref["_sub_llm_max_turns_reached_count"] += 1
+        state_ref["sub_llm_max_turns_reached_frac"] = (
+            state_ref["_sub_llm_max_turns_reached_count"]
+            / state_ref["_sub_llm_request_count"]
+        )
 
         return {
             "choices": [{"message": {"content": boxed_content}}],
-            "_rlm_metadata": metadata,
         }
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
@@ -3331,12 +3320,9 @@ class RLMEnv(vf.StatefulToolEnv):
                         "llm_batch does not accept extra keyword arguments: "
                         + ", ".join(sorted(kwargs))
                     )
-                result_value, print_lines = await self._root_llm_batch(
-                    root_tool_context, prompts
-                )
+                result_value = await self._root_llm_batch(root_tool_context, prompts)
             else:
                 result_value = await maybe_await(tool_func, *args, **kwargs)
-                print_lines = None
         except Exception as e:
             if self._should_stop_for_error(e):
                 state_ref["_rlm_stop_error"] = e
@@ -3872,11 +3858,6 @@ class RLMEnv(vf.StatefulToolEnv):
             output, state, ready_instruction=ready_instruction
         )
 
-        if self.root_max_completion_tokens is not None:
-            used = state.get("root_llm_completion_tokens", 0)
-            budget = self.root_max_completion_tokens
-            output += f"\n[{used}/{budget} root completion tokens used]"
-
         return output
 
     async def call_bash_repl(self, code: str, state: Any) -> str:
@@ -3928,6 +3909,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 n_turns,
                 visible_turns,
             )
+            state["summarize_rejected_count"] += 1
             return (
                 f"Nothing to drop (n_turns={n_turns}). "
                 f"Currently {visible_turns} turn(s) visible in context."
@@ -3944,6 +3926,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 visible_turns,
                 self.min_turns_in_context,
             )
+            state["summarize_rejected_count"] += 1
             return (
                 f"Cannot drop {n_turns} turn(s). "
                 f"You have {visible_turns} turn(s) visible in context and "
@@ -3985,10 +3968,10 @@ class RLMEnv(vf.StatefulToolEnv):
         state["summarize_total_turns_dropped"] += n_turns
         state["summarize_total_chars_dropped"] += chars_dropped
         state["summarize_summary_length_chars"] = len(state["_summary_text"])
-        if state["summarize_summary_length_chars"] > 0:
+        if state["summarize_total_chars_dropped"] > 0:
             state["summarize_char_compression_ratio"] = (
-                state["summarize_total_chars_dropped"]
-                / state["summarize_summary_length_chars"]
+                state["summarize_summary_length_chars"]
+                / state["summarize_total_chars_dropped"]
             )
         state["summarize_mean_turns_per_call"] = (
             state["summarize_total_turns_dropped"] / state["summarize_count"]
@@ -4229,11 +4212,15 @@ class RLMEnv(vf.StatefulToolEnv):
     async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
-        """Override to set final_env_response when answer is ready or root budget is exhausted."""
+        """Override to set final_env_response when answer is ready, root budget or context turn limit is exhausted."""
         tool_messages = await super().env_response(messages, state, **kwargs)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
         elif self._is_root_budget_exhausted(state):
+            await self._ensure_final_answer(state)
+            state["final_env_response"] = tool_messages
+        elif self._is_max_turns_in_context_reached(state):
+            state["max_turns_in_context_stopped"] = True
             await self._ensure_final_answer(state)
             state["final_env_response"] = tool_messages
         return tool_messages
@@ -4244,6 +4231,15 @@ class RLMEnv(vf.StatefulToolEnv):
             return False
         used = state.get("root_llm_completion_tokens", 0)
         return used >= self.root_max_completion_tokens
+
+    def _is_max_turns_in_context_reached(self, state: State) -> bool:
+        """Check if visible turns in context exceed max_turns_in_context."""
+        if self.max_turns_in_context is None:
+            return False
+        visible = self._main_turn_count(state) - state.get(
+            "_keep_from_assistant_index", 0
+        )
+        return visible >= self.max_turns_in_context
 
     # =========================================================================
     # Stop Conditions

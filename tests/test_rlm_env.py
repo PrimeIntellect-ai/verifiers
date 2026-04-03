@@ -808,27 +808,19 @@ class TestBashToolHelper:
         assert "Invalid JSON payload" in stderr
         assert captured is None
 
-    def test_llm_batch_output_headers_with_metadata(self):
+    def test_llm_batch_output_json(self):
         payload = json.dumps({"prompts": ["one", "two"]})
         response_data = {
             "result": ["first", "second"],
             "error": None,
-            "print_lines": [
-                "llm_batch: 2 call(s) in 0.10s",
-                "  [0]: 5 tokens, 0 tool calls, 0.01s ✓",
-                "  [1]: 6 tokens, 1 tool calls, 0.02s ✓",
-            ],
         }
         stdout, stderr, code, captured = self._run_helper(
             ["--tool", "llm_batch", "--json", payload], response_data=response_data
         )
         assert code == 0
         assert stderr == ""
-        assert "llm_batch: 2 call(s) in 0.10s" in stdout
-        assert "----- llm_batch[0]" in stdout
-        assert "----- llm_batch[1]" in stdout
-        assert "first" in stdout
-        assert "second" in stdout
+        parsed = json.loads(stdout.strip())
+        assert parsed == ["first", "second"]
 
 
 # =============================================================================
@@ -1256,12 +1248,12 @@ class TestLLMBatchPromptValidation:
             "state": {"trajectory": []},
         }
 
-        contents, _ = await rlm_env._root_llm_batch(
+        contents = await rlm_env._root_llm_batch(
             context, [{"role": "user", "content": "hi"}]
         )
         assert "must be a string" in contents[0]
 
-        contents, _ = await rlm_env._root_llm_batch(
+        contents = await rlm_env._root_llm_batch(
             context, [[{"role": "user", "content": "hi"}]]
         )
         assert "must be a string" in contents[0]
@@ -2114,7 +2106,6 @@ class TestSubLLMCompletionTokenBudget:
                 parent_turn=0,
             )
 
-        assert result["_rlm_metadata"].get("budget_exhausted") is not True
         assert result["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
@@ -2164,7 +2155,7 @@ class TestSubLLMCompletionTokenBudget:
                 parent_turn=0,
             )
 
-        assert result["_rlm_metadata"].get("budget_exhausted") is not True
+        assert result["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
     async def test_batch_early_exit_when_budget_exhausted(self, rlm_env):
@@ -2178,95 +2169,11 @@ class TestSubLLMCompletionTokenBudget:
             },
         }
 
-        contents, summary_lines = await rlm_env._root_llm_batch(
-            context, ["prompt1", "prompt2"]
-        )
+        contents = await rlm_env._root_llm_batch(context, ["prompt1", "prompt2"])
 
         assert len(contents) == 2
         assert "budget exhausted" in contents[0].lower()
         assert "budget exhausted" in contents[1].lower()
-        assert any("skipped" in line for line in summary_lines)
-        assert any("500/500" in line for line in summary_lines)
-
-    @pytest.mark.asyncio
-    async def test_batch_summary_includes_budget_when_set(self, rlm_env):
-        rlm_env.sub_max_completion_tokens = 10000
-
-        mock_response = MagicMock()
-        mock_response.message.content = "ok"
-        mock_response.message.tool_calls = None
-        mock_response.message.is_truncated = False
-        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
-
-        state = {
-            "trajectory": [],
-            "sampling_args": {},
-            "sub_llm_completion_tokens": 200,
-        }
-        context = {
-            "client": MagicMock(),
-            "sub_model": "gpt-4",
-            "state": state,
-        }
-
-        with patch.object(
-            rlm_env,
-            "_run_sub_llm_request",
-            new=AsyncMock(
-                return_value={
-                    "choices": [{"message": {"content": "ok"}}],
-                    "_rlm_metadata": {
-                        "prompt_tokens": 10,
-                        "completion_tokens": 20,
-                        "tool_call_count": 0,
-                        "num_turns": 1,
-                        "max_turns_reached": False,
-                    },
-                }
-            ),
-        ):
-            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
-
-        # Summary should include budget info
-        budget_line = [s for s in summary_lines if "llm_batch completion tokens" in s]
-        assert len(budget_line) == 1
-        assert "/10000" in budget_line[0]
-
-    @pytest.mark.asyncio
-    async def test_batch_summary_excludes_budget_when_none(self, rlm_env):
-        assert rlm_env.sub_max_completion_tokens is None
-
-        state = {
-            "trajectory": [],
-            "sampling_args": {},
-            "sub_llm_completion_tokens": 200,
-        }
-        context = {
-            "client": MagicMock(),
-            "sub_model": "gpt-4",
-            "state": state,
-        }
-
-        with patch.object(
-            rlm_env,
-            "_run_sub_llm_request",
-            new=AsyncMock(
-                return_value={
-                    "choices": [{"message": {"content": "ok"}}],
-                    "_rlm_metadata": {
-                        "prompt_tokens": 10,
-                        "completion_tokens": 20,
-                        "tool_call_count": 0,
-                        "num_turns": 1,
-                        "max_turns_reached": False,
-                    },
-                }
-            ),
-        ):
-            _, summary_lines = await rlm_env._root_llm_batch(context, ["prompt1"])
-
-        budget_lines = [s for s in summary_lines if "llm_batch completion tokens" in s]
-        assert len(budget_lines) == 0
 
     @pytest.mark.asyncio
     async def test_system_prompt_includes_budget_when_set(self):
@@ -2447,52 +2354,6 @@ class TestRootLLMMaxCompletionTokens:
         rlm_env.root_max_completion_tokens = 1000
         state = {"root_llm_completion_tokens": 1500}
         assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
-    async def test_repl_output_includes_budget_when_set(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 5000
-        rlm_env._execute_code = AsyncMock(
-            return_value={
-                "status": "ok",
-                "stdout": "output",
-                "stderr": "",
-                "result": None,
-                "execution_count": 1,
-                "answer": {"ready": False, "content": ""},
-            }
-        )
-
-        state = {
-            "trajectory": [],
-            "context_warning_sent": False,
-            "root_llm_completion_tokens": 1200,
-        }
-        output = await rlm_env.call_python_repl("print('test')", state)
-
-        assert "1200/5000 root completion tokens used" in output
-
-    @pytest.mark.asyncio
-    async def test_repl_output_excludes_budget_when_none(self, rlm_env):
-        assert rlm_env.root_max_completion_tokens is None
-        rlm_env._execute_code = AsyncMock(
-            return_value={
-                "status": "ok",
-                "stdout": "output",
-                "stderr": "",
-                "result": None,
-                "execution_count": 1,
-                "answer": {"ready": False, "content": ""},
-            }
-        )
-
-        state = {
-            "trajectory": [],
-            "context_warning_sent": False,
-            "root_llm_completion_tokens": 1200,
-        }
-        output = await rlm_env.call_python_repl("print('test')", state)
-
-        assert "root completion tokens" not in output
 
     @pytest.mark.asyncio
     async def test_system_prompt_includes_root_budget_when_set(self):
@@ -2983,15 +2844,6 @@ class TestSummarizeTurns:
     # System prompt
     # =====================================================================
 
-    def test_system_prompt_includes_note_when_enabled(self, env_with_summarize):
-        prompt = env_with_summarize.prompt_builder.build_system_prompt()
-        assert "summarize_turns" in prompt
-        assert "<SUMMARY>" in prompt
-
-    def test_system_prompt_excludes_note_when_disabled(self, env_without_summarize):
-        prompt = env_without_summarize.prompt_builder.build_system_prompt()
-        assert "summarize_turns" not in prompt
-
     # =====================================================================
     # Basic summarize_turns behavior
     # =====================================================================
@@ -3381,8 +3233,8 @@ class TestSummarizeTurns:
         assert state["summarize_total_chars_dropped"] > 0
         assert state["summarize_summary_length_chars"] == len(state["_summary_text"])
         assert state["summarize_char_compression_ratio"] == pytest.approx(
-            state["summarize_total_chars_dropped"]
-            / state["summarize_summary_length_chars"]
+            state["summarize_summary_length_chars"]
+            / state["summarize_total_chars_dropped"]
         )
 
     # =====================================================================
