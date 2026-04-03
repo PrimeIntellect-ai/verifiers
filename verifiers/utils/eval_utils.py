@@ -32,6 +32,7 @@ from verifiers.types import (
     RolloutInput,
     RolloutOutput,
     StartCallback,
+    TokenUsage,
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -674,7 +675,7 @@ def print_usage(results: GenerateOutputs):
             ctx_completion_total += float(ctx_compl)
             ctx_non_completion_total += float(ctx_non)
 
-    usage: dict[str, float] | None = None
+    usage: dict[str, float] | TokenUsage | None = None
     if usage_count > 0:
         usage = {
             "cumulative_prefill_tokens": prefill_total / usage_count,
