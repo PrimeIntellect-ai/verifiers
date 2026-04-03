@@ -653,6 +653,9 @@ def print_usage(results: GenerateOutputs):
     usage_count = 0
     prefill_total = 0.0
     decode_total = 0.0
+    ctx_completion_total = 0.0
+    ctx_non_completion_total = 0.0
+    ctx_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
@@ -664,13 +667,26 @@ def print_usage(results: GenerateOutputs):
         decode_total += _get_token_value(
             token_usage, "cumulative_decode_tokens", "output_tokens"
         )
+        ctx_compl = token_usage.get("longest_context_completion_tokens")
+        ctx_non = token_usage.get("longest_context_non_completion_tokens")
+        if ctx_compl is not None and ctx_non is not None:
+            ctx_count += 1
+            ctx_completion_total += float(ctx_compl)
+            ctx_non_completion_total += float(ctx_non)
 
-    usage = None
+    usage: dict[str, float] | None = None
     if usage_count > 0:
         usage = {
             "cumulative_prefill_tokens": prefill_total / usage_count,
             "cumulative_decode_tokens": decode_total / usage_count,
         }
+        if ctx_count > 0:
+            usage["longest_context_completion_tokens"] = (
+                ctx_completion_total / ctx_count
+            )
+            usage["longest_context_non_completion_tokens"] = (
+                ctx_non_completion_total / ctx_count
+            )
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
