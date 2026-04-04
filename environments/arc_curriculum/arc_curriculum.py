@@ -572,18 +572,21 @@ class ArcCurriculumEnv(MultiAgentEnv):
         self.name = "arc_curriculum"
         self._mastery_threshold = mastery_threshold
         self._mastery_window = mastery_window
-        self._level_history: dict[int, deque] = {
-            1: deque(maxlen=mastery_window),
-            2: deque(maxlen=mastery_window),
-            3: deque(maxlen=mastery_window),
-        }
+        # Keyed by (op, level) → deque of solver rewards
+        self._mastery_history: dict[tuple[str, int], deque] = {}
         super().__init__(max_turns=1, **kwargs)
 
-    def _is_level_mastered(self, level: int) -> bool:
-        history = self._level_history.get(level)
+    def _is_mastered(self, op: str, level: int) -> bool:
+        history = self._mastery_history.get((op, level))
         if not history or len(history) < 8:
             return False
         return sum(history) / len(history) >= self._mastery_threshold
+
+    def _record_result(self, op: str, level: int, reward: float):
+        key = (op, level)
+        if key not in self._mastery_history:
+            self._mastery_history[key] = deque(maxlen=self._mastery_window)
+        self._mastery_history[key].append(reward)
 
     def get_initial_actor(self, state: State) -> str:
         return self._actor_id
@@ -680,9 +683,9 @@ class ArcCurriculumEnv(MultiAgentEnv):
             state["child_states"].append(s)
             solver_reward = codegen_reward(s)
 
-        # Track per-level solver performance
-        self._level_history[level].append(solver_reward)
-        mastered = self._is_level_mastered(level)
+        # Track per-(op, level) solver performance
+        self._record_result(target_base_op, level, solver_reward)
+        mastered = self._is_mastered(target_base_op, level)
 
         # Generator reward: 0 if level is mastered (push to harder levels)
         if mastered:
@@ -693,9 +696,10 @@ class ArcCurriculumEnv(MultiAgentEnv):
         state["extras"]["solver_reward"] = solver_reward
         state["extras"]["level_mastered"] = mastered
 
-        avg = sum(self._level_history[level]) / len(self._level_history[level])
+        history = self._mastery_history.get((target_base_op, level))
+        avg = sum(history) / len(history) if history else 0.0
         print(
-            f"[arc_curriculum] [{task_id}] solver={solver_reward:.2f} gen={gen_r:.1f} L{level}_avg={avg:.2f}{' MASTERED' if mastered else ''}",
+            f"[arc_curriculum] [{task_id}] solver={solver_reward:.2f} gen={gen_r:.1f} {target_base_op}:L{level}_avg={avg:.2f}{' MASTERED' if mastered else ''}",
             flush=True,
         )
 
