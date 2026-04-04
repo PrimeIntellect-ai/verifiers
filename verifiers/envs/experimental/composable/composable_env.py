@@ -192,9 +192,10 @@ class ComposableEnv(CliAgentEnv):
         sandbox_id = state.get("sandbox_id")
         if sandbox_id and self.harness.log_path and "agent_logs" not in state:
             try:
+                log_path = shlex.quote(self.harness.log_path)
                 result = await self.sandbox_client.execute_command(
                     sandbox_id,
-                    f"cat {self.harness.log_path} 2>/dev/null || echo '<no logs>'",
+                    f"cat {log_path} 2>/dev/null || echo '<no logs>'",
                     working_dir=None,
                 )
                 state["agent_logs"] = (result.stdout or "").strip()

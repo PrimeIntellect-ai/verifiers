@@ -229,3 +229,32 @@ async def test_composable_env_quotes_paths_in_mkdir_command():
         "mkdir -p '/tmp/other path' '/tmp/with space'",
         timeout=10,
     )
+
+
+@pytest.mark.asyncio
+async def test_composable_env_quotes_log_path_when_collecting_logs():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            log_path="/tmp/log dir/agent.log",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="agent log\n", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {"sandbox_id": "sbx", "timing": {"total_ms": 0}}
+
+    await env.post_rollout(state)
+
+    env.sandbox_client.execute_command.assert_awaited_once_with(
+        "sbx",
+        "cat '/tmp/log dir/agent.log' 2>/dev/null || echo '<no logs>'",
+        working_dir=None,
+    )
+    assert state["agent_logs"] == "agent log"
