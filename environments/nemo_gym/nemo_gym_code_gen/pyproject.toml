@@ -1,5 +1,5 @@
 [project]
-name = "nemo-gym-code_gen"
+name = "nemo-gym-code-gen"
 description = "NeMo Gym code generation environment"
 tags = ["nemo-gym"]
 version = "0.1.0"

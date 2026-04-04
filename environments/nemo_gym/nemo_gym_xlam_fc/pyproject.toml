@@ -1,5 +1,5 @@
 [project]
-name = "nemo-gym-xlam_fc"
+name = "nemo-gym-xlam-fc"
 description = "NeMo Gym xlam function calling environment"
 tags = ["nemo-gym"]
 version = "0.1.0"

@@ -12,7 +12,9 @@ def load_environment(
     dataset_path: str | None = None,
     **kwargs: Any,
 ) -> vf.Environment:
-    dataset, _ = _build_dataset("workplace_assistant", "example", dataset_path=dataset_path)
+    dataset, _ = _build_dataset(
+        "workplace_assistant", "example", dataset_path=dataset_path
+    )
     return NemoGymEnv(
         gym_configs=[_resolve_gym_config("workplace_assistant")],
         dataset=dataset,

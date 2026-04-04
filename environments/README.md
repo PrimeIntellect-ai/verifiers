@@ -49,8 +49,14 @@ This folder contains installable example environments that showcase common usage
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
 
-- **NeMo Gym**
-  - **nemo_gym**: NeMo Gym integration via `NemoGymEnv`. The NeMo Gym agent server manages the full multi turn rollout, including tools, state logic and verification.
+- **NeMo Gym**: examples of using NVIDIA NeMo Gym environments. Currently requires a local editable install of NeMo Gym (to be updated to PyPI). Some examples to get started (not exhaustive):
+  - **nemo-gym-workplace-assistant**: Multi-step tool use workplace assistant
+  - **nemo-gym-reasoning-gym**: Reasoning Gym tasks with a simple agent
+  - **nemo-gym-reasoning-gym-reflection**: Reasoning Gym with a LangGraph reflection agent
+  - **nemo-gym-structured-outputs**: Structured output tasks
+  - **nemo-gym-code-gen**: Code generation tasks
+  - **nemo-gym-mcqa**: Science multiple choice question answering
+  - **nemo-gym-arc-agi**: ARC-AGI 1 and 2
 
 ### Composition
 - **EnvGroup**

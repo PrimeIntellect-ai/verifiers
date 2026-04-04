@@ -21,6 +21,7 @@ from verifiers.types import (
     TrajectoryStep,
 )
 
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -83,7 +84,9 @@ def _build_dataset(
             try:
                 row = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON in {path} line {line_no}: {exc}") from exc
+                raise ValueError(
+                    f"Invalid JSON in {path} line {line_no}: {exc}"
+                ) from exc
             if not isinstance(row, dict):
                 raise ValueError(f"Row {line_no} in {path} is not an object")
             if "responses_create_params" not in row:
@@ -131,10 +134,12 @@ def _resolve_gym_config(resources_server: str, config_name: str | None = None) -
         )
     return str(path)
 
-# this may silenty break things in multi-env runs if agent_ref is not set in the dataset! 
+
+# this may silenty break things in multi-env runs if agent_ref is not set in the dataset!
 # TODO: should discuss removing it, or at least documenting it
 def _resolve_agent_name(gym_config_path: str) -> str:
     import yaml
+
     with open(gym_config_path) as f:
         config = yaml.safe_load(f)
     for key, value in config.items():
@@ -238,33 +243,37 @@ def _build_trajectory_from_nemo(
         all_messages.append(assistant_msg)
         completion_messages.append(assistant_msg)
 
-        trajectory.append({
-            "prompt": step_prompt,
-            "completion": [assistant_msg],
-            "response": _make_response(
-                assistant_msg, model, gen_ids, logprobs, prompt_ids
-            ),
-            "tokens": {
-                "prompt_ids": prompt_ids,
-                "prompt_mask": [1] * len(prompt_ids),
-                "completion_ids": gen_ids,
-                "completion_mask": [1] * len(gen_ids),
-                "completion_logprobs": logprobs,
-                "overlong_prompt": False,
+        trajectory.append(
+            {
+                "prompt": step_prompt,
+                "completion": [assistant_msg],
+                "response": _make_response(
+                    assistant_msg, model, gen_ids, logprobs, prompt_ids
+                ),
+                "tokens": {
+                    "prompt_ids": prompt_ids,
+                    "prompt_mask": [1] * len(prompt_ids),
+                    "completion_ids": gen_ids,
+                    "completion_mask": [1] * len(gen_ids),
+                    "completion_logprobs": logprobs,
+                    "overlong_prompt": False,
+                    "is_truncated": False,
+                    "routed_experts": None,
+                },
+                "reward": None,
+                "advantage": None,
                 "is_truncated": False,
-                "routed_experts": None,
-            },
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": trajectory_id,
-            "extras": {},
-        })
+                "trajectory_id": trajectory_id,
+                "extras": {},
+            }
+        )
 
     return trajectory, completion_messages
 
 
-def _map_nemo_gym_result_to_state(state: State, nemo_gym_result: Any, model: str) -> None:
+def _map_nemo_gym_result_to_state(
+    state: State, nemo_gym_result: Any, model: str
+) -> None:
     import verifiers as vf
 
     if not isinstance(nemo_gym_result, dict) or nemo_gym_result.get("error"):
@@ -283,9 +292,9 @@ def _map_nemo_gym_result_to_state(state: State, nemo_gym_result: Any, model: str
     state["nemo_gym_reward"] = float(nemo_gym_result.get("reward", 0.0) or 0.0)
     state["nemo_gym_result"] = nemo_gym_result
 
-    output_items: list[dict[str, Any]] = (
-        nemo_gym_result.get("response") or {}
-    ).get("output") or []
+    output_items: list[dict[str, Any]] = (nemo_gym_result.get("response") or {}).get(
+        "output"
+    ) or []
 
     trajectory, completion_messages = _build_trajectory_from_nemo(
         output_items=output_items,

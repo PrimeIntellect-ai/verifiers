@@ -24,6 +24,8 @@ SKIPPED_ENVS = [
     # Uses prime-tunnel which is still experimental and has low usage limits
     "terminus_harbor",
     "opencode_harbor",
+    # Contains nested sub-environments (nemo_gym_*/), not a top-level environment itself
+    "nemo_gym",
 ]
 
 SKIPPED_ENV_LOADING_ENVS = [

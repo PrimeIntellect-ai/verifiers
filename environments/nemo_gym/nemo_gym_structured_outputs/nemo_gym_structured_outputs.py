@@ -12,9 +12,13 @@ def load_environment(
     dataset_path: str | None = None,
     **kwargs: Any,
 ) -> vf.Environment:
-    dataset, _ = _build_dataset("structured_outputs", "example", dataset_path=dataset_path)
+    dataset, _ = _build_dataset(
+        "structured_outputs", "example", dataset_path=dataset_path
+    )
     return NemoGymEnv(
-        gym_configs=[_resolve_gym_config("structured_outputs", "structured_outputs_json")],
+        gym_configs=[
+            _resolve_gym_config("structured_outputs", "structured_outputs_json")
+        ],
         dataset=dataset,
         **kwargs,
     )
