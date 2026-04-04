@@ -263,12 +263,48 @@ def test_cli_prepared_completions_infers_offline_defaults(monkeypatch, run_cli):
 
     config = captured["configs"][0]
     assert config.offline_mode == "prepared_completions"
-    assert config.prepared_completions_path == Path("/tmp/prepared.jsonl")
+    assert config.prepared_completions_path == Path("/tmp/prepared.jsonl").resolve()
     assert config.model == "prepared-model"
     assert config.num_examples == 2
     assert config.rollouts_per_example == 2
+    assert config.prepared_outputs == [
+        {"example_id": 0, "completion": "a"},
+        {"example_id": 0, "completion": "b"},
+        {"example_id": 1, "completion": "c"},
+        {"example_id": 1, "completion": "d"},
+    ]
     assert config.client_config.api_base_url == "offline://local"
     assert config.sampling_args == {}
+
+
+def test_cli_prepared_completions_falls_back_to_state_columns_without_metadata(
+    monkeypatch, run_cli
+):
+    monkeypatch.setattr(
+        vf_eval,
+        "load_prepared_outputs",
+        lambda path: (
+            [{"example_id": 0, "completion": "a"}],
+            None,
+        ),
+    )
+
+    captured = run_cli(
+        monkeypatch,
+        {
+            "prepared_completions": "/tmp/prepared.jsonl",
+            "state_columns": ["accuracy"],
+            "api_key_var": None,
+            "api_base_url": None,
+            "max_tokens": None,
+            "temperature": None,
+            "num_examples": None,
+            "rollouts_per_example": None,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.prepared_state_columns == ["accuracy"]
 
 
 def test_cli_ground_truth_defaults_to_single_rollout(monkeypatch, run_cli):

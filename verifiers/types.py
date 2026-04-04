@@ -370,6 +370,8 @@ class GenerateMetadata(TypedDict):
     state_columns: list[str]
     path_to_save: Path
     tools: list[Tool] | None
+    offline_mode: NotRequired[OfflineMode | None]
+    prepared_completions_path: NotRequired[str | None]
 
 
 class GenerateOutputs(TypedDict):
@@ -527,6 +529,8 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     offline_mode: OfflineMode | None = None
     prepared_completions_path: Path | None = None
+    prepared_outputs: list[dict[str, Any]] | None = Field(default=None, exclude=True)
+    prepared_state_columns: list[str] | None = Field(default=None, exclude=True)
     num_workers: int | str = "auto"
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}

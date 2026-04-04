@@ -4,7 +4,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from verifiers.types import EvalConfig
+from verifiers.types import EvalConfig, OfflineMode
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,8 @@ def find_latest_incomplete_eval_results_path(
     rollouts_per_example: int,
     env_dir_path: str = "./environments",
     output_dir: str | None = None,
+    offline_mode: OfflineMode | None = None,
+    prepared_completions_path: Path | None = None,
 ) -> Path | None:
     """Find the newest resumable, incomplete eval run for the provided config."""
     runs_dir = get_eval_runs_dir(
@@ -118,6 +120,11 @@ def find_latest_incomplete_eval_results_path(
 
     total_rollouts = num_examples * rollouts_per_example
     candidates: list[Path] = []
+    normalized_prepared_path = (
+        str(prepared_completions_path.expanduser().resolve())
+        if prepared_completions_path is not None
+        else None
+    )
     for run_dir in runs_dir.iterdir():
         if run_dir.is_dir() and is_valid_eval_results_path(run_dir):
             candidates.append(run_dir)
@@ -140,6 +147,10 @@ def find_latest_incomplete_eval_results_path(
         if metadata.get("model") != model:
             continue
         if metadata.get("rollouts_per_example") != rollouts_per_example:
+            continue
+        if metadata.get("offline_mode") != offline_mode:
+            continue
+        if metadata.get("prepared_completions_path") != normalized_prepared_path:
             continue
 
         saved_num_examples = metadata.get("num_examples")

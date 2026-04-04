@@ -191,6 +191,23 @@ def _infer_prepared_num_examples(prepared_outputs: list[dict[str, Any]]) -> int:
     return len(example_ids)
 
 
+def _extract_prepared_state_columns(
+    prepared_metadata: dict[str, Any] | None,
+) -> list[str] | None:
+    if prepared_metadata is None:
+        return None
+    raw_state_columns = prepared_metadata.get("state_columns")
+    if raw_state_columns is None:
+        return None
+    if not isinstance(raw_state_columns, list) or not all(
+        isinstance(col, str) for col in raw_state_columns
+    ):
+        raise ValueError(
+            "Prepared metadata field 'state_columns' must be a list of strings."
+        )
+    return list(raw_state_columns)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -482,10 +499,12 @@ def main():
         prepared_completions_path: Path | None = None
         inferred_prepared_num_examples: int | None = None
         inferred_prepared_rollouts: int | None = None
+        prepared_outputs: list[dict[str, Any]] | None = None
         prepared_metadata: dict[str, Any] | None = None
+        prepared_state_columns: list[str] | None = None
         if prepared_completions is not None:
             offline_mode = "prepared_completions"
-            prepared_completions_path = Path(prepared_completions)
+            prepared_completions_path = Path(prepared_completions).expanduser().resolve()
             prepared_outputs, prepared_metadata = load_prepared_outputs(
                 prepared_completions_path
             )
@@ -495,6 +514,9 @@ def main():
             inferred_prepared_rollouts = _infer_prepared_rollouts_per_example(
                 prepared_outputs
             )
+            prepared_state_columns = _extract_prepared_state_columns(prepared_metadata)
+            if prepared_state_columns is None:
+                prepared_state_columns = raw.get("state_columns") or None
         elif use_ground_truth_as_completion:
             offline_mode = "ground_truth"
 
@@ -861,6 +883,8 @@ def main():
                 rollouts_per_example=rollouts_per_example,
                 env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
                 output_dir=raw.get("output_dir"),
+                offline_mode=offline_mode,
+                prepared_completions_path=prepared_completions_path,
             )
             if auto_resume_path is not None:
                 resume_path = auto_resume_path
@@ -889,6 +913,8 @@ def main():
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             offline_mode=offline_mode,
             prepared_completions_path=prepared_completions_path,
+            prepared_outputs=cast(Any, prepared_outputs),
+            prepared_state_columns=prepared_state_columns,
             max_retries=raw.get("max_retries", 0),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),

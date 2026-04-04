@@ -851,20 +851,27 @@ async def run_evaluation(
                 on_log=on_log,
             )
         else:
-            prepared_outputs = None
+            prepared_outputs = config.prepared_outputs
             if offline_mode == "prepared_completions":
-                prepared_path = config.prepared_completions_path
-                if prepared_path is None:
+                if prepared_outputs is None:
+                    prepared_path = config.prepared_completions_path
+                    if prepared_path is None:
+                        raise ValueError(
+                            "prepared_completions_path is required for offline prepared-completions mode."
+                        )
+                    prepared_outputs, _ = load_prepared_outputs(prepared_path)
+                if prepared_outputs is None:
                     raise ValueError(
-                        "prepared_completions_path is required for offline prepared-completions mode."
+                        "prepared_outputs are required for offline prepared-completions mode."
                     )
-                prepared_outputs, _ = load_prepared_outputs(prepared_path)
 
             outputs = await vf_env._evaluate_offline(
                 model=config.model,
                 num_examples=config.num_examples,
                 rollouts_per_example=config.rollouts_per_example,
                 prepared_outputs=prepared_outputs,
+                prepared_state_columns=config.prepared_state_columns,
+                prepared_completions_path=config.prepared_completions_path,
                 use_ground_truth_as_completion=(offline_mode == "ground_truth"),
                 max_concurrent=effective_group_max_concurrent,
                 results_path=results_path,

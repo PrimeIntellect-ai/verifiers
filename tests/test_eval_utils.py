@@ -256,3 +256,62 @@ async def test_run_evaluation_offline_ground_truth_skips_prepared_loading(
         fake_env._evaluate_offline.await_args.kwargs["use_ground_truth_as_completion"]
         is True
     )
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_offline_prepared_reuses_cached_outputs_from_config(
+    monkeypatch, tmp_path, make_metadata
+):
+    expected_outputs: GenerateOutputs = {
+        "outputs": [],
+        "metadata": make_metadata(path_to_save=tmp_path / "results"),
+    }
+
+    fake_env = Mock()
+    fake_env.set_kwargs = Mock()
+    fake_env.start_server = AsyncMock()
+    fake_env.stop_server = AsyncMock()
+    fake_env.evaluate = AsyncMock()
+    fake_env._evaluate_offline = AsyncMock(return_value=expected_outputs)
+
+    monkeypatch.setattr(eval_utils.vf, "load_environment", lambda **kwargs: fake_env)
+
+    def fail_load_prepared_outputs(path):
+        raise AssertionError("load_prepared_outputs should not be called")
+
+    monkeypatch.setattr(eval_utils, "load_prepared_outputs", fail_load_prepared_outputs)
+
+    config = EvalConfig(
+        env_id="dummy-env",
+        env_args={},
+        env_dir_path=str(tmp_path),
+        output_dir=str(tmp_path),
+        model="prepared-model",
+        client_config=ClientConfig(
+            api_base_url="offline://local",
+            api_key_var="OFFLINE_UNUSED",
+        ),
+        sampling_args={},
+        num_examples=1,
+        rollouts_per_example=1,
+        max_concurrent=4,
+        offline_mode="prepared_completions",
+        prepared_completions_path=Path("/tmp/prepared.jsonl"),
+        prepared_outputs=[{"example_id": 0, "completion": "ok"}],
+        prepared_state_columns=["foo"],
+        disable_env_server=False,
+    )
+
+    outputs = await eval_utils.run_evaluation(config)
+
+    assert outputs == expected_outputs
+    fake_env.start_server.assert_not_awaited()
+    fake_env.stop_server.assert_not_awaited()
+    fake_env.evaluate.assert_not_awaited()
+    fake_env._evaluate_offline.assert_awaited_once()
+    assert fake_env._evaluate_offline.await_args.kwargs["prepared_outputs"] == [
+        {"example_id": 0, "completion": "ok"}
+    ]
+    assert fake_env._evaluate_offline.await_args.kwargs["prepared_state_columns"] == [
+        "foo"
+    ]

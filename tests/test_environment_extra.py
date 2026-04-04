@@ -109,6 +109,30 @@ class TrackingPreparedRubric(Rubric):
             await self.score_rollout(state)
 
 
+class AccuracyStateRubric(Rubric):
+    def __init__(self, expected_accuracy):
+        super().__init__()
+        self.expected_accuracy = expected_accuracy
+
+    async def score_rollout(self, state):
+        state["reward"] = 1.0 if state.get("accuracy") == self.expected_accuracy else 0.0
+        state["metrics"] = {"accuracy": 0.5}
+
+    async def score_group(self, states):
+        for state in states:
+            await self.score_rollout(state)
+
+
+class NoAccuracyStateRubric(Rubric):
+    async def score_rollout(self, state):
+        state["reward"] = 1.0 if state.get("accuracy") is None else 0.0
+        state["metrics"] = {"accuracy": 0.5}
+
+    async def score_group(self, states):
+        for state in states:
+            await self.score_rollout(state)
+
+
 @pytest.fixture
 def make_dummy_env():
     def _make_dummy_env(
@@ -437,6 +461,67 @@ async def test_evaluate_offline_grouped_scoring_uses_score_group(
     assert rubric.group_calls == 1
     assert rubric.rollout_calls == 2
     assert [output["reward"] for output in outputs["outputs"]] == [1.0, 0.0]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_offline_preserves_state_columns_that_shadow_metric_keys(
+    mock_client, make_dummy_env, make_output
+):
+    rubric = AccuracyStateRubric(expected_accuracy=0.5)
+    env = make_dummy_env(mock_client, rubric=rubric)
+    eval_input = env.get_eval_dataset(n=1).to_list()[0]
+
+    outputs = await env._evaluate_offline(
+        model="offline/prepared-completions",
+        num_examples=1,
+        rollouts_per_example=1,
+        prepared_outputs=[
+            make_output(
+                example_id=eval_input["example_id"],
+                task=eval_input["task"],
+                prompt=eval_input["prompt"],
+                completion="a1",
+                answer="a1",
+                info=eval_input.get("info", {}),
+                metrics={"accuracy": 0.5},
+                accuracy=0.5,
+            )
+        ],
+        prepared_state_columns=["accuracy"],
+        state_columns=["accuracy"],
+    )
+
+    assert outputs["outputs"][0]["reward"] == 1.0
+    assert outputs["outputs"][0]["accuracy"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_evaluate_offline_skips_flattened_metric_aliases_when_restoring_state(
+    mock_client, make_dummy_env, make_output
+):
+    env = make_dummy_env(mock_client, rubric=NoAccuracyStateRubric())
+    eval_input = env.get_eval_dataset(n=1).to_list()[0]
+
+    outputs = await env._evaluate_offline(
+        model="offline/prepared-completions",
+        num_examples=1,
+        rollouts_per_example=1,
+        prepared_outputs=[
+            make_output(
+                example_id=eval_input["example_id"],
+                task=eval_input["task"],
+                prompt=eval_input["prompt"],
+                completion="a1",
+                answer="a1",
+                info=eval_input.get("info", {}),
+                metrics={"accuracy": 0.5},
+                accuracy=0.5,
+            )
+        ],
+    )
+
+    assert outputs["outputs"][0]["reward"] == 1.0
+    assert outputs["outputs"][0]["metrics"]["accuracy"] == 0.5
 
 
 @pytest.mark.asyncio

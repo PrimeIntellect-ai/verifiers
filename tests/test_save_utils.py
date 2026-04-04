@@ -627,6 +627,71 @@ class TestResumeMetadataValidation:
                 rollouts_per_example=2,
             )
 
+    def test_validate_resume_metadata_rejects_offline_mode_mismatch(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                    "offline_mode": "prepared_completions",
+                    "prepared_completions_path": "/tmp/prepared-a.jsonl",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="offline_mode"):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id="math-env",
+                model="test-model",
+                num_examples=3,
+                rollouts_per_example=2,
+                offline_mode=None,
+            )
+
+    def test_validate_resume_metadata_rejects_prepared_source_mismatch(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        prepared_a = tmp_path / "prepared-a.jsonl"
+        prepared_b = tmp_path / "prepared-b.jsonl"
+        prepared_a.write_text("", encoding="utf-8")
+        prepared_b.write_text("", encoding="utf-8")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                    "offline_mode": "prepared_completions",
+                    "prepared_completions_path": str(prepared_a.resolve()),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="prepared_completions_path"):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id="math-env",
+                model="test-model",
+                num_examples=3,
+                rollouts_per_example=2,
+                offline_mode="prepared_completions",
+                prepared_completions_path=prepared_b,
+            )
+
 
 class TestBuilderPassAtK:
     """Tests for pass@k integration in GenerateOutputsBuilder."""

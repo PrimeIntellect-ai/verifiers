@@ -742,6 +742,7 @@ class Environment(ABC):
         self,
         state: State,
         prepared_row: RolloutOutput,
+        prepared_state_columns: list[str] | None = None,
     ) -> None:
         """Restore prepared completion data into an offline scoring state."""
         completion = prepared_row.get("completion")
@@ -774,10 +775,20 @@ class Environment(ABC):
             state["trajectory"] = prepared_row["trajectory"]
 
         metrics = prepared_row.get("metrics")
-        metric_keys = set(metrics.keys()) if isinstance(metrics, dict) else set()
+        metric_values = metrics if isinstance(metrics, dict) else {}
+        explicit_state_columns = set(prepared_state_columns or [])
 
         for key, value in prepared_row.items():
-            if key in _OFFLINE_RESERVED_STATE_FIELDS or key in metric_keys:
+            if key in _OFFLINE_RESERVED_STATE_FIELDS:
+                continue
+            if (
+                key in metric_values
+                and key not in explicit_state_columns
+                and value == metric_values[key]
+            ):
+                # state_to_output flattens metrics to top-level keys for backwards
+                # compatibility. Skip restoring those aliases unless the prepared
+                # metadata tells us the key was an explicit saved state column.
                 continue
             state[key] = value
 
@@ -788,11 +799,16 @@ class Environment(ABC):
         model: str,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        prepared_state_columns: list[str] | None = None,
     ) -> RolloutOutput:
         async def score_prepared_attempt() -> State:
             self._validate_prepared_row(input, prepared_row)
             state = self._build_offline_state(input, model)
-            self._apply_prepared_row_to_state(state, prepared_row)
+            self._apply_prepared_row_to_state(
+                state,
+                prepared_row,
+                prepared_state_columns=prepared_state_columns,
+            )
 
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
@@ -812,13 +828,18 @@ class Environment(ABC):
         model: str,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        prepared_state_columns: list[str] | None = None,
     ) -> list[RolloutOutput]:
         async def score_prepared_group_attempt() -> list[State]:
             states: list[State] = []
             for input_item, prepared_row in zip(group_inputs, group_rows):
                 self._validate_prepared_row(input_item, prepared_row)
                 state = self._build_offline_state(input_item, model)
-                self._apply_prepared_row_to_state(state, prepared_row)
+                self._apply_prepared_row_to_state(
+                    state,
+                    prepared_row,
+                    prepared_state_columns=prepared_state_columns,
+                )
                 states.append(state)
 
             if self.score_rollouts:
@@ -1018,6 +1039,8 @@ class Environment(ABC):
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         prepared_outputs: list[RolloutOutput] | None = None,
+        prepared_state_columns: list[str] | None = None,
+        prepared_completions_path: Path | None = None,
         use_ground_truth_as_completion: bool = False,
         max_concurrent: int = -1,
         results_path: Path | None = None,
@@ -1109,6 +1132,9 @@ class Environment(ABC):
             list[RolloutInput], self.get_eval_dataset(n=num_examples).to_list()
         )
         inputs_by_example_id = {input["example_id"]: input for input in eval_inputs}
+        offline_mode = (
+            "ground_truth" if use_ground_truth_as_completion else "prepared_completions"
+        )
 
         raw_prepared_rows: list[RolloutOutput] = []
         if use_ground_truth_as_completion:
@@ -1190,6 +1216,8 @@ class Environment(ABC):
             sampling_args={},
             results_path=results_path,
             pass_threshold=self.pass_threshold,
+            offline_mode=offline_mode,
+            prepared_completions_path=prepared_completions_path,
         )
 
         try:
@@ -1200,6 +1228,8 @@ class Environment(ABC):
                     model=model,
                     num_examples=len(eval_inputs),
                     rollouts_per_example=rollouts_per_example,
+                    offline_mode=offline_mode,
+                    prepared_completions_path=prepared_completions_path,
                 )
                 on_log(f"Resuming offline evaluation from {results_path}")
                 outputs = load_outputs(results_path)
@@ -1242,6 +1272,7 @@ class Environment(ABC):
                                     model,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    prepared_state_columns=prepared_state_columns,
                                 ),
                             ),
                         )
@@ -1278,6 +1309,7 @@ class Environment(ABC):
                                     model,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    prepared_state_columns=prepared_state_columns,
                                 ),
                             ),
                         )
