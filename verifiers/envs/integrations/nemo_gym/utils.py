@@ -4,6 +4,8 @@ import importlib.util
 import json
 import time
 import uuid
+
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -135,11 +137,7 @@ def _resolve_gym_config(resources_server: str, config_name: str | None = None) -
     return str(path)
 
 
-# this may silenty break things in multi-env runs if agent_ref is not set in the dataset!
-# TODO: should discuss removing it, or at least documenting it
 def _resolve_agent_name(gym_config_path: str) -> str:
-    import yaml
-
     with open(gym_config_path) as f:
         config = yaml.safe_load(f)
     for key, value in config.items():
