@@ -37,6 +37,7 @@ harnesses that need a per-instance workdir while still using a static
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import Any
 
 import verifiers as vf
@@ -148,8 +149,9 @@ class ComposableEnv(CliAgentEnv):
         dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
         if self.harness.system_prompt:
             dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
+        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
         await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {' '.join(dirs)}", timeout=10
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
         )
 
         # 3. Upload instruction to harness-declared path

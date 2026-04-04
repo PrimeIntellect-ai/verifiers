@@ -1,5 +1,8 @@
 """Tests for the composable architecture: Task, TaskSet, SandboxTaskSet, SandboxSpec."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 import verifiers as vf
@@ -198,3 +201,31 @@ async def test_composable_env_exports_task_workdir():
 
     assert env_vars["AGENT_WORKDIR"] == "/testbed"
     assert env_vars["FOO"] == "bar"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_quotes_paths_in_mkdir_command():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            instruction_path="/tmp/with space/prompt.txt",
+            system_prompt="system",
+            system_prompt_path="/tmp/other path/system.txt",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    env.sandbox_client.execute_command.assert_awaited_once_with(
+        "sbx",
+        "mkdir -p '/tmp/other path' '/tmp/with space'",
+        timeout=10,
+    )
