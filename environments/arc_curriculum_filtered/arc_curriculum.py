@@ -1,19 +1,23 @@
 """
-ARC Curriculum (Filtered): 2-LoRA Self-Play with Dynamic Op Filtering.
+ARC Curriculum: 2-LoRA Self-Play Environment.
 
-Same as arc_curriculum but with automatic filtering of ops the solver
-can't learn. Tracks per-op solver reward in a sliding window. Ops below
-skip_threshold are temporarily removed from batches. Periodic probes
-re-test dropped ops so they come back when the solver improves.
+Each dataset example specifies a base_op. The curriculum generator LoRA
+receives the op and outputs a single JSON recipe choosing difficulty
+settings (level, post_ops, seed). GRPO's rollouts_per_example=8 naturally
+produces 8 difficulty variations per base_op.
 
-Config params:
-    skip_threshold: float  -- ops with avg reward below this get skipped (default: 0.1)
-    skip_window: int       -- sliding window size per op (default: 40)
-    probe_interval: int    -- re-test skipped ops every N skips (default: 40)
+The solver LoRA attempts each generated task. Generator is rewarded 1.0 if
+the solver gets meaningful signal (reward >= 0.3), 0.0 otherwise. GRPO
+compares the 8 difficulty variations: generator learns which settings
+produce learnable tasks for each operation.
+
+Actors:
+    - curriculum_generator: outputs JSON recipe for a given base_op
+    - codegen_v1b: solver (writes Python code)
 
 Usage:
-    prime env install arc-curriculum-filtered
-    prime eval run arc-curriculum-filtered -m Qwen/Qwen3-4B-Instruct-2507 -n 10 -r 2
+    prime env install arc-curriculum
+    prime eval run arc-curriculum -m Qwen/Qwen3-4B-Instruct-2507 -n 10 -r 2
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections import deque
 from typing import Any, List
 
 from datasets import Dataset
@@ -39,8 +42,10 @@ from verifiers.envs.registry import Registry
 from verifiers.rubrics.multiagent_rubric import MultiAgentRubric
 from verifiers.types import Messages, State
 
+from collections import deque
+
 from recipe_executor import (
-    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS, FIXED_SEED,
+    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS, SEEDS,
     execute_recipe, parse_generator_output, generator_reward,
     build_generator_prompt, validate_task, OP_DESCRIPTIONS,
 )
@@ -438,10 +443,17 @@ def codegen_reward(state: State, **kwargs) -> float:
 
 
 def curriculum_generator_reward(state: State, **kwargs) -> float:
-    """Generator reward: 1.0 if solver gets meaningful signal, 0.0 otherwise."""
+    """Generator reward with mastery override.
+
+    Returns 0.0 if the chosen level is mastered (computed in on_turn_complete).
+    Otherwise normal binary reward based on solver performance.
+    """
     extras = state.get("extras", {})
 
     if not extras.get("recipe_valid"):
+        return 0.0
+
+    if extras.get("level_mastered"):
         return 0.0
 
     solver_reward = extras.get("solver_reward")
@@ -547,23 +559,31 @@ class CodegenEnv(MultiAgentEnv):
 
 class ArcCurriculumEnv(MultiAgentEnv):
     """
-    2-LoRA self-play pipeline with dynamic op filtering.
+    2-LoRA self-play pipeline with mastery-based curriculum progression.
 
-    Tracks per-op solver reward. Ops consistently below skip_threshold
-    are temporarily skipped (no solver spawned, both rewards = 0).
-    Periodic probes re-test skipped ops.
+    Generator picks level A/B/C. Once the solver's rolling average on a
+    level exceeds mastery_threshold, the generator gets 0 reward for that
+    level, pushing it toward harder unexplored levels.
     """
 
-    def __init__(self, skip_threshold=None, skip_window=40, probe_interval=40, **kwargs):
+    def __init__(self, mastery_threshold=0.7, mastery_window=40, **kwargs):
         self._actor_id = "curriculum_generator"
         self.actors = ["curriculum_generator", "codegen_v1b"]
         self.name = "arc_curriculum"
-        self._skip_threshold = skip_threshold
-        self._skip_window = skip_window
-        self._probe_interval = probe_interval
-        self._op_reward_history: dict[str, deque] = {}
-        self._op_skip_count: dict[str, int] = {}
+        self._mastery_threshold = mastery_threshold
+        self._mastery_window = mastery_window
+        self._level_history: dict[int, deque] = {
+            1: deque(maxlen=mastery_window),
+            2: deque(maxlen=mastery_window),
+            3: deque(maxlen=mastery_window),
+        }
         super().__init__(max_turns=1, **kwargs)
+
+    def _is_level_mastered(self, level: int) -> bool:
+        history = self._level_history.get(level)
+        if not history or len(history) < 8:
+            return False
+        return sum(history) / len(history) >= self._mastery_threshold
 
     def get_initial_actor(self, state: State) -> str:
         return self._actor_id
@@ -590,28 +610,6 @@ class ArcCurriculumEnv(MultiAgentEnv):
                 result.append(child_state)
         return result
 
-    def _should_skip_op(self, base_op: str) -> bool:
-        if not self._skip_threshold:
-            return False
-        history = self._op_reward_history.get(base_op)
-        if not history or len(history) < 8:
-            return False
-        avg = sum(history) / len(history)
-        if avg >= self._skip_threshold:
-            return False
-        # Below threshold — but periodically probe
-        self._op_skip_count[base_op] = self._op_skip_count.get(base_op, 0) + 1
-        if self._op_skip_count[base_op] >= self._probe_interval:
-            self._op_skip_count[base_op] = 0
-            print(f"[arc_curriculum] probing skipped op {base_op} (avg={avg:.3f})", flush=True)
-            return False
-        return True
-
-    def _record_op_reward(self, base_op: str, reward: float):
-        if base_op not in self._op_reward_history:
-            self._op_reward_history[base_op] = deque(maxlen=self._skip_window)
-        self._op_reward_history[base_op].append(reward)
-
     async def on_turn_complete(self, state: State) -> None:
         response_text = _get_last_response_text(state)
         if not response_text:
@@ -624,22 +622,16 @@ class ArcCurriculumEnv(MultiAgentEnv):
             info = json.loads(info)
         target_base_op = info.get("base_op", "")
 
-        # Check if this op should be skipped
-        if self._should_skip_op(target_base_op):
-            state["extras"]["recipe_valid"] = False
-            state["extras"]["skipped"] = True
-            state["extras"]["solver_reward"] = 0.0
-            return
-
         recipe = parse_generator_output(response_text)
         if recipe is None:
             state["extras"]["recipe_valid"] = False
             print(f"[arc_curriculum] generator: invalid JSON for {target_base_op}", flush=True)
             return
 
-        # Force base_op and fixed seed
+        # Force base_op and seed from dataset
         recipe["base_op"] = target_base_op
-        recipe["seed"] = FIXED_SEED
+        recipe["seed"] = info.get("seed", SEEDS[0])
+        level = recipe.get("level", 2)
 
         task = execute_recipe(recipe)
         if task is None:
@@ -650,8 +642,7 @@ class ArcCurriculumEnv(MultiAgentEnv):
         state["extras"]["recipe_valid"] = True
         state["extras"]["recipe"] = recipe
         state["extras"]["generated_task_type"] = target_base_op
-        level = recipe.get("level", 2)
-        task_id = f"gen_{target_base_op}_L{level}"
+        task_id = f"gen_{target_base_op}_L{level}_s{recipe['seed']}"
 
         print(
             f"[arc_curriculum] generator: recipe={json.dumps(recipe)}",
@@ -689,12 +680,22 @@ class ArcCurriculumEnv(MultiAgentEnv):
             state["child_states"].append(s)
             solver_reward = codegen_reward(s)
 
-        state["extras"]["solver_reward"] = solver_reward
-        self._record_op_reward(target_base_op, solver_reward)
+        # Track per-level solver performance
+        self._level_history[level].append(solver_reward)
+        mastered = self._is_level_mastered(level)
 
-        gen_r = generator_reward(solver_reward)
+        # Generator reward: 0 if level is mastered (push to harder levels)
+        if mastered:
+            gen_r = 0.0
+        else:
+            gen_r = generator_reward(solver_reward)
+
+        state["extras"]["solver_reward"] = solver_reward
+        state["extras"]["level_mastered"] = mastered
+
+        avg = sum(self._level_history[level]) / len(self._level_history[level])
         print(
-            f"[arc_curriculum] [{task_id}] solver={solver_reward:.2f} gen={gen_r:.1f}",
+            f"[arc_curriculum] [{task_id}] solver={solver_reward:.2f} gen={gen_r:.1f} L{level}_avg={avg:.2f}{' MASTERED' if mastered else ''}",
             flush=True,
         )
 
@@ -711,10 +712,12 @@ def load_and_prepare_dataset(
     num_examples: int | None = None,
     levels: list[int] | None = None,
 ) -> Dataset:
-    """Build a dataset with one entry per base_op.
+    """Build a dataset with one entry per (base_op, seed) combination.
+
+    13 ops × 8 seeds = 104 entries. Each gets its own GRPO rollout group.
 
     Args:
-        num_examples: Limit to first N ops (for quick testing).
+        num_examples: Limit total entries (for quick testing).
         levels: Which op tiers to include. [1] = 13 L1 ops, [2] = 18 L2 ops,
                 [1,2] = all 31. Defaults to [1].
     """
@@ -724,19 +727,21 @@ def load_and_prepare_dataset(
         pool.extend(L1_OPS)
     if 2 in levels:
         pool.extend(L2_OPS)
-    ops = pool[:num_examples] if num_examples and num_examples < len(pool) else pool
     records = []
-    for i, base_op in enumerate(ops):
+    for i, base_op in enumerate(pool):
         prompt_text = build_generator_prompt(base_op)
-        records.append({
-            "prompt": [{"role": "user", "content": prompt_text}],
-            "answer": "",
-            "info": json.dumps({"base_op": base_op}),
-            "task": "arc_curriculum",
-            "example_id": i,
-        })
+        for seed in SEEDS:
+            records.append({
+                "prompt": [{"role": "user", "content": prompt_text}],
+                "answer": "",
+                "info": json.dumps({"base_op": base_op, "seed": seed}),
+                "task": "arc_curriculum",
+                "example_id": len(records),
+            })
+    if num_examples and num_examples < len(records):
+        records = records[:num_examples]
 
-    logger.info(f"Prepared {len(records)} curriculum examples ({len(BASE_OPS)} base_ops available)")
+    logger.info(f"Prepared {len(records)} curriculum examples ({len(pool)} ops × {len(SEEDS)} seeds)")
     return Dataset.from_list(records)
 
 
@@ -784,9 +789,8 @@ GENERATOR_SYSTEM_PROMPT = (
 def load_environment(
     num_examples: int | None = None,
     levels: list[int] | None = None,
-    skip_threshold: float | None = None,
-    skip_window: int = 40,
-    probe_interval: int = 40,
+    mastery_threshold: float = 0.7,
+    mastery_window: int = 40,
     actor_endpoints: dict[str, str] | None = None,
     **kwargs,
 ) -> ArcCurriculumEnv:
@@ -823,9 +827,11 @@ def load_environment(
         codegen_v1b_agent.client = AsyncOpenAI(base_url=v1b_url, api_key="EMPTY")
 
     pipeline_env = ArcCurriculumEnv(
-        rubric=rubric, dataset=dataset,
-        skip_threshold=skip_threshold, skip_window=skip_window,
-        probe_interval=probe_interval, **kwargs,
+        mastery_threshold=mastery_threshold,
+        mastery_window=mastery_window,
+        rubric=rubric,
+        dataset=dataset,
+        **kwargs,
     )
     codegen_v1b_env = CodegenEnv(actor_id="codegen_v1b", env_name="codegen_v1b")
 

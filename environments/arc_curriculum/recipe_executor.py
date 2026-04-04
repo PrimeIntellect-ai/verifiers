@@ -3,16 +3,11 @@
 Takes JSON recipes from the curriculum generator LoRA and produces
 ARC tasks by calling existing generators and applying compositions.
 
-The generator receives a prompt specifying ONE base_op and outputs
-a difficulty level (1-3). The seed is fixed externally so GRPO
-compares level choices directly.
-
-Recipe format:
-    {
-        "base_op": "gravity_drop",      # set by the pipeline
-        "level": 2,                     # chosen by the generator (1, 2, or 3)
-        "seed": 42                      # fixed externally
-    }
+The generator picks a difficulty level (A/B/C → 1/2/3). The seed
+comes from the dataset (8 seeds per op). Grid sizes:
+    A (level 1) = 5-8   (matches fixed L1 dataset)
+    B (level 2) = 8-12
+    C (level 3) = 12-16
 """
 
 from __future__ import annotations
@@ -102,10 +97,10 @@ ALL_OPS = BASE_OPS + POST_OPS
 def _curriculum_grid_dims(level, rng):
     """Grid sizes for curriculum levels. Monkey-patched onto generators at import."""
     if level == 1:
-        return rng.randint(2, 5), rng.randint(2, 5)
-    if level == 2:
         return rng.randint(5, 8), rng.randint(5, 8)
-    return rng.randint(8, 12), rng.randint(8, 12)
+    if level == 2:
+        return rng.randint(8, 12), rng.randint(8, 12)
+    return rng.randint(12, 16), rng.randint(12, 16)
 
 
 # ─── Generator import ────────────────────────────────────────────────────────
@@ -159,7 +154,7 @@ def validate_task(task: dict) -> bool:
 
 # ─── Recipe execution ────────────────────────────────────────────────────────
 
-FIXED_SEED = 1337
+SEEDS = [1337, 42, 7890, 2024, 555, 9001, 314, 8675]
 
 
 def execute_recipe(recipe: dict) -> dict | None:
@@ -176,7 +171,7 @@ def execute_recipe(recipe: dict) -> dict | None:
     level = recipe.get("level", 2)
     if level not in (1, 2, 3):
         level = 2
-    seed = recipe.get("seed", FIXED_SEED)
+    seed = recipe.get("seed", SEEDS[0])
     post_ops = recipe.get("post_ops", [])
 
     for op in post_ops:
