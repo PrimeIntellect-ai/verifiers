@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
@@ -34,6 +36,7 @@ class NemoGymEnv(vf.Environment):
         head_server_client_host: str = "127.0.0.1",
         policy_base_url: str | None = None,
         policy_api_key: str | None = None,
+        policy_model_config: str | None = None,
         system_prompt: str | None = None,
         **kwargs: Any,
     ):
@@ -45,6 +48,7 @@ class NemoGymEnv(vf.Environment):
         self.head_server_client_host = head_server_client_host
         self.policy_base_url = policy_base_url
         self.policy_api_key = policy_api_key
+        self.policy_model_config = policy_model_config
 
         self._run_helper: Any | None = None
         self._rch: Any | None = None
@@ -74,28 +78,25 @@ class NemoGymEnv(vf.Environment):
             from omegaconf import DictConfig
         except ImportError as exc:
             raise ImportError(
-                "NemoGymEnv currently requires nemo-gym installed as an editable local clone (this should be resolved on 0.3):\n"
+                "NemoGymEnv currently requires nemo-gym installed as an editable local clone (this will update to support PyPI soon):\n"
                 "  git clone https://github.com/NVIDIA-NeMo/Gym /path/to/Gym\n"
                 "  pip install -e /path/to/Gym"
             ) from exc
 
-        import importlib.util
-        from pathlib import Path
-
-        responses_spec = importlib.util.find_spec("responses_api_models")
-        if responses_spec and responses_spec.submodule_search_locations:
-            responses_root = Path(next(iter(responses_spec.submodule_search_locations)))
-            policy_model_config = str(
-                responses_root
-                / "vllm_model"
-                / "configs"
-                / "vllm_model_for_training.yaml"
-            )
+        if self.policy_model_config:
+            policy_model_config = self.policy_model_config
         else:
-            raise RuntimeError(
-                "Could not locate responses_api_models. "
-                "nemo-gym must be installed as an editable local clone: pip install -e /path/to/Gym (this should be resolved on 0.3)."
-            )
+            responses_spec = importlib.util.find_spec("responses_api_models")
+            if responses_spec and responses_spec.submodule_search_locations:
+                responses_root = Path(next(iter(responses_spec.submodule_search_locations)))
+                policy_model_config = str(
+                    responses_root / "vllm_model" / "configs" / "vllm_model_for_training.yaml"
+                )
+            else:
+                raise RuntimeError(
+                    "Could not locate responses_api_models. "
+                    "nemo-gym must be installed as an editable local clone: pip install -e /path/to/Gym (this will update to support PyPI soon)."
+                )
 
         config = {
             HEAD_SERVER_KEY_NAME: {
