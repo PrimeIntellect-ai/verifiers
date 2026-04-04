@@ -1,5 +1,8 @@
 """Tests for the composable architecture: Task, TaskSet, SandboxTaskSet, SandboxSpec."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 import verifiers as vf
@@ -198,3 +201,60 @@ async def test_composable_env_exports_task_workdir():
 
     assert env_vars["AGENT_WORKDIR"] == "/testbed"
     assert env_vars["FOO"] == "bar"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_quotes_paths_in_mkdir_command():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            instruction_path="/tmp/with space/prompt.txt",
+            system_prompt="system",
+            system_prompt_path="/tmp/other path/system.txt",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    env.sandbox_client.execute_command.assert_awaited_once_with(
+        "sbx",
+        "mkdir -p '/tmp/other path' '/tmp/with space'",
+        timeout=10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_composable_env_quotes_log_path_when_collecting_logs():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            log_path="/tmp/log dir/agent.log",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="agent log\n", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {"sandbox_id": "sbx", "timing": {"total_ms": 0}}
+
+    await env.post_rollout(state)
+
+    env.sandbox_client.execute_command.assert_awaited_once_with(
+        "sbx",
+        "cat '/tmp/log dir/agent.log' 2>/dev/null || echo '<no logs>'",
+        working_dir=None,
+    )
+    assert state["agent_logs"] == "agent log"
