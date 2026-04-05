@@ -154,7 +154,17 @@ def validate_task(task: dict) -> bool:
 
 # ─── Recipe execution ────────────────────────────────────────────────────────
 
-SEEDS = [1337, 42, 7890, 2024, 555, 9001, 314, 8675]
+TASKS_PER_OP = 20
+
+
+def seeds_for_op(base_op: str, level: int = 1) -> list[int]:
+    """Compute seeds matching the fixed bhoy/arc-synthetic dataset.
+
+    Formula: 10000 * level + cat_idx * 1000 + task_idx
+    """
+    all_ops = L1_OPS + L2_OPS
+    cat_idx = all_ops.index(base_op)
+    return [10000 * level + cat_idx * 1000 + i for i in range(TASKS_PER_OP)]
 
 
 def execute_recipe(recipe: dict) -> dict | None:
@@ -171,7 +181,7 @@ def execute_recipe(recipe: dict) -> dict | None:
     level = recipe.get("level", 2)
     if level not in (1, 2, 3):
         level = 2
-    seed = recipe.get("seed", SEEDS[0])
+    seed = recipe.get("seed", seeds_for_op(base_op, level)[0])
     post_ops = recipe.get("post_ops", [])
 
     for op in post_ops:

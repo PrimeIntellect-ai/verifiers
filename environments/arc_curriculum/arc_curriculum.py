@@ -45,7 +45,7 @@ from verifiers.types import Messages, State
 from collections import deque
 
 from recipe_executor import (
-    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS, SEEDS,
+    L1_OPS, L2_OPS, BASE_OPS, POST_OPS, ALL_OPS, seeds_for_op, TASKS_PER_OP,
     execute_recipe, parse_generator_output, generator_reward,
     build_generator_prompt, validate_task, OP_DESCRIPTIONS,
 )
@@ -633,7 +633,7 @@ class ArcCurriculumEnv(MultiAgentEnv):
 
         # Force base_op and seed from dataset
         recipe["base_op"] = target_base_op
-        recipe["seed"] = info.get("seed", SEEDS[0])
+        recipe["seed"] = info.get("seed", seeds_for_op(target_base_op)[0])
         level = recipe.get("level", 2)
 
         task = execute_recipe(recipe)
@@ -718,7 +718,8 @@ def load_and_prepare_dataset(
 ) -> Dataset:
     """Build a dataset with one entry per (base_op, seed) combination.
 
-    13 ops × 8 seeds = 104 entries. Each gets its own GRPO rollout group.
+    Uses the same seeds as the fixed bhoy/arc-synthetic dataset:
+    13 ops × 20 seeds = 260 entries for L1. Each gets its own GRPO rollout group.
 
     Args:
         num_examples: Limit total entries (for quick testing).
@@ -732,9 +733,9 @@ def load_and_prepare_dataset(
     if 2 in levels:
         pool.extend(L2_OPS)
     records = []
-    for i, base_op in enumerate(pool):
+    for base_op in pool:
         prompt_text = build_generator_prompt(base_op)
-        for seed in SEEDS:
+        for seed in seeds_for_op(base_op, level=1):
             records.append({
                 "prompt": [{"role": "user", "content": prompt_text}],
                 "answer": "",
@@ -745,7 +746,7 @@ def load_and_prepare_dataset(
     if num_examples and num_examples < len(records):
         records = records[:num_examples]
 
-    logger.info(f"Prepared {len(records)} curriculum examples ({len(pool)} ops × {len(SEEDS)} seeds)")
+    logger.info(f"Prepared {len(records)} curriculum examples ({len(pool)} ops × {TASKS_PER_OP} seeds)")
     return Dataset.from_list(records)
 
 
