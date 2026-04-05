@@ -1457,7 +1457,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
     assert "Task\nSolve the puzzle" in items["details:details-task"].body
     assert "tool 1  search" in items["history"].body
     assert "Sunny" in items["history"].body
-    assert "Tokens\ninput_tokens: 123" in items["details"].body
+    assert "Tokens\nprefill_tokens: 123" in items["details"].body
     assert "judge_response" in items["details:details-info"].body
     assert '"winner": "assistant"' in items["details:details-info"].body
 

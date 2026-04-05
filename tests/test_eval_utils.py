@@ -134,5 +134,5 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     captured = capsys.readouterr()
 
     assert "Usage:" in captured.out
-    assert "input_tokens (avg): 8.000" in captured.out
-    assert "output_tokens (avg): 3.000" in captured.out
+    assert "cumulative_prefill_tokens (avg): 8.000" in captured.out
+    assert "cumulative_decode_tokens (avg): 3.000" in captured.out

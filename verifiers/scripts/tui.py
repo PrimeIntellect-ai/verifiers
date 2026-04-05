@@ -3111,12 +3111,16 @@ class ViewRunScreen(Screen):
         sampling_args = meta.get("sampling_args", {})
         usage_items: List[Tuple[str, str]] = []
         if isinstance(usage, dict):
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            if input_tokens is not None:
-                usage_items.append(("Avg input tokens", format_numeric(input_tokens)))
-            if output_tokens is not None:
-                usage_items.append(("Avg output tokens", format_numeric(output_tokens)))
+            prefill = usage.get("cumulative_prefill_tokens")
+            if prefill is None:
+                prefill = usage.get("input_tokens")
+            decode = usage.get("cumulative_decode_tokens")
+            if decode is None:
+                decode = usage.get("output_tokens")
+            if prefill is not None:
+                usage_items.append(("Avg prefill tokens", format_numeric(prefill)))
+            if decode is not None:
+                usage_items.append(("Avg decode tokens", format_numeric(decode)))
         max_tokens = sampling_args.get("max_tokens")
         if max_tokens not in (None, ""):
             usage_items.append(("Max tokens", str(max_tokens)))
@@ -4581,12 +4585,16 @@ class ViewRunScreen(Screen):
         token_usage = record.get("token_usage")
         if isinstance(token_usage, dict):
             usage_lines = []
-            input_tokens = token_usage.get("input_tokens")
-            output_tokens = token_usage.get("output_tokens")
-            if input_tokens is not None:
-                usage_lines.append(f"input_tokens: {format_numeric(input_tokens)}")
-            if output_tokens is not None:
-                usage_lines.append(f"output_tokens: {format_numeric(output_tokens)}")
+            prefill = token_usage.get("cumulative_prefill_tokens")
+            if prefill is None:
+                prefill = token_usage.get("input_tokens")
+            decode = token_usage.get("cumulative_decode_tokens")
+            if decode is None:
+                decode = token_usage.get("output_tokens")
+            if prefill is not None:
+                usage_lines.append(f"prefill_tokens: {format_numeric(prefill)}")
+            if decode is not None:
+                usage_lines.append(f"decode_tokens: {format_numeric(decode)}")
             self._append_context_section(out, "Tokens", "\n".join(usage_lines))
 
         timing = record.get("timing")
