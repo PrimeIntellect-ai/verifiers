@@ -24,6 +24,10 @@ from verifiers.envs.experimental.resource_managers.sandbox_manager import (
     SandboxManager,
 )
 from verifiers.envs.experimental.resource_managers.retry import RetryConfig
+from verifiers.envs.experimental.resource_managers.errors import (
+    SandboxCreationError,
+    SandboxNotReadyError,
+)
 
 
 class TestResourceManagerErrorTracking:
@@ -173,7 +177,7 @@ class TestSandboxManagerErrorTracking:
 
     @pytest.mark.asyncio
     async def test_ready_failure_records_error(self, sandbox_manager):
-        """Sandbox ready failure should record error."""
+        """Sandbox ready failure should record error in failure_info."""
         manager, mock_client = sandbox_manager
 
         # Make create succeed but ready fail
@@ -191,14 +195,16 @@ class TestSandboxManagerErrorTracking:
         with pytest.raises(SandboxNotReadyError):
             await manager.wait_for_ready(sandbox.id)
 
-        errors = manager.get_all_errors()
-        assert len(errors) == 1
-        assert errors[0].phase == "ready"
-        assert errors[0].rollout_id == "rollout-1"
+        # Failure tracked in sandbox.failure_info
+        assert sandbox.failure_info.not_ready is True
+        assert "Timeout waiting for ready" in sandbox.failure_info.error_message
 
     @pytest.mark.asyncio
     async def test_execute_failure_records_error(self, sandbox_manager):
-        """Command execution failure should record error."""
+        """Command execution OOM failure should record error in failure_info."""
+        from prime_sandboxes import SandboxOOMError as PrimeOOMError
+        from verifiers.envs.experimental.resource_managers.errors import SandboxOOMError
+
         manager, mock_client = sandbox_manager
 
         # Make create and ready succeed
@@ -206,18 +212,19 @@ class TestSandboxManagerErrorTracking:
         mock_sandbox.id = "sandbox-123"
         mock_client.create = AsyncMock(return_value=mock_sandbox)
         mock_client.wait_for_creation = AsyncMock()
-        mock_client.execute_command = AsyncMock(
-            side_effect=Exception("Connection reset")
-        )
 
         sandbox = await manager.acquire(rollout_id="rollout-1")
 
-        with pytest.raises(Exception, match="Connection reset"):
+        # Set up OOM error after acquire
+        mock_client.execute_command = AsyncMock(
+            side_effect=PrimeOOMError(sandbox_id=sandbox.id)
+        )
+
+        with pytest.raises(SandboxOOMError):
             await manager.execute_command(sandbox.id, "echo test")
 
-        errors = manager.get_all_errors()
-        assert len(errors) == 1
-        assert errors[0].phase == "execute"
+        # Failure tracked in sandbox.failure_info
+        assert sandbox.failure_info.oom is True
 
 
 class TestFailureScenarios:

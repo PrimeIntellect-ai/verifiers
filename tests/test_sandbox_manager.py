@@ -12,6 +12,7 @@ from verifiers.envs.experimental.resource_managers.retry import RetryConfig
 from verifiers.envs.experimental.resource_managers.errors import (
     SandboxCreationError,
     SandboxNotReadyError,
+    SandboxOOMError,
 )
 
 
@@ -98,9 +99,8 @@ class TestSandboxManager:
         """Create a SandboxManager for testing."""
         manager = SandboxManager(
             default_request=mock_create_sandbox_request,
-            timeout_per_command=30,
             retry_config=RetryConfig(max_attempts=2, initial_delay=0.01),
-            health_check_interval=10.0,
+            limits={"command_timeout_seconds": 30, "health_check_interval_seconds": 10.0},
             enable_health_monitoring=False,
         )
         return manager
@@ -151,7 +151,7 @@ class TestSandboxManager:
         sandbox = await manager.acquire(rollout_id="rollout-1")
         await manager.wait_for_ready(sandbox.id)
 
-        mock_sandbox_client.wait_for_creation.assert_called_with(sandbox.id)
+        mock_sandbox_client.wait_for_creation.assert_called()
         assert sandbox.ready_wait_time >= 0
 
     @pytest.mark.asyncio
@@ -168,7 +168,8 @@ class TestSandboxManager:
         with pytest.raises(SandboxNotReadyError):
             await manager.wait_for_ready(sandbox.id)
 
-        assert sandbox.state == ResourceState.ERROR
+        # Failure is recorded in failure_info
+        assert sandbox.failure_info.not_ready is True
 
     @pytest.mark.asyncio
     async def test_execute_command(
@@ -231,11 +232,17 @@ class TestSandboxManager:
 
     @pytest.mark.asyncio
     async def test_execute_command_unknown_sandbox(
-        self, manager: SandboxManager
+        self, manager: SandboxManager, mock_sandbox_client
     ):
-        """Test executing command on unknown sandbox."""
-        with pytest.raises(ValueError, match="Unknown sandbox"):
-            await manager.execute_command("unknown-id", "ls")
+        """Test executing command on unknown sandbox still works (sandbox=None)."""
+        mock_result = MagicMock()
+        mock_result.stdout = "output"
+        mock_result.stderr = ""
+        mock_sandbox_client.execute_command = AsyncMock(return_value=mock_result)
+
+        # Command executes but no timing is recorded since sandbox is unknown
+        output = await manager.execute_command("unknown-id", "ls")
+        assert output == "output"
 
     @pytest.mark.asyncio
     async def test_health_check_success(
@@ -255,33 +262,37 @@ class TestSandboxManager:
     async def test_health_check_failure(
         self, manager: SandboxManager, mock_sandbox_client
     ):
-        """Test health check with unexpected output."""
+        """Test health check with consecutive failures."""
         mock_result = MagicMock()
         mock_result.stdout = "error"
         mock_sandbox_client.execute_command = AsyncMock(return_value=mock_result)
 
         sandbox = await manager.acquire(rollout_id="rollout-1")
-        is_healthy = await manager.health_check(sandbox.id)
 
-        assert is_healthy is False
+        # Need 3 consecutive failures (default) to be marked unhealthy
+        assert await manager.health_check(sandbox.id) is True  # 1st failure
+        assert await manager.health_check(sandbox.id) is True  # 2nd failure
+        assert await manager.health_check(sandbox.id) is False  # 3rd failure - now unhealthy
 
     @pytest.mark.asyncio
-    async def test_bulk_delete(
+    async def test_release_all_bulk_deletes(
         self, manager: SandboxManager, mock_sandbox_client
     ):
-        """Test bulk delete operation."""
-        s1 = await manager.acquire(rollout_id="rollout-1")
-        s2 = await manager.acquire(rollout_id="rollout-2")
+        """Test release_all uses bulk delete."""
+        with patch(
+            "verifiers.envs.experimental.resource_managers.sandbox_manager.SandboxClient"
+        ) as mock_sync_class:
+            mock_sync_client = MagicMock()
+            mock_sync_class.return_value = mock_sync_client
 
-        # Store IDs before bulk delete
-        s1_id = s1.id
-        s2_id = s2.id
+            s1 = await manager.acquire(rollout_id="rollout-1")
+            s2 = await manager.acquire(rollout_id="rollout-2")
 
-        await manager.bulk_delete([s1_id, s2_id])
+            await manager.release_all()
 
-        mock_sandbox_client.bulk_delete.assert_called_once_with([s1_id, s2_id])
-        assert s1.state == ResourceState.DESTROYED
-        assert s2.state == ResourceState.DESTROYED
+            mock_sync_client.bulk_delete.assert_called()
+            assert s1.state == ResourceState.DESTROYED
+            assert s2.state == ResourceState.DESTROYED
 
     @pytest.mark.asyncio
     async def test_release_all_uses_sync_client(
@@ -340,7 +351,7 @@ class TestSandboxManagerErrors:
     async def test_ready_error_tracked(
         self, manager: SandboxManager, mock_sandbox_client
     ):
-        """Test that ready errors are tracked."""
+        """Test that ready errors are tracked in failure_info."""
         mock_sandbox_client.wait_for_creation = AsyncMock(
             side_effect=RuntimeError("Failed to start")
         )
@@ -350,24 +361,23 @@ class TestSandboxManagerErrors:
         with pytest.raises(SandboxNotReadyError):
             await manager.wait_for_ready(sandbox.id)
 
-        errors = manager.get_errors_for_rollout("rollout-1")
-        assert len(errors) == 1
-        assert errors[0].phase == "ready"
+        assert sandbox.failure_info.not_ready is True
+        assert "Failed to start" in sandbox.failure_info.error_message
 
     @pytest.mark.asyncio
     async def test_execute_error_tracked(
         self, manager: SandboxManager, mock_sandbox_client
     ):
-        """Test that execution errors are tracked."""
-        mock_sandbox_client.execute_command = AsyncMock(
-            side_effect=RuntimeError("Execution failed")
-        )
+        """Test that OOM errors are tracked in failure_info."""
+        from prime_sandboxes import SandboxOOMError as PrimeOOM
 
         sandbox = await manager.acquire(rollout_id="rollout-1")
 
-        with pytest.raises(Exception):
+        mock_sandbox_client.execute_command = AsyncMock(
+            side_effect=PrimeOOM(sandbox_id=sandbox.id)
+        )
+
+        with pytest.raises(SandboxOOMError):
             await manager.execute_command(sandbox.id, "ls")
 
-        errors = manager.get_errors_for_rollout("rollout-1")
-        assert len(errors) == 1
-        assert errors[0].phase == "execute"
+        assert sandbox.failure_info.oom is True

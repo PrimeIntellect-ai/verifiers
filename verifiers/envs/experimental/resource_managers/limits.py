@@ -125,32 +125,6 @@ DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
 }
 
 
-# Preset configurations for common use cases
-
-AGGRESSIVE_LIMITS: SandboxLimits = {
-    **DEFAULT_SANDBOX_LIMITS,
-    "command_timeout_seconds": 60,
-    "ready_timeout_seconds": 600,
-    "ready_max_attempts": 240,
-    "health_check_consecutive_failures": 5,
-    "gc_orphan_threshold_seconds": 600.0,
-    "max_concurrent_creates": 100,
-}
-"""Longer timeouts for complex environments or slow networks."""
-
-
-CONSERVATIVE_LIMITS: SandboxLimits = {
-    **DEFAULT_SANDBOX_LIMITS,
-    "command_timeout_seconds": 15,
-    "ready_timeout_seconds": 120,
-    "ready_max_attempts": 60,
-    "health_check_consecutive_failures": 2,
-    "gc_orphan_threshold_seconds": 120.0,
-    "max_concurrent_creates": 20,
-}
-"""Shorter timeouts for fast-fail scenarios."""
-
-
 def merge_limits(base: SandboxLimits, overrides: SandboxLimits | None) -> SandboxLimits:
     """Merge override limits into base limits.
 

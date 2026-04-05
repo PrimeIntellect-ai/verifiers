@@ -99,36 +99,4 @@ class RetryConfig:
         return self.build_retryer(logger).wraps(func)
 
 
-# Default configs for common use cases
 DEFAULT_RETRY_CONFIG = RetryConfig()
-
-AGGRESSIVE_RETRY_CONFIG = RetryConfig(
-    max_attempts=10,
-    initial_delay=0.25,
-    max_delay=60.0,
-    jitter=0.2,
-)
-
-CONSERVATIVE_RETRY_CONFIG = RetryConfig(
-    max_attempts=3,
-    initial_delay=1.0,
-    max_delay=10.0,
-    jitter=0.05,
-)
-
-
-# Common retry predicates
-def is_transient_error(exc: Exception) -> bool:
-    """Retry on transient/temporary errors."""
-    transient_keywords = ["timeout", "transient", "temporary", "retry", "unavailable", "503", "429"]
-    exc_str = str(exc).lower()
-    return any(kw in exc_str for kw in transient_keywords)
-
-
-def is_connection_error(exc: Exception) -> bool:
-    """Retry on connection-related errors."""
-    connection_types = (ConnectionError, TimeoutError, OSError)
-    if isinstance(exc, connection_types):
-        return True
-    connection_keywords = ["connection", "network", "socket", "refused", "reset"]
-    return any(kw in str(exc).lower() for kw in connection_keywords)

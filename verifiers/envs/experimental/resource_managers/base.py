@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, AsyncIterator, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.resource_managers.retry import RetryConfig
@@ -256,19 +258,3 @@ class ResourceManager(ABC, Generic[R]):
     async def _check_health_impl(self, resource_id: str) -> bool:
         """Check if resource is healthy. Called by health_check()."""
         pass
-
-
-@asynccontextmanager
-async def managed_resources(manager: ResourceManager[R]) -> AsyncIterator[ResourceManager[R]]:
-    """Context manager for resource lifecycle.
-
-    Usage:
-        async with managed_resources(SandboxManager(...)) as manager:
-            sandbox = await manager.acquire(...)
-            # use sandbox
-        # cleanup happens here
-    """
-    try:
-        yield manager
-    finally:
-        await manager.release_all()

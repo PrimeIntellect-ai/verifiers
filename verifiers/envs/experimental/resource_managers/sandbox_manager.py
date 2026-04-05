@@ -17,12 +17,12 @@ import uuid
 import weakref
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import batched
 from pathlib import Path
 from statistics import mean
-from typing import Any, AsyncIterator, Generator, Protocol, Self
+from typing import Any, AsyncIterator, Protocol, Self
 
 from prime_sandboxes import (
     AsyncSandboxClient,
@@ -59,59 +59,11 @@ from verifiers.envs.experimental.resource_managers.recorder import (
     CommandEvent,
     NullRecorder,
     Recorder,
-    StateChangeEvent,
 )
 from verifiers.utils.thread_utils import get_or_create_thread_attr, get_or_create_thread_loop
 
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Port Allocation (inspired by frontier-evals)
-# ---------------------------------------------------------------------------
-
-_FREE_PORTS: set[int] = set()
-_PORTS_INITIALIZED: bool = False
-
-
-def _init_port_pool() -> None:
-    """Initialize the port pool from environment or defaults."""
-    global _FREE_PORTS, _PORTS_INITIALIZED
-    if _PORTS_INITIALIZED:
-        return
-    port_range = os.getenv("SANDBOX_PORT_RANGE", "20000-30000")
-    start, end = map(int, port_range.split("-"))
-    _FREE_PORTS = set(range(start, end))
-    _PORTS_INITIALIZED = True
-
-
-@contextmanager
-def allocate_port() -> Generator[int, None, None]:
-    global _FREE_PORTS
-    _init_port_pool()
-
-    if not _FREE_PORTS:
-        raise RuntimeError("No free ports available in pool")
-
-    port = _FREE_PORTS.pop()
-    logger.debug(f"Allocated port {port}, {len(_FREE_PORTS)} remaining")
-    try:
-        yield port
-    finally:
-        _FREE_PORTS.add(port)
-        logger.debug(f"Freed port {port}, {len(_FREE_PORTS)} available")
-
-
-def get_available_ports() -> int:
-    """Get the number of available ports in the pool."""
-    _init_port_pool()
-    return len(_FREE_PORTS)
-
-
-# ---------------------------------------------------------------------------
-# File-based locking for GC leader election (inspired by frontier-evals)
-# ---------------------------------------------------------------------------
 
 class FileLock:
     """Simple file-based lock for cross-process coordination.
