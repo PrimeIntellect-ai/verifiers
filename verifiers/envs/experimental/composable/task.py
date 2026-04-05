@@ -33,6 +33,30 @@ from verifiers.types import Messages, State
 
 
 @dataclass
+class MCPServerSpec:
+    """An MCP server that a TaskSet provides to the agent.
+
+    The server is spawned by the agent harness via stdio transport.
+    The harness maps this spec to its own config format (e.g. OpenCode's
+    ``mcp`` section, Claude Code's ``--mcp-server`` flag, etc.).
+
+    The taskset is responsible for getting the server binary/script into
+    the sandbox (e.g. via ``setup()``, docker image, or install script).
+
+    Attributes
+    ----------
+    command:
+        Command to start the server inside the sandbox,
+        e.g. ``["python", "/task/tools/serper_search.py"]``.
+    env_vars:
+        Environment variables the server needs (e.g. API keys).
+    """
+
+    command: list[str]
+    env_vars: dict[str, str] | None = None
+
+
+@dataclass
 class SandboxSpec:
     """Sandbox requirements for a task instance."""
 
@@ -132,6 +156,18 @@ class TaskSet:
         return "/app"
 
     def get_env_vars(self) -> dict[str, str]:
+        return {}
+
+    def get_mcp_servers(self) -> dict[str, MCPServerSpec]:
+        """MCP servers this task provides to the agent.
+
+        Returns a mapping of server name → MCPServerSpec.  The ComposableEnv
+        uploads any declared files into the sandbox and passes the server
+        configs to the Harness, which maps them to the agent's native MCP
+        configuration format.
+
+        Default: no MCP servers.
+        """
         return {}
 
     async def setup(self, state: State) -> None:

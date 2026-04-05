@@ -15,6 +15,7 @@ The task and harness each own different concerns.  ComposableEnv connects them:
 - Sandbox setup: ``setup(sandbox_client, sandbox_id, state)``
 - Evaluation: ``evaluate(...)``
 - Environment variables: ``get_env_vars() -> dict``
+- MCP tool servers: ``get_mcp_servers() -> dict[str, MCPServerSpec]``
 
 **Harness owns** (via Harness dataclass):
 - How to install the agent: ``install_script``
@@ -27,7 +28,8 @@ The task and harness each own different concerns.  ComposableEnv connects them:
 **ComposableEnv connects them**:
 1. Writes task's instruction text → harness's instruction_path
 2. Writes harness's system prompt → harness's system_prompt_path
-3. Harness's ``run_command`` reads from these paths
+3. Uploads MCP server files and passes specs to harness via ``format_mcp_config``
+4. Harness's ``run_command`` reads from these paths
 
 ComposableEnv exports the task's working directory as ``AGENT_WORKDIR`` for
 harnesses that need a per-instance workdir while still using a static
@@ -166,7 +168,20 @@ class ComposableEnv(CliAgentEnv):
                 sandbox_id, self.harness.system_prompt, self.harness.system_prompt_path
             )
 
-        # 5. Install agent binary
+        # 5. Wire MCP servers from taskset into harness
+        mcp_servers = self.taskset.get_mcp_servers()
+        if mcp_servers:
+            self.harness.mcp_servers = mcp_servers
+            mcp_config = self.harness.format_mcp_config(mcp_servers)
+            if mcp_config is None:
+                raise NotImplementedError(
+                    f"TaskSet provides MCP servers {list(mcp_servers)} but "
+                    f"harness {type(self.harness).__name__} does not implement "
+                    f"format_mcp_config"
+                )
+            await self.upload_content(sandbox_id, mcp_config, "/task/mcp_config.json")
+
+        # 6. Install agent binary
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
             result = await self.sandbox_client.execute_command(
