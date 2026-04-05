@@ -1240,6 +1240,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         enable_sub_llms: bool = True,
         enable_summarization: bool = False,
         min_turns_in_context: int = 3,
+        max_turns_in_context: int | None = None,
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
@@ -1255,6 +1256,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         self.enable_sub_llms = enable_sub_llms
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
+        self.max_turns_in_context = max_turns_in_context
 
     def build_base_system_prompt(self) -> str:
         """Select the base system prompt or custom override."""
@@ -1362,13 +1364,20 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
             return self.MESSAGE_HISTORY_NOTE_BASH
         return self.MESSAGE_HISTORY_NOTE_PYTHON
 
-    def build_context_dropping_note(self) -> str:
-        """Return context-dropping documentation note, or empty string.
-
-        Currently returns empty — the ``summarize_turns`` tool docstring and
-        rejection messages provide all necessary information to the model.
-        """
-        return ""
+    def build_turn_limit_note(self) -> str:
+        """Return context-dropping documentation note, or empty string."""
+        if self.max_turns_in_context is None:
+            return ""
+        note = (
+            f"\nYour session will end after {self.max_turns_in_context}"
+            f" turns in context (each tool call counts as one turn)."
+        )
+        if self.enable_summarization:
+            note += (
+                " Use `summarize_turns` to drop old turns and stay"
+                f" within this limit beyond {self.max_turns_in_context} turns."
+            )
+        return note + "\n"
 
     def build_root_budget_note(self) -> str:
         """Return root-model token budget note, or empty string."""
@@ -1401,7 +1410,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
             + self.build_message_history_note()
-            + self.build_context_dropping_note()
+            + self.build_turn_limit_note()
         )
         return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
 
@@ -2548,6 +2557,7 @@ class RLMEnv(vf.StatefulToolEnv):
             enable_sub_llms=self.enable_sub_llms,
             enable_summarization=self.enable_summarization,
             min_turns_in_context=self.min_turns_in_context,
+            max_turns_in_context=self.max_turns_in_context,
         )
 
         # Add the REPL tool (state is injected via update_tool_args)
