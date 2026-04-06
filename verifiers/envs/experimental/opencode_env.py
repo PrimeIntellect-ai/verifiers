@@ -71,6 +71,12 @@ export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
 
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
+
 SCHEMA_DOLLAR='$'
 
 cat > ~/.config/opencode/opencode.json << EOFCONFIG
