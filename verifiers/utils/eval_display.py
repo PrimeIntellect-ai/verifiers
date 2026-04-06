@@ -957,8 +957,8 @@ class EvalDisplay(BaseDisplay):
             for env_state in self.state.envs.values()
         )
         if show_usage:
-            table.add_column("prefill", justify="center")
-            table.add_column("decode", justify="center")
+            table.add_column("input", justify="center")
+            table.add_column("output", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
@@ -979,16 +979,20 @@ class EvalDisplay(BaseDisplay):
             rollouts_str = str(config.rollouts_per_example)
 
             reward = f"{env_state.reward:.3f}"
-            prefill_tokens = None
-            decode_tokens = None
+            input_tokens = None
+            output_tokens = None
             usage = None
             if env_state.results is not None:
                 usage = env_state.results["metadata"].get("usage")
             else:
                 usage = env_state.usage
             if usage is not None:
-                prefill_tokens = format_numeric(usage.get("prefill_tokens", 0.0))
-                decode_tokens = format_numeric(usage.get("decode_tokens", 0.0))
+                inp = usage.get("input_tokens")
+                outp = usage.get("output_tokens")
+                if inp is not None:
+                    input_tokens = format_numeric(inp)
+                if outp is not None:
+                    output_tokens = format_numeric(outp)
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -1005,7 +1009,7 @@ class EvalDisplay(BaseDisplay):
 
             row = [config.env_id, status, examples_str, rollouts_str, reward]
             if show_usage:
-                row.extend([prefill_tokens or "-", decode_tokens or "-"])
+                row.extend([input_tokens or "-", output_tokens or "-"])
             row.extend([error_str, time_str])
             table.add_row(*row)
 
