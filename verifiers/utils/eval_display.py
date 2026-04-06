@@ -987,12 +987,8 @@ class EvalDisplay(BaseDisplay):
             else:
                 usage = env_state.usage
             if usage is not None:
-                inp = usage.get("input_tokens")
-                outp = usage.get("output_tokens")
-                if inp is not None:
-                    input_tokens = format_numeric(inp)
-                if outp is not None:
-                    output_tokens = format_numeric(outp)
+                input_tokens = format_numeric(usage.get("input_tokens", 0.0))
+                output_tokens = format_numeric(usage.get("output_tokens", 0.0))
 
             # error rate with color coding
             error_rate = env_state.error_rate
