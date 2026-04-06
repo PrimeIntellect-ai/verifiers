@@ -192,11 +192,11 @@ async def test_get_model_response_tracks_usage_on_state(
     await env.get_model_response(state=state, prompt=prompt)
 
     usage = env.get_state_usage(state)
-    assert usage == {"input_tokens": 14.0, "output_tokens": 9.0}
-    assert state["usage"] == {"input_tokens": 14.0, "output_tokens": 9.0}
+    assert usage == {"prefill_tokens": 14.0, "decode_tokens": 9.0}
+    assert state["usage"] == {"prefill_tokens": 14.0, "decode_tokens": 9.0}
     assert "usage_tracker" in state
     with pytest.raises(TypeError):
-        state["usage"]["input_tokens"] = 999  # read-only view
+        state["usage"]["prefill_tokens"] = 999  # read-only view
 
 
 @pytest.mark.asyncio
@@ -238,8 +238,8 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
 
     output = state_to_output(state, state_columns=[])
     usage = output["token_usage"]
-    assert usage["cumulative_prefill_tokens"] == 5.0
-    assert usage["cumulative_decode_tokens"] == 4.0
+    assert usage["prefill_tokens"] == 5.0
+    assert usage["decode_tokens"] == 4.0
 
 
 @pytest.mark.asyncio

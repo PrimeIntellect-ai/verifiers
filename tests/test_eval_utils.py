@@ -125,8 +125,8 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
         make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
         make_output(example_id=1, reward=0.0, metrics={"test_metric": 2.0}),
     ]
-    outputs[0]["token_usage"] = {"input_tokens": 10.0, "output_tokens": 4.0}
-    outputs[1]["token_usage"] = {"input_tokens": 6.0, "output_tokens": 2.0}
+    outputs[0]["token_usage"] = {"prefill_tokens": 10.0, "decode_tokens": 4.0}
+    outputs[1]["token_usage"] = {"prefill_tokens": 6.0, "decode_tokens": 2.0}
     metadata = make_metadata(num_examples=2, rollouts_per_example=1, usage=None)
 
     results = GenerateOutputs(outputs=outputs, metadata=metadata)
@@ -134,5 +134,5 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     captured = capsys.readouterr()
 
     assert "Usage:" in captured.out
-    assert "cumulative_prefill_tokens (avg): 8.000" in captured.out
-    assert "cumulative_decode_tokens (avg): 3.000" in captured.out
+    assert "prefill_tokens (avg): 8.000" in captured.out
+    assert "decode_tokens (avg): 3.000" in captured.out

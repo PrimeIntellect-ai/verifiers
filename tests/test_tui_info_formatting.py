@@ -1404,7 +1404,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
                 "answer": "42",
                 "stop_condition": "done",
                 "metrics": {"judge": 1.0},
-                "token_usage": {"input_tokens": 123, "output_tokens": 45},
+                "token_usage": {"prefill_tokens": 123, "decode_tokens": 45},
                 "timing": {"generation_ms": 12, "scoring_ms": 3, "total_ms": 15},
                 "info": {"trace": "ok"},
                 "judge_response": {"winner": "assistant"},

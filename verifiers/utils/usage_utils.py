@@ -61,8 +61,8 @@ class StateUsageTracker:
     def __init__(self) -> None:
         self._usage_seen = False
         self._usage_totals: dict[str, float] = {
-            "input_tokens": 0.0,
-            "output_tokens": 0.0,
+            "prefill_tokens": 0.0,
+            "decode_tokens": 0.0,
         }
         self._usage_view = MappingProxyType(self._usage_totals)
 
@@ -83,8 +83,8 @@ class StateUsageTracker:
             raise ValueError("Token usage increments must be non-negative.")
         if mark_seen:
             self._usage_seen = True
-        self._usage_totals["input_tokens"] += input_delta
-        self._usage_totals["output_tokens"] += output_delta
+        self._usage_totals["prefill_tokens"] += input_delta
+        self._usage_totals["decode_tokens"] += output_delta
 
     def increment_from_response(self, response: object) -> None:
         if getattr(response, "usage", None) is None:
@@ -96,54 +96,9 @@ class StateUsageTracker:
         if not self._usage_seen:
             return None
         return {
-            "input_tokens": self._usage_totals["input_tokens"],
-            "output_tokens": self._usage_totals["output_tokens"],
+            "prefill_tokens": self._usage_totals["prefill_tokens"],
+            "decode_tokens": self._usage_totals["decode_tokens"],
         }
-
-
-def _normalize_for_comparison(value: object) -> object:
-    """Normalize messages for prefix comparison.
-
-    Same idea as the TITO best-effort prefix matching: convert pydantic
-    objects to dicts and recursively normalize so that structurally
-    identical messages compare equal regardless of their Python type.
-    """
-    if hasattr(value, "model_dump"):
-        return _normalize_for_comparison(value.model_dump())  # type: ignore[union-attr]
-    if isinstance(value, Mapping):
-        return {str(k): _normalize_for_comparison(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_normalize_for_comparison(item) for item in value]
-    return value
-
-
-def _find_parent_step(
-    trajectory: list,
-    step_idx: int,
-    normalized_prompts: list,
-    normalized_completions: list,
-) -> int:
-    """Find the ancestor of trajectory[step_idx] via message prefix matching.
-
-    Walks backwards through prior steps.  A step *j* is a candidate parent
-    of step *i* when ``normalize(step_j.prompt + step_j.completion)`` is a
-    prefix of ``normalize(step_i.prompt)``.  Returns the index of the best
-    (longest prefix) match, or -1 if none.
-    """
-    target_prompt = normalized_prompts[step_idx]
-    best_idx = -1
-    best_prefix_len = 0
-    for j in range(step_idx - 1, -1, -1):
-        candidate = normalized_prompts[j] + normalized_completions[j]
-        prefix_len = len(candidate)
-        if prefix_len <= 0 or prefix_len <= best_prefix_len:
-            continue
-        if prefix_len > len(target_prompt):
-            continue
-        if target_prompt[:prefix_len] == candidate:
-            best_prefix_len = prefix_len
-            best_idx = j
-    return best_idx
 
 
 def compute_context_token_metrics(
@@ -151,78 +106,48 @@ def compute_context_token_metrics(
 ) -> dict[str, float]:
     """Compute context token metrics from the trajectory.
 
-    Uses the same message-prefix matching approach as the best-effort TITO
-    mechanism to detect which prior completions are still in context.  For
-    each step, ``step.prompt + step.completion`` is compared as a prefix
-    against later steps' prompts.  This automatically handles context
-    dropping, summarization, branching, and history rewriting — no
-    trajectory_id filtering required.
-
-    Finds the step with the largest total context (prompt_tokens +
-    completion_tokens), then walks its ancestor chain to partition context
-    into model-generated vs. non-model tokens.
+    Assumes a linear rollout: uses the last trajectory step with a
+    response as the reference point, and sums completion_tokens across
+    all steps as the model-generated tokens in context.
 
     Returns a dict with:
-        longest_context_completion_tokens: Model-generated tokens still
-            in context (sum of completion_tokens for in-context turns).
-        longest_context_non_completion_tokens: Non-model tokens in context
-            (total context minus completion tokens).
+        output_tokens: Model-generated tokens (sum of completion_tokens
+            across all steps).
+        input_tokens: Non-model tokens in context (last step's total
+            context minus output_tokens).
     """
     _zero: dict[str, float] = {
-        "longest_context_completion_tokens": 0,
-        "longest_context_non_completion_tokens": 0,
+        "output_tokens": 0,
+        "input_tokens": 0,
     }
     if not trajectory:
         return _zero
 
-    # Find the step with the largest total context.
-    best_step_idx = -1
-    best_total = -1
-    for i, step in enumerate(trajectory):
+    # Find the last step with a response.
+    last_step_total = 0
+    found = False
+    for step in reversed(trajectory):
         response = step.get("response")
         if response is None:
             continue
         prompt_tokens, completion_tokens = extract_usage_tokens(response)
-        total = prompt_tokens + completion_tokens
-        if total > best_total:
-            best_total = total
-            best_step_idx = i
+        last_step_total = prompt_tokens + completion_tokens
+        found = True
+        break
 
-    if best_step_idx < 0:
+    if not found:
         return _zero
 
-    # Pre-normalize all prompts and completions once.
-    normalized_prompts = [
-        _normalize_for_comparison(step.get("prompt") or []) for step in trajectory
-    ]
-    normalized_completions = [
-        _normalize_for_comparison(step.get("completion") or []) for step in trajectory
-    ]
-
-    # Build the ancestor chain for the target step via prefix matching.
-    chain_indices = [best_step_idx]
-    current_idx = best_step_idx
-    while current_idx > 0:
-        parent_idx = _find_parent_step(
-            trajectory, current_idx, normalized_prompts, normalized_completions
-        )
-        if parent_idx < 0:
-            break
-        chain_indices.append(parent_idx)
-        current_idx = parent_idx
-
-    # Sum completion tokens along the ancestor chain.
-    context_completion = 0
-    for idx in chain_indices:
-        response = trajectory[idx].get("response")
+    # Sum completion tokens across all steps.
+    total_completion = 0
+    for step in trajectory:
+        response = step.get("response")
         if response is None:
             continue
         _, completion_tokens = extract_usage_tokens(response)
-        context_completion += completion_tokens
+        total_completion += completion_tokens
 
     return {
-        "longest_context_completion_tokens": context_completion,
-        "longest_context_non_completion_tokens": max(
-            0, best_total - context_completion
-        ),
+        "output_tokens": total_completion,
+        "input_tokens": max(0, last_step_total - total_completion),
     }

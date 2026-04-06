@@ -642,71 +642,51 @@ def print_timing(results: GenerateOutputs):
     )
 
 
-def _get_token_value(usage: Mapping, new_key: str, old_key: str) -> float:
-    """Get token value from usage dict, trying new name then falling back to old."""
-    val = usage.get(new_key)
-    if val is None:
-        val = usage.get(old_key, 0.0)
-    return float(val)
-
-
 def print_usage(results: GenerateOutputs):
     usage_count = 0
     prefill_total = 0.0
     decode_total = 0.0
-    ctx_completion_total = 0.0
-    ctx_non_completion_total = 0.0
-    ctx_count = 0
+    input_total = 0.0
+    output_total = 0.0
+    context_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
             continue
         usage_count += 1
-        prefill_total += _get_token_value(
-            token_usage, "cumulative_prefill_tokens", "input_tokens"
-        )
-        decode_total += _get_token_value(
-            token_usage, "cumulative_decode_tokens", "output_tokens"
-        )
-        ctx_compl = token_usage.get("longest_context_completion_tokens")
-        ctx_non = token_usage.get("longest_context_non_completion_tokens")
-        if ctx_compl is not None and ctx_non is not None:
-            ctx_count += 1
-            ctx_completion_total += float(ctx_compl)
-            ctx_non_completion_total += float(ctx_non)
+        prefill_total += float(token_usage.get("prefill_tokens", 0.0))
+        decode_total += float(token_usage.get("decode_tokens", 0.0))
+        inp = token_usage.get("input_tokens")
+        out = token_usage.get("output_tokens")
+        if inp is not None and out is not None:
+            context_count += 1
+            input_total += float(inp)
+            output_total += float(out)
 
-    usage: dict[str, float] | TokenUsage | None = None
+    usage: TokenUsage | None = None
     if usage_count > 0:
-        usage = {
-            "cumulative_prefill_tokens": prefill_total / usage_count,
-            "cumulative_decode_tokens": decode_total / usage_count,
-        }
-        if ctx_count > 0:
-            usage["longest_context_completion_tokens"] = (
-                ctx_completion_total / ctx_count
-            )
-            usage["longest_context_non_completion_tokens"] = (
-                ctx_non_completion_total / ctx_count
-            )
+        usage = TokenUsage(
+            prefill_tokens=prefill_total / usage_count,
+            decode_tokens=decode_total / usage_count,
+        )
+        if context_count > 0:
+            usage["input_tokens"] = input_total / context_count
+            usage["output_tokens"] = output_total / context_count
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
     if usage is None:
         return
 
-    prefill = _get_token_value(usage, "cumulative_prefill_tokens", "input_tokens")
-    decode = _get_token_value(usage, "cumulative_decode_tokens", "output_tokens")
     print("Usage:")
-    print(f"cumulative_prefill_tokens (avg): {prefill:.3f}")
-    print(f"cumulative_decode_tokens (avg): {decode:.3f}")
-    ctx_non_completion = usage.get("longest_context_non_completion_tokens")
-    ctx_completion = usage.get("longest_context_completion_tokens")
-    if ctx_non_completion is not None:
-        print(
-            f"longest_context_non_completion_tokens (avg): {float(ctx_non_completion):.3f}"
-        )
-    if ctx_completion is not None:
-        print(f"longest_context_completion_tokens (avg): {float(ctx_completion):.3f}")
+    print(f"prefill_tokens (avg): {float(usage.get('prefill_tokens', 0.0)):.3f}")
+    print(f"decode_tokens (avg): {float(usage.get('decode_tokens', 0.0)):.3f}")
+    inp = usage.get("input_tokens")
+    out = usage.get("output_tokens")
+    if inp is not None:
+        print(f"input_tokens (avg): {float(inp):.3f}")
+    if out is not None:
+        print(f"output_tokens (avg): {float(out):.3f}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):

@@ -204,12 +204,10 @@ class TrajectoryStepTokens(TypedDict):
 
 
 class TokenUsage(TypedDict, total=False):
+    prefill_tokens: float
+    decode_tokens: float
     input_tokens: float
     output_tokens: float
-    cumulative_prefill_tokens: float
-    cumulative_decode_tokens: float
-    longest_context_completion_tokens: float
-    longest_context_non_completion_tokens: float
 
 
 class VersionInfo(TypedDict):

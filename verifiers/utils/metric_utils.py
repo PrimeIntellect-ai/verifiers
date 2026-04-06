@@ -68,60 +68,40 @@ class ErrorRateMetric(MeanMetric):
         return 1.0 if output.get("error") is not None else 0.0
 
 
-class InputTokensMetric(MeanMetric):
-    """Mean cumulative prefill tokens per output (skips outputs without token_usage)."""
+class _TokenUsageKeyMetric(MeanMetric):
+    """Mean of a specific key in token_usage (skips outputs without it)."""
+
+    _key: str = ""
 
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
-        if isinstance(usage, dict):
-            value = usage.get("cumulative_prefill_tokens")
-            if value is None:
-                value = usage.get("input_tokens")
-            if value is not None:
-                return float(value)
+        if isinstance(usage, dict) and self._key in usage:
+            return float(usage[self._key])
         return None
 
 
-class OutputTokensMetric(MeanMetric):
-    """Mean cumulative decode tokens per output (skips outputs without token_usage)."""
+class PrefillTokensMetric(_TokenUsageKeyMetric):
+    """Mean prefill_tokens per output."""
 
-    def extract(self, output: RolloutOutput) -> float | None:
-        usage = output.get("token_usage")
-        if isinstance(usage, dict):
-            value = usage.get("cumulative_decode_tokens")
-            if value is None:
-                value = usage.get("output_tokens")
-            if value is not None:
-                return float(value)
-        return None
+    _key = "prefill_tokens"
 
 
-def _make_token_usage_metric(key: str, doc: str) -> type:
-    """Create a MeanMetric subclass that extracts a key from token_usage."""
+class DecodeTokensMetric(_TokenUsageKeyMetric):
+    """Mean decode_tokens per output."""
 
-    class _Metric(MeanMetric):
-        __doc__ = doc
-
-        def extract(self, output: RolloutOutput) -> float | None:
-            usage = output.get("token_usage")
-            if isinstance(usage, dict) and key in usage:
-                return float(usage[key])
-            return None
-
-    _Metric.__name__ = _Metric.__qualname__ = (
-        "".join(part.capitalize() for part in key.split("_")) + "Metric"
-    )
-    return _Metric
+    _key = "decode_tokens"
 
 
-LongestContextCompletionTokensMetric = _make_token_usage_metric(
-    "longest_context_completion_tokens",
-    "Mean completion tokens in longest context branch per output.",
-)
-LongestContextNonCompletionTokensMetric = _make_token_usage_metric(
-    "longest_context_non_completion_tokens",
-    "Mean non-completion tokens in longest context branch per output.",
-)
+class InputTokensMetric(_TokenUsageKeyMetric):
+    """Mean input_tokens (non-completion context tokens) per output."""
+
+    _key = "input_tokens"
+
+
+class OutputTokensMetric(_TokenUsageKeyMetric):
+    """Mean output_tokens (completion context tokens) per output."""
+
+    _key = "output_tokens"
 
 
 class EnvMetrics:

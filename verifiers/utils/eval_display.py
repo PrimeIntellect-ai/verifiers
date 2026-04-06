@@ -353,23 +353,17 @@ class EvalDisplay(BaseDisplay):
         return make_aligned_row(metrics_text, error_text)
 
     def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
-        """Create a tokens row with prefill/decode and context values."""
-        prefill = usage.get("cumulative_prefill_tokens")
-        if prefill is None:
-            prefill = usage.get("input_tokens", 0.0)
-        decode = usage.get("cumulative_decode_tokens")
-        if decode is None:
-            decode = usage.get("output_tokens", 0.0)
+        """Create a tokens row with prefill/decode and input/output values."""
         kv: dict[str, object] = {
-            "prefill": format_numeric(prefill),
-            "decode": format_numeric(decode),
+            "prefill": format_numeric(usage.get("prefill_tokens", 0.0)),
+            "decode": format_numeric(usage.get("decode_tokens", 0.0)),
         }
-        ctx_non_completion = usage.get("longest_context_non_completion_tokens")
-        ctx_completion = usage.get("longest_context_completion_tokens")
-        if ctx_non_completion is not None:
-            kv["ctx non-completion"] = format_numeric(ctx_non_completion)
-        if ctx_completion is not None:
-            kv["ctx completion"] = format_numeric(ctx_completion)
+        inp = usage.get("input_tokens")
+        out = usage.get("output_tokens")
+        if inp is not None:
+            kv["input"] = format_numeric(inp)
+        if out is not None:
+            kv["output"] = format_numeric(out)
         return make_aligned_row(make_kv_line(kv), Text())
 
     @staticmethod
@@ -982,14 +976,8 @@ class EvalDisplay(BaseDisplay):
             else:
                 usage = env_state.usage
             if usage is not None:
-                _pf = usage.get("cumulative_prefill_tokens")
-                if _pf is None:
-                    _pf = usage.get("input_tokens", 0.0)
-                prefill_tokens = format_numeric(_pf)
-                _dc = usage.get("cumulative_decode_tokens")
-                if _dc is None:
-                    _dc = usage.get("output_tokens", 0.0)
-                decode_tokens = format_numeric(_dc)
+                prefill_tokens = format_numeric(usage.get("prefill_tokens", 0.0))
+                decode_tokens = format_numeric(usage.get("decode_tokens", 0.0))
 
             # error rate with color coding
             error_rate = env_state.error_rate
