@@ -261,7 +261,8 @@ def _format_env_args_help(
 
     import textwrap
 
-    desc_indent = " " * (fixed_width + 2) if show_descriptions else ""
+    # Padding to align continuation lines with the description column
+    desc_col_offset = " " * (fixed_width + 2)
 
     for (name, _), type_str, default_str, desc in zip(
         params, type_strs, default_strs, descriptions
@@ -275,7 +276,7 @@ def _format_env_args_help(
             if wrapped:
                 lines.append(f"{base}  {wrapped[0]}")
                 for continuation in wrapped[1:]:
-                    lines.append(f"{desc_indent}  {continuation}")
+                    lines.append(f"{desc_col_offset}{continuation}")
             else:
                 lines.append(base)
         else:
@@ -288,15 +289,15 @@ def _format_env_args_help(
 
 def _set_env_epilog(parser: argparse.ArgumentParser) -> None:
     """If an environment is given, set parser.epilog to show its args in -h."""
-    # Find the env_id candidate: first positional arg (not starting with -)
-    env_id = None
-    for arg in sys.argv[1:]:
-        if arg in ("-h", "--help"):
-            continue
-        if arg.startswith("-"):
-            continue
-        env_id = arg
-        break
+    # Use argparse to extract the positional arg, stripping -h/--help so
+    # parse_known_args doesn't exit.  This correctly skips flag values
+    # (e.g. -n 10) that the naive "first non-dash arg" heuristic would catch.
+    stripped = [a for a in sys.argv[1:] if a not in ("-h", "--help")]
+    try:
+        ns, _ = parser.parse_known_args(stripped)
+        env_id = getattr(ns, "env_id_or_config", None)
+    except SystemExit:
+        env_id = None
 
     if env_id is None or env_id.endswith(".toml"):
         return
