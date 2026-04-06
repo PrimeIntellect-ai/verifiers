@@ -60,7 +60,7 @@ or
 ```bash
 prime env push my-env --visibility PRIVATE
 ```
-4. For hosted eval workflows, prefer running large jobs against the Hub slug:
+4. For hosted environment workflows, prefer running large jobs against the Hub slug:
 ```bash
 prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
 ```
