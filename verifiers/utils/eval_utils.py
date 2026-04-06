@@ -32,6 +32,7 @@ from verifiers.types import (
     RolloutInput,
     RolloutOutput,
     StartCallback,
+    _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.import_utils import load_toml
@@ -104,6 +105,18 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
                 f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
+
+    raw_headers = raw_endpoint_dict.get("headers")
+    raw_extra_headers = raw_endpoint_dict.get("extra_headers")
+    if raw_headers is not None and raw_extra_headers is not None:
+        raise ValueError(
+            f"Use only one of 'headers' or 'extra_headers' in {source}, not both"
+        )
+    header_table = raw_headers if raw_headers is not None else raw_extra_headers
+    if header_table is not None:
+        coerced_headers = _validate_extra_headers_value(header_table)
+        if coerced_headers:
+            endpoint["extra_headers"] = coerced_headers
 
     return endpoint
 
@@ -416,6 +429,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "api_key_var",
         "api_base_url",
         "header",
+        "headers",
         # sampling
         "sampling_args",
         "max_tokens",

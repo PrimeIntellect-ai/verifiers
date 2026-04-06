@@ -1,10 +1,8 @@
 import asyncio
-import logging
 import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
-from typing import cast
 
 from math_verify import parse, verify
 
@@ -20,6 +18,7 @@ def verify_response(
     response: str,
     answer: str,
     max_verify_chars: int,
+    timeout_seconds: int = 5,
 ) -> tuple[float, float]:
     """
     Verify a response against an answer using math_verify.
@@ -37,11 +36,13 @@ def verify_response(
         return 0.0, elapsed
 
     try:
-        parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=cast(int, None))
+        parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=timeout_seconds)
         parsed_response = parse(
-            f"\\boxed{{{response}}}", parsing_timeout=cast(int, None)
+            f"\\boxed{{{response}}}", parsing_timeout=timeout_seconds
         )
-        is_correct = verify(parsed_answer, parsed_response, timeout_seconds=None)
+        is_correct = verify(
+            parsed_answer, parsed_response, timeout_seconds=timeout_seconds
+        )
         elapsed = time.perf_counter() - start
         return float(is_correct), elapsed
     except BaseException:
@@ -82,10 +83,6 @@ class MathRubric(Rubric):
             ),
         )
 
-        # suppress math_verify timeout warnings (we handle timeouts ourselves)
-        logging.getLogger("math_verify.parser").setLevel(logging.ERROR)
-        logging.getLogger("math_verify.grader").setLevel(logging.ERROR)
-
     async def correct_answer(
         self, parser: Parser, completion: Messages, answer: str, **kwargs
     ) -> float:
@@ -113,6 +110,7 @@ class MathRubric(Rubric):
                     response,
                     answer,
                     self.max_verify_chars,
+                    int(self.timeout_seconds),
                 ),
                 timeout=self.HARD_TIMEOUT_SECONDS,
             )

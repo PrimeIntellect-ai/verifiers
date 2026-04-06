@@ -745,7 +745,16 @@ class EvalConfig(BaseModel):
 ### Endpoint
 
 ```python
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoint = TypedDict(
+    "Endpoint",
+    {
+        "key": str,
+        "url": str,
+        "model": str,
+        "api_client_type": NotRequired[ClientType],
+        "extra_headers": NotRequired[dict[str, str]],
+    },
+)
 Endpoints = dict[str, list[Endpoint]]
 ```
 
