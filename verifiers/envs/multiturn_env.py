@@ -38,8 +38,13 @@ class MultiTurnEnv(vf.Environment):
     def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.max_total_completion_tokens: int = -1
 
         self.add_rubric(MultiTurnMonitorRubric())
+
+    def set_max_total_completion_tokens(self, max_total_completion_tokens: int) -> None:
+        """Set the maximum total completion tokens for this environment."""
+        self.max_total_completion_tokens = max_total_completion_tokens
 
     @abstractmethod
     async def env_response(
@@ -61,6 +66,15 @@ class MultiTurnEnv(vf.Environment):
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
+
+    @vf.stop
+    async def max_total_completion_tokens_reached(self, state: State) -> bool:
+        if self.max_total_completion_tokens <= 0:
+            return False
+        usage = self.get_state_usage(state)
+        if usage is None:
+            return False
+        return usage["output_tokens"] >= self.max_total_completion_tokens
 
     @vf.stop
     async def has_final_env_response(self, state: State) -> bool:
