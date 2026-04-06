@@ -289,6 +289,9 @@ def _format_env_args_help(
 
 def _set_env_epilog(parser: argparse.ArgumentParser) -> None:
     """If an environment is given, set parser.epilog to show its args in -h."""
+    if "-h" not in sys.argv and "--help" not in sys.argv:
+        return
+
     # Use argparse to extract the positional arg, stripping -h/--help so
     # parse_known_args doesn't exit.  This correctly skips flag values
     # (e.g. -n 10) that the naive "first non-dash arg" heuristic would catch.
@@ -299,14 +302,16 @@ def _set_env_epilog(parser: argparse.ArgumentParser) -> None:
     except SystemExit:
         env_id = None
 
-    if env_id is None or env_id.endswith(".toml"):
+    if not env_id or env_id.endswith(".toml"):
         return
 
     module_name = env_id.replace("-", "_").split("/")[-1]
+    if not module_name:
+        return
 
     try:
         module = importlib.import_module(module_name)
-    except ImportError:
+    except (ImportError, ValueError):
         parser.epilog = f"warning: environment '{env_id}' is not installed"
         return
 
