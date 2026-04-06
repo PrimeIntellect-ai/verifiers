@@ -48,6 +48,14 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
+To discover which arguments an environment accepts, run help with the environment name:
+
+```bash
+uv run vf-eval my-env -h
+```
+
+This shows a table of all `load_environment()` parameters with their name, type, default, and description (when the environment uses `Annotated` type hints).
+
 The `--env-args` flag passes arguments to your `load_environment()` function:
 
 ```bash
