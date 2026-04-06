@@ -227,9 +227,6 @@ def _build_trajectory_from_nemo(
             completion_messages.append(tool_msg)
             continue
 
-        if "generation_token_ids" not in item:
-            continue
-
         prompt_ids: list[int] = list(item.get("prompt_token_ids") or [])
         gen_ids: list[int] = list(item.get("generation_token_ids") or [])
         logprobs: list[float] = list(

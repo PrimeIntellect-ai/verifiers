@@ -89,9 +89,14 @@ class NemoGymEnv(vf.Environment):
             responses_spec = importlib.util.find_spec("responses_api_models")
             if responses_spec and responses_spec.submodule_search_locations:
                 responses_root = Path(next(iter(responses_spec.submodule_search_locations)))
-                policy_model_config = str(
-                    responses_root / "vllm_model" / "configs" / "vllm_model_for_training.yaml"
-                )
+                if self.policy_base_url:
+                    policy_model_config = str(
+                        responses_root / "openai_model" / "configs" / "openai_model.yaml"
+                    )
+                else:
+                    policy_model_config = str(
+                        responses_root / "vllm_model" / "configs" / "vllm_model_for_training.yaml"
+                    )
             else:
                 raise RuntimeError(
                     "Could not locate responses_api_models. "
@@ -110,8 +115,9 @@ class NemoGymEnv(vf.Environment):
             "policy_base_url": self.policy_base_url
             or f"http://{self.vllm_server_host}:{self.vllm_server_port}/v1",
             "policy_api_key": self.policy_api_key
-            or os.environ.get("POLICY_API_KEY", "EMPTY"),
-            "policy_model_name": model,
+            or os.environ.get("POLICY_API_KEY")
+            or os.environ.get("PRIME_API_KEY", "EMPTY"),
+            "policy_model_name": model.split("/", 1)[-1] if "/" in model else model,
             "global_aiohttp_connector_limit_per_host": 16_384,
             "global_aiohttp_connector_limit": 65_536,
             "skip_venv_if_present": True,
