@@ -123,12 +123,12 @@ def compute_context_token_metrics(
     if not trajectory:
         return _zero
 
-    # Find the last step with a response.
+    # Find the last step with usage data.
     last_step_total = 0
     found = False
     for step in reversed(trajectory):
         response = step.get("response")
-        if response is None:
+        if response is None or getattr(response, "usage", None) is None:
             continue
         prompt_tokens, completion_tokens = extract_usage_tokens(response)
         last_step_total = prompt_tokens + completion_tokens
@@ -138,11 +138,11 @@ def compute_context_token_metrics(
     if not found:
         return _zero
 
-    # Sum completion tokens across all steps.
+    # Sum completion tokens across all steps with usage data.
     total_completion = 0
     for step in trajectory:
         response = step.get("response")
-        if response is None:
+        if response is None or getattr(response, "usage", None) is None:
             continue
         _, completion_tokens = extract_usage_tokens(response)
         total_completion += completion_tokens

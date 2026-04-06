@@ -114,6 +114,32 @@ class TestContextMetrics:
         assert metrics["output_tokens"] == 50
         assert metrics["input_tokens"] == 230 - 50
 
+    def test_skips_responses_without_usage(self):
+        """Responses with no .usage attribute are skipped entirely."""
+        no_usage = MagicMock()
+        no_usage.usage = None
+        trajectory = [
+            {"response": _make_response(100, 20)},
+            {"response": _make_response(200, 30)},
+            {"response": no_usage},  # last step, but no usage
+        ]
+        metrics = compute_context_token_metrics(trajectory)
+        # Should use step 1 (last with usage): total = 230
+        assert metrics["output_tokens"] == 50
+        assert metrics["input_tokens"] == 230 - 50
+
+    def test_all_responses_lack_usage(self):
+        """If no response has usage data, return zeros."""
+        no_usage = MagicMock()
+        no_usage.usage = None
+        trajectory = [
+            {"response": no_usage},
+            {"response": no_usage},
+        ]
+        metrics = compute_context_token_metrics(trajectory)
+        assert metrics["output_tokens"] == 0
+        assert metrics["input_tokens"] == 0
+
     def test_input_tokens_clamped_to_zero(self):
         """If sum of completions exceeds last step total, input is clamped to 0."""
         trajectory = [
