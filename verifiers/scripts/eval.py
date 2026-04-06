@@ -297,8 +297,15 @@ def _set_env_epilog(parser: argparse.ArgumentParser) -> None:
     # (e.g. -n 10) that the naive "first non-dash arg" heuristic would catch.
     stripped = [a for a in sys.argv[1:] if a not in ("-h", "--help")]
     try:
-        ns, _ = parser.parse_known_args(stripped)
-        env_id = getattr(ns, "env_id_or_config", None)
+        import io
+
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            ns, _ = parser.parse_known_args(stripped)
+            env_id = getattr(ns, "env_id_or_config", None)
+        finally:
+            sys.stderr = old_stderr
     except SystemExit:
         env_id = None
 
