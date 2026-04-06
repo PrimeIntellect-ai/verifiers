@@ -483,20 +483,12 @@ class Environment(ABC):
         usage = state.get("usage")
         if isinstance(usage, Mapping):
             try:
-                prefill_raw = usage.get("prefill_tokens")
-                if prefill_raw is None:
-                    prefill_raw = usage.get("input_tokens")
-                decode_raw = usage.get("decode_tokens")
-                if decode_raw is None:
-                    decode_raw = usage.get("output_tokens")
-                prefill_tokens = float(0.0 if prefill_raw is None else prefill_raw)
-                decode_tokens = float(0.0 if decode_raw is None else decode_raw)
+                return {
+                    "prefill_tokens": float(usage.get("prefill_tokens", 0.0)),
+                    "decode_tokens": float(usage.get("decode_tokens", 0.0)),
+                }
             except (TypeError, ValueError):
                 return None
-            return {
-                "prefill_tokens": prefill_tokens,
-                "decode_tokens": decode_tokens,
-            }
         return None
 
     async def get_model_response(
