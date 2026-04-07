@@ -69,7 +69,7 @@ async def completions_request(
         base_url = base_url[:-3]
 
     async with httpx.AsyncClient(base_url=base_url, timeout=600.0) as http:
-        resp = await http.post("/v1/completions", json=body)
+        resp = await http.post("/v1/generate", json=body)
 
     if resp.status_code != 200:
         raise RuntimeError(f"vLLM returned {resp.status_code}: {resp.text[:500]}")

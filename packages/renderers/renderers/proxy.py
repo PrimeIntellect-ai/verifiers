@@ -1,19 +1,15 @@
-"""Rendering proxy — intercepts OpenAI chat completions requests, renders
-messages to tokens via the Renderer, and forwards as /v1/completions.
+"""Rendering proxy — intercepts chat completions, renders to tokens, forwards to /v1/generate.
 
-Runs as a lightweight async HTTP server between the verifiers client and vLLM.
-Verifiers sends standard chat messages → proxy renders to tokens → vLLM generates.
-
-Usage:
-    proxy = RenderingProxy(renderer, vllm_base_url="http://localhost:8000")
-    await proxy.start(port=8100)
-    # verifiers talks to http://localhost:8100/v1/chat/completions
-    # proxy renders messages → forwards tokens to http://localhost:8000/v1/completions
+Text-only: Renderer tokenizes → /v1/generate with token IDs.
+VLM: Renderer tokenizes (with image placeholders) + raw images extracted →
+/v1/generate with token IDs + images. vLLM processes images and generates.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -24,25 +20,26 @@ from starlette.routing import Route
 
 from renderers.base import Renderer
 
+logger = logging.getLogger("rendering.proxy")
+
 
 class RenderingProxy:
     def __init__(
-        self, renderer: Renderer, vllm_base_url: str = "http://localhost:8000"
+        self,
+        renderer: Renderer,
+        vllm_base_url: str = "http://localhost:8000",
+        processor=None,
     ):
         self._renderer = renderer
+        self._processor = processor
         self._vllm_base_url = vllm_base_url.rstrip("/")
-        # Strip trailing /v1 — we add the full path ourselves
         base = self._vllm_base_url
         if base.endswith("/v1"):
             base = base[:-3]
         self._client = httpx.AsyncClient(base_url=base, timeout=600.0)
         self._app = Starlette(
             routes=[
-                Route(
-                    "/v1/chat/completions",
-                    self._handle_chat_completions,
-                    methods=["POST"],
-                ),
+                Route("/v1/chat/completions", self._handle_chat_completions, methods=["POST"]),
                 Route("/v1/models", self._proxy_passthrough, methods=["GET"]),
                 Route("/health", self._health, methods=["GET"]),
             ]
@@ -56,7 +53,6 @@ class RenderingProxy:
         return JSONResponse({"status": "ok"})
 
     async def _proxy_passthrough(self, request: Request):
-        """Forward request to vLLM unchanged."""
         resp = await self._client.request(
             method=request.method,
             url=str(request.url.path),
@@ -66,75 +62,58 @@ class RenderingProxy:
         return JSONResponse(json.loads(resp.content), status_code=resp.status_code)
 
     async def _handle_chat_completions(self, request: Request):
-        """Intercept chat completions: render messages → forward as /v1/completions."""
         body = await request.json()
-
         messages = body.get("messages", [])
         tools = body.get("tools")
         model = body.get("model")
 
-        # Render messages to token IDs
-        prompt_ids = self._renderer.render_ids(
-            messages,
-            tools=tools,
-            add_generation_prompt=True,
-        )
+        # Renderer tokenizes (handles image placeholders for VLM)
+        prompt_ids = self._renderer.render_ids(messages, tools=tools, add_generation_prompt=True)
 
-        # Build /v1/completions request
-        completions_body: dict[str, Any] = {
+        # Extract raw images from messages (for VLM)
+        images = _extract_images(messages)
+
+        # Build /v1/generate request
+        generate_body: dict[str, Any] = {
             "model": model,
-            "prompt": prompt_ids,
-            "max_tokens": body.get("max_completion_tokens")
-            or body.get("max_tokens", 4096),
+            "prompt_token_ids": prompt_ids,
+            "max_tokens": body.get("max_completion_tokens") or body.get("max_tokens", 4096),
             "temperature": body.get("temperature", 1.0),
             "top_p": body.get("top_p", 1.0),
-            "logprobs": 1,
-            "return_token_ids": True,
-            "add_special_tokens": False,
-            "skip_special_tokens": False,
             "stop_token_ids": self._renderer.get_stop_token_ids(),
         }
+        if images:
+            generate_body["images"] = images
 
-        # Forward optional params
         for key in ["seed", "n", "repetition_penalty", "min_tokens", "min_p", "top_k"]:
             extra = body.get("extra_body", {})
             if key in extra:
-                completions_body[key] = extra[key]
+                generate_body[key] = extra[key]
             elif key in body:
-                completions_body[key] = body[key]
+                generate_body[key] = body[key]
 
-        # Call vLLM /v1/completions
-        import logging
-
-        logger = logging.getLogger("rendering.proxy")
         try:
-            resp = await self._client.post("/v1/completions", json=completions_body)
+            resp = await self._client.post("/v1/generate", json=generate_body)
         except Exception as e:
             logger.error(f"Proxy → vLLM request failed: {e}")
             return JSONResponse({"error": str(e)}, status_code=502)
 
         if resp.status_code != 200:
             logger.error(f"vLLM returned {resp.status_code}: {resp.text[:200]}")
-            return JSONResponse(json.loads(resp.content), status_code=resp.status_code)
+            try:
+                error_body = json.loads(resp.content)
+            except (json.JSONDecodeError, ValueError):
+                error_body = {"error": resp.text[:500]}
+            return JSONResponse(error_body, status_code=resp.status_code)
 
-        completions_resp = resp.json()
+        gen_resp = resp.json()
+        return JSONResponse(self._to_chat_response(gen_resp, prompt_ids))
 
-        # Convert completions response → chat completions response format
-        # so verifiers' standard OpenAIChatCompletionsClient can parse it
-        chat_resp = self._completions_to_chat(completions_resp, prompt_ids)
-        return JSONResponse(chat_resp)
-
-    def _completions_to_chat(
-        self, completions_resp: dict, prompt_ids: list[int]
-    ) -> dict:
-        """Convert /v1/completions response to /v1/chat/completions format."""
-        choice = completions_resp.get("choices", [{}])[0]
+    def _to_chat_response(self, gen_resp: dict, prompt_ids: list[int]) -> dict:
+        choice = gen_resp.get("choices", [{}])[0]
         completion_ids = choice.get("token_ids", [])
-
-        # Parse generated tokens back into structured message
         parsed = self._renderer.parse_response(completion_ids)
 
-        # Build tool_calls in OAI format
         tool_calls = None
         if parsed.tool_calls:
             tool_calls = [
@@ -153,28 +132,17 @@ class RenderingProxy:
                 for i, tc in enumerate(parsed.tool_calls)
             ]
 
-        # Build logprobs in chat format
-        logprobs_data = choice.get("logprobs", {})
-        token_logprobs = (
-            logprobs_data.get("token_logprobs", []) if logprobs_data else []
-        )
+        logprobs = choice.get("logprobs", [])
         chat_logprobs = (
-            {
-                "content": [
-                    {"token": "", "logprob": lp if lp is not None else 0.0}
-                    for lp in token_logprobs
-                ]
-            }
-            if token_logprobs
-            else None
+            {"content": [{"token": "", "logprob": lp} for lp in logprobs]} if logprobs else None
         )
 
         return {
-            "id": completions_resp.get("id", ""),
+            "id": gen_resp.get("id", ""),
             "object": "chat.completion",
-            "created": completions_resp.get("created", 0),
-            "model": completions_resp.get("model", ""),
-            "prompt_token_ids": prompt_ids,
+            "created": 0,
+            "model": gen_resp.get("model", ""),
+            "prompt_token_ids": gen_resp.get("prompt_token_ids", prompt_ids),
             "choices": [
                 {
                     "index": 0,
@@ -187,7 +155,38 @@ class RenderingProxy:
                     "finish_reason": choice.get("finish_reason", "stop"),
                     "logprobs": chat_logprobs,
                     "token_ids": completion_ids,
+                    "routed_experts": choice.get("routed_experts"),
                 }
             ],
-            "usage": completions_resp.get("usage", {}),
+            "usage": gen_resp.get("usage", {}),
         }
+
+
+def _extract_images(messages: list[dict]) -> list[dict]:
+    """Extract base64 image data from messages, in document order."""
+    from io import BytesIO
+
+    images = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if item.get("type") == "image_url":
+                url = (item.get("image_url") or {}).get("url", "")
+                if url.startswith("data:image"):
+                    header, b64_data = url.split(",", 1)
+                    media_type = header.split(";")[0].split(":")[1]
+                    images.append({"data": b64_data, "media_type": media_type})
+                elif url.startswith("file://"):
+                    from pathlib import Path
+
+                    raw = Path(url.removeprefix("file://")).read_bytes()
+                    images.append({"data": base64.b64encode(raw).decode("ascii"), "media_type": "image/png"})
+            elif item.get("type") == "image":
+                img_obj = item.get("image")
+                if img_obj and hasattr(img_obj, "save"):
+                    buf = BytesIO()
+                    img_obj.save(buf, format="PNG")
+                    images.append({"data": base64.b64encode(buf.getvalue()).decode("ascii"), "media_type": "image/png"})
+    return images
