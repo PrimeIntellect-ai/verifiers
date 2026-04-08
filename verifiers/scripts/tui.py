@@ -35,6 +35,7 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -1794,46 +1795,6 @@ class MathMarkdown(BaseMarkdown):
 # ----------------------------
 
 
-class MetricSelectorScreen(ModalScreen[Optional[str]]):
-    """Modal for selecting which metric to display in comparison view."""
-
-    BINDINGS = [
-        Binding("escape", "close", "Close"),
-    ]
-
-    def __init__(self, metrics: List[str], current: str):
-        super().__init__()
-        self._metrics = metrics
-        self._current = current
-
-    def compose(self) -> ComposeResult:
-        with Container():
-            with Panel(classes="modal-header"):
-                yield Label(Text("Select metric", style="bold"))
-            with Panel(classes="modal-panel"):
-                yield OptionList(id="metric-list")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        ol = self.query_one("#metric-list", OptionList)
-        highlight_idx = 0
-        for idx, name in enumerate(self._metrics):
-            style = "bold" if name == self._current else ""
-            label = Text(name, style=style)
-            ol.add_option(Option(label, id=name))
-            if name == self._current:
-                highlight_idx = idx
-        ol.highlighted = highlight_idx
-        ol.focus()
-
-    @on(OptionList.OptionSelected, "#metric-list")
-    def on_metric_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(event.option_id)
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-
 class CompareRunsScreen(Screen):
     """Dedicated comparison view for runs, optionally across models."""
 
@@ -1867,6 +1828,13 @@ class CompareRunsScreen(Screen):
             yield Panel(
                 Label(Text("Run Comparison", style="bold"), classes="title"),
                 Static("", id="compare-subtitle", classes="subtitle", markup=False),
+                Select[str](
+                    [("reward", "reward")],
+                    value="reward",
+                    prompt="metric",
+                    id="metric-select",
+                    allow_blank=False,
+                ),
                 VerticalScroll(
                     Static("", id="compare-header", markup=False),
                     Static("", id="compare-outcomes", markup=False),
@@ -1969,6 +1937,10 @@ class CompareRunsScreen(Screen):
         for stats in stats_by_path.values():
             metric_names.update(stats.metric_values.keys())
         self._available_metrics = ["reward"] + sorted(metric_names)
+        # Populate the metric selector dropdown.
+        sel = self.query_one("#metric-select", Select)
+        sel.set_options((name, name) for name in self._available_metrics)
+        sel.value = self._selected_metric
         self.query_one("#compare-header", Static).update(Text(""))
         self._refresh_outcomes()
         self._load_distinct_prompt_counts()
@@ -2071,13 +2043,12 @@ class CompareRunsScreen(Screen):
 
     def action_cursor_select(self) -> None:
         if self._cursor_on_metric:
-            # Metric column selected — open metric picker
+            # Metric column selected — open the Select dropdown
             if len(self._available_metrics) <= 1:
                 return
-            self.app.push_screen(
-                MetricSelectorScreen(self._available_metrics, self._selected_metric),
-                callback=self._on_metric_selected,
-            )
+            sel = self.query_one("#metric-select", Select)
+            sel.focus()
+            sel.action_show_overlay()
         else:
             # Setting column selected — toggle grouping
             if not self._setting_keys:
@@ -2091,10 +2062,16 @@ class CompareRunsScreen(Screen):
             self._refresh_outcomes()
             self._load_distinct_prompt_counts()
 
-    def _on_metric_selected(self, metric: str | None) -> None:
-        if metric is None or metric == self._selected_metric:
+    @on(Select.Changed, "#metric-select")
+    def on_metric_changed(self, event: Select.Changed) -> None:
+        if event.value is None or event.value == Select.BLANK:
+            return
+        metric = str(event.value)
+        if metric == self._selected_metric:
+            self.set_focus(None)
             return
         self._selected_metric = metric
+        self.set_focus(None)
         self._refresh_outcomes()
 
     def _short_setting_key(self, key: str) -> str:
