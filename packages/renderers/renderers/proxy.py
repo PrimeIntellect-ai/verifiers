@@ -49,6 +49,9 @@ class RenderingProxy:
     def app(self) -> Starlette:
         return self._app
 
+    async def close(self) -> None:
+        await self._client.aclose()
+
     async def _health(self, request: Request):
         return JSONResponse({"status": "ok"})
 

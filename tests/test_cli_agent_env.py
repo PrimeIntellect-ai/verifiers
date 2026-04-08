@@ -1,5 +1,6 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
+import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,6 +9,7 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.utils.interception_utils import serialize_intercept_response
 
 
 @pytest.fixture
@@ -202,6 +204,152 @@ class TestCliAgentEnv:
         kwargs = mock_client.last_call_kwargs
         assert kwargs["tools"] is not None
         assert kwargs["tools"][0].name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_env_delivers_intercepted_tool_call_response(
+    sample_dataset, mock_client
+):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    prompt = sample_dataset[0]["prompt"]
+    tool_call = {
+        "id": "call_echo",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"text": "hello"}'},
+    }
+    mock_client.add_response(
+        prompt,
+        "",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+
+    state = await env.init_state(
+        input=sample_dataset[0],
+        client=mock_client,
+        model="test-model",
+    )
+    response_future = asyncio.Future()
+    request_id = "req-tool-call"
+    state["current_request_id"] = request_id
+    env._interception_server.intercepts[request_id] = {
+        "stream": False,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Return the provided text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "response_future": response_future,
+    }
+
+    response = await env.get_model_response(
+        state=state,
+        prompt=prompt,
+        client=mock_client,
+        model="test-model",
+    )
+
+    assert response_future.done()
+    assert response_future.result() is response
+    assert state["current_request_id"] is None
+
+    payload = serialize_intercept_response(response_future.result())
+    choice = payload["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"] == [tool_call]
+    assert mock_client.last_call_kwargs["tools"][0].name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_env_synthesizes_stream_for_intercepted_tool_call_response(
+    sample_dataset, mock_client
+):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    prompt = sample_dataset[0]["prompt"]
+    tool_call = {
+        "id": "call_echo",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"text": "hello"}'},
+    }
+    mock_client.add_response(
+        prompt,
+        "",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+
+    state = await env.init_state(
+        input=sample_dataset[0],
+        client=mock_client,
+        model="test-model",
+    )
+    chunk_queue = asyncio.Queue()
+    response_future = asyncio.Future()
+    request_id = "req-stream-tool-call"
+    state["current_request_id"] = request_id
+    env._interception_server.intercepts[request_id] = {
+        "stream": True,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Return the provided text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    response = await env.get_model_response(
+        state=state,
+        prompt=prompt,
+        client=mock_client,
+        model="test-model",
+    )
+
+    chunks = []
+    while True:
+        chunk = await asyncio.wait_for(chunk_queue.get(), timeout=1.0)
+        if chunk is None:
+            break
+        chunks.append(chunk)
+
+    assert response_future.done()
+    assert response_future.result() is response
+    assert state["current_request_id"] is None
+
+    assert chunks[0]["object"] == "chat.completion.chunk"
+    assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"] == "call_echo"
+    assert (
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "echo"
+    )
+    assert (
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+        == '{"text": "hello"}'
+    )
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
 
 
 class TestHarborEnv:

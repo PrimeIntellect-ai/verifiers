@@ -66,7 +66,7 @@ __all__ = [
     "Client",
     "AnthropicMessagesClient",
     "OpenAIChatCompletionsClient",
-    "OpenAIChatCompletionsTokenClient",
+    "RendererClient",
     "OpenAICompletionsClient",
     "extract_boxed_answer",
     "extract_hash_answer",
@@ -99,8 +99,8 @@ _LAZY_IMPORTS = {
     "OpenAIChatCompletionsClient": (
         "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
     ),
-    "OpenAIChatCompletionsTokenClient": (
-        "verifiers.clients.openai_chat_completions_token_client:OpenAIChatCompletionsTokenClient"
+    "RendererClient": (
+        "verifiers.clients.renderer_client:RendererClient"
     ),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
@@ -169,10 +169,8 @@ if TYPE_CHECKING:
     from .clients.openai_chat_completions_client import (  # noqa: F401
         OpenAIChatCompletionsClient,
     )
-    from .clients.openai_chat_completions_token_client import (  # noqa: F401
-        OpenAIChatCompletionsTokenClient,
-    )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .clients.renderer_client import RendererClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401

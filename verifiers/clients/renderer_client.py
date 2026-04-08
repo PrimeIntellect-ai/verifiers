@@ -1,4 +1,4 @@
-"""Renderer-based client — replaces the TITO/MITO token client.
+"""Renderer-based client.
 
 All tokenization happens client-side via a Renderer from the renderers package.
 No prefix matching, no /tokenize calls, no suffix stitching.
@@ -58,7 +58,7 @@ class RendererClient(OpenAIChatCompletionsClient):
         tools: list[OpenAITool] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
-        """Override: render messages → call /v1/completions → return raw result dict."""
+        """Override: render messages → call /v1/generate → return raw result dict."""
         renderer = self._get_renderer(model)
 
         args = dict(sampling_args)
@@ -121,9 +121,9 @@ class RendererClient(OpenAIChatCompletionsClient):
         )
 
         return Response(
-            id="",
-            created=0,
-            model="",
+            id=response.get("id", ""),
+            created=response.get("created", 0),
+            model=response.get("model", ""),
             usage=usage,
             message=ResponseMessage(
                 content=content,

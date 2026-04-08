@@ -1,11 +1,11 @@
-"""Renderer-based verifiers client — replaces the TITO/MITO token client.
+"""Renderer-based verifiers client.
 
 All tokenization happens client-side via a Renderer:
-    messages → Renderer.render_ids() → token IDs → vLLM /v1/completions → completion tokens
+    messages → Renderer.render_ids() → token IDs → vLLM /v1/generate → completion tokens
     completion tokens → Renderer.parse_response() → structured message back to verifiers
 
 Verifiers just sends standard chat messages. This client intercepts them,
-renders to tokens, calls vLLM's completions endpoint, and returns a structured
+renders to tokens, calls the token-in generate endpoint, and returns a structured
 Response that verifiers can work with.
 """
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-import httpx
 import numpy as np
 from openai import AsyncOpenAI
 
@@ -29,25 +28,22 @@ async def completions_request(
     tools: list[dict[str, Any]] | None = None,
     **sampling_args: Any,
 ) -> dict[str, Any]:
-    """Render messages to tokens, call vLLM /v1/completions, return parsed result.
+    """Render messages to tokens, call vLLM /v1/generate, return parsed result.
 
     Returns a dict with: prompt_ids, completion_ids, completion_logprobs,
     content, reasoning_content, tool_calls, finish_reason, usage, routed_experts.
     """
     prompt_ids = renderer.render_ids(messages, tools=tools, add_generation_prompt=True)
+    images = _extract_images(messages)
 
-    # Build completions body
     body: dict[str, Any] = {
         "model": model,
-        "prompt": prompt_ids,
-        "logprobs": 1,
-        "return_token_ids": True,
-        "add_special_tokens": False,
-        "skip_special_tokens": False,
+        "prompt_token_ids": prompt_ids,
         "stop_token_ids": renderer.get_stop_token_ids(),
     }
+    if images:
+        body["images"] = images
 
-    # Map sampling args
     for key in ["temperature", "top_p", "seed", "n"]:
         if key in sampling_args:
             body[key] = sampling_args[key]
@@ -63,27 +59,13 @@ async def completions_request(
         if key in extra_body:
             body[key] = extra_body[key]
 
-    # Strip /v1 from base_url for raw post
-    base_url = str(client.base_url).rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-
-    async with httpx.AsyncClient(base_url=base_url, timeout=600.0) as http:
-        resp = await http.post("/v1/generate", json=body)
-
-    if resp.status_code != 200:
-        raise RuntimeError(f"vLLM returned {resp.status_code}: {resp.text[:500]}")
-
-    data = resp.json()
+    data = await client.post("/generate", cast_to=dict, body=body)
     choice = data.get("choices", [{}])[0]
 
     completion_ids = choice.get("token_ids") or []
     parsed = renderer.parse_response(completion_ids)
 
-    # Extract logprobs
-    logprobs_data = choice.get("logprobs") or {}
-    token_logprobs = logprobs_data.get("token_logprobs") or []
-    completion_logprobs = [lp if lp is not None else 0.0 for lp in token_logprobs]
+    completion_logprobs = [float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []]
 
     # Extract routed experts
     routed_experts = None
@@ -106,3 +88,33 @@ async def completions_request(
         "usage": data.get("usage"),
         "routed_experts": routed_experts,
     }
+
+
+def _extract_images(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    from io import BytesIO
+    from pathlib import Path
+
+    images: list[dict[str, str]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if item.get("type") == "image_url":
+                url = (item.get("image_url") or {}).get("url", "")
+                if url.startswith("data:image"):
+                    header, b64_data = url.split(",", 1)
+                    media_type = header.split(";")[0].split(":")[1]
+                    images.append({"data": b64_data, "media_type": media_type})
+                elif url.startswith("file://"):
+                    raw = Path(url.removeprefix("file://")).read_bytes()
+                    images.append({"data": base64.b64encode(raw).decode("ascii"), "media_type": "image/png"})
+            elif item.get("type") == "image":
+                image = item.get("image")
+                if image is not None and hasattr(image, "save"):
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    images.append(
+                        {"data": base64.b64encode(buffer.getvalue()).decode("ascii"), "media_type": "image/png"}
+                    )
+    return images

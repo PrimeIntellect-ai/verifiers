@@ -91,8 +91,8 @@ RENDERER_REGISTRY: dict[str, type] = {}
 # Maps model name prefixes to renderer names. Checked in order.
 MODEL_RENDERER_MAP: dict[str, str] = {
     "Qwen/Qwen3.5": "qwen3.5",
+    "Qwen/Qwen3-VL": "qwen3_vl",
     "Qwen/Qwen3": "qwen3",
-    "PrimeIntellect/Qwen3": "qwen3",
     "zai-org/GLM-5": "glm5",
     "zai-org/GLM-4.7": "glm5",
     "THUDM/GLM-4.5": "glm4.5",
@@ -104,16 +104,18 @@ def _populate_registry():
     if RENDERER_REGISTRY:
         return
     from renderers.default import DefaultRenderer
-    from renderers.glm45 import GLM45Renderer
     from renderers.glm5 import GLM5Renderer
+    from renderers.glm45 import GLM45Renderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.qwen3 import Qwen3Renderer
+    from renderers.qwen3_vl import Qwen3VLRenderer
     from renderers.qwen35 import Qwen35Renderer
 
     RENDERER_REGISTRY.update(
         {
             "default": DefaultRenderer,
             "qwen3": Qwen3Renderer,
+            "qwen3_vl": Qwen3VLRenderer,
             "qwen3.5": Qwen35Renderer,
             "glm5": GLM5Renderer,
             "glm4.5": GLM45Renderer,
@@ -127,7 +129,7 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
 
     Args:
         tokenizer: HuggingFace tokenizer instance.
-        renderer: Renderer name ('qwen3', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2',
+        renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2',
                   'intellect', 'default') or 'auto' to detect from model name.
     """
     _populate_registry()

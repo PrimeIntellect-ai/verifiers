@@ -98,11 +98,11 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         if client_type not in (
             "openai_completions",
             "openai_chat_completions",
-            "openai_chat_completions_token",
+            "renderer",
             "anthropic_messages",
         ):
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'renderer' or 'anthropic_messages' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 

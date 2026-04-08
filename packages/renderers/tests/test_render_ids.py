@@ -4,6 +4,11 @@ Every test case runs against every (model, renderer) pair from conftest.
 If a test passes, the renderer is token-for-token correct for that case.
 """
 
+from functools import lru_cache
+
+from renderers import create_renderer
+from transformers import AutoTokenizer
+
 
 def _expected(tokenizer, messages, **kwargs):
     result = tokenizer.apply_chat_template(
@@ -270,6 +275,87 @@ def test_multi_step_tool_cycle(model_name, tokenizer, renderer):
         },
         {"role": "tool", "content": '{"temp": 15}'},
         {"role": "assistant", "content": "Paris: 20, London: 15."},
+    ]
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
+
+
+# ── Qwen3-VL multimodal content ─────────────────────────────────────────
+
+
+@lru_cache
+def _qwen3_vl():
+    tokenizer = AutoTokenizer.from_pretrained(
+        "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True
+    )
+    renderer = create_renderer(tokenizer, renderer="auto")
+    return tokenizer, renderer
+
+
+def test_qwen3_vl_auto_renderer():
+    _, renderer = _qwen3_vl()
+    assert type(renderer).__name__ == "Qwen3VLRenderer"
+
+
+def test_qwen3_vl_user_image_content():
+    tokenizer, renderer = _qwen3_vl()
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Look at this: "},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+                {"type": "text", "text": " what color is it?"},
+            ],
+        }
+    ]
+    assert renderer.render_ids(msgs) == _expected(tokenizer, msgs)
+
+
+def test_qwen3_vl_image_generation_prompt():
+    tokenizer, renderer = _qwen3_vl()
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+                {"type": "text", "text": "Describe it."},
+            ],
+        }
+    ]
+    assert renderer.render_ids(msgs, add_generation_prompt=True) == _expected(
+        tokenizer, msgs, add_generation_prompt=True
+    )
+
+
+def test_qwen3_vl_tool_image_content():
+    tokenizer, renderer = _qwen3_vl()
+    msgs = [
+        {"role": "user", "content": "Inspect the image."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
+        },
+        {
+            "role": "tool",
+            "content": [
+                {"type": "text", "text": "Tool returned image: "},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,BBBB"},
+                },
+            ],
+        },
     ]
     assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
         tokenizer, msgs, tools=TOOLS
