@@ -21,6 +21,7 @@ prime eval run my-env -m gpt-4.1-mini -n 5
 ```bash
 prime env list --search "keyword"
 prime env info owner/name
+prime env inspect owner/name
 prime env install owner/name
 ```
 5. For repository examples, use repo install when available:
@@ -58,13 +59,19 @@ prime env install math-python --from-repo
 4. Benchmark runtime and remove avoidable bottlenecks before handoff.
 
 ### 3. Start From Hub Environment
-1. Install or pull the closest baseline:
+1. Inspect the closest baseline before changing anything:
+```bash
+prime env info owner/name
+prime env inspect owner/name
+prime env inspect owner/name README.md
+```
+2. Install or pull only when you need the package locally:
 ```bash
 prime env install owner/name
 prime env pull owner/name -t ./tmp-env
 ```
-2. Keep proven interfaces stable unless a migration is deliberate and explicit.
-3. Re-run smoke evals after each major change.
+3. Keep proven interfaces stable unless a migration is deliberate and explicit.
+4. Re-run smoke evals after each major change.
 
 ## Non-Negotiable Quality Rules
 1. Use deterministic, well-defined reward checks or LLM judges.

@@ -1,6 +1,6 @@
 ---
 name: browse-environments
-description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose environment starting points before evaluation, training, or migration work.
+description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, browse source files with `prime env inspect`, check action status, pull local copies when necessary, or choose environment starting points before evaluation, training, or migration work.
 ---
 
 # Browse Environments
@@ -24,12 +24,14 @@ prime env list --starred
    - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
    - Prefer candidates updated in roughly the last 2 months.
    - Prefer candidates on version `v0.1.8` or newer.
-4. Inspect details for shortlisted candidates:
+4. Inspect details and source for shortlisted candidates:
 ```bash
 prime env info owner/name
 prime env status owner/name
+prime env inspect owner/name
+prime env inspect owner/name README.md
 ```
-5. Pull source for deep inspection when needed:
+5. Pull source only when you need to edit locally, diff larger changes offline, or the inspect endpoint is unavailable:
 ```bash
 prime env pull owner/name -t ./tmp-env
 ```
@@ -51,12 +53,13 @@ For each candidate, collect:
 
 ## Prefer Official Ecosystem Paths
 1. Prefer Hub and Prime CLI workflows before manual third-party setup.
-2. Use install + smoke eval to validate real usability. Treat `prime eval run` as the canonical eval path and do not add `--skip-upload` unless the user explicitly requests that deviation:
+2. Prefer `prime env inspect` for quick code review before reaching for `prime env pull`.
+3. Use install + smoke eval to validate real usability. Treat `prime eval run` as the canonical eval path and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime env install owner/name
 prime eval run name -m gpt-4.1-mini -n 5
 ```
-3. For examples in the verifiers repository, use repo install path when available:
+4. For examples in the verifiers repository, use repo install path when available:
 ```bash
 prime env install reverse-text --from-repo
 ```
