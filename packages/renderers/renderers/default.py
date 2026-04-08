@@ -21,6 +21,8 @@ class DefaultRenderer:
     message attribution. Use a model-specific renderer when available.
     """
 
+    supports_tools = False
+
     def __init__(self, tokenizer: PreTrainedTokenizer, **chat_template_kwargs):
         self._tokenizer = tokenizer
         self._chat_template_kwargs = chat_template_kwargs

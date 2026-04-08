@@ -33,6 +33,12 @@ async def completions_request(
     Returns a dict with: prompt_ids, completion_ids, completion_logprobs,
     content, reasoning_content, tool_calls, finish_reason, usage, routed_experts.
     """
+    if tools and not getattr(renderer, "supports_tools", True):
+        raise ValueError(
+            f"{type(renderer).__name__} does not support tools. "
+            "Choose a model-specific renderer instead of the default fallback."
+        )
+
     prompt_ids = renderer.render_ids(messages, tools=tools, add_generation_prompt=True)
     images = _extract_images(messages)
 

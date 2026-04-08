@@ -22,21 +22,32 @@ from renderers.base import Renderer
 
 logger = logging.getLogger("rendering.proxy")
 
+UPSTREAM_BASE_URL_HEADER = "X-Renderer-Upstream-Base-URL"
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
 
 class RenderingProxy:
     def __init__(
         self,
         renderer: Renderer,
-        vllm_base_url: str = "http://localhost:8000",
+        vllm_base_url: str | None = "http://localhost:8000",
         processor=None,
     ):
         self._renderer = renderer
         self._processor = processor
-        self._vllm_base_url = vllm_base_url.rstrip("/")
-        base = self._vllm_base_url
-        if base.endswith("/v1"):
-            base = base[:-3]
-        self._client = httpx.AsyncClient(base_url=base, timeout=600.0)
+        self._default_vllm_base_url = _normalize_upstream_base_url(vllm_base_url) if vllm_base_url else None
+        self._client = httpx.AsyncClient(timeout=600.0)
         self._app = Starlette(
             routes=[
                 Route("/v1/chat/completions", self._handle_chat_completions, methods=["POST"]),
@@ -56,11 +67,12 @@ class RenderingProxy:
         return JSONResponse({"status": "ok"})
 
     async def _proxy_passthrough(self, request: Request):
+        upstream_base_url = self._get_upstream_base_url(request)
         resp = await self._client.request(
             method=request.method,
-            url=str(request.url.path),
+            url=f"{upstream_base_url}{request.url.path}",
             content=await request.body(),
-            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            headers=_forward_headers(request.headers),
         )
         return JSONResponse(json.loads(resp.content), status_code=resp.status_code)
 
@@ -69,6 +81,16 @@ class RenderingProxy:
         messages = body.get("messages", [])
         tools = body.get("tools")
         model = body.get("model")
+        if tools and not getattr(self._renderer, "supports_tools", True):
+            return JSONResponse(
+                {
+                    "error": (
+                        f"{type(self._renderer).__name__} does not support tools. "
+                        "Choose a model-specific renderer instead of the default fallback."
+                    )
+                },
+                status_code=400,
+            )
 
         # Renderer tokenizes (handles image placeholders for VLM)
         prompt_ids = self._renderer.render_ids(messages, tools=tools, add_generation_prompt=True)
@@ -96,7 +118,14 @@ class RenderingProxy:
                 generate_body[key] = body[key]
 
         try:
-            resp = await self._client.post("/v1/generate", json=generate_body)
+            upstream_base_url = self._get_upstream_base_url(request)
+            resp = await self._client.post(
+                f"{upstream_base_url}/v1/generate",
+                json=generate_body,
+                headers=_forward_headers(request.headers),
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
         except Exception as e:
             logger.error(f"Proxy → vLLM request failed: {e}")
             return JSONResponse({"error": str(e)}, status_code=502)
@@ -111,6 +140,16 @@ class RenderingProxy:
 
         gen_resp = resp.json()
         return JSONResponse(self._to_chat_response(gen_resp, prompt_ids))
+
+    def _get_upstream_base_url(self, request: Request) -> str:
+        header_base_url = request.headers.get(UPSTREAM_BASE_URL_HEADER)
+        if header_base_url:
+            return _normalize_upstream_base_url(header_base_url)
+        if self._default_vllm_base_url:
+            return self._default_vllm_base_url
+        raise ValueError(
+            f"Missing {UPSTREAM_BASE_URL_HEADER} and no default upstream base URL is configured."
+        )
 
     def _to_chat_response(self, gen_resp: dict, prompt_ids: list[int]) -> dict:
         choice = gen_resp.get("choices", [{}])[0]
@@ -193,3 +232,20 @@ def _extract_images(messages: list[dict]) -> list[dict]:
                     img_obj.save(buf, format="PNG")
                     images.append({"data": base64.b64encode(buf.getvalue()).decode("ascii"), "media_type": "image/png"})
     return images
+
+
+def _normalize_upstream_base_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    return normalized
+
+
+def _forward_headers(headers: Any) -> dict[str, str]:
+    forwarded = {}
+    for key, value in headers.items():
+        lower = key.lower()
+        if lower in HOP_BY_HOP_HEADERS or lower == UPSTREAM_BASE_URL_HEADER.lower():
+            continue
+        forwarded[key] = value
+    return forwarded
