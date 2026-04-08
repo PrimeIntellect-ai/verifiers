@@ -61,8 +61,8 @@ class StateUsageTracker:
     def __init__(self) -> None:
         self._usage_seen = False
         self._usage_totals: dict[str, float] = {
-            "prefill_tokens": 0.0,
-            "decode_tokens": 0.0,
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
         }
         self._usage_view = MappingProxyType(self._usage_totals)
 
@@ -83,8 +83,8 @@ class StateUsageTracker:
             raise ValueError("Token usage increments must be non-negative.")
         if mark_seen:
             self._usage_seen = True
-        self._usage_totals["prefill_tokens"] += input_delta
-        self._usage_totals["decode_tokens"] += output_delta
+        self._usage_totals["input_tokens"] += input_delta
+        self._usage_totals["output_tokens"] += output_delta
 
     def increment_from_response(self, response: object) -> None:
         if getattr(response, "usage", None) is None:
@@ -96,8 +96,8 @@ class StateUsageTracker:
         if not self._usage_seen:
             return None
         return {
-            "prefill_tokens": self._usage_totals["prefill_tokens"],
-            "decode_tokens": self._usage_totals["decode_tokens"],
+            "input_tokens": self._usage_totals["input_tokens"],
+            "output_tokens": self._usage_totals["output_tokens"],
         }
 
 
@@ -111,14 +111,14 @@ def compute_context_token_metrics(
     all steps as the model-generated tokens in context.
 
     Returns a dict with:
-        output_tokens: Model-generated tokens (sum of completion_tokens
+        final_output_tokens: Model-generated tokens (sum of completion_tokens
             across all steps).
-        input_tokens: Non-model tokens in context (last step's total
-            context minus output_tokens).
+        final_input_tokens: Non-model tokens in context (last step's total
+            context minus final_output_tokens).
     """
     _zero: dict[str, float] = {
-        "output_tokens": 0,
-        "input_tokens": 0,
+        "final_output_tokens": 0,
+        "final_input_tokens": 0,
     }
     if not trajectory:
         return _zero
@@ -148,6 +148,6 @@ def compute_context_token_metrics(
         total_completion += completion_tokens
 
     return {
-        "output_tokens": total_completion,
-        "input_tokens": max(0, last_step_total - total_completion),
+        "final_output_tokens": total_completion,
+        "final_input_tokens": max(0, last_step_total - total_completion),
     }

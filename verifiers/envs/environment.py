@@ -484,8 +484,8 @@ class Environment(ABC):
         if isinstance(usage, Mapping):
             try:
                 return {
-                    "prefill_tokens": float(usage.get("prefill_tokens", 0.0)),
-                    "decode_tokens": float(usage.get("decode_tokens", 0.0)),
+                    "input_tokens": float(usage.get("input_tokens", 0.0)),
+                    "output_tokens": float(usage.get("output_tokens", 0.0)),
                 }
             except (TypeError, ValueError):
                 return None

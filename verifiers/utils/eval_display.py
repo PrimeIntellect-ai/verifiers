@@ -353,27 +353,27 @@ class EvalDisplay(BaseDisplay):
         return make_aligned_row(metrics_text, error_text)
 
     def _make_tokens_rows(self, usage: TokenUsage) -> list[Table]:
-        """Create token rows: prefill/decode on one line, input/output below."""
+        """Create token rows: input/output on one line, final_input/final_output below."""
         rows: list[Table] = []
         rows.append(
             make_aligned_row(
                 make_kv_line(
                     {
-                        "prefill": format_numeric(usage.get("prefill_tokens", 0.0)),
-                        "decode": format_numeric(usage.get("decode_tokens", 0.0)),
+                        "input": format_numeric(usage.get("input_tokens", 0.0)),
+                        "output": format_numeric(usage.get("output_tokens", 0.0)),
                     }
                 ),
                 Text(),
             )
         )
-        inp = usage.get("input_tokens")
-        out = usage.get("output_tokens")
+        inp = usage.get("final_input_tokens")
+        out = usage.get("final_output_tokens")
         if inp is not None or out is not None:
             kv: dict[str, object] = {}
             if inp is not None:
-                kv["input"] = format_numeric(inp)
+                kv["final input"] = format_numeric(inp)
             if out is not None:
-                kv["output"] = format_numeric(out)
+                kv["final output"] = format_numeric(out)
             rows.append(make_aligned_row(make_kv_line(kv), Text()))
         return rows
 

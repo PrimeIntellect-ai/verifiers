@@ -80,28 +80,28 @@ class _TokenUsageKeyMetric(MeanMetric):
         return None
 
 
-class PrefillTokensMetric(_TokenUsageKeyMetric):
-    """Mean prefill_tokens per output."""
-
-    _key = "prefill_tokens"
-
-
-class DecodeTokensMetric(_TokenUsageKeyMetric):
-    """Mean decode_tokens per output."""
-
-    _key = "decode_tokens"
-
-
 class InputTokensMetric(_TokenUsageKeyMetric):
-    """Mean input_tokens (non-completion context tokens) per output."""
+    """Mean input_tokens per output."""
 
     _key = "input_tokens"
 
 
 class OutputTokensMetric(_TokenUsageKeyMetric):
-    """Mean output_tokens (completion context tokens) per output."""
+    """Mean output_tokens per output."""
 
     _key = "output_tokens"
+
+
+class FinalInputTokensMetric(_TokenUsageKeyMetric):
+    """Mean final_input_tokens (non-completion context tokens) per output."""
+
+    _key = "final_input_tokens"
+
+
+class FinalOutputTokensMetric(_TokenUsageKeyMetric):
+    """Mean final_output_tokens (completion context tokens) per output."""
+
+    _key = "final_output_tokens"
 
 
 class EnvMetrics:

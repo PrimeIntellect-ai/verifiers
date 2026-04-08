@@ -1404,7 +1404,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
                 "answer": "42",
                 "stop_condition": "done",
                 "metrics": {"judge": 1.0},
-                "token_usage": {"prefill_tokens": 123, "decode_tokens": 45},
+                "token_usage": {"input_tokens": 123, "output_tokens": 45},
                 "timing": {"generation_ms": 12, "scoring_ms": 3, "total_ms": 15},
                 "info": {"trace": "ok"},
                 "judge_response": {"winner": "assistant"},
@@ -1457,7 +1457,7 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
     assert "Task\nSolve the puzzle" in items["details:details-task"].body
     assert "tool 1  search" in items["history"].body
     assert "Sunny" in items["history"].body
-    assert "Tokens\nprefill_tokens: 123" in items["details"].body
+    assert "Tokens\ninput_tokens: 123" in items["details"].body
     assert "judge_response" in items["details:details-info"].body
     assert '"winner": "assistant"' in items["details:details-info"].body
 

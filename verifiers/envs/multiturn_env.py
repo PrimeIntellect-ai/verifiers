@@ -74,7 +74,7 @@ class MultiTurnEnv(vf.Environment):
         usage = self.get_state_usage(state)
         if usage is None:
             return False
-        return usage["decode_tokens"] >= self.max_total_completion_tokens
+        return usage["output_tokens"] >= self.max_total_completion_tokens
 
     @vf.stop
     async def has_final_env_response(self, state: State) -> bool:

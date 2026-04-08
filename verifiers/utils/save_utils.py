@@ -27,13 +27,13 @@ from verifiers.utils.message_utils import (
     serialize_messages_for_output,
 )
 from verifiers.utils.metric_utils import (
-    DecodeTokensMetric,
     EnvMetrics,
     ErrorRateMetric,
+    FinalInputTokensMetric,
+    FinalOutputTokensMetric,
     InputTokensMetric,
     OutputTokensMetric,
     PassAtKMetric,
-    PrefillTokensMetric,
     RewardMetric,
 )
 from verifiers.utils.path_utils import get_results_path
@@ -99,20 +99,20 @@ def _coerce_token_usage(value: object) -> TokenUsage | None:
         return None
     mapping_value = cast(Mapping[str, Any], value)
     try:
-        # Accept both new and old key names
-        prefill_raw = mapping_value.get("prefill_tokens")
-        if prefill_raw is None:
-            prefill_raw = mapping_value.get("input_tokens")
-        decode_raw = mapping_value.get("decode_tokens")
-        if decode_raw is None:
-            decode_raw = mapping_value.get("output_tokens")
-        prefill_tokens = float(0.0 if prefill_raw is None else prefill_raw)
-        decode_tokens = float(0.0 if decode_raw is None else decode_raw)
+        # Accept current and legacy key names
+        input_raw = mapping_value.get("input_tokens")
+        if input_raw is None:
+            input_raw = mapping_value.get("prefill_tokens")
+        output_raw = mapping_value.get("output_tokens")
+        if output_raw is None:
+            output_raw = mapping_value.get("decode_tokens")
+        input_tokens = float(0.0 if input_raw is None else input_raw)
+        output_tokens = float(0.0 if output_raw is None else output_raw)
     except (TypeError, ValueError):
         return None
     return {
-        "prefill_tokens": prefill_tokens,
-        "decode_tokens": decode_tokens,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
 
@@ -203,13 +203,13 @@ def state_to_output(
             output_tokens += step_output_tokens
         if usage_seen:
             usage = {
-                "prefill_tokens": float(input_tokens),
-                "decode_tokens": float(output_tokens),
+                "input_tokens": float(input_tokens),
+                "output_tokens": float(output_tokens),
             }
     if usage is not None:
         token_usage: dict[str, float] = {
-            "prefill_tokens": usage.get("prefill_tokens", 0.0),
-            "decode_tokens": usage.get("decode_tokens", 0.0),
+            "input_tokens": usage.get("input_tokens", 0.0),
+            "output_tokens": usage.get("output_tokens", 0.0),
         }
         # Add context token metrics from trajectory
         trajectory = state.get("trajectory", [])
@@ -306,10 +306,10 @@ class GenerateOutputsBuilder:
         self.reward = RewardMetric()
         self.error_rate = ErrorRateMetric()
         self.env_metrics = EnvMetrics()
-        self.prefill_tokens = PrefillTokensMetric()
-        self.decode_tokens = DecodeTokensMetric()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.final_input_tokens = FinalInputTokensMetric()
+        self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
 
         # Tools tracking
@@ -356,10 +356,10 @@ class GenerateOutputsBuilder:
         self.reward.add_outputs(new_outputs)
         self.error_rate.add_outputs(new_outputs)
         self.env_metrics.add_outputs(new_outputs)
-        self.prefill_tokens.add_outputs(new_outputs)
-        self.decode_tokens.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.final_input_tokens.add_outputs(new_outputs)
+        self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
 
         for output in new_outputs:
@@ -377,14 +377,14 @@ class GenerateOutputsBuilder:
         tools = self.first_tools if len(self.unique_tools_keys) == 1 else None
 
         usage: TokenUsage | None = None
-        if self.prefill_tokens.count > 0:
+        if self.input_tokens.count > 0:
             usage = TokenUsage(
-                prefill_tokens=self.prefill_tokens.compute(),
-                decode_tokens=self.decode_tokens.compute(),
+                input_tokens=self.input_tokens.compute(),
+                output_tokens=self.output_tokens.compute(),
             )
-            if self.input_tokens.count > 0:
-                usage["input_tokens"] = self.input_tokens.compute()
-                usage["output_tokens"] = self.output_tokens.compute()
+            if self.final_input_tokens.count > 0:
+                usage["final_input_tokens"] = self.final_input_tokens.compute()
+                usage["final_output_tokens"] = self.final_output_tokens.compute()
 
         return GenerateMetadata(
             env_id=self.env_id,

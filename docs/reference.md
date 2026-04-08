@@ -196,25 +196,22 @@ class RolloutTiming(TypedDict, total=False):
 
 ```python
 class TokenUsage(TypedDict, total=False):
-    prefill_tokens: float
-    decode_tokens: float
     input_tokens: float
     output_tokens: float
+    final_input_tokens: float
+    final_output_tokens: float
 ```
 
 | Field | Description |
 |-------|-------------|
-| `prefill_tokens` | Sum of prompt tokens across all turns. Counts tokens each time they appear in a prompt, so shared context is counted per-turn. |
-| `decode_tokens` | Sum of completion tokens across all turns. |
-| `input_tokens` | Non-completion tokens in the last turn's context (system prompts, user messages, tool results, etc.). |
-| `output_tokens` | Prior completion tokens in the last turn's context. Equals `decode_tokens` for linear rollouts. |
+| `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
+| `output_tokens` | Sum of completion tokens across all turns. |
+| `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
+| `final_output_tokens` | Completion tokens in the final turn's context. Equals `output_tokens` for single-turn rollouts. |
 
-**How they relate:**
+In a single-turn rollout, `input_tokens == final_input_tokens` and `output_tokens == final_output_tokens`. In a multi-turn rollout, `input_tokens > final_input_tokens` because earlier turns' prompts are counted again.
 
-- In a single-turn rollout, `prefill_tokens == input_tokens` and `decode_tokens == output_tokens`.
-- In a multi-turn rollout, `prefill_tokens > input_tokens` because earlier turns' prompts are counted again in later turns.
-
-**Assumptions:** The `input_tokens` / `output_tokens` computation assumes a single, continuously extended trajectory. Multi-agent systems, context summarization, history rewriting, and other forms of branching are not accounted for — `output_tokens` simply sums all completion tokens across all trajectory steps regardless of whether they remain in context. Environment designers working with non-linear trajectories should account for this when interpreting these metrics.
+The `final_*` metrics assume a single, continuously extended trajectory. Non-linear trajectories (multi-agent, context summarization, history rewriting) are not accounted for.
 
 ### GenerateOutputs
 

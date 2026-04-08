@@ -644,34 +644,34 @@ def print_timing(results: GenerateOutputs):
 
 def print_usage(results: GenerateOutputs):
     usage_count = 0
-    prefill_total = 0.0
-    decode_total = 0.0
     input_total = 0.0
     output_total = 0.0
+    final_input_total = 0.0
+    final_output_total = 0.0
     context_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
             continue
         usage_count += 1
-        prefill_total += float(token_usage.get("prefill_tokens", 0.0))
-        decode_total += float(token_usage.get("decode_tokens", 0.0))
-        inp = token_usage.get("input_tokens")
-        out = token_usage.get("output_tokens")
+        input_total += float(token_usage.get("input_tokens", 0.0))
+        output_total += float(token_usage.get("output_tokens", 0.0))
+        inp = token_usage.get("final_input_tokens")
+        out = token_usage.get("final_output_tokens")
         if inp is not None and out is not None:
             context_count += 1
-            input_total += float(inp)
-            output_total += float(out)
+            final_input_total += float(inp)
+            final_output_total += float(out)
 
     usage: TokenUsage | None = None
     if usage_count > 0:
         usage = TokenUsage(
-            prefill_tokens=prefill_total / usage_count,
-            decode_tokens=decode_total / usage_count,
+            input_tokens=input_total / usage_count,
+            output_tokens=output_total / usage_count,
         )
         if context_count > 0:
-            usage["input_tokens"] = input_total / context_count
-            usage["output_tokens"] = output_total / context_count
+            usage["final_input_tokens"] = final_input_total / context_count
+            usage["final_output_tokens"] = final_output_total / context_count
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
@@ -679,14 +679,14 @@ def print_usage(results: GenerateOutputs):
         return
 
     print("Usage:")
-    print(f"prefill_tokens (avg): {float(usage.get('prefill_tokens', 0.0)):.3f}")
-    print(f"decode_tokens (avg): {float(usage.get('decode_tokens', 0.0)):.3f}")
-    inp = usage.get("input_tokens")
-    out = usage.get("output_tokens")
+    print(f"input_tokens (avg): {float(usage.get('input_tokens', 0.0)):.3f}")
+    print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
+    inp = usage.get("final_input_tokens")
+    out = usage.get("final_output_tokens")
     if inp is not None:
-        print(f"input_tokens (avg): {float(inp):.3f}")
+        print(f"final_input_tokens (avg): {float(inp):.3f}")
     if out is not None:
-        print(f"output_tokens (avg): {float(out):.3f}")
+        print(f"final_output_tokens (avg): {float(out):.3f}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
