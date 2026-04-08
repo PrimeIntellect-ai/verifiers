@@ -1936,6 +1936,7 @@ class CompareRunsScreen(Screen):
         metric_names: set[str] = set()
         for stats in stats_by_path.values():
             metric_names.update(stats.metric_values.keys())
+        metric_names.discard("reward")
         self._available_metrics = ["reward"] + sorted(metric_names)
         # Populate the metric selector dropdown.
         sel = self.query_one("#metric-select", Select)
