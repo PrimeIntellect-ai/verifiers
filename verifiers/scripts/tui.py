@@ -2446,11 +2446,13 @@ class CompareRunsScreen(Screen):
                     )
                 )
             fmt = _format_reward_value if is_reward else _format_compact_metric
+            avg_style = (
+                (_reward_style(avg_value) if is_reward else "bold")
+                if avg_value is not None
+                else "dim"
+            )
             row_cells.append(
-                Text(
-                    fmt(avg_value) if avg_value is not None else "—",
-                    style=_reward_style(avg_value) if avg_value is not None else "dim",
-                )
+                Text(fmt(avg_value) if avg_value is not None else "—", style=avg_style)
             )
             if show("=0"):
                 if is_reward:
