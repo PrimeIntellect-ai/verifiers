@@ -1,5 +1,6 @@
 import base64
 import functools
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
@@ -62,6 +63,9 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_openai_client
 
 
+logger = logging.getLogger(__name__)
+
+
 def handle_openai_overlong_prompt(func):
     """Decorator to handle overlong prompt errors from the model API."""
 
@@ -85,6 +89,11 @@ def handle_openai_overlong_prompt(func):
             ]
             if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e
+            if "please use /v1/responses instead" in error_text:
+                logger.error(
+                    "This model requires the Responses API for tool calling with "
+                    'reasoning. Set client_type="openai_responses" in your client config.'
+                )
             raise
 
     return wrapper

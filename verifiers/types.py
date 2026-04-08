@@ -35,6 +35,7 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
     "anthropic_messages",
 ]
 MessageType = Literal["chat", "completion"]  # deprecated
