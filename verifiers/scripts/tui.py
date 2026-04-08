@@ -1007,7 +1007,7 @@ def _metric_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     n_buckets = len(_METRIC_BUCKET_STYLES)
     if lo == hi:
         # All values identical — single bucket.
-        label = _format_reward_value(lo)
+        label = _format_compact_metric(lo)
         return [(label, len(values), "bold green")]
     step = (hi - lo) / n_buckets
     buckets: List[Tuple[str, int, str]] = []
