@@ -881,6 +881,118 @@ class TestRLMEnvInitialization:
     def test_bash_tool_removed(self, rlm_env):
         assert "bash" not in rlm_env.tool_map
 
+    # -- max_turns_in_context range validation --------------------------------
+
+    def test_max_turns_in_context_single_int(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=10, min_turns_in_context=3)
+        assert env._max_turns_in_context_range == (10, 10)
+
+    def test_max_turns_in_context_one_element_sequence(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=[10], min_turns_in_context=3)
+        assert env._max_turns_in_context_range == (10, 10)
+
+    def test_max_turns_in_context_two_element_sequence(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=[10, 20], min_turns_in_context=3)
+        assert env._max_turns_in_context_range == (10, 20)
+
+    def test_max_turns_in_context_tuple_input(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=(8, 15), min_turns_in_context=3)
+        assert env._max_turns_in_context_range == (8, 15)
+
+    def test_max_turns_in_context_none(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=None)
+        assert env._max_turns_in_context_range is None
+
+    def test_max_turns_in_context_equal_lo_hi(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=[10, 10], min_turns_in_context=3)
+        assert env._max_turns_in_context_range == (10, 10)
+
+    def test_max_turns_in_context_inverted_range_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="max_turns_in_context"):
+            build_env(dataset, max_turns_in_context=[20, 10], min_turns_in_context=3)
+
+    def test_max_turns_in_context_three_elements_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="max_turns_in_context"):
+            build_env(dataset, max_turns_in_context=[5, 10, 15], min_turns_in_context=3)
+
+    def test_max_turns_in_context_empty_sequence_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="max_turns_in_context"):
+            build_env(dataset, max_turns_in_context=[], min_turns_in_context=3)
+
+    def test_max_turns_in_context_non_int_elements_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="max_turns_in_context"):
+            build_env(dataset, max_turns_in_context=[5.0, 10.0], min_turns_in_context=3)
+
+    def test_max_turns_in_context_below_min_turns_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="min_turns_in_context"):
+            build_env(dataset, max_turns_in_context=3, min_turns_in_context=3)
+
+    def test_max_turns_in_context_range_lo_below_min_turns_raises(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="min_turns_in_context"):
+            build_env(dataset, max_turns_in_context=[2, 10], min_turns_in_context=3)
+
+    def test_max_turns_in_context_range_sampling_in_setup_state(self):
+        """Sampled value should fall within the configured range."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            max_turns_in_context=[10, 20],
+            min_turns_in_context=3,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        state = vf.State()
+        state["prompt"] = [UserMessage(content="test")]
+        state["trajectory"] = []
+        state["info"] = {}
+        state["_sampled_max_turns_in_context"] = None
+        # Manually sample the way setup_state does (without full sandbox setup)
+        lo, hi = env._max_turns_in_context_range
+        import random
+
+        random.seed(42)
+        samples = {random.randint(lo, hi) for _ in range(200)}
+        assert all(lo <= s <= hi for s in samples)
+        assert len(samples) > 1  # not degenerate
+
+    def test_max_turns_in_context_prompt_builder_receives_value(self):
+        """build_system_prompt should embed the sampled value in the prompt."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            max_turns_in_context=15,
+            min_turns_in_context=3,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        prompt = env.prompt_builder.build_system_prompt(max_turns_in_context=15)
+        assert "15" in prompt
+        assert "turns in context" in prompt
+
+    def test_max_turns_in_context_prompt_builder_none_omits_note(self):
+        """build_system_prompt with None should not include the turn limit note."""
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            max_turns_in_context=None,
+            repl_language="python",
+            interception_url="http://test.invalid",
+        )
+        prompt = env.prompt_builder.build_system_prompt(max_turns_in_context=None)
+        assert "turns in context" not in prompt
+
 
 class TestToolSplitConfiguration:
     def test_repl_tool_name_collision_raises(self):
@@ -996,6 +1108,30 @@ class TestStopConditions:
         state = {}
         result = await rlm_env.answer_ready(state)
         assert result is False
+
+    def test_max_turns_in_context_reached_reads_from_state(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=[10, 20], min_turns_in_context=3)
+        main_id = "main"
+        state = vf.State()
+        state["trajectory_id"] = main_id
+        state["trajectory"] = [{"trajectory_id": main_id}] * 15
+        state["_keep_from_assistant_index"] = 0
+        state["_sampled_max_turns_in_context"] = 12
+        assert env._is_max_turns_in_context_reached(state) is True
+
+        state["_sampled_max_turns_in_context"] = 20
+        assert env._is_max_turns_in_context_reached(state) is False
+
+    def test_max_turns_in_context_reached_none_always_false(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, max_turns_in_context=None)
+        state = vf.State()
+        state["trajectory_id"] = "main"
+        state["trajectory"] = [{"trajectory_id": "main"}] * 100
+        state["_keep_from_assistant_index"] = 0
+        state["_sampled_max_turns_in_context"] = None
+        assert env._is_max_turns_in_context_reached(state) is False
 
 
 # =============================================================================
