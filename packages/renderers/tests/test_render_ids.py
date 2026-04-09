@@ -7,7 +7,7 @@ If a test passes, the renderer is token-for-token correct for that case.
 from functools import lru_cache
 
 from renderers import create_renderer
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer
 
 
 def _expected(tokenizer, messages, **kwargs):
@@ -293,13 +293,37 @@ def _qwen3_vl():
     return tokenizer, renderer
 
 
+@lru_cache
+def _qwen3_vl_processor():
+    return AutoProcessor.from_pretrained(
+        "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True, use_fast=True
+    )
+
+
+_TINY_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO"
+    "a4e0cAAAAASUVORK5CYII="
+)
+
+
+def _qwen3_vl_expected(messages, **kwargs):
+    _, renderer = _qwen3_vl()
+    result = _qwen3_vl_processor().apply_chat_template(
+        renderer._prepare_messages_for_processor(messages),
+        tokenize=True,
+        return_dict=True,
+        **kwargs,
+    )
+    return list(result["input_ids"][0])
+
+
 def test_qwen3_vl_auto_renderer():
     _, renderer = _qwen3_vl()
     assert type(renderer).__name__ == "Qwen3VLRenderer"
 
 
 def test_qwen3_vl_user_image_content():
-    tokenizer, renderer = _qwen3_vl()
+    _, renderer = _qwen3_vl()
     msgs = [
         {
             "role": "user",
@@ -307,36 +331,36 @@ def test_qwen3_vl_user_image_content():
                 {"type": "text", "text": "Look at this: "},
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
                 },
                 {"type": "text", "text": " what color is it?"},
             ],
         }
     ]
-    assert renderer.render_ids(msgs) == _expected(tokenizer, msgs)
+    assert renderer.render_ids(msgs) == _qwen3_vl_expected(msgs)
 
 
 def test_qwen3_vl_image_generation_prompt():
-    tokenizer, renderer = _qwen3_vl()
+    _, renderer = _qwen3_vl()
     msgs = [
         {
             "role": "user",
             "content": [
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
                 },
                 {"type": "text", "text": "Describe it."},
             ],
         }
     ]
-    assert renderer.render_ids(msgs, add_generation_prompt=True) == _expected(
-        tokenizer, msgs, add_generation_prompt=True
+    assert renderer.render_ids(msgs, add_generation_prompt=True) == _qwen3_vl_expected(
+        msgs, add_generation_prompt=True
     )
 
 
 def test_qwen3_vl_tool_image_content():
-    tokenizer, renderer = _qwen3_vl()
+    _, renderer = _qwen3_vl()
     msgs = [
         {"role": "user", "content": "Inspect the image."},
         {
@@ -352,11 +376,11 @@ def test_qwen3_vl_tool_image_content():
                 {"type": "text", "text": "Tool returned image: "},
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,BBBB"},
+                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
                 },
             ],
         },
     ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
-        tokenizer, msgs, tools=TOOLS
+    assert renderer.render_ids(msgs, tools=TOOLS) == _qwen3_vl_expected(
+        msgs, tools=TOOLS
     )

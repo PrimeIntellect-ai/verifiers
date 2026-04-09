@@ -12,7 +12,7 @@ Response that verifiers can work with.
 from __future__ import annotations
 
 import base64
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from openai import AsyncOpenAI
@@ -65,7 +65,7 @@ async def completions_request(
         if key in extra_body:
             body[key] = extra_body[key]
 
-    data = await client.post("/generate", cast_to=dict, body=body)
+    data = await client.post("/generate", cast_to=cast(Any, dict[str, Any]), body=body)
     choice = data.get("choices", [{}])[0]
 
     completion_ids = choice.get("token_ids") or []

@@ -15,8 +15,10 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessages,
     OpenAITool,
+    content_to_text,
     handle_openai_overlong_prompt,
 )
+from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     FinishReason,
     Response,
@@ -31,7 +33,7 @@ from verifiers.types import (
 class RendererClient(OpenAIChatCompletionsClient):
     """Client that tokenizes prompts client-side via a Renderer.
 
-    Every turn: Renderer renders messages → sends token IDs to vLLM /v1/completions
+    Every turn: Renderer renders messages → sends token IDs to vLLM /v1/generate
     → gets completion tokens → Renderer parses back to structured message.
 
     The Renderer is created lazily from the model name on first use.
@@ -40,13 +42,23 @@ class RendererClient(OpenAIChatCompletionsClient):
     def __init__(self, config, renderer: Renderer | None = None):
         super().__init__(config)
         self._renderer = renderer
+        self._renderer_cache: dict[tuple[str, str], Renderer] = {}
 
     def _get_renderer(self, model: str) -> Renderer:
         if self._renderer is None:
             from transformers import AutoTokenizer
 
-            tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-            self._renderer = create_renderer(tokenizer)
+            renderer_name = self._config.renderer if self._config is not None else "auto"
+            renderer_model = (
+                self._config.renderer_model_name
+                if self._config is not None and self._config.renderer_model_name is not None
+                else model
+            )
+            cache_key = (renderer_model, renderer_name)
+            if cache_key not in self._renderer_cache:
+                tokenizer = AutoTokenizer.from_pretrained(renderer_model, trust_remote_code=True)
+                self._renderer_cache[cache_key] = create_renderer(tokenizer, renderer=renderer_name)
+            return self._renderer_cache[cache_key]
         return self._renderer
 
     @handle_openai_overlong_prompt
@@ -74,6 +86,18 @@ class RendererClient(OpenAIChatCompletionsClient):
             **args,
         )
         return result
+
+    async def raise_from_native_response(self, response: dict[str, Any]) -> None:
+        if response is None:
+            raise EmptyModelResponseError("Model returned no response")
+
+        has_content = bool(content_to_text(response.get("content")))
+        has_tool_calls = bool(response.get("tool_calls"))
+        has_reasoning = bool(response.get("reasoning_content"))
+        if not (has_content or has_tool_calls or has_reasoning):
+            raise EmptyModelResponseError(
+                "Model returned no content, reasoning, and did not call any tools"
+            )
 
     async def from_native_response(self, response: dict[str, Any]) -> Response:
         """Parse the completions_request result dict into a verifiers Response."""

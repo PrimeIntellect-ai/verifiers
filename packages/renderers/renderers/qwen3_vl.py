@@ -6,9 +6,14 @@ placeholders for user/tool image and video content.
 
 from __future__ import annotations
 
+import base64
 import json
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
+from PIL import Image
+from transformers import AutoProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ParsedResponse, RenderedTokens
@@ -53,6 +58,7 @@ class Qwen3VLRenderer:
         self._tool_call_end = self._token_id("</tool_call>")
         self._tool_response = self._token_id("<tool_response>")
         self._tool_response_end = self._token_id("</tool_response>")
+        self._processor = None
 
     def _token_id(self, token: str) -> int:
         tid = self._tokenizer.convert_tokens_to_ids(token)
@@ -65,6 +71,101 @@ class Qwen3VLRenderer:
         if not text:
             return []
         return self._tokenizer.encode(text, add_special_tokens=False)
+
+    def _get_processor(self):
+        if self._processor is None:
+            self._processor = AutoProcessor.from_pretrained(
+                self._tokenizer.name_or_path,
+                trust_remote_code=True,
+                use_fast=True,
+            )
+        return self._processor
+
+    @staticmethod
+    def _is_multimodal_item(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        item_type = item.get("type")
+        return item_type in {"image", "image_url", "video"} or any(
+            key in item for key in ("image", "image_url", "video")
+        )
+
+    @classmethod
+    def _has_multimodal_content(cls, messages: list[dict[str, Any]]) -> bool:
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            if any(cls._is_multimodal_item(item) for item in content):
+                return True
+        return False
+
+    @staticmethod
+    def _load_image_from_item(item: dict[str, Any]) -> Image.Image | None:
+        if item.get("type") == "image":
+            image = item.get("image")
+            if image is not None and hasattr(image, "save"):
+                return image
+            return None
+
+        url = ""
+        if item.get("type") == "image_url":
+            url = (item.get("image_url") or {}).get("url", "")
+        elif "image_url" in item:
+            url = (item.get("image_url") or {}).get("url", "")
+
+        if not isinstance(url, str) or not url:
+            return None
+
+        if url.startswith("file://"):
+            return Image.open(Path(url.removeprefix("file://"))).convert("RGB")
+        if url.startswith("data:image"):
+            return Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).convert(
+                "RGB"
+            )
+        return None
+
+    @classmethod
+    def _prepare_messages_for_processor(
+        cls, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                prepared.append(
+                    {**message, "content": [{"type": "text", "text": content}]}
+                )
+                continue
+
+            if not isinstance(content, list):
+                prepared.append(dict(message))
+                continue
+
+            new_content: list[dict[str, Any]] = []
+            for item in content:
+                if isinstance(item, str):
+                    new_content.append({"type": "text", "text": item})
+                    continue
+                if not isinstance(item, dict):
+                    raise TypeError(f"Unexpected content item type: {type(item)}")
+
+                if cls._is_multimodal_item(item):
+                    if image := cls._load_image_from_item(item):
+                        new_content.append({"type": "image", "image": image})
+                    else:
+                        new_content.append(dict(item))
+                    continue
+
+                if item.get("type") == "text" or "text" in item:
+                    new_content.append({"type": "text", "text": item.get("text", "")})
+                    continue
+
+                new_content.append(dict(item))
+
+            prepared.append({**message, "content": new_content})
+
+        return prepared
 
     @staticmethod
     def _render_text_content(content: Any) -> str:
@@ -127,6 +228,15 @@ class Qwen3VLRenderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
+        if self._has_multimodal_content(messages):
+            token_ids = self.render_ids(
+                messages, tools=tools, add_generation_prompt=add_generation_prompt
+            )
+            return RenderedTokens(
+                token_ids=token_ids,
+                message_indices=[-1] * len(token_ids),
+            )
+
         if not messages:
             raise ValueError("No messages provided.")
 
@@ -224,6 +334,21 @@ class Qwen3VLRenderer:
         tools: list[dict[str, Any]] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
+        if self._has_multimodal_content(messages):
+            result = self._get_processor().apply_chat_template(
+                self._prepare_messages_for_processor(messages),
+                tokenize=True,
+                return_dict=True,
+                add_generation_prompt=add_generation_prompt,
+                **({} if tools is None else {"tools": tools}),
+            )
+            input_ids = result["input_ids"]
+            if hasattr(input_ids, "tolist"):
+                input_ids = input_ids.tolist()
+            if input_ids and isinstance(input_ids[0], list):
+                return list(input_ids[0])
+            return list(input_ids)
+
         return self.render(
             messages, tools=tools, add_generation_prompt=add_generation_prompt
         ).token_ids
