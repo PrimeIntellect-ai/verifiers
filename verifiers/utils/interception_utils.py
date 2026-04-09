@@ -38,7 +38,7 @@ class SupportsModelDump(Protocol):
 
 def has_valid_bearer_auth(auth_header: str, expected_token: str | None) -> bool:
     """Return whether the bearer auth header matches the expected token."""
-    if expected_token is None:
+    if not expected_token:
         return True
     bearer_token = (
         auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
