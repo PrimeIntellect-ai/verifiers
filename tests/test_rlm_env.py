@@ -835,6 +835,24 @@ class TestBashToolHelper:
         assert captured["headers"]["Authorization"] == "Bearer secret-token"
 
 
+class TestRLMAuthCheck:
+    def test_check_rollout_auth_accepts_matching_bearer_token(self):
+        env = build_env(make_dataset({}))
+        request = MagicMock(headers={"Authorization": "Bearer secret-token"})
+
+        assert env._check_rollout_auth(request, {"auth_token": "secret-token"}) is None
+
+    def test_check_rollout_auth_rejects_wrong_bearer_token(self):
+        env = build_env(make_dataset({}))
+        request = MagicMock(headers={"Authorization": "Bearer wrong-token"})
+
+        response = env._check_rollout_auth(request, {"auth_token": "secret-token"})
+
+        assert response is not None
+        assert response.status == 401
+        assert json.loads(response.text)["error"] == "Unauthorized"
+
+
 # =============================================================================
 # 3. Initialization and Configuration
 # =============================================================================

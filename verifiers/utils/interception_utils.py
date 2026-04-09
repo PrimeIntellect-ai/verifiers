@@ -36,6 +36,16 @@ class SupportsModelDump(Protocol):
     def model_dump(self) -> dict[str, Any]: ...
 
 
+def has_valid_bearer_auth(auth_header: str, expected_token: str | None) -> bool:
+    """Return whether the bearer auth header matches the expected token."""
+    if expected_token is None:
+        return True
+    bearer_token = (
+        auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
+    )
+    return secrets.compare_digest(bearer_token, expected_token)
+
+
 class InterceptionServer:
     """
     HTTP server that intercepts API requests from agents.
@@ -143,16 +153,11 @@ class InterceptionServer:
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
 
-        expected_token = context.get("auth_token")
-        if expected_token is not None:
-            auth_header = request.headers.get("Authorization", "")
-            bearer_token = (
-                auth_header.removeprefix("Bearer ")
-                if auth_header.startswith("Bearer ")
-                else ""
-            )
-            if not secrets.compare_digest(bearer_token, expected_token):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not has_valid_bearer_auth(
+            request.headers.get("Authorization", ""),
+            context.get("auth_token"),
+        ):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         try:
             request_body = await request.json()

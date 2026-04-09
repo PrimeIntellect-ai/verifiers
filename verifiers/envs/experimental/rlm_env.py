@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import shlex
 import shutil
 import sys
@@ -79,7 +78,10 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
-from verifiers.utils.interception_utils import generate_interception_token
+from verifiers.utils.interception_utils import (
+    generate_interception_token,
+    has_valid_bearer_auth,
+)
 from verifiers.utils.message_utils import concat_messages, from_raw_message
 from verifiers.utils.response_utils import (
     parse_response_message,
@@ -3331,16 +3333,11 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _check_rollout_auth(self, request: Any, context: dict) -> web.Response | None:
         """Check bearer token for a rollout request. Returns error response or None."""
-        expected_token = context.get("auth_token")
-        if expected_token is not None:
-            auth_header = request.headers.get("Authorization", "")
-            bearer_token = (
-                auth_header.removeprefix("Bearer ")
-                if auth_header.startswith("Bearer ")
-                else ""
-            )
-            if not secrets.compare_digest(bearer_token, expected_token):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not has_valid_bearer_auth(
+            request.headers.get("Authorization", ""),
+            context.get("auth_token"),
+        ):
+            return web.json_response({"error": "Unauthorized"}, status=401)
         return None
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
