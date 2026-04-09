@@ -6,10 +6,12 @@ requests are forwarded to the :class:`EnvRouter` worker pool; the router's
 
 Health checks are handled inline on the ROUTER socket — clients send a
 ``b"ping"`` payload and receive a pre-serialized health response back on the
-same connection.  No separate port is needed.
+same connection.  No separate port is needed. When ``auth_token`` is set,
+clients must include it as a dedicated frame ahead of the payload.
 """
 
 import asyncio
+import secrets
 
 import msgpack
 import zmq
@@ -23,13 +25,26 @@ _HEALTH_RESPONSE = msgpack.packb({"success": True, "error": None}, use_bin_type=
 # Sentinel payload used by health-check probes.
 _HEALTH_PING = b"ping"
 
+# Pre-serialized auth failure response for regular requests and pings.
+_UNAUTHORIZED_RESPONSE = msgpack.packb(
+    {"success": False, "error": "Unauthorized"},
+    use_bin_type=True,
+)
+
 
 class ZMQEnvServer(EnvServer):
     """ZMQ ROUTER frontend + EnvRouter worker pool."""
 
-    def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
+    def __init__(
+        self,
+        *args,
+        address: str = "tcp://127.0.0.1:5000",
+        auth_token: str | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.address = address
+        self.auth_token = auth_token.encode() if auth_token is not None else None
 
         # Client-facing ROUTER socket (also serves health checks)
         self.ctx = zmq.asyncio.Context()
@@ -48,6 +63,24 @@ class ZMQEnvServer(EnvServer):
             await self.frontend.send_multipart([client_id, request_id, response_bytes])
         except zmq.ZMQError as e:
             self.logger.warning(f"Failed to forward response: {e}")
+
+    def _parse_frames(
+        self, frames: list[bytes]
+    ) -> tuple[bytes, bytes, bytes | None, bytes] | None:
+        if len(frames) == 3:
+            client_id, request_id, payload = frames
+            return client_id, request_id, None, payload
+        if len(frames) == 4:
+            client_id, request_id, auth_token, payload = frames
+            return client_id, request_id, auth_token, payload
+        return None
+
+    def _is_authorized(self, auth_token: bytes | None) -> bool:
+        if self.auth_token is None:
+            return True
+        if auth_token is None:
+            return False
+        return secrets.compare_digest(auth_token, self.auth_token)
 
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         self.logger.info(f"ZMQEnvServer started on {self.address}")
@@ -79,12 +112,22 @@ class ZMQEnvServer(EnvServer):
 
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
-                    if len(frames) != 3:
+                    parsed = self._parse_frames(frames)
+                    if parsed is None:
                         self.logger.warning(
-                            f"Invalid message: expected 3 frames, got {len(frames)}"
+                            f"Invalid message: expected 3 or 4 frames, got {len(frames)}"
                         )
                     else:
-                        client_id, request_id, payload = frames
+                        client_id, request_id, auth_token, payload = parsed
+                        if not self._is_authorized(auth_token):
+                            if payload != b"":
+                                try:
+                                    await self.frontend.send_multipart(
+                                        [client_id, request_id, _UNAUTHORIZED_RESPONSE]
+                                    )
+                                except zmq.ZMQError:
+                                    pass
+                            continue
                         if payload == _HEALTH_PING:
                             # Health check — respond immediately
                             try:
