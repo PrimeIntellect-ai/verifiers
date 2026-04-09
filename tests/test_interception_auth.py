@@ -8,6 +8,7 @@ Verifies that:
 """
 
 import asyncio
+from typing import Any
 
 import pytest
 from aiohttp import ClientSession
@@ -34,7 +35,11 @@ def _chat_payload(content: str = "hello") -> dict:
 
 
 async def _post(
-    base: str, rollout_id: str, token: str | None = None, timeout: float = 0.5
+    base: str,
+    rollout_id: str,
+    token: str | None = None,
+    timeout: float = 0.5,
+    payload: Any | None = None,
 ):
     """POST to a rollout endpoint, return (status, body) or 'timeout'."""
     headers = {}
@@ -44,7 +49,7 @@ async def _post(
         async with ClientSession() as session:
             async with session.post(
                 f"{base}/rollout/{rollout_id}/v1/chat/completions",
-                json=_chat_payload(),
+                json=_chat_payload() if payload is None else payload,
                 headers=headers,
                 timeout=__import__("aiohttp").ClientTimeout(total=timeout),
             ) as resp:
@@ -133,3 +138,41 @@ async def test_cross_rollout_blocked(server: InterceptionServer):
 
     server.unregister_rollout("rollout_a")
     server.unregister_rollout("rollout_b")
+
+
+@pytest.mark.asyncio
+async def test_missing_messages_rejected(server: InterceptionServer):
+    """Authenticated requests without messages return a 400 instead of crashing."""
+    token = generate_interception_token()
+    server.register_rollout("rollout_missing_messages", auth_token=token)
+    base = f"http://127.0.0.1:{server.port}"
+
+    status, body = await _post(
+        base,
+        "rollout_missing_messages",
+        token=token,
+        payload={"model": "test-model"},
+    )
+    assert status == 400
+    assert body["error"] == "Request body must include 'messages'"
+
+    server.unregister_rollout("rollout_missing_messages")
+
+
+@pytest.mark.asyncio
+async def test_non_object_body_rejected(server: InterceptionServer):
+    """Authenticated requests must send a JSON object."""
+    token = generate_interception_token()
+    server.register_rollout("rollout_non_object", auth_token=token)
+    base = f"http://127.0.0.1:{server.port}"
+
+    status, body = await _post(
+        base,
+        "rollout_non_object",
+        token=token,
+        payload=["not", "an", "object"],
+    )
+    assert status == 400
+    assert body["error"] == "Request body must be a JSON object"
+
+    server.unregister_rollout("rollout_non_object")

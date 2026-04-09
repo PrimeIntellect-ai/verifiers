@@ -79,6 +79,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.interception_utils import generate_interception_token
 from verifiers.utils.message_utils import concat_messages, from_raw_message
 from verifiers.utils.response_utils import (
     parse_response_message,
@@ -708,6 +709,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
+    _RLM_AUTH_TOKEN = os.environ.get("RLM_AUTH_TOKEN", "")
 
 
     def _decode_arg(raw: str):
@@ -727,15 +729,19 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             "kwargs": kwargs,
         }
 
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": ROOT_TOOL_USER_AGENT,
+        }
+        if _RLM_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {_RLM_AUTH_TOKEN}"
+
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             ROOT_TOOL_URL,
             data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": ROOT_TOOL_USER_AGENT,
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -3479,7 +3485,7 @@ class RLMEnv(vf.StatefulToolEnv):
         state["interception_url"] = interception_url
         state["root_tool_url"] = root_tool_url
 
-        auth_token = secrets.token_hex(32)
+        auth_token = generate_interception_token()
         state["interception_auth_token"] = auth_token
 
         self.active_rollouts[rollout_id] = {

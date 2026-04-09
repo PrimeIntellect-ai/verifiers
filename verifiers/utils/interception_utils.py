@@ -153,6 +153,17 @@ class InterceptionServer:
         except Exception as e:
             return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
+        if not isinstance(request_body, dict):
+            return web.json_response(
+                {"error": "Request body must be a JSON object"}, status=400
+            )
+        if "messages" not in request_body:
+            return web.json_response(
+                {"error": "Request body must include 'messages'"}, status=400
+            )
+        if not isinstance(request_body["messages"], list):
+            return web.json_response({"error": "'messages' must be a list"}, status=400)
+
         _log_request(rollout_id, request_body)
 
         is_streaming = request_body.get("stream", False)
