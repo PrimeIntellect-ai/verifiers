@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import secrets
 import time
 import uuid
 from typing import Any, cast
@@ -99,10 +100,13 @@ class InterceptionServer:
                     self._site = None
                     self._app = None
 
-    def register_rollout(self, rollout_id: str) -> asyncio.Queue:
+    def register_rollout(
+        self, rollout_id: str, auth_token: str | None = None
+    ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
+            "auth_token": auth_token,
         }
         return request_queue
 
@@ -132,6 +136,17 @@ class InterceptionServer:
         context = self.active_rollouts.get(rollout_id)
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
+
+        expected_token = context.get("auth_token")
+        if expected_token is not None:
+            auth_header = request.headers.get("Authorization", "")
+            bearer_token = (
+                auth_header.removeprefix("Bearer ")
+                if auth_header.startswith("Bearer ")
+                else ""
+            )
+            if not secrets.compare_digest(bearer_token, expected_token):
+                return web.json_response({"error": "Unauthorized"}, status=401)
 
         try:
             request_body = await request.json()
@@ -228,6 +243,11 @@ class InterceptionServer:
         except ConnectionResetError:
             logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
         return response
+
+
+def generate_interception_token() -> str:
+    """Generate a cryptographically random token for rollout authentication."""
+    return secrets.token_hex(32)
 
 
 def deliver_response(

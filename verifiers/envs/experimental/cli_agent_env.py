@@ -30,6 +30,7 @@ from verifiers.types import (
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
+    generate_interception_token,
     synthesize_stream,
 )
 from verifiers.utils.logging_utils import print_time, truncate
@@ -188,6 +189,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
+        auth_token = generate_interception_token()
+        state["interception_auth_token"] = auth_token
 
         interception_server = self._require_interception_server()
         await interception_server.start()
@@ -227,7 +230,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
-        request_id_queue = interception_server.register_rollout(rollout_id)
+        request_id_queue = interception_server.register_rollout(
+            rollout_id, auth_token=auth_token
+        )
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -261,6 +266,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     PROTECTED_ENV_VARS = frozenset(
         {
             "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
             "OPENAI_TIMEOUT",
             "OPENAI_REQUEST_TIMEOUT",
             "HTTPX_TIMEOUT",
@@ -272,6 +278,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
+        auth_token = state.get("interception_auth_token")
+        if auth_token:
+            env_vars["OPENAI_API_KEY"] = auth_token
         env_vars.setdefault("OPENAI_TIMEOUT", "3600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
         env_vars.setdefault("HTTPX_TIMEOUT", "3600")
