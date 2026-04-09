@@ -26,6 +26,7 @@ import contextvars
 import json
 import logging
 import os
+import random
 import re
 import shlex
 import shutil
@@ -35,6 +36,7 @@ import tempfile
 import textwrap
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -1224,7 +1226,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         enable_sub_llms: bool = True,
         enable_summarization: bool = False,
         min_turns_in_context: int = 3,
-        max_turns_in_context: int | None = None,
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
@@ -1239,7 +1240,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         self.enable_sub_llms = enable_sub_llms
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
-        self.max_turns_in_context = max_turns_in_context
 
     def build_base_system_prompt(self) -> str:
         """Select the base system prompt or custom override."""
@@ -1339,18 +1339,18 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
         return "\n".join(lines)
 
-    def build_turn_limit_note(self) -> str:
+    def build_turn_limit_note(self, max_turns_in_context: int | None) -> str:
         """Return context-dropping documentation note, or empty string."""
-        if self.max_turns_in_context is None:
+        if max_turns_in_context is None:
             return ""
         note = (
-            f"\nYour session will end after {self.max_turns_in_context}"
+            f"\nYour session will end after {max_turns_in_context}"
             f" turns in context (each tool call counts as one turn)."
         )
         if self.enable_summarization:
             note += (
                 " Use `summarize_turns` to drop old turns and stay"
-                f" within this limit beyond {self.max_turns_in_context} turns."
+                f" within this limit beyond {max_turns_in_context} turns."
             )
         return note + "\n"
 
@@ -1374,7 +1374,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
             f"across all llm_batch() calls.\n"
         )
 
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, max_turns_in_context: int | None = None) -> str:
         """Assemble the full RLM system prompt, wrapped in scaffolding tags."""
         if self.repl_language == "bash":
             message_history_note = """
@@ -1400,7 +1400,7 @@ history = [json.loads(line) for line in open(".messages")]
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
             + message_history_note
-            + self.build_turn_limit_note()
+            + self.build_turn_limit_note(max_turns_in_context)
         )
         return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
 
@@ -2248,10 +2248,14 @@ class RLMEnv(vf.StatefulToolEnv):
         min_turns_in_context: Minimum turns that must remain after summarization
                    (default: 3). Only has effect when enable_summarization=True.
         max_turns_in_context: Maximum number of visible turns in context before
-                   the rollout is stopped. Without summarization this behaves
+                   the rollout is stopped. Accepts a single int or a sequence
+                   of one or two ints. When two values ``[lo, hi]`` are given,
+                   a limit is sampled uniformly at random from ``[lo, hi]``
+                   (inclusive) per rollout. Without summarization this behaves
                    identically to max_turns. With summarization it limits how
-                   many turns remain after compaction. None (default) means no
-                   limit beyond max_turns.
+                   many turns remain after compaction. The lower bound must be
+                   greater than ``min_turns_in_context``. None (default) means
+                   no limit beyond max_turns.
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         system_prompt: Custom system prompt (default: RLM standard prompt)
@@ -2352,7 +2356,7 @@ class RLMEnv(vf.StatefulToolEnv):
         enable_sub_llms: bool = True,
         enable_summarization: bool = False,
         min_turns_in_context: int = 3,
-        max_turns_in_context: int | None = None,
+        max_turns_in_context: int | Sequence[int] | None = None,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         system_prompt: str | None = None,
@@ -2416,15 +2420,38 @@ class RLMEnv(vf.StatefulToolEnv):
         self.abort_on_code_timeout = abort_on_code_timeout
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
-        self.max_turns_in_context = max_turns_in_context
-        if max_turns_in_context is not None and max_turns_in_context > max_turns:
-            logger.warning(
-                "max_turns_in_context=%d > max_turns=%d. "
-                "max_turns will always trigger first, making "
-                "max_turns_in_context ineffective.",
-                max_turns_in_context,
-                max_turns,
-            )
+        self._max_turns_in_context_range: tuple[int, int] | None = None
+        if max_turns_in_context is not None:
+            if isinstance(max_turns_in_context, int):
+                pair = (max_turns_in_context, max_turns_in_context)
+            else:
+                pair = tuple(max_turns_in_context)
+                if len(pair) == 1:
+                    pair = (pair[0], pair[0])
+            if (
+                len(pair) != 2
+                or not all(isinstance(v, int) for v in pair)
+                or pair[0] > pair[1]
+            ):
+                raise ValueError(
+                    f"max_turns_in_context must be an int or a 1-2 element "
+                    f"[lo, hi] sequence of ints; got {max_turns_in_context!r}"
+                )
+            if pair[0] <= min_turns_in_context:
+                raise ValueError(
+                    f"max_turns_in_context lower bound ({pair[0]}) must be "
+                    f"greater than min_turns_in_context ({min_turns_in_context})"
+                )
+            self._max_turns_in_context_range = cast(tuple[int, int], pair)
+            if pair[0] > max_turns:
+                logger.warning(
+                    "max_turns_in_context range [%d, %d] > max_turns=%d. "
+                    "max_turns will always trigger first, making "
+                    "max_turns_in_context ineffective.",
+                    pair[0],
+                    pair[1],
+                    max_turns,
+                )
         if not self.enable_sub_llms:
             if sub_max_completion_tokens is not None:
                 logger.warning(
@@ -2530,7 +2557,6 @@ class RLMEnv(vf.StatefulToolEnv):
             enable_sub_llms=self.enable_sub_llms,
             enable_summarization=self.enable_summarization,
             min_turns_in_context=self.min_turns_in_context,
-            max_turns_in_context=self.max_turns_in_context,
         )
 
         # Add the REPL tool (state is injected via update_tool_args)
@@ -3503,7 +3529,14 @@ class RLMEnv(vf.StatefulToolEnv):
             state["retain_filesystem_after_rollout"] = (
                 self.retain_filesystem_after_rollout
             )
-            state["rlm_system_prompt"] = self.prompt_builder.build_system_prompt()
+            if self._max_turns_in_context_range is not None:
+                lo, hi = self._max_turns_in_context_range
+                state["_sampled_max_turns_in_context"] = random.randint(lo, hi)
+            else:
+                state["_sampled_max_turns_in_context"] = None
+            state["rlm_system_prompt"] = self.prompt_builder.build_system_prompt(
+                max_turns_in_context=state["_sampled_max_turns_in_context"],
+            )
             state["rlm_root_tools"] = [
                 _tool_display_name(tool) for tool in self.root_tools
             ]
@@ -4225,12 +4258,13 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _is_max_turns_in_context_reached(self, state: State) -> bool:
         """Check if visible turns in context exceed max_turns_in_context."""
-        if self.max_turns_in_context is None:
+        limit = state.get("_sampled_max_turns_in_context")
+        if limit is None:
             return False
         visible = self._main_turn_count(state) - state.get(
             "_keep_from_assistant_index", 0
         )
-        return visible >= self.max_turns_in_context
+        return visible >= limit
 
     # =========================================================================
     # Stop Conditions
