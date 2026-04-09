@@ -1,3 +1,5 @@
+import pytest
+
 from verifiers.types import (
     Response,
     ResponseMessage,
@@ -61,3 +63,8 @@ def test_serialize_intercept_response_passthrough_native_chat_completion():
     assert payload["object"] == "chat.completion"
     assert payload["model"] == "native-model"
     assert len(payload["choices"]) == 1
+
+
+def test_serialize_intercept_response_rejects_invalid_input_type():
+    with pytest.raises(TypeError, match="Unsupported intercepted response type: str"):
+        serialize_intercept_response("0")

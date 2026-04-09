@@ -1,12 +1,13 @@
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import secrets
 import time
 import uuid
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from aiohttp import web
 from openai.types.chat import (
@@ -28,6 +29,11 @@ from verifiers.types import Response
 from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class SupportsModelDump(Protocol):
+    def model_dump(self) -> dict[str, Any]: ...
 
 
 class InterceptionServer:
@@ -425,7 +431,9 @@ def _response_content_to_text(content: Any) -> str:
     return ""
 
 
-def serialize_intercept_response(response: Any) -> dict[str, Any]:
+def serialize_intercept_response(
+    response: Response | SupportsModelDump | Mapping[str, object],
+) -> dict[str, Any]:
     """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
     if isinstance(response, Response):
         message = response.message
@@ -470,9 +478,20 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
 
         return output
 
-    if hasattr(response, "model_dump"):
-        return response.model_dump()
-    return dict(response)
+    if isinstance(response, SupportsModelDump):
+        model_dump = response.model_dump()
+        if isinstance(model_dump, Mapping):
+            return dict(model_dump)
+        raise TypeError("model_dump() must return a mapping")
+
+    if isinstance(response, Mapping):
+        return dict(response)
+
+    raise TypeError(
+        "Unsupported intercepted response type: "
+        f"{type(response).__name__}. Expected Response, model_dump()-compatible "
+        "object, or mapping."
+    )
 
 
 def _log_request(rollout_id: str, body: dict) -> None:
