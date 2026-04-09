@@ -50,6 +50,7 @@ __all__ = [
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
+    "ApiEnv",
     "CliAgentEnv",
     "HarborEnv",
     "MCPEnv",
@@ -125,6 +126,7 @@ _LAZY_IMPORTS = {
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
+    "ApiEnv": "verifiers.envs.experimental.api_env:ApiEnv",
     "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
     "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
     "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
@@ -175,6 +177,7 @@ if TYPE_CHECKING:
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
+    from .envs.experimental.api_env import ApiEnv  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
