@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
+from verifiers.types import ClientConfig
 from verifiers.utils.eval_utils import load_endpoints
 
 
@@ -220,3 +224,96 @@ def test_load_endpoints_toml_accepts_type_shorthand(tmp_path: Path):
     endpoints = load_endpoints(str(registry_path))
 
     assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"
+
+
+def test_load_endpoints_toml_accepts_headers_table(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "proxy"\n'
+        'model = "m"\n'
+        'url = "https://api.example/v1"\n'
+        'key = "K"\n'
+        'headers = { "X-Custom" = "v1" }\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["proxy"][0]["extra_headers"] == {"X-Custom": "v1"}
+
+
+def test_load_endpoints_toml_accepts_extra_headers_alias(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "proxy"\n'
+        'model = "m"\n'
+        'url = "https://api.example/v1"\n'
+        'key = "K"\n'
+        'extra_headers = { "X-A" = "a" }\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["proxy"][0]["extra_headers"] == {"X-A": "a"}
+
+
+def test_load_endpoints_toml_rejects_headers_and_extra_headers_together(
+    tmp_path: Path,
+):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "proxy"\n'
+        'model = "m"\n'
+        'url = "https://api.example/v1"\n'
+        'key = "K"\n'
+        'headers = { "X-A" = "a" }\n'
+        'extra_headers = { "X-B" = "b" }\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
+
+
+def test_load_endpoints_python_registry_accepts_headers_dict(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "p": {"model": "m", "url": "https://x/v1", "key": "K", '
+        '"headers": {"X-Foo": "bar"}},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["p"][0]["extra_headers"] == {"X-Foo": "bar"}
+
+
+def test_load_endpoints_malformed_headers_string_falls_back_to_empty_registry(
+    tmp_path: Path,
+):
+    toml_path = tmp_path / "endpoints.toml"
+    toml_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "x"\n'
+        'model = "m"\n'
+        'url = "https://api.example/v1"\n'
+        'key = "K"\n'
+        'headers = "invalid"\n',
+        encoding="utf-8",
+    )
+
+    assert load_endpoints(str(toml_path)) == {}
+
+
+def test_client_config_validates_extra_header_keys():
+    with pytest.raises(ValidationError):
+        ClientConfig(extra_headers={"": "x"})
+    with pytest.raises(ValidationError):
+        ClientConfig(extra_headers={"X": 1})  # type: ignore[arg-type]

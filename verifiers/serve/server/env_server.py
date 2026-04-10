@@ -15,7 +15,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
-from verifiers.utils.process_utils import monitor_death_pipe
+from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 
 
 class EnvServer(ABC):
@@ -41,6 +41,7 @@ class EnvServer(ABC):
         stats_log_interval: float = 10.0,
         death_pipe: Connection | None = None,
     ):
+        set_proc_title("EnvServer")
         self.death_pipe = death_pipe
 
         logger_kwargs: dict[str, Any] = {

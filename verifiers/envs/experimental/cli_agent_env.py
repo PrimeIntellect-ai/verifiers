@@ -202,16 +202,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         env_vars = await self.build_env_vars(state)
         docker_image = await self.get_docker_image(state)
+        resources = self.get_sandbox_resources(state)
 
         sandbox_request = CreateSandboxRequest(
             name=rollout_id,
             docker_image=docker_image,
             start_command=self.start_command,
-            cpu_cores=self.cpu_cores,
-            memory_gb=self.memory_gb,
-            disk_size_gb=self.disk_size_gb,
-            gpu_count=self.gpu_count,
-            timeout_minutes=math.ceil(self.timeout_seconds / 60),
+            cpu_cores=resources["cpu_cores"],
+            memory_gb=resources["memory_gb"],
+            disk_size_gb=resources["disk_size_gb"],
+            gpu_count=resources["gpu_count"],
+            gpu_type=resources.get("gpu_type"),
+            vm=resources.get("vm", resources["gpu_count"] > 0),
+            timeout_minutes=resources["timeout_minutes"],
             environment_vars=env_vars,
             team_id=self.team_id,
             advanced_configs=self.advanced_configs,
@@ -241,6 +244,29 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
+
+    def get_sandbox_resources(self, state: State) -> dict[str, Any]:
+        """Get sandbox resource allocation. Override for per-instance resources."""
+        return {
+            "cpu_cores": self.cpu_cores,
+            "memory_gb": self.memory_gb,
+            "disk_size_gb": self.disk_size_gb,
+            "gpu_count": self.gpu_count,
+            "gpu_type": None,
+            "vm": self.gpu_count > 0,
+            "timeout_minutes": math.ceil(self.timeout_seconds / 60),
+        }
+
+    # Keys set by build_env_vars that subclasses must not override.
+    PROTECTED_ENV_VARS = frozenset(
+        {
+            "OPENAI_BASE_URL",
+            "OPENAI_TIMEOUT",
+            "OPENAI_REQUEST_TIMEOUT",
+            "HTTPX_TIMEOUT",
+            "OPENAI_MODEL",
+        }
+    )
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""

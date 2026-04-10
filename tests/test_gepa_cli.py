@@ -3,7 +3,33 @@ from pathlib import Path
 
 import pytest
 
-from verifiers.scripts.gepa import load_gepa_toml_config, resolve_gepa_config_args
+from verifiers.scripts.gepa import (
+    _gepa_extra_headers_from_group,
+    load_gepa_toml_config,
+    resolve_gepa_config_args,
+)
+
+
+def test_gepa_extra_headers_from_group_requires_consistent_variants():
+    with pytest.raises(ValueError, match="different headers"):
+        _gepa_extra_headers_from_group(
+            [
+                {"extra_headers": {"X-A": "1"}},
+                {"extra_headers": {"X-A": "2"}},
+            ],
+            "my-alias",
+        )
+
+
+def test_gepa_extra_headers_from_group_returns_first_row_dict():
+    h = _gepa_extra_headers_from_group(
+        [
+            {"extra_headers": {"X-A": "x"}},
+            {"extra_headers": {"X-A": "x"}},
+        ],
+        "my-alias",
+    )
+    assert h == {"X-A": "x"}
 
 
 def test_load_gepa_toml_config_reads_env_table(tmp_path: Path):

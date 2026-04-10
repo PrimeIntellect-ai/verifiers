@@ -71,6 +71,12 @@ export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
 
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
+
 SCHEMA_DOLLAR='$'
 
 cat > ~/.config/opencode/opencode.json << EOFCONFIG
@@ -294,8 +300,6 @@ class OpenCodeEnv(CliAgentEnv):
             content = message.content
             if content is None:
                 content = ""
-            elif isinstance(content, str):
-                content = content.rstrip()
             reasoning_content = message.reasoning_content or None
             normalized_message = message.model_copy(
                 update={

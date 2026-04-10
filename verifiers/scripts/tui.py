@@ -2,6 +2,7 @@
 Textual-based TUI for viewing verifiers eval results.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -385,6 +386,180 @@ class LazyRunResults:
         return self._count_hint
 
 
+class LazyLogFile:
+    """Lazy loader for log files with line-level random access."""
+
+    MAX_DISPLAY_LINES = 10_000
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._fh = path.open("r", encoding="utf-8", errors="replace")
+        self._offsets: List[int] = []
+        self._cache: Dict[int, str] = {}
+        self._eof = False
+        self._count: Optional[int] = None
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+
+    def _read_next_line(self) -> Optional[str]:
+        if self._eof:
+            return None
+        pos = self._fh.tell()
+        line = self._fh.readline()
+        if not line:
+            self._eof = True
+            self._count = len(self._offsets)
+            return None
+        self._offsets.append(pos)
+        return line
+
+    def _ensure_index(self, index: int) -> bool:
+        if index < 0:
+            return False
+        while len(self._offsets) <= index and not self._eof:
+            if self._read_next_line() is None:
+                break
+        return index < len(self._offsets)
+
+    def _ensure_count(self) -> int:
+        if self._count is not None:
+            return self._count
+        while not self._eof:
+            if self._read_next_line() is None:
+                break
+        self._count = len(self._offsets)
+        return self._count
+
+    def get_line(self, index: int) -> str:
+        if index in self._cache:
+            return self._cache[index]
+        if not self._ensure_index(index):
+            return ""
+        pos = self._fh.tell()
+        try:
+            self._fh.seek(self._offsets[index])
+            line = self._fh.readline().rstrip("\n\r")
+        finally:
+            self._fh.seek(pos)
+        self._cache[index] = line
+        return line
+
+    def __len__(self) -> int:
+        return self._ensure_count()
+
+    def __bool__(self) -> bool:
+        if self._count is not None:
+            return self._count > 0
+        if self._offsets:
+            return True
+        if self._eof:
+            return False
+        return self._read_next_line() is not None
+
+
+# ----------------------------
+# Log styling helpers
+# ----------------------------
+
+_LOG_LEVEL_STYLES: Dict[str, str] = {
+    "DEBUG": "dim blue",
+    "INFO": "bold green",
+    "WARNING": "bold yellow",
+    "ERROR": "bold red",
+    "CRITICAL": "bold red reverse",
+}
+
+
+def _parse_log_header(line: str) -> Optional[Tuple[str, str, str, str]]:
+    """Parse a log line into (timestamp, source, level, message).
+
+    Expected format: '2026-03-03 22:57:21 - source.name - LEVEL ...'
+    """
+    if len(line) < 22 or line[19:22] != " - ":
+        return None
+    rest = line[22:]
+    sep_idx = rest.find(" - ")
+    if sep_idx < 0:
+        return None
+    source = rest[:sep_idx]
+    after_source = rest[sep_idx + 3 :]
+    space_idx = after_source.find(" ")
+    if space_idx < 0:
+        level = after_source
+        message = ""
+    else:
+        level = after_source[:space_idx]
+        message = after_source[space_idx:]
+    if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        return None
+    return line[:19], source, level, message
+
+
+def _append_styled_log_line(log_text: Text, line: str) -> None:
+    """Append a log line to a Text object with colored header parts."""
+    parsed = _parse_log_header(line)
+    if parsed is None:
+        log_text.append(line, style="dim")
+        return
+    timestamp, source, level, message = parsed
+    level_style = _LOG_LEVEL_STYLES.get(level, "dim")
+    log_text.append(timestamp, style="bold dim")
+    log_text.append(" - ", style="dim")
+    log_text.append(source, style="dim cyan")
+    log_text.append(" - ", style="dim")
+    log_text.append(level, style=level_style)
+    log_text.append(message, style="dim")
+
+
+def _log_tab_label(path: Path) -> str:
+    """Derive a display label from a log file path."""
+    stem = path.stem
+    if stem.startswith("env_"):
+        stem = stem[4:]
+    return stem
+
+
+def _discover_log_files(run_path: Path) -> List[Path]:
+    """Find log files in a run directory, sorted with env_server first."""
+    log_files = sorted(run_path.glob("*.log"))
+    # Put env_server.log first, then workers in natural order
+    server_logs = [p for p in log_files if p.name == "env_server.log"]
+    worker_logs = sorted(
+        [p for p in log_files if p.name.startswith("env_worker_")],
+        key=lambda p: (
+            int(p.stem.split("_")[-1]) if p.stem.split("_")[-1].isdigit() else 0
+        ),
+    )
+    other_logs = [p for p in log_files if p not in server_logs and p not in worker_logs]
+    return server_logs + worker_logs + other_logs
+
+
+def _merge_log_files(log_files: List[Path]) -> List[str]:
+    """Merge lines from multiple log files, sorted by timestamp.
+
+    Lines without a parseable timestamp are attached to the preceding
+    timestamped line (continuation lines from multi-line log messages).
+    """
+    # Collect all lines with their timestamps
+    entries: List[Tuple[str, int, str]] = []  # (timestamp, file_idx, line)
+    for file_idx, path in enumerate(log_files):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        current_ts = ""
+        for line in lines:
+            parsed = _parse_log_header(line)
+            if parsed is not None:
+                current_ts = parsed[0]  # timestamp string
+            entries.append((current_ts, file_idx, line))
+    # Stable sort by timestamp — preserves original order for same-timestamp lines
+    entries.sort(key=lambda e: e[0])
+    return [line for _, _, line in entries]
+
+
 # ----------------------------
 # Formatting helpers
 # ----------------------------
@@ -490,6 +665,15 @@ def _truncate_preview(text: str, limit: int = 72) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _compute_prompt_hash(prompt: list | None) -> str | None:
+    """MD5 hash of JSON-serialized prompt for deduplication."""
+    if prompt is None:
+        return None
+    return hashlib.md5(
+        json.dumps(prompt, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
@@ -1051,14 +1235,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
         "Scores": 5,
         "Other": 6,
     }
-    replacements = (
-        ("sub llm", "sub-LLM"),
-        ("main rlm", "main RLM"),
-        ("root rlm", "root RLM"),
-        ("llm", "LLM"),
-        ("repl", "REPL"),
-    )
-    prepared: List[Tuple[int, int, str, str, MetricSummary]] = []
+    prepared: List[Tuple[int, str, str, MetricSummary]] = []
     for summary in metric_summaries:
         lowered = summary.name.lower()
         if "token" in lowered:
@@ -1076,23 +1253,10 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
         else:
             category = "Other"
 
-        prefix_rank = 4
-        if lowered.startswith("sub_llm_"):
-            prefix_rank = 0
-        elif lowered.startswith("main_rlm_"):
-            prefix_rank = 1
-        elif lowered.startswith("root_"):
-            prefix_rank = 2
-        elif lowered.startswith("repl_"):
-            prefix_rank = 3
-
         display_name = summary.name.replace("_", " ")
-        for source, target in replacements:
-            display_name = display_name.replace(source, target)
         prepared.append(
             (
                 category_order.get(category, 99),
-                prefix_rank,
                 display_name,
                 category,
                 summary,
@@ -1107,7 +1271,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     count_width = len("N")
 
     previous_category: str | None = None
-    for _, _, display_name, category, summary in sorted(prepared):
+    for _, display_name, category, summary in sorted(prepared):
         avg_text = _format_metric_stat_value(summary.avg)
         min_text = _format_metric_stat_value(summary.min_value)
         max_text = _format_metric_stat_value(summary.max_value)
@@ -1207,6 +1371,33 @@ class TabbedScrollPane(VerticalScroll):
         tc = self._get_tabbed_content()
         if tc is not None:
             tc.query_one(ContentTabs).action_next_tab()
+
+
+class LogScrollPane(VerticalScroll):
+    """A VerticalScroll that switches log file tabs with left/right arrows."""
+
+    BINDINGS = [
+        Binding("left", "prev_log_tab", "Prev log", show=False),
+        Binding("right", "next_log_tab", "Next log", show=False),
+    ]
+
+    def _get_view_run_screen(self) -> Optional["ViewRunScreen"]:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, Screen):
+                return node if isinstance(node, ViewRunScreen) else None
+            node = node.parent
+        return None
+
+    def action_prev_log_tab(self) -> None:
+        screen = self._get_view_run_screen()
+        if screen is not None:
+            screen._cycle_log_tab(-1)
+
+    def action_next_log_tab(self) -> None:
+        screen = self._get_view_run_screen()
+        if screen is not None:
+            screen._cycle_log_tab(1)
 
 
 # ----------------------------
@@ -1577,12 +1768,11 @@ class CompareRunsScreen(Screen):
         self._stats_by_path: Dict[Path, RunOverviewStats] = {}
         self._setting_keys: List[str] = []
         self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
-        self._display_maps: Dict[str, Dict[str, str]] = {}
-        self._style_maps: Dict[str, Dict[str, str]] = {}
-        self._legend_rows: List[Tuple[str, str, str]] = []
         self._group_mode: bool = False
         self._group_cursor: int = 0
         self._grouped_by_key: str | None = None
+        self._distinct_prompts_by_group: Dict[Tuple[str, ...], int] = {}
+        self._prompt_count_cache: Dict[str, int] = {}  # run-ID-set hash → count
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -1613,7 +1803,9 @@ class CompareRunsScreen(Screen):
     def action_back(self) -> None:
         if self._grouped_by_key is not None:
             self._grouped_by_key = None
+            self._distinct_prompts_by_group = {}
             self._refresh_outcomes()
+            self._load_distinct_prompt_counts()
             return
         if self._group_mode:
             self._group_mode = False
@@ -1632,20 +1824,16 @@ class CompareRunsScreen(Screen):
     def action_copy(self) -> None:
         if not self._stats_by_path:
             return
+        outcomes_table, axis_legend, value_legend = self._build_grouped_outcomes_table(
+            self._stats_by_path,
+            self._setting_keys,
+            self._run_settings,
+            group_by_key=self._grouped_by_key,
+        )
         parts: List[str] = [
-            self._renderable_to_text(self._build_comparison_header()),
-            self._renderable_to_text(
-                self._build_grouped_outcomes_table(
-                    self._stats_by_path,
-                    self._setting_keys,
-                    self._run_settings,
-                    self._display_maps,
-                    self._style_maps,
-                    group_by_key=self._grouped_by_key,
-                )
-            ),
+            self._renderable_to_text(outcomes_table),
         ]
-        legend = self._build_value_legend(self._legend_rows)
+        legend = self._build_argument_legend(axis_legend, value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             parts.append(self._renderable_to_text(legend))
         all_body = "\n\n".join(parts)
@@ -1682,14 +1870,11 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
-        (
-            self._display_maps,
-            self._style_maps,
-            self._legend_rows,
-        ) = self._build_setting_display_maps(self._setting_keys, self._run_settings)
-        self.query_one("#compare-header", Static).update(
-            self._build_comparison_header()
-        )
+        self.query_one("#compare-header", Static).update(Text(""))
+        self._refresh_outcomes()
+        self._load_distinct_prompt_counts()
+
+    def on_resize(self, event: events.Resize) -> None:
         self._refresh_outcomes()
 
     def _refresh_outcomes(self) -> None:
@@ -1698,6 +1883,80 @@ class CompareRunsScreen(Screen):
         self.query_one("#compare-outcomes", Static).update(
             self._build_comparison_outcomes()
         )
+
+    @work(
+        thread=True,
+        group="prompt-counting",
+        exclusive=True,
+        exit_on_error=False,
+    )
+    def _load_distinct_prompt_counts(self) -> None:
+        """Compute distinct prompt counts per group in a background thread."""
+
+        group_keys = (
+            [self._grouped_by_key] if self._grouped_by_key else self._setting_keys
+        )
+
+        # Build group membership
+        groups: Dict[Tuple[str, ...], List[Tuple[RunInfo, Dict[str, str]]]] = (
+            defaultdict(list)
+        )
+        for run, settings in self._run_settings:
+            gk = tuple(settings.get(key, "(unset)") for key in group_keys)
+            groups[gk].append((run, settings))
+
+        # Process one group at a time; update table after each group completes
+        for group_key_val, group_runs in groups.items():
+            if not self.is_mounted:
+                return
+
+            # Cache key: hash of sorted run IDs in this group
+            run_ids = sorted(run.run_id for run, _ in group_runs)
+            cache_key = hashlib.md5(str(run_ids).encode()).hexdigest()
+
+            cached = self._prompt_count_cache.get(cache_key)
+            if cached is not None:
+                self.app.call_from_thread(
+                    self._update_group_prompt_count, group_key_val, cached
+                )
+                continue
+
+            # Not cached — compute by streaming results.jsonl
+            hashes: set[str] = set()
+            for run, _ in group_runs:
+                if not self.is_mounted:
+                    return
+                try:
+                    with (run.path / "results.jsonl").open("r", encoding="utf-8") as f:
+                        for line in f:
+                            if not self.is_mounted:
+                                return
+                            try:
+                                record = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(record, dict):
+                                continue
+                            prompt = record.get("prompt")
+                            ph = _compute_prompt_hash(prompt)
+                            if ph is not None:
+                                hashes.add(ph)
+                except OSError:
+                    pass
+
+            count = len(hashes)
+            self._prompt_count_cache[cache_key] = count
+            self.app.call_from_thread(
+                self._update_group_prompt_count, group_key_val, count
+            )
+
+    def _update_group_prompt_count(
+        self, group_key: Tuple[str, ...], count: int
+    ) -> None:
+        if not self.is_mounted:
+            return
+        self._distinct_prompts_by_group[group_key] = count
+        self._refresh_outcomes()
 
     def action_enter_group_mode(self) -> None:
         if not self._setting_keys:
@@ -1723,13 +1982,17 @@ class CompareRunsScreen(Screen):
         if not self._group_mode or not self._setting_keys:
             return
         self._grouped_by_key = self._setting_keys[self._group_cursor]
+        self._distinct_prompts_by_group = {}
         self._refresh_outcomes()
+        self._load_distinct_prompt_counts()
 
     def action_exit_group_mode(self) -> None:
         if self._group_mode:
             self._group_mode = False
             self._grouped_by_key = None
+            self._distinct_prompts_by_group = {}
             self._refresh_outcomes()
+            self._load_distinct_prompt_counts()
 
     def _short_setting_key(self, key: str) -> str:
         replacements = {
@@ -1743,7 +2006,7 @@ class CompareRunsScreen(Screen):
         return short
 
     def _alias_style(self, label: str) -> str:
-        match = re.fullmatch(r"v(\d+)", label)
+        match = re.fullmatch(r"v(\d+)(?:\.\d+)?", label)
         if match is None:
             return ""
         alias_idx = int(match.group(1)) - 1
@@ -1755,57 +2018,6 @@ class CompareRunsScreen(Screen):
         if positive:
             return "bold green" if share >= 0.5 else "green"
         return "bold red" if share >= 0.5 else "red"
-
-    def _build_setting_display_maps(
-        self,
-        setting_keys: List[str],
-        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-    ) -> Tuple[
-        Dict[str, Dict[str, str]],
-        Dict[str, Dict[str, str]],
-        List[Tuple[str, str, str]],
-    ]:
-        display_maps: Dict[str, Dict[str, str]] = {}
-        style_maps: Dict[str, Dict[str, str]] = {}
-        legend_rows: List[Tuple[str, str, str]] = []
-
-        for key in setting_keys:
-            ordered_values: List[str] = []
-            for _, settings in run_settings:
-                value = settings.get(key, "(unset)")
-                if value not in ordered_values:
-                    ordered_values.append(value)
-
-            previews = [
-                _truncate_preview(" ".join(value.split()), 20)
-                for value in ordered_values
-            ]
-            needs_alias = len(set(previews)) != len(previews) or any(
-                len(" ".join(value.split())) > 20 for value in ordered_values
-            )
-
-            if needs_alias:
-                display_maps[key] = {}
-                style_maps[key] = {}
-                for idx, value in enumerate(ordered_values):
-                    alias = f"v{idx + 1}"
-                    display_maps[key][value] = alias
-                    style_maps[key][value] = self._alias_style(alias)
-                    legend_rows.append(
-                        (
-                            f"{self._short_setting_key(key)} {alias}",
-                            _truncate_preview(" ".join(value.split()), 120),
-                            style_maps[key][value],
-                        )
-                    )
-                continue
-
-            display_maps[key] = {
-                value: preview for value, preview in zip(ordered_values, previews)
-            }
-            style_maps[key] = {value: "" for value in ordered_values}
-
-        return display_maps, style_maps, legend_rows
 
     def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
         if not values:
@@ -1842,61 +2054,14 @@ class CompareRunsScreen(Screen):
             out.append("░" * (width - used), style="dim")
         return out
 
-    def _build_axes_table(
-        self,
-        setting_keys: List[str],
-        run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-        display_maps: Dict[str, Dict[str, str]],
-        style_maps: Dict[str, Dict[str, str]],
-    ) -> Group | Text:
-        if not setting_keys:
-            return Text("All saved settings match across these runs", style="dim")
-
-        table = Table(
-            box=box.SIMPLE_HEAD,
-            expand=True,
-            show_edge=False,
-            pad_edge=False,
-            padding=(0, 1),
-            collapse_padding=True,
-            row_styles=["none", "dim"],
-        )
-        table.add_column(
-            "Axis", style="bold", header_style="bold dim", width=18, no_wrap=True
-        )
-        table.add_column("Values", header_style="bold dim", ratio=1)
-
-        for key in setting_keys:
-            counts: Dict[str, int] = defaultdict(int)
-            ordered_values: List[str] = []
-            for _, settings in run_settings:
-                value = settings.get(key, "(unset)")
-                counts[value] += 1
-                if value not in ordered_values:
-                    ordered_values.append(value)
-
-            value_text = Text()
-            for idx, value in enumerate(ordered_values):
-                if idx:
-                    value_text.append("   ")
-                label = display_maps[key][value]
-                value_text.append(label, style=style_maps[key][value] or "")
-                value_text.append(f" ({counts[value]})", style="dim")
-            axis_label = Text(self._short_setting_key(key), style="bold")
-            table.add_row(axis_label, value_text)
-
-        return Group(Text("Ablation axes", style="bold dim"), table)
-
     def _build_grouped_outcomes_table(
         self,
         stats_by_path: Dict[Path, RunOverviewStats],
         setting_keys: List[str],
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
-        display_maps: Dict[str, Dict[str, str]],
-        style_maps: Dict[str, Dict[str, str]],
         group_by_key: str | None = None,
         highlight_col: int | None = None,
-    ) -> Table:
+    ) -> Tuple[Table, List[Tuple[str, str, str]], List[Tuple[str, str, str, str]]]:
         # Determine which keys to actually group by.
         group_keys = [group_by_key] if group_by_key else setting_keys
 
@@ -1949,20 +2114,154 @@ class CompareRunsScreen(Screen):
             collapse_padding=True,
             row_styles=["none", "dim"],
         )
-        for idx, key in enumerate(setting_keys):
+        # --- Responsive aliasing and column hiding ---
+        #
+        # 1. Compute per-column budget assuming all optional columns are shown.
+        #    Alias any header or value that exceeds that budget.
+        # 2. Drop optional columns until setting columns (with min_width) fit.
+        terminal_width = self.size.width if self.is_mounted else 120
+        n = len(setting_keys)
+        optional_cols = [
+            ("=0", 7),
+            ("=1", 7),
+            ("mix", 22),
+            ("rollouts", 11),
+            ("unique prompts", 10),
+            ("runs", 7),
+        ]  # name, width (includes 2 for padding)
+        all_opt_w = sum(w for _, w in optional_cols)
+        budget = (terminal_width - 9 - all_opt_w) // n - 2 if n > 0 else 999
+
+        # -- Alias headers and values that exceed the budget --
+        def _alias_settings(
+            budget: int,
+        ) -> Tuple[
+            List[str],
+            List[Tuple[str, str, str]],
+            List[Tuple[str, str, str, str]],
+            Dict[str, Dict[str, str]],
+            Dict[str, Dict[str, str]],
+        ]:
+            """Alias headers/values exceeding budget. budget<=0 aliases everything."""
+            hdrs: List[str] = []
+            ax_legend: List[Tuple[str, str, str]] = []
+            val_legend: List[Tuple[str, str, str, str]] = []
+            d_maps: Dict[str, Dict[str, str]] = {}
+            s_maps: Dict[str, Dict[str, str]] = {}
+            for kidx, key in enumerate(setting_keys):
+                short_name = self._short_setting_key(key)
+                axis_num = kidx + 1
+                ordered: List[str] = []
+                for _, settings in run_settings:
+                    v = settings.get(key, "(unset)")
+                    if v not in ordered:
+                        ordered.append(v)
+                # Alias header?
+                if budget <= 0 or len(short_name) > budget:
+                    hdrs.append(f"a{axis_num}")
+                    ax_legend.append((f"a{axis_num}", short_name, "bold dim"))
+                else:
+                    hdrs.append(short_name)
+                # Alias values?
+                max_val_w = max(
+                    (len(_truncate_preview(" ".join(v.split()), 20)) for v in ordered),
+                    default=0,
+                )
+                if budget <= 0 or max_val_w > budget:
+                    d_maps[key] = {}
+                    s_maps[key] = {}
+                    for vidx, value in enumerate(ordered):
+                        alias = f"v{axis_num}.{vidx + 1}"
+                        d_maps[key][value] = alias
+                        s_maps[key][value] = self._alias_style(alias)
+                        val_legend.append(
+                            (
+                                alias,
+                                short_name,
+                                _truncate_preview(" ".join(value.split()), 120),
+                                s_maps[key][value],
+                            )
+                        )
+                else:
+                    d_maps[key] = {
+                        v: _truncate_preview(" ".join(v.split()), 20) for v in ordered
+                    }
+                    s_maps[key] = {v: "" for v in ordered}
+            return hdrs, ax_legend, val_legend, d_maps, s_maps
+
+        def _compute_col_widths(
+            hdrs: List[str], d_maps: Dict[str, Dict[str, str]]
+        ) -> Tuple[List[int], int]:
+            widths = [
+                max(
+                    len(hdrs[i]), max((len(d_maps[k][v]) for v in d_maps[k]), default=0)
+                )
+                for i, k in enumerate(setting_keys)
+            ]
+            return widths, sum(w + 2 for w in widths)
+
+        # Try budget-based aliasing first
+        col_headers, axis_legend_rows, value_legend_rows, display_maps, style_maps = (
+            _alias_settings(budget)
+        )
+        col_widths, settings_need = _compute_col_widths(col_headers, display_maps)
+
+        # If it doesn't fit, force-alias everything
+        if terminal_width - 9 - all_opt_w < settings_need + n * 2:
+            (
+                col_headers,
+                axis_legend_rows,
+                value_legend_rows,
+                display_maps,
+                style_maps,
+            ) = _alias_settings(0)
+            col_widths, settings_need = _compute_col_widths(col_headers, display_maps)
+
+        # Drop optional columns if even fully-aliased content doesn't fit
+        visible: set[str] = {name for name, _ in optional_cols}
+        for drop_group in [
+            {"=0", "=1"},
+            {"mix"},
+            {"rollouts"},
+            {"unique prompts"},
+            {"runs"},
+        ]:
+            opt_w = sum(w for name, w in optional_cols if name in visible)
+            if terminal_width - 9 - opt_w >= settings_need + n * 2:
+                break
+            visible -= drop_group
+        show = visible.__contains__
+
+        # Distribute leftover space evenly across setting columns.
+        opt_w = sum(w for name, w in optional_cols if name in visible)
+        leftover = max(terminal_width - 9 - opt_w - settings_need, 0)
+        extra = leftover // n if n > 0 else 0
+
+        for idx, (header, cw) in enumerate(zip(col_headers, col_widths)):
             header_style = "bold reverse" if highlight_col == idx else "bold dim"
             table.add_column(
-                self._short_setting_key(key),
+                header,
                 header_style=header_style,
-                ratio=1,
+                width=cw + extra,
                 no_wrap=True,
             )
-        table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        if show("runs"):
+            table.add_column("runs", justify="right", width=5, header_style="bold dim")
+        if show("rollouts"):
+            table.add_column(
+                "rollouts", justify="right", width=9, header_style="bold dim"
+            )
+        if show("unique prompts"):
+            table.add_column(
+                "unique prompts", justify="right", width=8, header_style="bold dim"
+            )
         table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
-        table.add_column("=0", justify="right", width=5, header_style="bold red")
-        table.add_column("=1", justify="right", width=5, header_style="bold green")
-        table.add_column("mix", width=20, header_style="bold dim")
-        table.add_column("ids", ratio=1, header_style="bold dim")
+        if show("=0"):
+            table.add_column("=0", justify="right", width=5, header_style="bold red")
+        if show("=1"):
+            table.add_column("=1", justify="right", width=5, header_style="bold green")
+        if show("mix"):
+            table.add_column("mix", width=20, header_style="bold dim")
 
         for _group_key_val, group in rows:
             rewards = cast(List[float], group["rewards"])
@@ -1989,13 +2288,6 @@ class CompareRunsScreen(Screen):
                 ),
                 0,
             )
-            run_ids = ", ".join(
-                run.run_id for run in cast(List[RunInfo], group["runs"])[:3]
-            )
-            hidden_ids = max(0, len(cast(List[RunInfo], group["runs"])) - 3)
-            if hidden_ids:
-                run_ids += f" +{hidden_ids}"
-
             # Build setting cells.
             setting_cells: List[Text] = []
             for key in setting_keys:
@@ -2024,91 +2316,126 @@ class CompareRunsScreen(Screen):
                             Text(f"{len(distinct)} values", style="dim italic")
                         )
 
-            table.add_row(
-                *setting_cells,
-                str(len(cast(List[RunInfo], group["runs"]))),
+            prompt_count = self._distinct_prompts_by_group.get(_group_key_val)
+            row_cells: list[Any] = list(setting_cells)
+            if show("runs"):
+                row_cells.append(str(len(cast(List[RunInfo], group["runs"]))))
+            if show("rollouts"):
+                row_cells.append(str(len(rewards)) if rewards else "—")
+            if show("unique prompts"):
+                row_cells.append(
+                    Text(
+                        str(prompt_count) if prompt_count is not None else "?",
+                        style="dim",
+                    )
+                )
+            row_cells.append(
                 Text(
                     _format_reward_value(avg_reward) if avg_reward is not None else "—",
                     style=_reward_style(avg_reward)
                     if avg_reward is not None
                     else "dim",
-                ),
-                Text(
-                    f"{(zero_count / total):.0%}" if total else "—",
-                    style=self._share_style(
-                        (zero_count / total) if total else 0.0, False
-                    ),
-                ),
-                Text(
-                    f"{(one_count / total):.0%}" if total else "—",
-                    style=self._share_style(
-                        (one_count / total) if total else 0.0, True
-                    ),
-                ),
-                self._build_reward_mix_bar(rewards),
-                Text(run_ids or "—", style="dim"),
+                )
             )
+            if show("=0"):
+                row_cells.append(
+                    Text(
+                        f"{(zero_count / total):.0%}" if total else "—",
+                        style=self._share_style(
+                            (zero_count / total) if total else 0.0, False
+                        ),
+                    )
+                )
+            if show("=1"):
+                row_cells.append(
+                    Text(
+                        f"{(one_count / total):.0%}" if total else "—",
+                        style=self._share_style(
+                            (one_count / total) if total else 0.0, True
+                        ),
+                    )
+                )
+            if show("mix"):
+                row_cells.append(self._build_reward_mix_bar(rewards))
+            table.add_row(*row_cells)
 
-        return table
+        return table, axis_legend_rows, value_legend_rows
 
-    def _build_value_legend(
-        self, legend_rows: List[Tuple[str, str, str]]
+    def _build_argument_legend(
+        self,
+        axis_rows: List[Tuple[str, str, str]],
+        value_rows: List[Tuple[str, str, str, str]],
     ) -> Group | Text:
-        if not legend_rows:
+        """Build the argument legend.
+
+        axis_rows: (alias, full_name, style)
+        value_rows: (alias, full_name, preview, style)
+        """
+        if not axis_rows and not value_rows:
             return Text()
 
-        table = Table(
-            box=box.SIMPLE_HEAD,
-            expand=True,
-            show_edge=False,
-            pad_edge=False,
-            padding=(0, 1),
-            collapse_padding=True,
-            row_styles=["none", "dim"],
-        )
-        table.add_column(
-            "Alias", style="bold", header_style="bold dim", width=18, no_wrap=True
-        )
-        table.add_column("Preview", header_style="bold dim", ratio=1)
-        for alias, preview, style in legend_rows:
-            table.add_row(Text(alias, style=style), Text(preview, style="dim"))
-        return Group(Text("Value legend", style="bold dim"), table)
+        def _make_table(*columns: Tuple[str, dict]) -> Table:
+            t = Table(
+                box=box.SIMPLE_HEAD,
+                expand=True,
+                show_edge=False,
+                pad_edge=False,
+                padding=(0, 1),
+                collapse_padding=True,
+            )
+            for name, kwargs in columns:
+                t.add_column(name, header_style="bold dim", **kwargs)
+            return t
 
-    def _build_comparison_header(self) -> Group:
-        summary = Text()
-        summary.append("Ablation summary\n", style="bold dim")
-        summary.append(self.model or "all models", style="bold")
-        summary.append("\n")
-        summary.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
-        return Group(
-            summary,
-            Text(""),
-            self._build_axes_table(
-                self._setting_keys,
-                self._run_settings,
-                self._display_maps,
-                self._style_maps,
-            ),
-        )
+        items: List[Any] = []
+
+        if axis_rows:
+            t = _make_table(
+                ("Alias", {"width": 8, "no_wrap": True}),
+                ("Full Name", {"ratio": 1, "no_wrap": True}),
+            )
+            for alias, full_name, style in axis_rows:
+                t.add_row(
+                    Text(alias, style=style),
+                    Text(full_name, style="dim"),
+                )
+            items.extend([Text("Arg name legend", style="bold dim"), t])
+
+        if value_rows:
+            t = _make_table(
+                ("Alias", {"width": 8, "no_wrap": True}),
+                ("Full Name", {"ratio": 1, "no_wrap": True}),
+                ("Value", {"ratio": 2}),
+            )
+            for alias, full_name, preview, style in value_rows:
+                t.add_row(
+                    Text(alias, style=style),
+                    Text(full_name, style="dim"),
+                    Text(preview, style="dim"),
+                )
+            if items:
+                items.append(Text(""))
+            items.extend([Text("Arg value legend", style="bold dim"), t])
+
+        return Group(*items)
 
     def _build_comparison_outcomes(self) -> Group:
         highlight_col = self._group_cursor if self._group_mode else None
+        outcomes_table, axis_legend, value_legend = self._build_grouped_outcomes_table(
+            self._stats_by_path,
+            self._setting_keys,
+            self._run_settings,
+            group_by_key=self._grouped_by_key,
+            highlight_col=highlight_col,
+        )
         items: List[Any] = [
             Text(""),
             Group(
                 Text("Outcome groups", style="bold dim"),
-                self._build_grouped_outcomes_table(
-                    self._stats_by_path,
-                    self._setting_keys,
-                    self._run_settings,
-                    self._display_maps,
-                    self._style_maps,
-                    group_by_key=self._grouped_by_key,
-                    highlight_col=highlight_col,
-                ),
+                outcomes_table,
             ),
         ]
-        legend = self._build_value_legend(self._legend_rows)
+        legend = self._build_argument_legend(axis_legend, value_legend)
         if isinstance(legend, Group) or (isinstance(legend, Text) and legend.plain):
             items.extend([Text(""), legend])
         return Group(*items)
@@ -2625,8 +2952,10 @@ class ViewRunScreen(Screen):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
-        Binding("left,p", "prev_record", "Prev rollout"),
-        Binding("right,n", "next_record", "Next rollout"),
+        Binding("p", "prev_record", "Prev rollout"),
+        Binding("n", "next_record", "Next rollout"),
+        Binding("l", "show_logs", "Logs"),
+        Binding("r", "show_rollouts", "Rollouts"),
         Binding("pageup", "history_page_up", show=False),
         Binding("pagedown", "history_page_down", show=False),
         Binding("home", "history_home", show=False),
@@ -2641,6 +2970,24 @@ class ViewRunScreen(Screen):
         Binding("ctrl+c", "copy", show=False),
     ]
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Dynamically show/hide footer bindings based on view mode."""
+        mode = getattr(self, "_view_mode", "rollouts")
+        hide_in_logs = (
+            "expand_all",
+            "collapse_all",
+            "toggle_markdown_math",
+            "show_logs",
+        )
+        hide_in_rollouts = ("show_rollouts",)
+        if mode == "logs":
+            if action in hide_in_logs:
+                return False
+        else:
+            if action in hide_in_rollouts:
+                return False
+        return True
+
     def __init__(self, run: RunInfo):
         super().__init__()
         self.run = run
@@ -2654,6 +3001,15 @@ class ViewRunScreen(Screen):
         self._highlight_timer = None
         self._previous_animation_level: Optional[AnimationLevel] = None
         self._render_markdown_math = True
+        # Log viewer state
+        # Tab 0 = "all" (merged), tab 1+ = individual files
+        self._log_files: List[Path] = _discover_log_files(run.path)
+        self._log_loaders: Dict[int, LazyLogFile] = {}
+        self._merged_log_lines: Optional[List[str]] = None
+        self._active_log_tab: int = 0
+        self._view_mode: Literal["rollouts", "logs"] = "rollouts"
+        self._log_highlight_regex: Optional[re.Pattern] = None
+        self._log_highlight_timer = None
         if self.records:
             self._set_record_text_state(self.records[self.current_record_idx])
 
@@ -2683,6 +3039,16 @@ class ViewRunScreen(Screen):
                         "", id="history-summary", classes="subtitle", markup=False
                     )
                     yield VerticalScroll(*completion_sections, id="completion-scroll")
+                with Panel(id="logs-panel", classes="logs-panel"):
+                    yield Label(
+                        Text("Logs", style="bold"),
+                        id="logs-header",
+                        classes="column-header",
+                    )
+                    yield Static(
+                        "", id="logs-tab-bar", classes="subtitle", markup=False
+                    )
+                    yield LogScrollPane(id="logs-scroll")
                 with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
@@ -2895,6 +3261,8 @@ class ViewRunScreen(Screen):
 
     def on_unmount(self) -> None:
         self.records.close()
+        for loader in self._log_loaders.values():
+            loader.close()
         if self._previous_animation_level is not None:
             cast(App[Any], self.app).animation_level = self._previous_animation_level
 
@@ -3095,6 +3463,135 @@ class ViewRunScreen(Screen):
         rollout_list.scroll_to_highlight()
         self._set_current_record(new_index)
 
+    # ------ Log viewer ------
+
+    def action_show_logs(self) -> None:
+        if not self._log_files:
+            self.notify("No log files available for this run", severity="warning")
+            return
+        if self._view_mode == "logs":
+            return
+        self._view_mode = "logs"
+        self.query_one("#history-panel", Panel).display = False
+        self.query_one("#logs-panel", Panel).display = True
+        self._populate_logs_view()
+        self.query_one("#logs-scroll", LogScrollPane).focus()
+        self.refresh_bindings()
+
+    def action_show_rollouts(self) -> None:
+        if self._view_mode == "rollouts":
+            return
+        self._view_mode = "rollouts"
+        self.query_one("#logs-panel", Panel).display = False
+        self.query_one("#history-panel", Panel).display = True
+        self._focus_primary_content()
+        self.refresh_bindings()
+
+    def _cycle_log_tab(self, delta: int) -> None:
+        num_tabs = self._log_tab_count()
+        if num_tabs < 2:
+            return
+        self._active_log_tab = (self._active_log_tab + delta) % num_tabs
+        self._populate_logs_view()
+
+    def _log_tab_count(self) -> int:
+        """Number of log tabs: 'all' + individual files if 2+ files, else just 1."""
+        if len(self._log_files) >= 2:
+            return len(self._log_files) + 1  # "all" tab + individual files
+        return len(self._log_files)  # 0 or 1
+
+    def _build_log_tab_bar(self) -> Text:
+        num_tabs = self._log_tab_count()
+        if num_tabs <= 1:
+            return Text()
+        text = Text()
+        # Tab 0 = "all", tabs 1+ = individual files
+        labels = ["all"] + [_log_tab_label(p) for p in self._log_files]
+        for i, label in enumerate(labels):
+            if i > 0:
+                text.append("  ")
+            if i == self._active_log_tab:
+                text.append(f"[{label}]", style="bold")
+            else:
+                text.append(f" {label} ", style="dim")
+        text.append("  ")
+        text.append("(←/→ to switch)", style="dim italic")
+        return text
+
+    def _get_active_log_lines(self) -> Tuple[List[str], str]:
+        """Return (lines, tab_label) for the active log tab."""
+        is_merged = len(self._log_files) >= 2 and self._active_log_tab == 0
+        if is_merged:
+            if self._merged_log_lines is None:
+                self._merged_log_lines = _merge_log_files(self._log_files)
+            return self._merged_log_lines, "all"
+        # Individual file tab — index into _log_files
+        file_idx = (
+            self._active_log_tab - 1
+            if len(self._log_files) >= 2
+            else self._active_log_tab
+        )
+        if file_idx not in self._log_loaders:
+            self._log_loaders[file_idx] = LazyLogFile(self._log_files[file_idx])
+        loader = self._log_loaders[file_idx]
+        line_count = len(loader)
+        lines = [loader.get_line(i) for i in range(line_count)]
+        return lines, _log_tab_label(self._log_files[file_idx])
+
+    def _populate_logs_view(self) -> None:
+        if not self._log_files:
+            self.query_one("#logs-tab-bar", Static).update(
+                Text("No log files available", style="dim")
+            )
+            return
+
+        # Update tab bar
+        self.query_one("#logs-tab-bar", Static).update(self._build_log_tab_bar())
+
+        lines, log_name = self._get_active_log_lines()
+        line_count = len(lines)
+
+        # Update header
+        self.query_one("#logs-header", Label).update(
+            Text.assemble(
+                ("Logs", "bold"),
+                (f"  {log_name}", "dim"),
+                (f"  ({line_count:,} lines)", "dim"),
+            )
+        )
+
+        # Build log content
+        container = self.query_one("#logs-scroll", LogScrollPane)
+        container.remove_children()
+
+        if line_count == 0:
+            container.mount(Static(Text("(empty log file)", style="dim"), markup=False))
+            return
+
+        text = Text()
+        # Cap display at last MAX_DISPLAY_LINES lines
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        if start > 0:
+            text.append(
+                f"... {start:,} earlier lines not shown ...\n\n", style="dim italic"
+            )
+        for i in range(start, line_count):
+            if i > start:
+                text.append("\n")
+            line = lines[i]
+            if self._log_highlight_regex:
+                _append_styled_log_line(text, line)
+                # Apply highlights on top
+                offset = len(text.plain) - len(line)
+                for match in self._log_highlight_regex.finditer(line):
+                    text.stylize(
+                        "reverse", offset + match.start(), offset + match.end()
+                    )
+            else:
+                _append_styled_log_line(text, line)
+
+        container.mount(Static(text, markup=False, classes="log-content"))
+
     def _build_search_lines(
         self, record: Dict[str, Any]
     ) -> Tuple[List[Tuple[int, int, str]], List[Tuple[int, int, str]]]:
@@ -3126,6 +3623,9 @@ class ViewRunScreen(Screen):
         return prompt_lines, completion_lines
 
     def action_search(self) -> None:
+        if self._view_mode == "logs":
+            self._search_logs()
+            return
         if not self.records:
             return
         record = self.records[self.current_record_idx]
@@ -3135,7 +3635,82 @@ class ViewRunScreen(Screen):
             self._handle_search_result,
         )
 
+    def _search_logs(self) -> None:
+        if not self._log_files:
+            return
+        lines, _ = self._get_active_log_lines()
+        line_count = len(lines)
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        log_lines: List[Tuple[int, int, str]] = [
+            (0, -1, lines[i]) for i in range(start, line_count)
+        ]
+        self.app.push_screen(
+            SearchScreen([], log_lines),
+            self._handle_log_search_result,
+        )
+
+    def _handle_log_search_result(self, result: Optional[SearchResult]) -> None:
+        if self._log_highlight_timer is not None:
+            self._log_highlight_timer.stop()
+            self._log_highlight_timer = None
+        self._log_highlight_regex = None
+        if result is not None:
+            try:
+                self._log_highlight_regex = re.compile(result.pattern, re.IGNORECASE)
+            except re.error:
+                return
+            self._log_highlight_timer = self.set_timer(3.0, self._clear_log_highlight)
+        self._populate_logs_view()
+        if result is not None and self._log_highlight_regex is not None:
+            self._scroll_to_first_log_match()
+
+    def _scroll_to_first_log_match(self) -> None:
+        """Scroll the logs panel so the first matching line is visible."""
+        if not self._log_highlight_regex or not self._log_files:
+            return
+        lines, _ = self._get_active_log_lines()
+        line_count = len(lines)
+        start = max(0, line_count - LazyLogFile.MAX_DISPLAY_LINES)
+        # Find the first matching line index (relative to displayed range)
+        first_match_display_idx: Optional[int] = None
+        for i in range(start, line_count):
+            if self._log_highlight_regex.search(lines[i]):
+                first_match_display_idx = i - start
+                break
+        if first_match_display_idx is None:
+            return
+        # Account for the "... N earlier lines not shown ..." header (2 lines)
+        offset_lines = 2 if start > 0 else 0
+        target_line = first_match_display_idx + offset_lines
+        container = self.query_one("#logs-scroll", LogScrollPane)
+
+        def _do_scroll() -> None:
+            # Estimate scroll position: each log line is roughly 1 row of height
+            # in the Static widget. We scroll to a Y offset proportional to the
+            # target line relative to total content height.
+            content_height = container.virtual_size.height
+            visible_height = container.size.height
+            total_lines = (line_count - start) + offset_lines
+            if total_lines <= 0 or content_height <= visible_height:
+                return
+            fraction = target_line / total_lines
+            target_y = int(fraction * content_height)
+            # Center the match in the viewport
+            target_y = max(0, target_y - visible_height // 2)
+            container.scroll_to(y=target_y, animate=False)
+
+        self.call_after_refresh(_do_scroll)
+
+    def _clear_log_highlight(self) -> None:
+        self._log_highlight_regex = None
+        self._log_highlight_timer = None
+        if self._view_mode == "logs":
+            self._populate_logs_view()
+
     def action_copy(self) -> None:
+        if self._view_mode == "logs":
+            self._copy_logs()
+            return
         if not self.records:
             return
         record = self.records[self.current_record_idx]
@@ -3144,6 +3719,44 @@ class ViewRunScreen(Screen):
                 self._build_rollout_copy_items(record),
                 start_key="snapshot",
                 title=f"Copy Rollout #{self.current_record_idx}",
+            )
+        )
+
+    def _copy_logs(self) -> None:
+        if not self._log_files:
+            return
+        items: List[RolloutCopyItem] = []
+        has_merged = len(self._log_files) >= 2
+        if has_merged:
+            # "all" tab uses merged lines
+            if self._merged_log_lines is None:
+                self._merged_log_lines = _merge_log_files(self._log_files)
+            items.append(
+                RolloutCopyItem(
+                    key="log-all",
+                    label="Log: all (merged)",
+                    body="\n".join(self._merged_log_lines),
+                )
+            )
+        for idx, path in enumerate(self._log_files):
+            items.append(
+                RolloutCopyItem(
+                    key=f"log-file-{idx}",
+                    label=f"Log: {_log_tab_label(path)}",
+                    body=path.read_text(encoding="utf-8", errors="replace"),
+                )
+            )
+        # Select the copy target matching the active tab
+        if has_merged and self._active_log_tab == 0:
+            current_key = "log-all"
+        else:
+            file_idx = self._active_log_tab - 1 if has_merged else self._active_log_tab
+            current_key = f"log-file-{file_idx}"
+        self.app.push_screen(
+            RolloutCopyScreen(
+                items,
+                start_key=current_key,
+                title="Copy Logs",
             )
         )
 
@@ -3206,21 +3819,22 @@ class ViewRunScreen(Screen):
             if self.focused is first_candidate:
                 break
 
+    def _center_scroll_target(self) -> VerticalScroll:
+        if self._view_mode == "logs":
+            return self.query_one("#logs-scroll", LogScrollPane)
+        return self.query_one("#completion-scroll", VerticalScroll)
+
     def action_history_page_up(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_page_up(
-            animate=False
-        )
+        self._center_scroll_target().scroll_page_up(animate=False)
 
     def action_history_page_down(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_page_down(
-            animate=False
-        )
+        self._center_scroll_target().scroll_page_down(animate=False)
 
     def action_history_home(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_home(animate=False)
+        self._center_scroll_target().scroll_home(animate=False)
 
     def action_history_end(self) -> None:
-        self.query_one("#completion-scroll", VerticalScroll).scroll_end(animate=False)
+        self._center_scroll_target().scroll_end(animate=False)
 
     def _make_body_widget(self, body: str, column: str) -> Widget:
         """Create the appropriate body widget based on render mode."""
@@ -3994,6 +4608,18 @@ class ViewRunScreen(Screen):
         info = record.get("info")
         if info not in (None, {}, ""):
             self._append_context_section(out, "Info", format_info_for_details(info))
+
+        state_columns = self.run.load_metadata().get("state_columns")
+        if isinstance(state_columns, list):
+            for column in state_columns:
+                if not isinstance(column, str) or not column:
+                    continue
+                value = record.get(column)
+                if value in (None, "", {}):
+                    continue
+                self._append_context_section(
+                    out, column, format_info_for_details(value)
+                )
         return out
 
     def _append_context_section(self, out: Text, title: str, value: Any) -> None:
@@ -4159,7 +4785,33 @@ class VerifiersTUI(App):
         height: 100%;
         layout: vertical;
     }
-    
+
+    .logs-panel {
+        width: 1fr;
+        height: 100%;
+        layout: vertical;
+        display: none;
+    }
+
+    #logs-scroll {
+        layout: vertical;
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-size-vertical: 2;
+        scrollbar-color: $primary 40%;
+        scrollbar-color-hover: $primary 70%;
+        scrollbar-color-active: $accent;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-corner-color: $panel;
+    }
+
+    #logs-scroll:focus {
+        background-tint: $foreground 4%;
+    }
+
     .column-header {
         height: auto;
         margin-bottom: 0;

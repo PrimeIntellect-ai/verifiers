@@ -339,7 +339,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
     """Generate environment feedback after model turn."""
 ```
 
-**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `has_final_env_response`
+**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
 
 **Hooks:**
 
@@ -349,6 +349,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
 | `get_prompt_messages(state)` | Customize prompt construction |
 | `render_completion(state)` | Customize completion rendering |
 | `add_trajectory_step(state, step)` | Customize trajectory handling |
+| `set_max_total_completion_tokens(int)` | Set maximum total completion tokens |
 
 #### ToolEnv
 
@@ -745,7 +746,16 @@ class EvalConfig(BaseModel):
 ### Endpoint
 
 ```python
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoint = TypedDict(
+    "Endpoint",
+    {
+        "key": str,
+        "url": str,
+        "model": str,
+        "api_client_type": NotRequired[ClientType],
+        "extra_headers": NotRequired[dict[str, str]],
+    },
+)
 Endpoints = dict[str, list[Endpoint]]
 ```
 
