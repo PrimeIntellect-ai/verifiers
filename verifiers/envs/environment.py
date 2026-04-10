@@ -5,7 +5,10 @@ import atexit
 import json
 import logging
 import multiprocessing as mp
+import os
+import queue
 import signal
+import threading
 import time
 import uuid
 import warnings
@@ -71,6 +74,7 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.logging_utils import print_time
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -87,6 +91,12 @@ from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
 _MESSAGE_TYPE_UNSET = object()
+_DATASET_BUILD_TIMEOUT_ENV_VAR = "VF_DATASET_BUILD_TIMEOUT"
+_DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS = 300.0
+
+
+class DatasetBuildError(RuntimeError):
+    """Raised when building an environment dataset fails or times out."""
 
 
 class Environment(ABC):
@@ -112,6 +122,7 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
         pass_threshold: float = 0.5,
+        dataset_build_timeout_seconds: float | None = None,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -148,6 +159,9 @@ class Environment(ABC):
 
         self.set_score_rollouts(score_rollouts)
         self.pass_threshold = pass_threshold
+        self.dataset_build_timeout_seconds = self._resolve_dataset_build_timeout(
+            dataset_build_timeout_seconds
+        )
 
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
@@ -393,13 +407,86 @@ class Environment(ABC):
             map_kwargs=self.map_kwargs,
         )
 
+    def _resolve_dataset_build_timeout(
+        self, dataset_build_timeout_seconds: float | None
+    ) -> float | None:
+        if dataset_build_timeout_seconds is not None:
+            return (
+                None
+                if dataset_build_timeout_seconds <= 0
+                else dataset_build_timeout_seconds
+            )
+
+        raw_timeout = os.getenv(_DATASET_BUILD_TIMEOUT_ENV_VAR)
+        if raw_timeout is not None:
+            try:
+                parsed_timeout = float(raw_timeout)
+            except ValueError:
+                self.logger.warning(
+                    "Invalid %s=%r; using default %.0fs",
+                    _DATASET_BUILD_TIMEOUT_ENV_VAR,
+                    raw_timeout,
+                    _DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS,
+                )
+            else:
+                return None if parsed_timeout <= 0 else parsed_timeout
+
+        return _DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS
+
+    def _build_dataset_from_source(
+        self,
+        source: DatasetBuilder,
+        *,
+        source_name: str,
+    ) -> Dataset:
+        timeout_seconds = self.dataset_build_timeout_seconds
+        if timeout_seconds is None:
+            return source()
+
+        result_queue: queue.SimpleQueue[Dataset | BaseException] = queue.SimpleQueue()
+
+        def build_dataset() -> None:
+            try:
+                result_queue.put(source())
+            except BaseException as exc:  # pragma: no cover - exercised via caller
+                result_queue.put(exc)
+
+        builder_thread = threading.Thread(
+            target=build_dataset,
+            name=f"dataset-builder-{source_name.replace(' ', '-')}",
+            daemon=True,
+        )
+        builder_thread.start()
+        builder_thread.join(timeout_seconds)
+
+        if builder_thread.is_alive():
+            raise DatasetBuildError(
+                f"Building {source_name} for environment '{self.env_id or self.__class__.__name__}' "
+                f"timed out after {print_time(timeout_seconds)}. "
+                f"Check dataset access and network reachability, or increase "
+                f"{_DATASET_BUILD_TIMEOUT_ENV_VAR}."
+            )
+
+        result = result_queue.get()
+        if isinstance(result, BaseException):
+            if isinstance(result, DatasetBuildError):
+                raise result
+            raise DatasetBuildError(
+                f"Failed to build {source_name} for environment '{self.env_id or self.__class__.__name__}': {result}"
+            ) from result
+
+        return result
+
     def build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
         if self.dataset is not None:
             return self.dataset
         if self.dataset_source is None:
             return None
-        built = self.dataset_source()
+        built = self._build_dataset_from_source(
+            self.dataset_source,
+            source_name="training dataset",
+        )
         self.dataset = self._format_dataset_source(built)
         return self.dataset
 
@@ -409,7 +496,10 @@ class Environment(ABC):
             return self.eval_dataset
         if self.eval_dataset_source is None:
             return None
-        built = self.eval_dataset_source()
+        built = self._build_dataset_from_source(
+            self.eval_dataset_source,
+            source_name="evaluation dataset",
+        )
         self.eval_dataset = self._format_dataset_source(built)
         return self.eval_dataset
 

@@ -734,6 +734,10 @@ async def run_evaluation(
 
     results_path = config.resume_path or get_eval_results_path(config)
 
+    logger.info(f"Preparing evaluation dataset for {config.env_id}")
+    vf_env.get_eval_dataset(n=1)
+    logger.info(f"Evaluation dataset ready for {config.env_id}")
+
     try:
         if not config.disable_env_server:
             extra_env_kwargs = dict(config.extra_env_kwargs)

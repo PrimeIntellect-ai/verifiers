@@ -1,5 +1,6 @@
 """Tests for the base Environment class."""
 
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -184,6 +185,46 @@ class TestEnvironmentBase:
         # Get subset
         subset = env.get_dataset(n=1)
         assert len(subset) == 1
+
+    def test_get_eval_dataset_wraps_builder_errors(self):
+        """Test eval dataset builder errors include environment context."""
+
+        def failing_builder():
+            raise RuntimeError("Dataset 'cais/hle' is gated")
+
+        env = SimpleEnvironment(
+            eval_dataset=failing_builder,
+            env_id="hle",
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="Failed to build evaluation dataset for environment 'hle': Dataset 'cais/hle' is gated",
+        ):
+            env.get_eval_dataset()
+
+    def test_get_eval_dataset_timeout_raises_clear_error(self):
+        """Test slow eval dataset builders fail with a timeout instead of hanging forever."""
+
+        def slow_builder():
+            time.sleep(0.2)
+            return Dataset.from_dict({"question": ["q"], "answer": ["a"]})
+
+        env = SimpleEnvironment(
+            eval_dataset=slow_builder,
+            env_id="hle",
+            parser=Parser(),
+            rubric=Rubric(),
+            dataset_build_timeout_seconds=0.01,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="Building evaluation dataset for environment 'hle' timed out after 10ms",
+        ):
+            env.get_eval_dataset()
 
     @pytest.mark.asyncio
     async def test_get_model_response_chat(self, mock_client, make_input):
