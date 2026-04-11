@@ -35,6 +35,16 @@ Set the `VF_LOG_LEVEL` environment variable:
 VF_LOG_LEVEL=DEBUG prime eval run my-environment -m gpt-4.1-mini -n 5
 ```
 
+### What if my evaluation dataset hangs while loading?
+
+If your environment uses a lazy `DatasetBuilder`, Verifiers applies a 5-minute timeout by default so evals fail clearly instead of stalling forever before the first rollout. You can tune that timeout globally with `VF_DATASET_BUILD_TIMEOUT`:
+
+```bash
+VF_DATASET_BUILD_TIMEOUT=120 prime eval run my-environment -m gpt-4.1-mini -n 5
+```
+
+Set the value to `0` or a negative number to disable the guard entirely. Dataset builder failures and timeouts are raised as `vf.DatasetBuildError` with the environment name in the message.
+
 ## Environments
 
 ### Which environment class should I use?

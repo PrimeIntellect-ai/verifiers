@@ -81,6 +81,7 @@ __all__ = [
     "teardown",
     "ensure_keys",
     "MissingKeyError",
+    "DatasetBuildError",
     "get_model",
     "get_model_and_tokenizer",
     "RLConfig",
@@ -106,6 +107,7 @@ _LAZY_IMPORTS = {
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
+    "DatasetBuildError": "verifiers.envs.environment:DatasetBuildError",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
@@ -174,7 +176,7 @@ if TYPE_CHECKING:
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
-    from .envs.environment import Environment  # noqa: F401
+    from .envs.environment import DatasetBuildError, Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401

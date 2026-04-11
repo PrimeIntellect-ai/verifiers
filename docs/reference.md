@@ -261,25 +261,30 @@ class RolloutScores(TypedDict):
 class Environment(ABC):
     def __init__(
         self,
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
+        dataset: Dataset | DatasetBuilder | None = None,
+        eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
+        tool_defs: list[Tool] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
+        map_kwargs: dict = {},
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
         pass_threshold: float = 0.5,
+        dataset_build_timeout_seconds: float | None = None,
         **kwargs,
     ): ...
 ```
 
 Abstract base class for all environments.
+
+`dataset` and `eval_dataset` may be either eager Hugging Face `Dataset` objects or lazy `DatasetBuilder` callables. When using builders, Verifiers raises `DatasetBuildError` if the builder fails, and applies a 5-minute timeout by default to prevent pre-rollout hangs. Override the timeout per environment with `dataset_build_timeout_seconds` or globally with the `VF_DATASET_BUILD_TIMEOUT` environment variable; set either to `0` or a negative value to disable the guard.
 
 **Generation methods:**
 
@@ -875,6 +880,13 @@ vf.load_environment(env_id: str, **kwargs) -> Environment
 ```
 
 Load an environment by ID (e.g., `"primeintellect/gsm8k"`).
+
+```python
+class DatasetBuildError(RuntimeError):
+    ...
+```
+
+Raised when a lazy dataset builder fails or exceeds the configured dataset build timeout.
 
 ### Configuration Utilities
 
