@@ -6,13 +6,14 @@ import itertools
 import logging
 import math
 import os
+import queue
 import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -43,6 +44,71 @@ from verifiers.utils.logging_utils import (
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
+
+_DATASET_BUILD_TIMEOUT_ENV_VAR = "VF_DATASET_BUILD_TIMEOUT"
+_DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS = 300.0
+
+
+def _resolve_dataset_build_timeout_seconds() -> float | None:
+    raw_timeout = os.getenv(_DATASET_BUILD_TIMEOUT_ENV_VAR)
+    if raw_timeout is None:
+        return _DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS
+
+    try:
+        parsed_timeout = float(raw_timeout)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using default %s",
+            _DATASET_BUILD_TIMEOUT_ENV_VAR,
+            raw_timeout,
+            print_time(_DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS),
+        )
+        return _DEFAULT_DATASET_BUILD_TIMEOUT_SECONDS
+
+    return None if parsed_timeout <= 0 else parsed_timeout
+
+
+def _prepare_eval_dataset(vf_env: Any, env_id: str) -> None:
+    logger.info(f"Preparing evaluation dataset for {env_id}")
+
+    timeout_seconds = _resolve_dataset_build_timeout_seconds()
+    if timeout_seconds is None:
+        vf_env.get_eval_dataset(n=1)
+        logger.info(f"Evaluation dataset ready for {env_id}")
+        return
+
+    result_queue: queue.SimpleQueue[BaseException | None] = queue.SimpleQueue()
+
+    def build_eval_dataset() -> None:
+        try:
+            vf_env.get_eval_dataset(n=1)
+        except BaseException as exc:  # pragma: no cover - exercised via caller
+            result_queue.put(exc)
+        else:
+            result_queue.put(None)
+
+    builder_thread = threading.Thread(
+        target=build_eval_dataset,
+        name=f"eval-dataset-prep-{env_id.replace('/', '-')}",
+        daemon=True,
+    )
+    builder_thread.start()
+    builder_thread.join(timeout_seconds)
+
+    if builder_thread.is_alive():
+        raise RuntimeError(
+            f"Preparing evaluation dataset for {env_id} timed out after {print_time(timeout_seconds)}. "
+            f"Check dataset access and network reachability, or increase "
+            f"{_DATASET_BUILD_TIMEOUT_ENV_VAR}."
+        )
+
+    error = result_queue.get()
+    if error is not None:
+        raise RuntimeError(
+            f"Failed to prepare evaluation dataset for {env_id}: {error}"
+        ) from error
+
+    logger.info(f"Evaluation dataset ready for {env_id}")
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -734,9 +800,7 @@ async def run_evaluation(
 
     results_path = config.resume_path or get_eval_results_path(config)
 
-    logger.info(f"Preparing evaluation dataset for {config.env_id}")
-    vf_env.get_eval_dataset(n=1)
-    logger.info(f"Evaluation dataset ready for {config.env_id}")
+    _prepare_eval_dataset(vf_env, config.env_id)
 
     try:
         if not config.disable_env_server:

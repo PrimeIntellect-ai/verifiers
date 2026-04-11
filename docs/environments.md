@@ -163,10 +163,6 @@ The builder pattern is useful when:
 - Multiple environment replicas don't all need to own the dataset
 - You want to parameterize dataset creation without loading it immediately
 
-Dataset builders are guarded by a timeout so hosted evaluations fail clearly instead of hanging forever before the first rollout. By default, Verifiers allows a builder up to 5 minutes to return. You can override this per environment with `dataset_build_timeout_seconds=...` on `vf.Environment` (or any subclass), or globally with the `VF_DATASET_BUILD_TIMEOUT` environment variable. Set either value to `0` or a negative number to disable the timeout.
-
-If a builder raises an exception or exceeds the timeout, Verifiers raises `vf.DatasetBuildError` with environment context so dataset-access failures are surfaced directly in eval logs.
-
 When a raw `Dataset` is passed directly (the default pattern), it is loaded eagerly during environment initialization for backwards compatibility.
 
 ## Rubrics
