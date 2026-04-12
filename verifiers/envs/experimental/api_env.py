@@ -50,15 +50,14 @@ class ApiEnvMonitorRubric(vf.Rubric):
 
 class ApiEnv(vf.MultiTurnEnv):
     """
-    Environment for running agent code that makes API calls through an
-    interception proxy. Unlike CliAgentEnv which runs agents in remote
-    sandboxes, ApiEnv runs agent code locally via a user-provided callable
-    and intercepts LLM API calls.
+    Base environment for running agent code that makes API calls through an
+    interception proxy. All LLM calls are intercepted, forwarded to the real
+    model, and recorded through the verifiers pipeline.
     """
 
     def __init__(
         self,
-        agent_fn: Callable[[str, State], Any],
+        agent_fn: Callable[[str, State], Any] | None = None,
         *,
         interception_port: int | None = None,
         interception_url: str | None = None,
@@ -88,7 +87,7 @@ class ApiEnv(vf.MultiTurnEnv):
         """Initialize interception server and optional tunnel resources."""
         self.interception_port = interception_port
         self.interception_url = interception_url
-        self._tunnel = None
+        self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._interception_server = InterceptionServer(port=interception_port)
 
@@ -122,8 +121,24 @@ class ApiEnv(vf.MultiTurnEnv):
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
 
+    async def compute_base_url(self, state: State, rollout_id: str) -> str:
+        """Compute the interception proxy base URL for this rollout.
+
+        Override in subclasses to change URL routing (e.g. always use tunnel).
+        """
+        interception_server = self._require_interception_server()
+        if self.interception_url is not None:
+            return f"{self.interception_url.rstrip('/')}/rollout/{rollout_id}/v1"
+        elif self.use_tunnel:
+            tunnel_url = await self.get_tunnel_url()
+            return f"{tunnel_url}/rollout/{rollout_id}/v1"
+        else:
+            return (
+                f"http://localhost:{interception_server.port}/rollout/{rollout_id}/v1"
+            )
+
     async def setup_state(self, state: State) -> State:
-        """Start interception, register rollout, launch agent_fn."""
+        """Start interception, register rollout, launch agent."""
         state = await super().setup_state(state)
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
@@ -132,32 +147,28 @@ class ApiEnv(vf.MultiTurnEnv):
         interception_server = self._require_interception_server()
         await interception_server.start()
 
-        # Compute base URL for the agent
-        if self.interception_url is not None:
-            base_url = f"{self.interception_url.rstrip('/')}/rollout/{rollout_id}/v1"
-        elif self.use_tunnel:
-            tunnel_url = await self.get_tunnel_url()
-            base_url = f"{tunnel_url}/rollout/{rollout_id}/v1"
-        else:
-            base_url = (
-                f"http://localhost:{interception_server.port}/rollout/{rollout_id}/v1"
-            )
+        state["interception_base_url"] = await self.compute_base_url(state, rollout_id)
 
-        state["interception_base_url"] = base_url
-
-        # Register rollout for interception
         request_id_queue = interception_server.register_rollout(rollout_id)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
-        # Launch agent_fn as asyncio task
-        state["agent_task"] = asyncio.create_task(self._run_agent_fn(state, base_url))
-        state["agent_start_time"] = time.time()
+        await self.launch_agent(state)
 
         self.logger.info(
             f"Started  rollout_id={rollout_id} | example_id={state['example_id']}"
         )
         return state
+
+    async def launch_agent(self, state: State) -> None:
+        """Start the agent. Override in subclasses for different execution models."""
+        if self.agent_fn is None:
+            raise RuntimeError(
+                "ApiEnv requires agent_fn to be set, or launch_agent to be overridden."
+            )
+        base_url = state["interception_base_url"]
+        state["agent_task"] = asyncio.create_task(self._run_agent_fn(state, base_url))
+        state["agent_start_time"] = time.time()
 
     async def _run_agent_fn(self, state: State, base_url: str) -> None:
         """Execute the user's agent_fn, handling sync/async and errors."""
@@ -177,8 +188,18 @@ class ApiEnv(vf.MultiTurnEnv):
             state["agent_completed"] = True
 
     async def check_agent_completed(self, state: State) -> bool:
-        """Check if the agent function has completed."""
+        """Check if the agent has completed. Override for custom completion logic."""
         return state.get("agent_completed", False)
+
+    async def cleanup_agent(self, state: State) -> None:
+        """Clean up agent-specific resources."""
+        agent_task = state.get("agent_task")
+        if agent_task and not agent_task.done():
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
 
     def normalize_intercepted_tools(self, intercept_tools: object) -> list[Tool] | None:
         """Normalize intercepted request tools for the provider-agnostic runtime.
@@ -250,11 +271,7 @@ class ApiEnv(vf.MultiTurnEnv):
                     request_id_queue.get(), timeout=self.poll_interval
                 )
             except asyncio.TimeoutError:
-                if (
-                    self.use_tunnel
-                    and self._tunnel is not None
-                    and not self._tunnel.is_running
-                ):
+                if self._tunnel is not None and not self._tunnel.is_running:
                     frpc_output = "\n".join(self._tunnel.recent_output)
                     raise vf.TunnelError(
                         f"Tunnel process died during rollout. "
@@ -407,6 +424,7 @@ class ApiEnv(vf.MultiTurnEnv):
             f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
         )
         agent_error = state.get("agent_error")
+        exit_code = state.get("agent_exit_code")
         timed_out = state.get("agent_timed_out", False)
         duration_s = state["timing"].get("total_ms", 0) / 1000
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
@@ -418,6 +436,8 @@ class ApiEnv(vf.MultiTurnEnv):
             f"stop={stop_condition}",
             f"duration={print_time(duration_s)}",
         ]
+        if exit_code is not None:
+            parts.append(f"exit_code={exit_code}")
         if timed_out:
             parts.append("timed_out=True")
         if agent_error:
@@ -440,23 +460,19 @@ class ApiEnv(vf.MultiTurnEnv):
             return True
         return False
 
-    @vf.cleanup
-    async def cleanup_agent_and_interception(self, state: State):
-        """Cancel agent task and cleanup interception context for rollout."""
-        # Call post_rollout for logging if rollout completed normally
+    @vf.cleanup(priority=10)
+    async def cleanup_rollout(self, state: State):
+        """Post-rollout logging, agent cleanup, and interception unregistration.
+
+        Priority 10 ensures this runs before lower-priority cleanup handlers
+        (e.g. sandbox destruction) that may remove resources needed by
+        post_rollout.
+        """
         if state.get("is_completed", False):
             await self.post_rollout(state)
 
-        # Cancel agent task if still running
-        agent_task = state.get("agent_task")
-        if agent_task and not agent_task.done():
-            agent_task.cancel()
-            try:
-                await agent_task
-            except asyncio.CancelledError:
-                pass
+        await self.cleanup_agent(state)
 
-        # Unregister rollout from interception server
         rollout_id = state.get("rollout_id")
         if rollout_id and self._interception_server is not None:
             self._interception_server.unregister_rollout(rollout_id)

@@ -314,7 +314,7 @@ class TestApiEnv:
         }
 
         assert not agent_task.done()
-        await env.cleanup_agent_and_interception(state)
+        await env.cleanup_rollout(state)
         assert agent_task.done()
 
     @pytest.mark.asyncio
