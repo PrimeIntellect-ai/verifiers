@@ -310,7 +310,7 @@ async def judge_correctness(prompt, completion, answer, judge) -> float:
 judge_rubric.add_reward_func(judge_correctness)
 ```
 
-The `judge` callable formats a prompt comparing the model's response to the ground truth and returns the judge model's verdict. By default, `JudgeRubric` constructs its own `AsyncOpenAI()` client, so bare model ids like `gpt-4.1-mini` assume direct OpenAI credentials. If you want to judge through Prime Inference or another OpenAI-compatible endpoint, pass a configured `judge_client` and use the model id format that endpoint expects (for Prime Inference, for example, `openai/gpt-4.1-mini`).
+The `judge` callable formats a prompt comparing the model's response to the ground truth and returns the judge model's verdict.
 
 For more control, JudgeRubric accepts a custom `judge_prompt` template and exposes its internals (`judge_client`, `judge_model`, `judge_prompt`, `judge_sampling_args`) as class objects:
 
