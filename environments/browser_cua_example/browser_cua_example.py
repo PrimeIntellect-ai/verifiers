@@ -12,7 +12,7 @@ for fastest startup (~5-10s). No manual server setup is required.
 
 Usage:
     # Default (pre-built image - fastest, recommended)
-    prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+    prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 
     # Binary upload mode (for custom server versions)
     prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_prebuilt_image": false}'

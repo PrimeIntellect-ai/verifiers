@@ -88,7 +88,7 @@ prime env install primeintellect/math-python
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
-prime eval run my-env -m gpt-5-nano # run and save eval results locally
+prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
