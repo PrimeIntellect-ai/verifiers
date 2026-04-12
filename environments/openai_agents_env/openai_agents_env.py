@@ -1,7 +1,6 @@
 from agents import (
     Agent,
     OpenAIChatCompletionsModel,
-    RunConfig,
     Runner,
     function_tool,
     set_tracing_disabled,
@@ -46,7 +45,6 @@ async def run_agent(base_url: str, state: vf.State):
     result = await Runner.run(
         agent,
         input=prompt,
-        run_config=RunConfig(max_turns=10),
     )
     return result.final_output
 
