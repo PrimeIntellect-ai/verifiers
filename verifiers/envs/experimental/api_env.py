@@ -173,6 +173,8 @@ class ApiEnv(vf.MultiTurnEnv):
                 result = await self.agent_fn(base_url, state)
             else:
                 result = await asyncio.to_thread(self.agent_fn, base_url, state)
+            if asyncio.iscoroutine(result):
+                result = await result
             state["agent_result"] = result
         except asyncio.CancelledError:
             self.logger.debug("Agent task cancelled")
