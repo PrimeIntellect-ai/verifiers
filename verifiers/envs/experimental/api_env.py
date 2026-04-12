@@ -280,6 +280,7 @@ class ApiEnv(vf.MultiTurnEnv):
                     state["agent_completed"] = True
                     return None
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                    state["agent_timed_out"] = True
                     return None
 
     async def get_prompt_messages(self, state: State) -> Messages:
