@@ -10,9 +10,13 @@ Universal runner for Gym-compatible environments. Wraps any environment that imp
 
 Environment for integrating MCP (Model Context Protocol) servers as tools. Connects to one or more MCP servers via stdio transport and exposes their tools to the model. Useful for giving models access to external services like web search, file fetching, or any MCP-compatible tool server.
 
+## ApiEnv
+
+Base environment for running agent code that makes API calls through an interception proxy. Executes a user-provided Python callable (`agent_fn`) as a background task while the rollout loop intercepts, forwards, and records all LLM calls. The agent receives a `base_url` and can use any HTTP client or agent framework (OpenAI SDK, DSPy, LangChain, etc). Provides lifecycle hooks (`launch_agent`, `cleanup_agent`, `compute_base_url`) for subclasses.
+
 ## CliAgentEnv
 
-Environment for running custom agent code inside sandboxes. Intercepts the agent's OpenAI API requests via an HTTP proxy server, with each request triggering one `MultiTurnEnv` rollout step.
+`ApiEnv` subclass for running agent code inside remote sandboxes. Overrides the agent lifecycle to create a sandbox and start the agent as a CLI background job, with API requests intercepted via a tunnel to the interception proxy.
 
 ## HarborEnv
 
