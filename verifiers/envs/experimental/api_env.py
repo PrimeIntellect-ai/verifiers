@@ -37,15 +37,10 @@ class ApiEnvMonitorRubric(vf.Rubric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.agent_timeout)
-        self.add_metric(self.agent_error)
 
     async def agent_timeout(self, state: vf.State) -> float:
         """Whether the agent timed out."""
         return float(bool(state.get("agent_timed_out")))
-
-    async def agent_error(self, state: vf.State) -> float:
-        """Whether the agent function raised an error."""
-        return float(bool(state.get("agent_error")))
 
 
 class ApiEnv(vf.MultiTurnEnv):

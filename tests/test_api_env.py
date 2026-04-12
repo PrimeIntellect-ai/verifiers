@@ -386,15 +386,13 @@ class TestApiEnvMonitorRubric:
 
         state: dict = {}
         assert await rubric.agent_timeout(state) == 0.0
-        assert await rubric.agent_error(state) == 0.0
 
     @pytest.mark.asyncio
     async def test_records_issues(self):
-        """Test ApiEnvMonitorRubric tracks timeout and error."""
+        """Test ApiEnvMonitorRubric tracks timeout."""
         from verifiers.envs.experimental.api_env import ApiEnvMonitorRubric
 
         rubric = ApiEnvMonitorRubric()
 
-        state: dict = {"agent_timed_out": True, "agent_error": "boom"}
+        state: dict = {"agent_timed_out": True}
         assert await rubric.agent_timeout(state) == 1.0
-        assert await rubric.agent_error(state) == 1.0

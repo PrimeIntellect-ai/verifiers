@@ -24,19 +24,14 @@ class AgentError(vf.InfraError):
 
 
 class CliAgentMonitorRubric(vf.Rubric):
-    """Monitor rubric that tracks CLI agent execution state.
-
-    Note: ``agent_timeout`` and ``agent_error`` (callable exception) are
-    already tracked by ``ApiEnvMonitorRubric`` via inheritance.  This rubric
-    only adds the sandbox-specific exit-code metric.
-    """
+    """Monitor rubric that tracks CLI agent execution state."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_metric(self.agent_exit_code_error)
+        self.add_metric(self.agent_error)
 
-    async def agent_exit_code_error(self, state: vf.State) -> float:
-        """Whether the sandbox agent exited with a non-zero code."""
+    async def agent_error(self, state: vf.State) -> float:
+        """Whether the agent errored (non-zero exit_code)."""
         agent_exit_code = state.get("agent_exit_code")
         if agent_exit_code is None:
             return 0.0
