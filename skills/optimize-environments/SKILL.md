@@ -89,6 +89,6 @@ Report findings sorted by severity:
 ## Verification
 After applying fixes, verify with a concurrency stress test:
 ```bash
-prime eval run <env> -m gpt-4.1-mini -n 64 -r 32 -c -1 -s
+prime eval run <env> -m openai/gpt-4.1-mini -n 64 -r 32 -c -1 -s
 ```
 Compare wall-clock time and the event loop lag which is periodically logged from the env server.
