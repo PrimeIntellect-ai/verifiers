@@ -5,7 +5,7 @@ This folder contains installable example environments that showcase common usage
 ## Quick start
 
 - **Install an environment from this GitHub repo**: `prime env install math-python --from-repo`
-- **Evaluate**: `prime eval run math-python` (defaults to gpt-4.1-mini, small sample)
+- **Evaluate**: `prime eval run math-python` (defaults to openai/gpt-4.1-mini, small sample)
 
 ## Common usage patterns and examples
 
