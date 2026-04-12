@@ -172,6 +172,7 @@ class ApiEnv(vf.MultiTurnEnv):
 
     async def _run_agent_fn(self, state: State, base_url: str) -> None:
         """Execute the user's agent_fn, handling sync/async and errors."""
+        assert self.agent_fn is not None
         try:
             if asyncio.iscoroutinefunction(self.agent_fn):
                 result = await self.agent_fn(base_url, state)
