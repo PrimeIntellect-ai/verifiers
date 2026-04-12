@@ -1,7 +1,7 @@
 [project]
-name = "openai-agents-sdk"
+name = "openai-agents-env"
 description = "ApiEnv environment using the OpenAI Agents SDK"
-tags = ["api-env", "multi-turn", "tool-use", "openai-agents-sdk"]
+tags = ["api-env", "multi-turn", "tool-use", "openai-agents"]
 version = "0.1.0"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -15,4 +15,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["openai_agents.py"]
+include = ["openai_agents_env.py", "pyproject.toml"]

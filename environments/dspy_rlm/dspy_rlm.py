@@ -17,7 +17,7 @@ import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 
-def run_agent(base_url: str, state: vf.State):
+async def run_agent(base_url: str, state: vf.State):
     """Run a DSPy RLM agent against the interception proxy."""
     lm = dspy.LM(
         f"openai/{state['model']}",
@@ -33,7 +33,7 @@ def run_agent(base_url: str, state: vf.State):
         )
 
         query = state["prompt"][-1]["content"]
-        result = rlm(query=query)
+        result = await rlm.aforward(query=query)
         return result.answer
 
 
