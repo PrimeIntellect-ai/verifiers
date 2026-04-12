@@ -43,16 +43,28 @@ def answer_reward(completion: vf.Messages, answer: str, **kwargs) -> float:
         return 0.0
     last = str(completion[-1].content or "")
 
-    # Look for DSPy structured output: [[ ## answer ## ]] value
-    match = re.search(
-        r"\[\[\s*##\s*answer\s*##\s*\]\]\s*(.+?)(?:\n|$)", last, re.IGNORECASE
-    )
+    agent_answer = ""
+
+    match = re.search(r"SUBMIT\((.+?)\)", last)
     if match:
-        agent_answer = match.group(1).strip()
-    else:
-        # Fallback: last non-empty line
-        lines = [line.strip() for line in last.strip().split("\n") if line.strip()]
-        agent_answer = lines[-1] if lines else ""
+        agent_answer = match.group(1).strip().strip("'\"")
+
+    if not agent_answer:
+        match = re.search(
+            r"\[\[\s*##\s*answer\s*##\s*\]\]\s*(.+?)(?:\n|$)", last, re.IGNORECASE
+        )
+        if match:
+            agent_answer = match.group(1).strip()
+
+    if not agent_answer:
+        for line in reversed(last.strip().split("\n")):
+            line = line.strip()
+            if line and not line.startswith("[[ ##"):
+                agent_answer = line
+                break
+
+    if not agent_answer:
+        return 0.0
 
     try:
         return 1.0 if abs(float(agent_answer) - float(answer)) < 0.01 else 0.0
