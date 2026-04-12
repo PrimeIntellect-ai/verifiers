@@ -181,6 +181,7 @@ class ApiEnv(vf.MultiTurnEnv):
             raise
         except Exception as e:
             state["agent_error"] = str(e)
+            state["error"] = vf.InfraError(f"Agent function failed: {e}")
             self.logger.warning(f"Agent function raised: {type(e).__name__}: {e}")
         finally:
             state["agent_completed"] = True
