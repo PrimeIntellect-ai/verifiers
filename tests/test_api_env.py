@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -372,6 +373,311 @@ class TestApiEnv:
 
         await env.add_model_response(state, [], dummy_response)
         assert len(state["trajectory"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_compute_base_url_custom_interception_url(self, sample_chat_dataset):
+        """Test compute_base_url with a custom interception_url."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            interception_url="https://my-proxy.example.com",
+        )
+        url = await env.compute_base_url({}, "rollout_abc")
+        assert url == "https://my-proxy.example.com/rollout/rollout_abc/v1"
+
+    @pytest.mark.asyncio
+    async def test_compute_base_url_custom_interception_url_trailing_slash(
+        self, sample_chat_dataset
+    ):
+        """Test compute_base_url strips trailing slash from interception_url."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            interception_url="https://my-proxy.example.com/",
+        )
+        url = await env.compute_base_url({}, "rollout_xyz")
+        assert url == "https://my-proxy.example.com/rollout/rollout_xyz/v1"
+
+
+class TestPollNextRequest:
+    """Tests for the _poll_next_request polling loop."""
+
+    @pytest.mark.asyncio
+    async def test_returns_request_id_from_queue(self, sample_chat_dataset):
+        """Test that a queued request_id is returned immediately."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            poll_interval=0.05,
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        await queue.put("req-123")
+        state = {
+            "request_id_queue": queue,
+            "agent_completed": False,
+            "timing": {"start_time": time.time()},
+        }
+        result = await env._poll_next_request(state)
+        assert result == "req-123"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_agent_completed(self, sample_chat_dataset):
+        """Test that None is returned when the agent completes between polls."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            poll_interval=0.05,
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        state = {
+            "request_id_queue": queue,
+            "agent_completed": True,
+            "timing": {"start_time": time.time()},
+        }
+        result = await env._poll_next_request(state)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_timeout(self, sample_chat_dataset):
+        """Test that None is returned when the rollout timeout elapses."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=0.0,
+            poll_interval=0.05,
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        state = {
+            "request_id_queue": queue,
+            "agent_completed": False,
+            "timing": {"start_time": time.time() - 10},
+        }
+        result = await env._poll_next_request(state)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_waits_then_returns_request(self, sample_chat_dataset):
+        """Test that the poller waits across poll cycles until a request arrives."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+            poll_interval=0.05,
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        state = {
+            "request_id_queue": queue,
+            "agent_completed": False,
+            "timing": {"start_time": time.time()},
+        }
+
+        async def enqueue_later():
+            await asyncio.sleep(0.1)
+            await queue.put("req-delayed")
+
+        asyncio.create_task(enqueue_later())
+        result = await env._poll_next_request(state)
+        assert result == "req-delayed"
+
+
+class TestAddModelResponseFirstTurn:
+    """Tests for add_model_response first-turn prompt update."""
+
+    @pytest.mark.asyncio
+    async def test_first_turn_updates_state_prompt(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """Test that the first turn replaces state['prompt'] with the agent's actual prompt."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+        original_prompt = state["prompt"]
+        agent_prompt = [
+            {"role": "system", "content": "You are a coding assistant."},
+            {"role": "user", "content": "Write hello world"},
+        ]
+
+        response = vf.Response(
+            id="resp-1",
+            created=0,
+            model="test-model",
+            usage=None,
+            message=vf.ResponseMessage(
+                content="print('hello world')",
+                reasoning_content=None,
+                tool_calls=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+            ),
+        )
+
+        assert state["trajectory"] == []
+        await env.add_model_response(state, agent_prompt, response)
+
+        # state["prompt"] should now be the agent's prompt, not the original
+        assert state["prompt"] == agent_prompt
+        assert state["prompt"] != original_prompt
+        assert len(state["trajectory"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_second_turn_does_not_update_prompt(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """Test that subsequent turns don't overwrite state['prompt']."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+
+        first_prompt = [{"role": "user", "content": "First turn"}]
+        second_prompt = [{"role": "user", "content": "Second turn"}]
+
+        response = vf.Response(
+            id="resp-1",
+            created=0,
+            model="test-model",
+            usage=None,
+            message=vf.ResponseMessage(
+                content="response",
+                reasoning_content=None,
+                tool_calls=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+            ),
+        )
+
+        await env.add_model_response(state, first_prompt, response)
+        assert state["prompt"] == first_prompt
+
+        await env.add_model_response(state, second_prompt, response)
+        # prompt should still be from the first turn
+        assert state["prompt"] == first_prompt
+
+
+class TestGetModelResponseErrorDelivery:
+    """Tests for get_model_response error delivery to HTTP handler."""
+
+    @pytest.mark.asyncio
+    async def test_error_delivered_to_handler_non_streaming(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """Test that when get_model_response raises, the error is still delivered
+        to the HTTP handler via deliver_response so the agent doesn't hang."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+
+        request_id = "req-error-test"
+        state["current_request_id"] = request_id
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "tools": None,
+            "messages": [{"role": "user", "content": "test"}],
+            "response_future": future,
+        }
+
+        injected_error = RuntimeError("LLM call failed")
+
+        with patch.object(
+            vf.MultiTurnEnv,
+            "get_model_response",
+            new_callable=AsyncMock,
+            side_effect=injected_error,
+        ):
+            with pytest.raises(RuntimeError, match="LLM call failed"):
+                await env.get_model_response(
+                    state=state,
+                    prompt=[{"role": "user", "content": "test"}],
+                    client=mock_client,
+                    model="test-model",
+                )
+
+        # The future should have the error set so the HTTP handler unblocks
+        assert future.done()
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            future.result()
+
+    @pytest.mark.asyncio
+    async def test_error_delivered_to_handler_streaming(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """Test that streaming intercepts also get errors delivered via synthesize_stream."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+
+        request_id = "req-stream-error"
+        state["current_request_id"] = request_id
+        env._interception_server.intercepts[request_id] = {
+            "stream": True,
+            "tools": None,
+            "messages": [{"role": "user", "content": "test"}],
+            "chunk_queue": asyncio.Queue(),
+            "response_future": asyncio.get_event_loop().create_future(),
+        }
+
+        injected_error = RuntimeError("streaming LLM call failed")
+
+        with (
+            patch.object(
+                vf.MultiTurnEnv,
+                "get_model_response",
+                new_callable=AsyncMock,
+                side_effect=injected_error,
+            ),
+            patch(
+                "verifiers.envs.experimental.api_env.synthesize_stream",
+                new_callable=AsyncMock,
+            ) as mock_synth,
+        ):
+            with pytest.raises(RuntimeError, match="streaming LLM call failed"):
+                await env.get_model_response(
+                    state=state,
+                    prompt=[{"role": "user", "content": "test"}],
+                    client=mock_client,
+                    model="test-model",
+                )
+
+            # synthesize_stream should have been called with the error
+            mock_synth.assert_awaited_once()
+            call_args = mock_synth.call_args
+            assert call_args[0][1] is None  # response is None
+            assert call_args[0][2] is injected_error
 
 
 class TestApiEnvMonitorRubric:
