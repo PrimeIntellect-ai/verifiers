@@ -172,9 +172,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             if self._tunnel is not None:
                 now = time.time()
                 if now - self._tunnel_last_checked > self.TUNNEL_CHECK_INTERVAL:
+                    self._tunnel_last_checked = now
                     try:
                         registered = await self._tunnel.check_registered()
-                        self._tunnel_last_checked = now
                         if not registered:
                             self.logger.warning(
                                 "Tunnel registration expired server-side, recreating."
