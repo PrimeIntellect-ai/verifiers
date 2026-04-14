@@ -5,7 +5,10 @@ from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionAssistantMessageParam,
-    ChatCompletionMessageToolCallParam,
+)
+from openai.types.chat.chat_completion_message_function_tool_call_param import (
+    ChatCompletionMessageFunctionToolCallParam,
+    Function,
 )
 
 from verifiers.clients.openai_chat_completions_client import (
@@ -254,10 +257,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
                 tool_calls=[
-                    ChatCompletionMessageToolCallParam(
+                    ChatCompletionMessageFunctionToolCallParam(
                         id=tc_id,
                         type="function",
-                        function={"name": "f", "arguments": "{}"},
+                        function=Function(name="f", arguments="{}"),
                     )
                     for tc_id in tool_call_ids
                 ],
