@@ -369,7 +369,7 @@ def print_post_setup_call_to_action(prime_rl: bool, primary_agent: str) -> None:
     command_table = Table.grid(padding=(0, 1))
     command_table.add_row("[bold green]$[/bold green]", "prime env init my-env")
     command_table.add_row(
-        "[bold green]$[/bold green]", "prime eval run my-env -m gpt-5-nano -n 5"
+        "[bold green]$[/bold green]", "prime eval run my-env -m openai/gpt-5-nano -n 5"
     )
     command_table.add_row("[bold green]$[/bold green]", "prime eval tui")
     if prime_rl:
@@ -382,7 +382,7 @@ def print_post_setup_call_to_action(prime_rl: bool, primary_agent: str) -> None:
             "[bold green]$[/bold green]", "prime rl run configs/rl/wiki-search.toml"
         )
     command_table.add_row(
-        "[bold green]$[/bold green]", "prime gepa run my-env -m gpt-5-nano"
+        "[bold green]$[/bold green]", "prime gepa run my-env -m openai/gpt-5-nano"
     )
 
     header_text = Text.assemble(

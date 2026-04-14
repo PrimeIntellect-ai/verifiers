@@ -212,10 +212,10 @@ def test_run_setup_prints_post_setup_call_to_action(
     assert "idea -> environment -> eval -> training" in output
     assert "prime env init my-env" in output
     assert "prime env install my-env" not in output
-    assert "prime eval run my-env -m gpt-5-nano -n 5" in output
+    assert "prime eval run my-env -m openai/gpt-5-nano -n 5" in output
     assert "prime eval tui" in output
     assert "prime rl run configs/rl/wiki-search.toml" in output
-    assert "prime gepa run my-env -m gpt-5-nano" in output
+    assert "prime gepa run my-env -m openai/gpt-5-nano" in output
 
 
 def test_run_setup_prints_prime_rl_post_setup_call_to_action(

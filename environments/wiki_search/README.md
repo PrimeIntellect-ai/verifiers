@@ -38,7 +38,7 @@ Configure model and sampling:
 
 ```bash
 prime eval run wiki-search \
-  -m gpt-4.1-mini \
+  -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"judge_model": "gpt-4.1-mini", "judge_base_url": "https://api.openai.com/v1", "judge_api_key_var": "OPENAI_API_KEY", "embed_model": "text-embedding-3-small", "embed_base_url": "https://api.openai.com/v1", "embed_api_key_var": "OPENAI_API_KEY"}'
 ```

@@ -171,7 +171,6 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
             "timeout_minutes": math.ceil(self.timeout_seconds / 60),
         }
 
-    # Keys set by build_env_vars that subclasses must not override.
     PROTECTED_ENV_VARS = frozenset(
         {
             "OPENAI_BASE_URL",
@@ -266,6 +265,12 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
                     self.logger.warning(
                         f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
                     )
+                    if len(state.get("trajectory", [])) == 0:
+                        stderr_snippet = (status.stderr or "")[:500]
+                        raise AgentError(
+                            f"Agent crashed before any LLM call "
+                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                        )
                 return
             await asyncio.sleep(1)
 
