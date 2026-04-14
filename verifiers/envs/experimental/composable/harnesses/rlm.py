@@ -13,11 +13,11 @@ DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 
 
 def build_install_script(rlm_repo_url: str = DEFAULT_RLM_REPO_URL) -> str:
-    return (
-        "set -e; "
-        'command -v uv >/dev/null 2>&1 || { curl -LsSf https://astral.sh/uv/install.sh | sh; source "$HOME/.local/bin/env"; }; '
-        f'uv tool install --python 3.11 "rlm @ git+https://${{GH_TOKEN}}@{rlm_repo_url}"'
+    raw_base = rlm_repo_url.removesuffix(".git").replace(
+        "github.com", "raw.githubusercontent.com"
     )
+    url = f"https://${{GH_TOKEN}}@{raw_base}/main/install.sh"
+    return f"(curl -fsSL {url} || wget -qO- {url}) > /tmp/rlm-install.sh && bash /tmp/rlm-install.sh"
 
 
 def build_run_command(
