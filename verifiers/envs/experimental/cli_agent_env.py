@@ -376,10 +376,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     )
                     if len(state.get("trajectory", [])) == 0:
                         stderr_snippet = (status.stderr or "")[:500]
-                        raise AgentError(
+                        error = AgentError(
                             f"Agent crashed before any LLM call "
                             f"(exit_code={status.exit_code}): {stderr_snippet}"
                         )
+                        state["error"] = error
+                        self.logger.error(str(error))
                 return
             await asyncio.sleep(1)
 
