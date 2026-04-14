@@ -231,9 +231,37 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # assistant and env response is correct, while avoiding template behaviors
         # that depend on the assistant being the last message (e.g., Qwen3's
         # context-dependent think block injection with add_generation_prompt=False).
-        dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-            role="assistant", content="x"
-        )
+        # Collect tool_call_ids from leading tool messages so the dummy
+        # assistant satisfies chat-template validation ("tool message must
+        # follow an assistant message with a tool call").
+        tool_call_ids: list[str] = []
+        for msg in env_messages:
+            if _get_role(msg) != "tool":
+                break
+            tc_id = (
+                msg.get("tool_call_id")
+                if hasattr(msg, "get")
+                else getattr(msg, "tool_call_id", None)
+            )
+            if tc_id:
+                tool_call_ids.append(tc_id)
+
+        if tool_call_ids:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                    for tc_id in tool_call_ids
+                ],
+            )
+        else:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant", content="x"
+            )
 
         try:
             bridge_full_ids = await self.tokenize(
