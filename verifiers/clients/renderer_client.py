@@ -6,9 +6,9 @@ No prefix matching, no /tokenize calls, no suffix stitching.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from renderers import Renderer, create_renderer
+from renderers import Message, Renderer, ToolSpec, create_renderer
 from renderers.client import completions_request
 
 from verifiers.clients.openai_chat_completions_client import (
@@ -48,16 +48,23 @@ class RendererClient(OpenAIChatCompletionsClient):
         if self._renderer is None:
             from transformers import AutoTokenizer
 
-            renderer_name = self._config.renderer if self._config is not None else "auto"
+            renderer_name = (
+                self._config.renderer if self._config is not None else "auto"
+            )
             renderer_model = (
                 self._config.renderer_model_name
-                if self._config is not None and self._config.renderer_model_name is not None
+                if self._config is not None
+                and self._config.renderer_model_name is not None
                 else model
             )
             cache_key = (renderer_model, renderer_name)
             if cache_key not in self._renderer_cache:
-                tokenizer = AutoTokenizer.from_pretrained(renderer_model, trust_remote_code=True)
-                self._renderer_cache[cache_key] = create_renderer(tokenizer, renderer=renderer_name)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    renderer_model, trust_remote_code=True
+                )
+                self._renderer_cache[cache_key] = create_renderer(
+                    tokenizer, renderer=renderer_name
+                )
             return self._renderer_cache[cache_key]
         return self._renderer
 
@@ -80,14 +87,14 @@ class RendererClient(OpenAIChatCompletionsClient):
         result = await completions_request(
             client=self.client,
             renderer=renderer,
-            messages=prompt,
+            messages=cast(list[Message], prompt),
             model=model,
-            tools=tools,
+            tools=cast(list[ToolSpec] | None, tools),
             **args,
         )
         return result
 
-    async def raise_from_native_response(self, response: dict[str, Any]) -> None:
+    async def raise_from_native_response(self, response: dict[str, Any]) -> None:  # type: ignore[override]
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
 
@@ -99,7 +106,7 @@ class RendererClient(OpenAIChatCompletionsClient):
                 "Model returned no content, reasoning, and did not call any tools"
             )
 
-    async def from_native_response(self, response: dict[str, Any]) -> Response:
+    async def from_native_response(self, response: dict[str, Any]) -> Response:  # type: ignore[override]
         """Parse the completions_request result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")

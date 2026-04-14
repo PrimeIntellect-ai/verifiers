@@ -99,9 +99,7 @@ _LAZY_IMPORTS = {
     "OpenAIChatCompletionsClient": (
         "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
     ),
-    "RendererClient": (
-        "verifiers.clients.renderer_client:RendererClient"
-    ),
+    "RendererClient": ("verifiers.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
     ),
