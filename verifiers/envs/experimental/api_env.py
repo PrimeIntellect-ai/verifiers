@@ -179,7 +179,7 @@ class ApiEnv(vf.MultiTurnEnv):
     async def launch_agent(self, state: State) -> None:
         """Start the agent. Override in subclasses for different execution models."""
         if self.agent_fn is None:
-            raise RuntimeError(
+            raise vf.InfraError(
                 "ApiEnv requires agent_fn to be set, or launch_agent to be overridden."
             )
         base_url = state["interception_base_url"]
