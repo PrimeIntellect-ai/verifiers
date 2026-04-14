@@ -11,6 +11,19 @@ from verifiers.envs.env_group import EnvGroupRubric
 from verifiers.types import State
 
 
+class CountingRubric(Rubric):
+    def __init__(self, reward_value: float):
+        super().__init__()
+        self.reward_value = reward_value
+        self.group_calls = 0
+
+    async def score_group(self, states):
+        self.group_calls += 1
+        for state in states:
+            state["reward"] = self.reward_value
+            state["metrics"] = {}
+
+
 class TestEnvGroupRubric:
     """Test cases for the EnvGroupRubric class."""
 
@@ -408,6 +421,36 @@ class TestEnvGroup:
         for state in states:
             assert "completion" in state
             assert "reward" in state
+
+    @pytest.mark.asyncio
+    async def test_env_group_evaluate_offline_routes_to_subenvs(self, mock_client):
+        env1_rubric = CountingRubric(1.0)
+        env2_rubric = CountingRubric(2.0)
+        env1 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=env1_rubric,
+        )
+        env2 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=env2_rubric,
+        )
+
+        env_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
+
+        outputs = await env_group._evaluate_offline(
+            model="offline/ground-truth",
+            num_examples=2,
+            rollouts_per_example=1,
+            use_ground_truth_as_completion=True,
+        )
+
+        assert env1_rubric.group_calls == 1
+        assert env2_rubric.group_calls == 1
+        assert [output["reward"] for output in outputs["outputs"]] == [1.0, 2.0]
 
     def test_env_group_with_mixed_datasets(self, mock_client):
         """Test EnvGroup with environments having different dataset configurations."""

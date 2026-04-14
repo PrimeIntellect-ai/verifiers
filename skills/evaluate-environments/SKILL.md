@@ -130,6 +130,19 @@ temperature = [0.0, 0.5, 1.0]
 difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
+10. Re-score saved completions offline without inference:
+```bash
+prime eval run my-env --prepared-completions ./outputs/evals/my-env--gpt-4.1-mini/abc12345 -s
+```
+The prepared path may be a results directory or a standalone JSONL file.
+For standalone JSONL inputs without `metadata.json`, pass `-C/--state-columns` for any custom state fields the rubric needs during offline scoring.
+11. Score ground-truth answers as completions:
+```bash
+prime eval run my-env --use-ground-truth-as-completion -n 100
+```
+Ground-truth mode only supports one rollout per example.
+12. Treat offline scoring as distinct from live inference when resuming:
+Use the same offline mode, and for prepared completions use the same prepared source path, or start a fresh run instead of `--resume`.
 
 ## Inspect Saved Results
 1. Browse locally saved runs:

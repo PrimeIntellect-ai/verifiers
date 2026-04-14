@@ -15,6 +15,7 @@ from verifiers.types import (
     ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
+    OfflineMode,
     RolloutOutput,
     SamplingArgs,
     State,
@@ -44,6 +45,12 @@ from verifiers.utils.usage_utils import (
 from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_prepared_completions_path(path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    return str(Path(path).expanduser().resolve())
 
 
 def is_json_serializable(value: object) -> bool:
@@ -267,6 +274,8 @@ class GenerateOutputsBuilder:
         sampling_args: SamplingArgs,
         results_path: Path | None,
         pass_threshold: float = 0.5,
+        offline_mode: OfflineMode | None = None,
+        prepared_completions_path: Path | None = None,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -278,6 +287,10 @@ class GenerateOutputsBuilder:
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
         self.pass_threshold = pass_threshold
+        self.offline_mode = offline_mode
+        self.prepared_completions_path = _normalize_prepared_completions_path(
+            prepared_completions_path
+        )
         self.start_time = time.time()
         self.base_url = self.compute_base_url(self.client)
         self.version_info = get_version_info(env_id=env_id)
@@ -383,6 +396,8 @@ class GenerateOutputsBuilder:
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,
+            offline_mode=self.offline_mode,
+            prepared_completions_path=self.prepared_completions_path,
         )
 
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:
@@ -400,8 +415,13 @@ class GenerateOutputsBuilder:
 
 
 def load_outputs(results_path: Path) -> list[RolloutOutput]:
-    """Load outputs from disk."""
+    """Load outputs from a results directory."""
     outputs_path = results_path / "results.jsonl"
+    return _load_outputs_file(outputs_path)
+
+
+def _load_outputs_file(outputs_path: Path) -> list[RolloutOutput]:
+    """Load rollout outputs from a JSONL file."""
     outputs: list[RolloutOutput] = []
 
     with open(outputs_path, "r") as f:
@@ -430,12 +450,38 @@ def load_outputs(results_path: Path) -> list[RolloutOutput]:
     return outputs
 
 
+def load_prepared_outputs(
+    path: Path,
+) -> tuple[list[RolloutOutput], dict[str, Any] | None]:
+    """Load prepared rollout outputs from a results directory or JSONL file."""
+    if path.is_dir():
+        outputs = load_outputs(path)
+        metadata_path = path / "metadata.json"
+        metadata: dict[str, Any] | None = None
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata_raw = json.load(f)
+            if not isinstance(metadata_raw, dict):
+                raise ValueError(
+                    f"Prepared metadata at {metadata_path} must be a JSON object."
+                )
+            metadata = cast(dict[str, Any], metadata_raw)
+        return outputs, metadata
+
+    if path.is_file():
+        return _load_outputs_file(path), None
+
+    raise FileNotFoundError(f"Prepared completions path does not exist: {path}")
+
+
 def validate_resume_metadata(
     results_path: Path,
     env_id: str,
     model: str,
     num_examples: int,
     rollouts_per_example: int,
+    offline_mode: OfflineMode | None = None,
+    prepared_completions_path: Path | None = None,
 ) -> None:
     """Validate saved metadata matches the current resume configuration.
 
@@ -461,11 +507,15 @@ def validate_resume_metadata(
         "env_id": env_id,
         "model": model,
         "rollouts_per_example": rollouts_per_example,
+        "offline_mode": offline_mode,
+        "prepared_completions_path": _normalize_prepared_completions_path(
+            prepared_completions_path
+        ),
     }
 
     mismatches: list[str] = []
     for field, expected_value in expected.items():
-        saved_value = saved_metadata.get(field, "<missing>")
+        saved_value = saved_metadata.get(field)
         if saved_value != expected_value:
             mismatches.append(
                 f"{field}: saved={saved_value!r}, current={expected_value!r}"

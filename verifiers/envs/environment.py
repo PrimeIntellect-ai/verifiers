@@ -73,6 +73,10 @@ from verifiers.utils.async_utils import (
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.message_utils import (
+    sanitize_tool_calls,
+    serialize_messages_for_output,
+)
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -87,6 +91,26 @@ from verifiers.utils.save_utils import (
 from verifiers.utils.usage_utils import StateUsageTracker
 
 _MESSAGE_TYPE_UNSET = object()
+_OFFLINE_RESERVED_STATE_FIELDS = {
+    "example_id",
+    "prompt",
+    "completion",
+    "answer",
+    "task",
+    "info",
+    "reward",
+    "metrics",
+    "error",
+    "error_chain",
+    "long_error_chain",
+    "timing",
+    "is_completed",
+    "is_truncated",
+    "stop_condition",
+    "tool_defs",
+    "token_usage",
+    "trajectory",
+}
 
 
 class Environment(ABC):
@@ -554,21 +578,8 @@ class Environment(ABC):
 
         return response
 
-    @final
-    async def init_state(
-        self,
-        input: RolloutInput,
-        client: Client | ClientConfig,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> State:
-        """
-        Create initial state from dataset row.
-        Environment-agnostic - just stores the data.
-
-        Creates State with input fields in "input" RolloutInput for structured access,
-        but State's forwarding behavior allows backward-compatible direct access.
-        """
+    def _build_state_base(self, input: RolloutInput) -> State:
+        """Create a base rollout state without resolving any model client."""
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
@@ -580,12 +591,6 @@ class Environment(ABC):
         raw_prompt = input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
             state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
-
-        state["client"] = resolve_client(client)
-        state["model"] = model
-        state["sampling_args"] = sampling_args
-        state["is_completed"] = False
-        state["is_truncated"] = False
 
         # Resolve tool definitions
         resolved_tool_defs: list[Tool] | list[dict[str, Any]] | None = None
@@ -608,6 +613,11 @@ class Environment(ABC):
         state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
+        state["client"] = None
+        state["model"] = None
+        state["sampling_args"] = None
+        state["is_completed"] = False
+        state["is_truncated"] = False
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None
@@ -619,6 +629,233 @@ class Environment(ABC):
             start_time=time.time(),
         )
         return state
+
+    def _build_offline_state(
+        self,
+        input: RolloutInput,
+        model: str,
+    ) -> State:
+        """Create a base state for offline scoring without resolving a client."""
+        state = self._build_state_base(input)
+        state["model"] = model
+        state["sampling_args"] = {}
+        return state
+
+    @final
+    async def init_state(
+        self,
+        input: RolloutInput,
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ) -> State:
+        """
+        Create initial state from dataset row.
+        Environment-agnostic - just stores the data.
+
+        Creates State with input fields in "input" RolloutInput for structured access,
+        but State's forwarding behavior allows backward-compatible direct access.
+        """
+        state = self._build_state_base(input)
+        state["client"] = resolve_client(client)
+        state["model"] = model
+        state["sampling_args"] = sampling_args
+        return state
+
+    def _normalize_offline_completion(self, completion: Messages | str) -> Messages:
+        """Normalize prepared completions into assistant messages when needed."""
+        if isinstance(completion, str):
+            completion = [{"role": "assistant", "content": completion}]
+        return normalize_messages(completion, field_name="prepared.completion")
+
+    def _normalize_info_for_compare(self, info: object) -> object:
+        if isinstance(info, str):
+            try:
+                return json.loads(info)
+            except json.JSONDecodeError:
+                return info
+        return info
+
+    def _serialize_messages_for_compare(self, messages: Messages | str) -> object:
+        normalized = normalize_messages(messages, field_name="prepared.prompt")
+        return sanitize_tool_calls(serialize_messages_for_output(normalized))
+
+    def _validate_prepared_row(
+        self,
+        input: RolloutInput,
+        prepared_row: RolloutOutput,
+    ) -> None:
+        """Validate that a prepared row matches the selected dataset input."""
+        prepared_example_id = prepared_row.get("example_id")
+        if prepared_example_id != input["example_id"]:
+            raise ValueError(
+                "Prepared completion example_id does not match selected dataset row: "
+                f"prepared={prepared_example_id!r}, input={input['example_id']!r}"
+            )
+
+        if "task" in prepared_row and prepared_row.get("task") != input["task"]:
+            raise ValueError(
+                "Prepared completion task does not match selected dataset row for "
+                f"example_id={input['example_id']}: prepared={prepared_row.get('task')!r}, "
+                f"input={input['task']!r}"
+            )
+
+        if "answer" in prepared_row and prepared_row.get("answer") != input.get(
+            "answer"
+        ):
+            raise ValueError(
+                "Prepared completion answer does not match selected dataset row for "
+                f"example_id={input['example_id']}."
+            )
+
+        if "info" in prepared_row:
+            prepared_info = self._normalize_info_for_compare(prepared_row.get("info"))
+            input_info = self._normalize_info_for_compare(input.get("info", {}))
+            if prepared_info != input_info:
+                raise ValueError(
+                    "Prepared completion info does not match selected dataset row for "
+                    f"example_id={input['example_id']}."
+                )
+
+        if "prompt" in prepared_row:
+            prepared_prompt = prepared_row.get("prompt")
+            if prepared_prompt is None:
+                raise ValueError(
+                    "Prepared completion prompt cannot be null when provided for "
+                    f"example_id={input['example_id']}."
+                )
+            input_prompt = input.get("prompt")
+            if input_prompt is None:
+                raise ValueError(
+                    "Selected dataset row is missing a prompt for "
+                    f"example_id={input['example_id']}."
+                )
+            prepared_prompt_cmp = self._serialize_messages_for_compare(prepared_prompt)
+            input_prompt_cmp = self._serialize_messages_for_compare(input_prompt)
+            if prepared_prompt_cmp != input_prompt_cmp:
+                raise ValueError(
+                    "Prepared completion prompt does not match selected dataset row "
+                    f"for example_id={input['example_id']}."
+                )
+
+    def _apply_prepared_row_to_state(
+        self,
+        state: State,
+        prepared_row: RolloutOutput,
+        prepared_state_columns: list[str] | None = None,
+    ) -> None:
+        """Restore prepared completion data into an offline scoring state."""
+        completion = prepared_row.get("completion")
+        if completion is None:
+            raise ValueError(
+                "Prepared completions must include 'completion' on every row."
+            )
+        if not isinstance(completion, (str, list)):
+            raise TypeError(
+                "Prepared completion values must be strings or message lists, got "
+                f"{type(completion).__name__}."
+            )
+        state["completion"] = self._normalize_offline_completion(completion)
+        state["is_completed"] = True
+        state["is_truncated"] = bool(prepared_row.get("is_truncated", False))
+
+        if "tool_defs" in prepared_row and prepared_row.get("tool_defs") is not None:
+            tool_defs = cast(
+                list[Tool] | list[dict[str, Any]], prepared_row["tool_defs"]
+            )
+            state["tool_defs"] = self._normalize_tool_defs(tool_defs) or []
+
+        if (
+            "token_usage" in prepared_row
+            and prepared_row.get("token_usage") is not None
+        ):
+            state["token_usage"] = prepared_row["token_usage"]
+
+        if "trajectory" in prepared_row and prepared_row.get("trajectory") is not None:
+            state["trajectory"] = prepared_row["trajectory"]
+
+        metrics = prepared_row.get("metrics")
+        metric_values = metrics if isinstance(metrics, dict) else {}
+        explicit_state_columns = set(prepared_state_columns or [])
+
+        for key, value in prepared_row.items():
+            if key in _OFFLINE_RESERVED_STATE_FIELDS:
+                continue
+            if (
+                key in metric_values
+                and key not in explicit_state_columns
+                and value == metric_values[key]
+            ):
+                # state_to_output flattens metrics to top-level keys for backwards
+                # compatibility. Skip restoring those aliases unless the prepared
+                # metadata tells us the key was an explicit saved state column.
+                continue
+            state[key] = value
+
+    async def _score_prepared_rollout(
+        self,
+        input: RolloutInput,
+        prepared_row: RolloutOutput,
+        model: str,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        prepared_state_columns: list[str] | None = None,
+    ) -> RolloutOutput:
+        async def score_prepared_attempt() -> State:
+            self._validate_prepared_row(input, prepared_row)
+            state = self._build_offline_state(input, model)
+            self._apply_prepared_row_to_state(
+                state,
+                prepared_row,
+                prepared_state_columns=prepared_state_columns,
+            )
+
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state)
+            else:
+                await self.rubric.dummy_score_rollout(state)
+
+            await self.rubric.cleanup(state)
+            return state
+
+        state = await maybe_retry(score_prepared_attempt, max_retries=max_retries)()
+        return state_to_output(state, state_columns or [])
+
+    async def _score_prepared_group(
+        self,
+        group_inputs: list[RolloutInput],
+        group_rows: list[RolloutOutput],
+        model: str,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        prepared_state_columns: list[str] | None = None,
+    ) -> list[RolloutOutput]:
+        async def score_prepared_group_attempt() -> list[State]:
+            states: list[State] = []
+            for input_item, prepared_row in zip(group_inputs, group_rows):
+                self._validate_prepared_row(input_item, prepared_row)
+                state = self._build_offline_state(input_item, model)
+                self._apply_prepared_row_to_state(
+                    state,
+                    prepared_row,
+                    prepared_state_columns=prepared_state_columns,
+                )
+                states.append(state)
+
+            if self.score_rollouts:
+                await self.rubric.score_group(states)
+            else:
+                await self.rubric.dummy_score_group(states)
+
+            for state in states:
+                await self.rubric.cleanup(state)
+
+            return states
+
+        states = await maybe_retry(
+            score_prepared_group_attempt, max_retries=max_retries
+        )()
+        return [state_to_output(state, state_columns or []) for state in states]
 
     @abstractmethod
     async def rollout(
@@ -795,6 +1032,330 @@ class Environment(ABC):
             state_to_output(state, state_columns or []) for state in group_states
         ]
         return outputs
+
+    async def _evaluate_offline(
+        self,
+        model: str,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        prepared_outputs: list[RolloutOutput] | None = None,
+        prepared_state_columns: list[str] | None = None,
+        prepared_completions_path: Path | None = None,
+        use_ground_truth_as_completion: bool = False,
+        max_concurrent: int = -1,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
+        independent_scoring: bool = False,
+        max_retries: int = 0,
+        on_start: StartCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
+        on_log: LogCallback | None = None,
+    ) -> GenerateOutputs:
+        """Score prepared completions or ground truth without running inference."""
+        from tqdm import tqdm
+
+        pbar: tqdm | None = None
+
+        def default_on_start(
+            raw_inputs: list[RolloutOutput],
+            filtered_inputs: list[RolloutOutput] | list[list[RolloutOutput]],
+        ) -> None:
+            nonlocal pbar
+
+            total_rollouts = len(raw_inputs)
+            total_groups = len(set([i["example_id"] for i in raw_inputs]))
+            derived_rollouts_per_example = (
+                total_rollouts // total_groups if total_groups > 0 else 0
+            )
+
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining_rollouts = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining_rollouts = len(filtered_inputs)
+            saved_rollouts = total_rollouts - remaining_rollouts
+
+            if filtered_inputs:
+                if isinstance(filtered_inputs[0], list):
+                    pbar_total = total_groups
+                    pbar_initial = (
+                        saved_rollouts // derived_rollouts_per_example
+                        if derived_rollouts_per_example > 0
+                        else 0
+                    )
+                    pbar_desc = f"Scoring {total_groups} groups ({total_rollouts} prepared rollouts)"
+                else:
+                    pbar_total = total_rollouts
+                    pbar_initial = saved_rollouts
+                    pbar_desc = f"Scoring {total_rollouts} prepared rollouts"
+
+                pbar = tqdm(
+                    total=pbar_total,
+                    initial=pbar_initial,
+                    desc=pbar_desc,
+                    postfix=dict(reward="?"),
+                )
+
+        def default_on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            new_metadata: GenerateMetadata,
+        ) -> None:
+            nonlocal pbar
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
+
+        def default_on_log(message: str) -> None:
+            self.logger.info(message)
+
+        on_start = on_start or cast(StartCallback, default_on_start)
+        extra_on_progress: list[ProgressCallback] = []
+        if isinstance(on_progress, list):
+            extra_on_progress = cast(list[ProgressCallback], on_progress)
+        elif on_progress is not None:
+            extra_on_progress = [on_progress]
+
+            def default_on_progress(*a, **kw):
+                None
+
+        on_log = on_log or cast(LogCallback, default_on_log)
+
+        sem = await maybe_semaphore(max_concurrent)
+        eval_inputs = cast(
+            list[RolloutInput], self.get_eval_dataset(n=num_examples).to_list()
+        )
+        inputs_by_example_id = {input["example_id"]: input for input in eval_inputs}
+        offline_mode = (
+            "ground_truth" if use_ground_truth_as_completion else "prepared_completions"
+        )
+
+        raw_prepared_rows: list[RolloutOutput] = []
+        if use_ground_truth_as_completion:
+            for input in eval_inputs:
+                answer = input.get("answer")
+                if not isinstance(answer, str) or not answer:
+                    raise ValueError(
+                        "Ground-truth offline mode requires every selected dataset row "
+                        "to include a non-empty string 'answer'."
+                    )
+                raw_prepared_rows.append(
+                    RolloutOutput(
+                        example_id=input["example_id"],
+                        completion=[{"role": "assistant", "content": answer}],
+                    )
+                )
+        else:
+            if prepared_outputs is None:
+                raise ValueError(
+                    "prepared_outputs are required unless ground-truth offline mode "
+                    "is enabled."
+                )
+
+            prepared_rows_by_example_id: dict[int, list[RolloutOutput]] = defaultdict(
+                list
+            )
+            ignored_rows = 0
+            for prepared_row in prepared_outputs:
+                example_id = prepared_row.get("example_id")
+                if not isinstance(example_id, int):
+                    raise ValueError(
+                        "Prepared completions must include integer 'example_id' "
+                        "values on every row."
+                    )
+                if example_id in inputs_by_example_id:
+                    prepared_rows_by_example_id[example_id].append(prepared_row)
+                else:
+                    ignored_rows += 1
+
+            if ignored_rows > 0:
+                on_log(
+                    f"Ignoring {ignored_rows} prepared completion(s) outside the "
+                    "selected eval dataset subset"
+                )
+
+            missing_example_ids = [
+                input["example_id"]
+                for input in eval_inputs
+                if input["example_id"] not in prepared_rows_by_example_id
+            ]
+            if missing_example_ids:
+                raise ValueError(
+                    "Prepared completions are missing rows for selected example_id(s): "
+                    f"{missing_example_ids[:10]}"
+                )
+
+            for input in eval_inputs:
+                example_id = input["example_id"]
+                example_rows = prepared_rows_by_example_id[example_id]
+                if len(example_rows) != rollouts_per_example:
+                    raise ValueError(
+                        "Prepared completions do not match the configured "
+                        f"rollouts_per_example for example_id={example_id}: "
+                        f"expected {rollouts_per_example}, found {len(example_rows)}"
+                    )
+                raw_prepared_rows.extend(example_rows)
+
+        builder = GenerateOutputsBuilder(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            client=ClientConfig(
+                api_base_url="offline://local",
+                api_key_var="OFFLINE_UNUSED",
+            ),
+            num_examples=len(eval_inputs),
+            rollouts_per_example=rollouts_per_example,
+            state_columns=state_columns,
+            sampling_args={},
+            results_path=results_path,
+            pass_threshold=self.pass_threshold,
+            offline_mode=offline_mode,
+            prepared_completions_path=prepared_completions_path,
+        )
+
+        try:
+            if results_path is not None and is_valid_eval_results_path(results_path):
+                validate_resume_metadata(
+                    results_path=results_path,
+                    env_id=self.env_id,
+                    model=model,
+                    num_examples=len(eval_inputs),
+                    rollouts_per_example=rollouts_per_example,
+                    offline_mode=offline_mode,
+                    prepared_completions_path=prepared_completions_path,
+                )
+                on_log(f"Resuming offline evaluation from {results_path}")
+                outputs = load_outputs(results_path)
+                builder.add_outputs(outputs)
+                filtered_prepared_rows = cast(
+                    list[RolloutOutput],
+                    filter_inputs(
+                        raw_prepared_rows,
+                        outputs,
+                        rollouts_per_example,
+                    ),
+                )
+                if not filtered_prepared_rows:
+                    on_log(
+                        "No remaining prepared rollouts to score, returning completed outputs"
+                    )
+                    return builder.build(sort_by_example_id=True)
+                on_log(
+                    f"Found {len(outputs)} completed rollout(s), {len(filtered_prepared_rows)} remaining rollout(s)"
+                )
+            else:
+                filtered_prepared_rows = raw_prepared_rows
+
+            if save_results:
+                on_log(f"Saving results to {builder.results_path}")
+
+            tasks: dict[asyncio.Task, int] = {}
+            try:
+                if independent_scoring:
+                    on_start(raw_prepared_rows, filtered_prepared_rows)
+                    for i, prepared_row in enumerate(filtered_prepared_rows):
+                        example_id = prepared_row["example_id"]
+                        rollout_input = inputs_by_example_id[example_id]
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self._score_prepared_rollout(
+                                    rollout_input,
+                                    prepared_row,
+                                    model,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                    prepared_state_columns=prepared_state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+                else:
+                    filtered_group_rows: list[list[RolloutOutput]] = []
+                    filtered_group_inputs: list[list[RolloutInput]] = []
+                    grouped_rows_by_example_id: dict[int, list[RolloutOutput]] = (
+                        defaultdict(list)
+                    )
+                    for prepared_row in filtered_prepared_rows:
+                        grouped_rows_by_example_id[prepared_row["example_id"]].append(
+                            prepared_row
+                        )
+                    for input in eval_inputs:
+                        example_rows = grouped_rows_by_example_id.get(
+                            input["example_id"], []
+                        )
+                        if not example_rows:
+                            continue
+                        filtered_group_rows.append(example_rows)
+                        filtered_group_inputs.append([input] * len(example_rows))
+                    on_start(raw_prepared_rows, filtered_group_rows)
+
+                    for i, (group_input, group_rows) in enumerate(
+                        zip(filtered_group_inputs, filtered_group_rows)
+                    ):
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self._score_prepared_group(
+                                    group_input,
+                                    group_rows,
+                                    model,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                    prepared_state_columns=prepared_state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+
+                for coro in asyncio.as_completed(tasks.keys()):
+                    result = await coro
+                    new_outputs = [result] if independent_scoring else result
+                    builder.add_outputs(new_outputs)
+                    metadata = builder.build_metadata()
+
+                    default_on_progress(builder.outputs, new_outputs, metadata)
+                    for cb in extra_on_progress:
+                        cb(builder.outputs, new_outputs, metadata)
+
+                    if save_results:
+                        await asyncio.to_thread(
+                            save_new_outputs, new_outputs, builder.results_path
+                        )
+                        await asyncio.to_thread(
+                            save_metadata, metadata, builder.results_path
+                        )
+            finally:
+                pending = [task for task in tasks.keys() if not task.done()]
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            results = builder.build(sort_by_example_id=True)
+
+            if save_results:
+                await asyncio.to_thread(
+                    save_outputs, results["outputs"], builder.results_path
+                )
+                await asyncio.to_thread(
+                    save_metadata, results["metadata"], builder.results_path
+                )
+                if push_to_hf_hub:
+                    push_results_to_hf_hub(results, hf_hub_dataset_name)
+                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
+
+            return results
+        finally:
+            if pbar is not None:
+                pbar.close()
 
     async def generate(
         self,

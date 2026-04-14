@@ -10,6 +10,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Model Configuration](#model-configuration)
   - [Sampling Parameters](#sampling-parameters)
   - [Evaluation Scope](#evaluation-scope)
+  - [Offline Scoring](#offline-scoring)
   - [Concurrency](#concurrency)
   - [Output and Saving](#output-and-saving)
   - [Resuming Evaluations](#resuming-evaluations)
@@ -181,6 +182,37 @@ prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 
 Multiple rollouts per example enable metrics like pass@k and help measure variance. The total number of rollouts is `num_examples × rollouts_per_example`.
 
+### Offline Scoring
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--prepared-completions` | — | Path to a saved eval results directory or standalone JSONL of prepared completions to score offline |
+| `--use-ground-truth-as-completion` | false | Score each example's ground-truth `answer` as the completion without running inference |
+
+Offline scoring reuses the environment's rubric without making model API calls. This is useful when you already have saved completions or want to measure an upper bound from the dataset answers.
+
+**Prepared completions:**
+
+```bash
+prime eval run my-env --prepared-completions ./outputs/evals/my-env--gpt-4.1-mini/abc12345 -s
+```
+
+- The path may point to a Verifiers results directory (`results.jsonl` + `metadata.json`) or a standalone JSONL file.
+- If `--model` is omitted, verifiers uses the prepared run's saved model from `metadata.json` when available, otherwise it falls back to an offline placeholder model id.
+- If `--num-examples` and `--rollouts-per-example` are omitted, verifiers infers them from the prepared outputs.
+- For standalone JSONL files without `metadata.json`, pass `-C/--state-columns` for any custom state fields that must be restored during offline scoring.
+
+**Ground-truth scoring:**
+
+```bash
+prime eval run my-env --use-ground-truth-as-completion -n 100
+```
+
+- Every selected eval row must have a non-empty string `answer`.
+- Ground-truth mode only supports `--rollouts-per-example 1`.
+
+Offline scoring is mutually exclusive with inference-only flags such as `--provider`, `--api-base-url`, `--api-key-var`, `--api-client-type`, `--sampling-args`, `--max-tokens`, `--temperature`, and extra request headers.
+
 ### Concurrency
 
 | Flag | Short | Default | Description |
@@ -242,7 +274,7 @@ With `-s` (save results) enabled, partial results are written to disk after each
 prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
-When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, and `rollouts_per_example` where saved `num_examples` is less than or equal to the current run. When resuming:
+When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, `rollouts_per_example`, and offline scoring settings where saved `num_examples` is less than or equal to the current run. For prepared-completions mode, the prepared source path must also match. When resuming:
 
 1. Existing completed rollouts are loaded from the checkpoint
 2. Remaining rollouts are computed based on the example ids and group size
