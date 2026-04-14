@@ -7,7 +7,7 @@
 Use `prime eval run` with a small sample:
 
 ```bash
-prime eval run my-environment -m gpt-4.1-mini -n 5
+prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 The `-s` flag prints sample outputs so you can see what's happening.
@@ -32,7 +32,7 @@ vf.print_prompt_completions_sample(outputs, n=3)
 Set the `VF_LOG_LEVEL` environment variable:
 
 ```bash
-VF_LOG_LEVEL=DEBUG prime eval run my-environment -m gpt-4.1-mini -n 5
+VF_LOG_LEVEL=DEBUG prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 ## Environments

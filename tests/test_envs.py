@@ -161,7 +161,17 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
-    eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 512"
+    if os.getenv("OPENAI_API_KEY"):
+        model_flags = "-m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY"
+    elif os.getenv("PRIME_API_KEY"):
+        model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
+    else:
+        pytest.skip("Skipping vf-eval smoke test because no API key is configured")
+
+    eval_cmd = (
+        f"cd {tmp_venv_dir} && source .venv/bin/activate && "
+        f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t 512"
+    )
     try:
         process = subprocess.run(
             eval_cmd,

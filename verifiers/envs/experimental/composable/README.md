@@ -19,8 +19,8 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 ## Usage
 
 ```python
-from swe_tasksets import R2EGymTaskSet
-from opencode_harness import opencode_harness
+from verifiers.envs.experimental.composable.tasksets.swe.r2e_gym import R2EGymTaskSet
+from verifiers.envs.experimental.composable.harnesses.opencode import opencode_harness
 from verifiers.envs.experimental.composable import ComposableEnv
 
 # Create a taskset

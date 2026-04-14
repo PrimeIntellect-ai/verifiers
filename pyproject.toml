@@ -37,7 +37,7 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
-    "prime-tunnel>=0.1.5",
+    "prime-tunnel>=0.1.6",
     "prime-sandboxes>=0.2.19",
     "pydantic>=2.11.9",
     "requests",
@@ -201,6 +201,15 @@ redundant-cast = "ignore"
 
 [tool.ty.src]
 exclude = ["environments"]
+
+[[tool.ty.overrides]]
+include = ["verifiers/envs/experimental/composable/tasksets/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+invalid-method-override = "ignore"
+invalid-assignment = "ignore"
+not-iterable = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]

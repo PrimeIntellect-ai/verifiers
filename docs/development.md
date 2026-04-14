@@ -226,7 +226,7 @@ prime env init my-environment
 prime env install my-environment
 
 # Test your environment
-prime eval run my-environment -m gpt-4.1-mini -n 5
+prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 ### Environment Module Structure
@@ -284,7 +284,7 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 # Environment tools
 prime env init new-env                       # Create environment
 prime env install new-env                    # Install environment
-prime eval run new-env -m gpt-4.1-mini -n 5  # Test environment
+prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval tui                               # Browse evals in the tree browser
 ```
 

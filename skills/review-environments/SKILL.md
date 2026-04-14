@@ -21,7 +21,7 @@ Find correctness risks and regressions first, then assess maintainability and ec
 2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
 ```bash
 prime env install <env>
-prime eval run <env> -m gpt-4.1-mini -n 5
+prime eval run <env> -m openai/gpt-4.1-mini -n 5
 ```
 3. Trace reward pipeline and validate scoring semantics.
 4. Run targeted checks for tool/stateful behavior where applicable.
