@@ -2,18 +2,22 @@
 
 All tokenization happens client-side via a Renderer from the renderers package.
 No prefix matching, no /tokenize calls, no suffix stitching.
+
+A shared RendererPool (one per model) offloads sync tokenization to threads so
+concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
-from renderers import Renderer, ToolSpec, create_renderer
+from renderers import Renderer, RendererPool, ToolSpec, create_renderer
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.client import completions_request
@@ -41,6 +45,8 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.message_utils import maybe_normalize_messages
 
+_DEFAULT_POOL_SIZE = 32
+
 
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
@@ -50,13 +56,22 @@ class RendererClient(
     Every turn: Renderer renders messages → sends token IDs to vLLM /v1/generate
     → gets completion tokens → Renderer parses back to structured message.
 
-    The Renderer is created lazily from the model name on first use.
+    A class-level RendererPool (keyed by model) is shared across all instances
+    so that concurrent rollouts tokenize in parallel threads.
     """
 
-    def __init__(self, config: ClientConfig, renderer: Renderer | None = None):
+    _shared_pools: ClassVar[dict[tuple[str, str], RendererPool]] = {}
+    _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
+
+    def __init__(
+        self,
+        config: ClientConfig,
+        renderer: Renderer | None = None,
+        pool_size: int = _DEFAULT_POOL_SIZE,
+    ):
         super().__init__(config)
         self._renderer = renderer
-        self._renderer_cache: dict[tuple[str, str], Renderer] = {}
+        self._pool_size = pool_size
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
@@ -66,10 +81,9 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer(self, model: str) -> Renderer:
+    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
-        from transformers import AutoTokenizer
 
         renderer_name = self._config.renderer if self._config is not None else "auto"
         renderer_model = (
@@ -78,14 +92,25 @@ class RendererClient(
             else model
         )
         cache_key = (renderer_model, renderer_name)
-        if cache_key not in self._renderer_cache:
-            tokenizer = AutoTokenizer.from_pretrained(
-                renderer_model, trust_remote_code=True
-            )
-            self._renderer_cache[cache_key] = create_renderer(
-                tokenizer, renderer=renderer_name
-            )
-        return self._renderer_cache[cache_key]
+
+        with self._shared_pools_lock:
+            if cache_key not in self._shared_pools:
+
+                def factory(
+                    _name=renderer_name, _model=renderer_model
+                ) -> Renderer:
+                    from transformers import AutoTokenizer
+
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        _model, trust_remote_code=True
+                    )
+                    return create_renderer(tokenizer, renderer=_name)
+
+                self._shared_pools[cache_key] = RendererPool(
+                    factory, size=self._pool_size
+                )
+
+        return self._shared_pools[cache_key]
 
     # ── Type conversions ────────────────────────────────────────────
 
@@ -112,7 +137,7 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer(model)
+        renderer = self._get_renderer_or_pool(model)
 
         args = dict(sampling_args)
         if "max_tokens" in args:

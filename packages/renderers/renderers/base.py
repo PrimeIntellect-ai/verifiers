@@ -215,6 +215,27 @@ def _populate_registry():
     )
 
 
+def create_renderer_pool(
+    tokenizer_name_or_path: str, renderer: str = "auto", size: int = 32
+) -> RendererPool:
+    """Create a RendererPool with *size* independent tokenizer copies.
+
+    Each slot loads its own tokenizer so threads never share mutable state.
+    HuggingFace fast tokenizers release the GIL during Rust encoding, so
+    threads achieve real parallelism.
+    """
+
+    def factory(
+        _name=tokenizer_name_or_path, _renderer=renderer
+    ) -> Renderer:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(_name, trust_remote_code=True)
+        return create_renderer(tokenizer, renderer=_renderer)
+
+    return RendererPool(factory, size=size)
+
+
 def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
     """Create a Renderer by name, or auto-detect from the tokenizer's model name.
 

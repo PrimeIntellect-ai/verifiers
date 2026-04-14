@@ -4,25 +4,37 @@ All tokenization happens client-side via a Renderer:
     messages → Renderer.render_ids() → token IDs → vLLM /v1/generate → completion tokens
     completion tokens → Renderer.parse_response() → structured message back to verifiers
 
-Verifiers just sends standard chat messages. This client intercepts them,
-renders to tokens, calls the token-in generate endpoint, and returns a structured
-Response that verifiers can work with.
+When a RendererPool is passed instead of a single Renderer, the sync tokenization
+and parsing work is offloaded to threads for parallel execution across rollouts.
+HuggingFace fast tokenizers release the GIL during Rust encoding, so threads
+achieve real parallelism.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any, cast
 
 import numpy as np
 from openai import AsyncOpenAI
 
-from renderers.base import Message, Renderer, ToolSpec
+from renderers.base import Message, Renderer, RendererPool, ToolSpec
+
+
+async def _run_pooled(pool: RendererPool, fn):
+    """Check out a renderer, run *fn(renderer)* in a thread, return result."""
+
+    def _work():
+        with pool.checkout() as r:
+            return fn(r)
+
+    return await asyncio.to_thread(_work)
 
 
 async def completions_request(
     client: AsyncOpenAI,
-    renderer: Renderer,
+    renderer: Renderer | RendererPool,
     messages: list[Message],
     model: str,
     tools: list[ToolSpec] | None = None,
@@ -39,13 +51,25 @@ async def completions_request(
             "Choose a model-specific renderer instead of the default fallback."
         )
 
-    prompt_ids = renderer.render_ids(messages, tools=tools, add_generation_prompt=True)
-    images = _extract_images(messages)
+    pool = renderer if isinstance(renderer, RendererPool) else None
 
+    # -- Prepare: tokenize prompt + extract images --
+    def _prepare(r: Renderer):
+        prompt_ids = r.render_ids(messages, tools=tools, add_generation_prompt=True)
+        stop_token_ids = r.get_stop_token_ids()
+        images = _extract_images(messages)
+        return prompt_ids, stop_token_ids, images
+
+    if pool is not None:
+        prompt_ids, stop_token_ids, images = await _run_pooled(pool, _prepare)
+    else:
+        prompt_ids, stop_token_ids, images = _prepare(renderer)
+
+    # -- Build request body --
     body: dict[str, Any] = {
         "model": model,
         "prompt_token_ids": prompt_ids,
-        "stop_token_ids": renderer.get_stop_token_ids(),
+        "stop_token_ids": stop_token_ids,
     }
     if images:
         body["images"] = images
@@ -65,11 +89,17 @@ async def completions_request(
         if key in extra_body:
             body[key] = extra_body[key]
 
+    # -- Send to vLLM --
     data = await client.post("/generate", cast_to=cast(Any, dict[str, Any]), body=body)
     choice = data.get("choices", [{}])[0]
 
+    # -- Parse completion tokens --
     completion_ids = choice.get("token_ids") or []
-    parsed = renderer.parse_response(completion_ids)
+
+    if pool is not None:
+        parsed = await _run_pooled(pool, lambda r: r.parse_response(completion_ids))
+    else:
+        parsed = renderer.parse_response(completion_ids)
 
     completion_logprobs = [
         float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []

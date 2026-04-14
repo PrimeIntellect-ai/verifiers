@@ -5,12 +5,15 @@ import pytest
 import verifiers as vf
 from verifiers.errors import EmptyModelResponseError
 from verifiers.clients.renderer_client import RendererClient
+from renderers import RendererPool
 
 
 def test_renderer_client_honors_configured_renderer_name():
+    RendererClient._shared_pools.clear()
+
     client = object.__new__(RendererClient)
     client._renderer = None
-    client._renderer_cache = {}
+    client._pool_size = 1
     client._config = vf.ClientConfig(client_type="renderer", renderer="qwen3_vl")
 
     with (
@@ -21,9 +24,9 @@ def test_renderer_client_honors_configured_renderer_name():
             "verifiers.clients.renderer_client.create_renderer", return_value="renderer"
         ) as create_renderer_mock,
     ):
-        renderer = client._get_renderer("Qwen/Qwen3-VL-4B-Instruct")
+        pool = client._get_renderer_or_pool("Qwen/Qwen3-VL-4B-Instruct")
 
-    assert renderer == "renderer"
+    assert isinstance(pool, RendererPool)
     tokenizer_mock.assert_called_once_with(
         "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True
     )
@@ -33,9 +36,11 @@ def test_renderer_client_honors_configured_renderer_name():
 
 
 def test_renderer_client_uses_renderer_model_name_override():
+    RendererClient._shared_pools.clear()
+
     client = object.__new__(RendererClient)
     client._renderer = None
-    client._renderer_cache = {}
+    client._pool_size = 1
     client._config = vf.ClientConfig(
         client_type="renderer",
         renderer="qwen3_vl",
@@ -50,9 +55,9 @@ def test_renderer_client_uses_renderer_model_name_override():
             "verifiers.clients.renderer_client.create_renderer", return_value="renderer"
         ) as create_renderer_mock,
     ):
-        renderer = client._get_renderer("r8-smoke")
+        pool = client._get_renderer_or_pool("r8-smoke")
 
-    assert renderer == "renderer"
+    assert isinstance(pool, RendererPool)
     tokenizer_mock.assert_called_once_with(
         "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True
     )

@@ -15,6 +15,7 @@ from renderers.base import (
     build_supervised_sample,
     build_trajectory_step,
     create_renderer,
+    create_renderer_pool,
 )
 from renderers.deepseek_v3 import DeepSeekV3Renderer
 from renderers.default import DefaultRenderer
@@ -58,4 +59,5 @@ __all__ = [
     "build_supervised_sample",
     "build_trajectory_step",
     "create_renderer",
+    "create_renderer_pool",
 ]
