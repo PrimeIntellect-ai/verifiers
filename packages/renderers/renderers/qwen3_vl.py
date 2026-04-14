@@ -409,7 +409,15 @@ class Qwen3VLRenderer:
         emit_special(self._im_end, msg_idx)
         emit_text("\n", msg_idx)
 
-    def _render_tool(self, messages: list[Message], msg_idx: int, content: str, *, emit_special, emit_text) -> None:
+    def _render_tool(
+        self,
+        messages: list[Message],
+        msg_idx: int,
+        content: str,
+        *,
+        emit_special,
+        emit_text,
+    ) -> None:
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
             msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"

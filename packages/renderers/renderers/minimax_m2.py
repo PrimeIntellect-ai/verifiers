@@ -285,7 +285,14 @@ class MiniMaxM2Renderer:
         emit_text("\n", orig_idx)
 
     def _render_tool(
-        self, conversation: list[Message], conv_idx: int, orig_idx: int, msg: Message, *, emit_special, emit_text
+        self,
+        conversation: list[Message],
+        conv_idx: int,
+        orig_idx: int,
+        msg: Message,
+        *,
+        emit_special,
+        emit_text,
     ) -> None:
         prev_is_tool = conv_idx > 0 and conversation[conv_idx - 1]["role"] == "tool"
         next_is_tool = (

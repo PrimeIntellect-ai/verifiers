@@ -71,7 +71,9 @@ async def completions_request(
     completion_ids = choice.get("token_ids") or []
     parsed = renderer.parse_response(completion_ids)
 
-    completion_logprobs = [float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []]
+    completion_logprobs = [
+        float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []
+    ]
 
     # Extract routed experts
     routed_experts = None
@@ -114,13 +116,21 @@ def _extract_images(messages: list[Message]) -> list[dict[str, str]]:
                     images.append({"data": b64_data, "media_type": media_type})
                 elif url.startswith("file://"):
                     raw = Path(url.removeprefix("file://")).read_bytes()
-                    images.append({"data": base64.b64encode(raw).decode("ascii"), "media_type": "image/png"})
+                    images.append(
+                        {
+                            "data": base64.b64encode(raw).decode("ascii"),
+                            "media_type": "image/png",
+                        }
+                    )
             elif item.get("type") == "image":
                 image = item.get("image")
                 if image is not None and hasattr(image, "save"):
                     buffer = BytesIO()
                     image.save(buffer, format="PNG")
                     images.append(
-                        {"data": base64.b64encode(buffer.getvalue()).decode("ascii"), "media_type": "image/png"}
+                        {
+                            "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                            "media_type": "image/png",
+                        }
                     )
     return images

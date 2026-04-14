@@ -59,9 +59,7 @@ class KimiK2Renderer:
             return []
         return self._tokenizer.encode(text, add_special_tokens=False)
 
-    def _ensure_system_message(
-        self, messages: list[Message]
-    ) -> list[Message]:
+    def _ensure_system_message(self, messages: list[Message]) -> list[Message]:
         """Prepend default system message if none present.
 
         Mirrors the HuggingFace chat template behavior:
@@ -87,9 +85,7 @@ class KimiK2Renderer:
         return messages
 
     @staticmethod
-    def _extract_thinking(
-        msg: Message, content: str
-    ) -> tuple[str, str]:
+    def _extract_thinking(msg: Message, content: str) -> tuple[str, str]:
         """Return (reasoning_content, plain_content) extracted from message.
 
         Checks msg['reasoning_content'] first, then falls back to parsing
@@ -151,14 +147,10 @@ class KimiK2Renderer:
         # Compute last non-tool-call assistant index to determine thinking preservation
         last_plain_assistant_idx = -1
         for i in range(len(messages) - 1, -1, -1):
-            if (
-                messages[i]["role"] == "assistant"
-                and not messages[i].get("tool_calls")
-            ):
+            if messages[i]["role"] == "assistant" and not messages[i].get("tool_calls"):
                 last_plain_assistant_idx = i
                 break
 
-        num_messages = len(messages)
         for i, msg in enumerate(messages):
             role = msg.get("role", "")
             content = msg.get("content") or ""
@@ -171,9 +163,7 @@ class KimiK2Renderer:
                             parts.append(part.get("text", ""))
                         elif part.get("type") == "thinking":
                             parts.append(
-                                "<think>"
-                                + part.get("thinking", "")
-                                + "</think>"
+                                "<think>" + part.get("thinking", "") + "</think>"
                             )
                     elif isinstance(part, str):
                         parts.append(part)
@@ -217,7 +207,9 @@ class KimiK2Renderer:
                 )
 
             elif role == "tool":
-                self._render_tool(msg, i, content, emit_special=emit_special, emit_text=emit_text)
+                self._render_tool(
+                    msg, i, content, emit_special=emit_special, emit_text=emit_text
+                )
 
             else:
                 # Unknown role: use system-style formatting

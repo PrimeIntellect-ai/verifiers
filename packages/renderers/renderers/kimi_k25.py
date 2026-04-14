@@ -48,7 +48,9 @@ _TS_FIELD_DELIMITER = ",\n"
 
 
 def _format_description(description: str, indent: str = "") -> str:
-    return "\n".join([f"{indent}// {line}" if line else "" for line in description.split("\n")])
+    return "\n".join(
+        [f"{indent}// {line}" if line else "" for line in description.split("\n")]
+    )
 
 
 class _BaseType:
@@ -57,7 +59,9 @@ class _BaseType:
 
     def __init__(self, extra_props: dict[str, Any], *, allowed_constraint_keys=()):
         self.description = extra_props.get("description", "")
-        self.constraints = {k: v for k, v in extra_props.items() if k in allowed_constraint_keys}
+        self.constraints = {
+            k: v for k, v in extra_props.items() if k in allowed_constraint_keys
+        }
 
     def to_typescript_style(self, indent: str = "") -> str:
         raise NotImplementedError
@@ -68,7 +72,8 @@ class _BaseType:
             lines.append(_format_description(self.description, indent))
         if self.constraints:
             constraints_str = ", ".join(
-                f"{k}: {v}" for k, v in sorted(self.constraints.items(), key=lambda kv: kv[0])
+                f"{k}: {v}"
+                for k, v in sorted(self.constraints.items(), key=lambda kv: kv[0])
             )
             lines.append(f"{indent}// {constraints_str}")
         return "".join(x + "\n" for x in lines)
@@ -121,7 +126,9 @@ class _ObjectType(_BaseType):
             registry.register_definitions(schema["$defs"])
         self.additional_properties = schema.get("additionalProperties")
         if isinstance(self.additional_properties, dict):
-            self.additional_properties = _parse_type(self.additional_properties, registry)
+            self.additional_properties = _parse_type(
+                self.additional_properties, registry
+            )
         if "properties" not in schema:
             return
         required = set(schema.get("required", []))
@@ -136,8 +143,12 @@ class _ObjectType(_BaseType):
             )
 
     def to_typescript_style(self, indent: str = "") -> str:
-        required_params = sorted([p for p in self.properties if not p.optional], key=lambda p: p.name)
-        optional_params = sorted([p for p in self.properties if p.optional], key=lambda p: p.name)
+        required_params = sorted(
+            [p for p in self.properties if not p.optional], key=lambda p: p.name
+        )
+        optional_params = sorted(
+            [p for p in self.properties if p.optional], key=lambda p: p.name
+        )
         params = required_params + optional_params
         param_strs = [p.to_typescript_style(indent=indent + _TS_INDENT) for p in params]
         if self.additional_properties is not None:
@@ -146,7 +157,9 @@ class _ObjectType(_BaseType):
             elif self.additional_properties is False:
                 ap_type = "never"
             else:
-                ap_type = self.additional_properties.to_typescript_style(indent=indent + _TS_INDENT)
+                ap_type = self.additional_properties.to_typescript_style(
+                    indent=indent + _TS_INDENT
+                )
             param_strs.append(f"{indent + _TS_INDENT}[k: string]: {ap_type}")
         if not param_strs:
             return "{}"
@@ -157,7 +170,11 @@ class _ObjectType(_BaseType):
 class _ArrayType(_BaseType):
     def __init__(self, schema: dict[str, Any], registry: _SchemaRegistry | None = None):
         super().__init__(schema, allowed_constraint_keys=("minItems", "maxItems"))
-        self.item = _parse_type(schema["items"], registry) if schema.get("items") else _ScalarType("any")
+        self.item = (
+            _parse_type(schema["items"], registry)
+            if schema.get("items")
+            else _ScalarType("any")
+        )
 
     def to_typescript_style(self, indent: str = "") -> str:
         docstring = self.item.format_docstring(indent + _TS_INDENT)
@@ -195,8 +212,13 @@ class _AnyOfType(_BaseType):
 
 class _UnionType(_BaseType):
     _MAPPING = {
-        "string": "string", "number": "number", "integer": "number",
-        "boolean": "boolean", "null": "null", "object": "{}", "array": "Array<any>",
+        "string": "string",
+        "number": "number",
+        "integer": "number",
+        "boolean": "boolean",
+        "null": "null",
+        "object": "{}",
+        "array": "Array<any>",
     }
 
     def __init__(self, schema: dict[str, Any]):
@@ -224,7 +246,13 @@ class _RefType(_BaseType):
 
 
 _ParamType = (
-    _ScalarType | _ObjectType | _ArrayType | _EnumType | _AnyOfType | _UnionType | _RefType
+    _ScalarType
+    | _ObjectType
+    | _ArrayType
+    | _EnumType
+    | _AnyOfType
+    | _UnionType
+    | _RefType
 )
 
 
@@ -247,10 +275,15 @@ class _TypedParam:
             )
             comments += f"{indent}// Default: {default_repr}\n"
         opt = "?" if self.optional else ""
-        return comments + f"{indent}{self.name}{opt}: {self.type_.to_typescript_style(indent=indent)}"
+        return (
+            comments
+            + f"{indent}{self.name}{opt}: {self.type_.to_typescript_style(indent=indent)}"
+        )
 
 
-def _parse_type(schema: dict[str, Any] | bool, registry: _SchemaRegistry | None = None) -> _ParamType:
+def _parse_type(
+    schema: dict[str, Any] | bool, registry: _SchemaRegistry | None = None
+) -> _ParamType:
     if isinstance(schema, bool):
         return _ScalarType("any" if schema else "null")
     if "$ref" in schema and registry:
@@ -308,7 +341,14 @@ def _function_to_typescript(function: dict[str, Any]) -> str:
 
     description = function.get("description")
     return "\n".join(
-        filter(bool, [interface_str, (description and _format_description(description)) or "", type_def])
+        filter(
+            bool,
+            [
+                interface_str,
+                (description and _format_description(description)) or "",
+                type_def,
+            ],
+        )
     )
 
 
@@ -376,14 +416,18 @@ def _parse_kimi_k2_response(
     elif "<think>" in text:
         # Truncated reasoning (no closing tag)
         _, _, partial = text.partition("<think>")
-        return ParsedResponse(content="", reasoning_content=partial.strip() or None, tool_calls=None)
+        return ParsedResponse(
+            content="", reasoning_content=partial.strip() or None, tool_calls=None
+        )
 
     # Extract tool calls section
     tool_calls: list[dict[str, Any]] | None = None
     tc_match = _TOOL_CALLS_SECTION_RE.search(text)
     if tc_match:
         text = text[: tc_match.start()]
-        tool_section = tc_match.group(1) if tc_match.group(1) is not None else tc_match.group(2)
+        tool_section = (
+            tc_match.group(1) if tc_match.group(1) is not None else tc_match.group(2)
+        )
         parsed_calls = []
         for m in _TOOL_CALL_RE.finditer(tool_section):
             tool_id = m.group(1).strip()
@@ -523,7 +567,8 @@ class KimiK25Renderer:
         if tools:
             # Find the tool_declare slot index for attribution
             tool_declare_idx = next(
-                (i for i, m in enumerate(messages) if m.get("role") == "tool_declare"), -1
+                (i for i, m in enumerate(messages) if m.get("role") == "tool_declare"),
+                -1,
             )
             tools_ts = _encode_tools_typescript(tools)
             emit_special(self._im_system, tool_declare_idx)
@@ -552,15 +597,21 @@ class KimiK25Renderer:
                 emit_special(self._im_user, i)
                 emit_text("user", i)
                 emit_special(self._im_middle, i)
-                self._emit_content(msg.get("content"), i, emit_special, emit_text, emit_ids)
+                self._emit_content(
+                    msg.get("content"), i, emit_special, emit_text, emit_ids
+                )
                 emit_special(self._im_end, i)
                 emit_text("\n", i)
 
             elif role == "assistant":
-                self._render_assistant(msg, i, emit_special=emit_special, emit_text=emit_text)
+                self._render_assistant(
+                    msg, i, emit_special=emit_special, emit_text=emit_text
+                )
 
             elif role == "tool":
-                self._render_tool_response(msg, i, emit_special=emit_special, emit_text=emit_text)
+                self._render_tool_response(
+                    msg, i, emit_special=emit_special, emit_text=emit_text
+                )
 
             else:
                 # Unknown roles use system-style formatting
@@ -631,11 +682,14 @@ class KimiK25Renderer:
             # Check if a system message follows
             if len(messages) >= 2 and messages[1].get("role") == "system":
                 return messages
-            return [messages[0], {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + list(
-                messages[1:]
-            )
+            return [
+                messages[0],
+                {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT},
+            ] + list(messages[1:])
         elif first_role != "system":
-            return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + list(messages)
+            return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + list(
+                messages
+            )
         return messages
 
     def _emit_content(
@@ -678,7 +732,11 @@ class KimiK25Renderer:
     ) -> None:
         """Emit an image content part using K2.5 media tokens."""
         image_url: str = part.get("image", "")  # type: ignore[attr-defined]
-        if self._media_begin is not None and self._media_content is not None and self._media_end is not None:
+        if (
+            self._media_begin is not None
+            and self._media_content is not None
+            and self._media_end is not None
+        ):
             # Use dedicated special tokens when available
             emit_special(self._media_begin, msg_idx)
             emit_text("image", msg_idx)
@@ -707,13 +765,25 @@ class KimiK25Renderer:
             reasoning_content = msg["reasoning_content"]
             # content stays as-is (text only)
             if isinstance(content, list):
-                text_content = "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+                text_content = "".join(
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
             else:
                 text_content = content or ""
         elif isinstance(content, list):
             # Extract thinking + text from content parts
-            thinking_parts = [p.get("thinking", "") for p in content if isinstance(p, dict) and p.get("type") == "thinking"]
-            text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            thinking_parts = [
+                p.get("thinking", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "thinking"
+            ]
+            text_parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
             reasoning_content = "".join(thinking_parts)
             text_content = "".join(text_parts)
         elif isinstance(content, str) and "</think>" in content:
@@ -778,7 +848,9 @@ class KimiK25Renderer:
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = "".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
             )
 
         emit_special(self._im_system, msg_idx)

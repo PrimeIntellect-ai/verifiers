@@ -268,7 +268,15 @@ class GLM45Renderer:
                     emit_text("\n", msg_idx)
             emit_special(self._tool_call_end_tok, msg_idx)
 
-    def _render_tool(self, messages: list[Message], msg_idx: int, content: str, *, emit_special, emit_text) -> None:
+    def _render_tool(
+        self,
+        messages: list[Message],
+        msg_idx: int,
+        content: str,
+        *,
+        emit_special,
+        emit_text,
+    ) -> None:
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
 
         if not prev_is_tool:

@@ -217,8 +217,12 @@ class GptOssRenderer:
         for i, msg in enumerate(effective_messages):
             is_last = i == num - 1
             self._render_message(
-                msg, i, is_last=is_last, tools=tools if i == 0 else None,
-                emit_special=emit_special, emit_text=emit_text,
+                msg,
+                i,
+                is_last=is_last,
+                tools=tools if i == 0 else None,
+                emit_special=emit_special,
+                emit_text=emit_text,
             )
 
         # Generation prompt: <|start|>assistant<|channel|>analysis<|message|>
@@ -274,7 +278,9 @@ class GptOssRenderer:
         role = msg.get("role", "")
 
         if role == "tool":
-            self._render_tool_result(msg, msg_idx, emit_special=emit_special, emit_text=emit_text)
+            self._render_tool_result(
+                msg, msg_idx, emit_special=emit_special, emit_text=emit_text
+            )
             return
 
         # Map roles
@@ -290,8 +296,11 @@ class GptOssRenderer:
 
         if role == "assistant":
             self._render_assistant(
-                msg, msg_idx, is_last=is_last,
-                emit_special=emit_special, emit_text=emit_text,
+                msg,
+                msg_idx,
+                is_last=is_last,
+                emit_special=emit_special,
+                emit_text=emit_text,
             )
         elif role == "system":
             # System messages from user → developer role with "# Instructions" wrapper

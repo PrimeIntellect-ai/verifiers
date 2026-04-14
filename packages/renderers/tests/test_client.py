@@ -50,7 +50,9 @@ class _FakeClient:
                     "logprobs": [-0.1, -0.2],
                     "finish_reason": "tool_calls",
                     "routed_experts": {
-                        "data": base64.b85encode(routed_experts.tobytes()).decode("ascii"),
+                        "data": base64.b85encode(routed_experts.tobytes()).decode(
+                            "ascii"
+                        ),
                         "shape": list(routed_experts.shape),
                     },
                 }

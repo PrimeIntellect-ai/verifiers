@@ -26,11 +26,7 @@ from renderers.parsing import parse_qwen35
 # Tool system prompt constants
 # ---------------------------------------------------------------------------
 
-_TOOLS_HEADER = (
-    "# Tools\n\n"
-    "You have access to the following functions:\n\n"
-    "<tools>"
-)
+_TOOLS_HEADER = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
 
 _TOOLS_FOOTER = "\n</tools>"
 
@@ -170,9 +166,7 @@ class Nemotron3Renderer:
                 )
                 lines.append("</parameter>")
         if isinstance(params, dict):
-            lines.extend(
-                _render_extra_keys(params, {"type", "properties", "required"})
-            )
+            lines.extend(_render_extra_keys(params, {"type", "properties", "required"}))
         if isinstance(params, dict) and "required" in params:
             lines.append(f"<required>{json.dumps(params['required'])}</required>")
         lines.append("</parameters>")
@@ -186,9 +180,7 @@ class Nemotron3Renderer:
     # Message normalization
     # ------------------------------------------------------------------
 
-    def _normalize_messages(
-        self, messages: list[Message]
-    ) -> list[Message]:
+    def _normalize_messages(self, messages: list[Message]) -> list[Message]:
         """Prepend empty system message if none exists.
 
         Nemotron 3's HF template always outputs a system message block even
@@ -455,8 +447,7 @@ class Nemotron3Renderer:
         # Consecutive tool messages are grouped under a single <|im_start|>user block
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
-            msg_idx + 1 < len(messages)
-            and messages[msg_idx + 1]["role"] == "tool"
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
         )
 
         if not prev_is_tool:

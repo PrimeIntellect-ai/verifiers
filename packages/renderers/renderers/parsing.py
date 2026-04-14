@@ -736,17 +736,19 @@ def parse_gpt_oss(
         recipient = recipient_match.group(1) if recipient_match else None
 
         if recipient and recipient.startswith("functions."):
-            tool_name = recipient[len("functions."):]
+            tool_name = recipient[len("functions.") :]
             try:
                 arguments = json.loads(body_text)
             except json.JSONDecodeError:
                 arguments = body_text  # preserve raw string on failure
-            tool_calls.append({
-                "function": {
-                    "name": tool_name,
-                    "arguments": arguments,
+            tool_calls.append(
+                {
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments,
+                    }
                 }
-            })
+            )
         elif channel == "analysis":
             reasoning_parts.append(body_text)
         elif channel == "final":
@@ -779,6 +781,6 @@ def _gptoss_extract_after_token(
     pos = _find(header_ids, marker_id)
     if pos == -1:
         return None
-    after = _decode(tokenizer, header_ids[pos + 1:]).strip()
+    after = _decode(tokenizer, header_ids[pos + 1 :]).strip()
     # Take first whitespace-delimited word (channel name)
     return after.split()[0] if after else None

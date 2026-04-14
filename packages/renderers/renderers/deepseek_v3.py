@@ -58,7 +58,9 @@ class DeepSeekV3Renderer:
         self._tool_sep = self._get_special_token(f"tool{_US}sep")
 
         # ── Tool output section tokens ────────────────────────────────
-        self._tool_outputs_begin = self._get_special_token(f"tool{_US}outputs{_US}begin")
+        self._tool_outputs_begin = self._get_special_token(
+            f"tool{_US}outputs{_US}begin"
+        )
         self._tool_outputs_end = self._get_special_token(f"tool{_US}outputs{_US}end")
         self._tool_output_begin = self._get_special_token(f"tool{_US}output{_US}begin")
         self._tool_output_end = self._get_special_token(f"tool{_US}output{_US}end")
@@ -71,9 +73,7 @@ class DeepSeekV3Renderer:
         """Encode <｜{name}｜> and assert it maps to exactly one token."""
         token_str = _ds_token(name)
         ids = self._tokenizer.encode(token_str, add_special_tokens=False)
-        assert len(ids) == 1, (
-            f"Expected single token for {token_str!r}, got {ids}"
-        )
+        assert len(ids) == 1, f"Expected single token for {token_str!r}, got {ids}"
         return ids[0]
 
     def _encode(self, text: str) -> list[int]:
@@ -154,8 +154,10 @@ class DeepSeekV3Renderer:
                 content = msg.get("content") or ""
                 if isinstance(content, list):
                     content = "".join(
-                        p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
-                        else p.get("text", "") if isinstance(p, dict)
+                        p.get("text", "")
+                        if isinstance(p, dict) and p.get("type") == "text"
+                        else p.get("text", "")
+                        if isinstance(p, dict)
                         else ""
                         for p in content
                     )
@@ -164,14 +166,17 @@ class DeepSeekV3Renderer:
 
             elif role == "assistant":
                 self._render_assistant(
-                    msg, i, messages,
+                    msg,
+                    i,
+                    messages,
                     emit_special=emit_special,
                     emit_text=emit_text,
                 )
 
             elif role == "tool":
                 self._render_tool(
-                    messages, i,
+                    messages,
+                    i,
                     emit_special=emit_special,
                     emit_text=emit_text,
                 )
@@ -296,15 +301,12 @@ class DeepSeekV3Renderer:
     ) -> None:
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
-            msg_idx + 1 < len(messages)
-            and messages[msg_idx + 1]["role"] == "tool"
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
         )
 
         content = messages[msg_idx].get("content") or ""
         if isinstance(content, list):
-            content = "".join(
-                p.get("text", "") for p in content if isinstance(p, dict)
-            )
+            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
 
         if not prev_is_tool:
             emit_special(self._tool_outputs_begin, msg_idx)
