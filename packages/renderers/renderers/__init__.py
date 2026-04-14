@@ -1,25 +1,48 @@
 from renderers.base import (
+    Content,
+    ContentPart,
+    ImagePart,
+    Message,
     ParsedResponse,
     RenderedTokens,
     Renderer,
     RendererPool,
+    TextPart,
+    ThinkingPart,
+    ToolCall,
+    ToolCallFunction,
+    ToolSpec,
     build_supervised_sample,
     build_trajectory_step,
     create_renderer,
 )
+from renderers.deepseek_v3 import DeepSeekV3Renderer
 from renderers.default import DefaultRenderer
 from renderers.glm5 import GLM5Renderer
 from renderers.glm45 import GLM45Renderer
+from renderers.gpt_oss import GptOssRenderer
+from renderers.kimi_k2 import KimiK2Renderer
+from renderers.kimi_k25 import KimiK25Renderer
 from renderers.minimax_m2 import MiniMaxM2Renderer
+from renderers.nemotron3 import Nemotron3Renderer
 from renderers.qwen3 import Qwen3Renderer
 from renderers.qwen3_vl import Qwen3VLRenderer
 from renderers.qwen35 import Qwen35Renderer
 
 __all__ = [
+    "Content",
+    "ContentPart",
+    "DeepSeekV3Renderer",
     "DefaultRenderer",
     "GLM45Renderer",
     "GLM5Renderer",
+    "GptOssRenderer",
+    "ImagePart",
+    "KimiK2Renderer",
+    "KimiK25Renderer",
+    "Message",
     "MiniMaxM2Renderer",
+    "Nemotron3Renderer",
     "ParsedResponse",
     "Qwen3Renderer",
     "Qwen3VLRenderer",
@@ -27,6 +50,11 @@ __all__ = [
     "RenderedTokens",
     "Renderer",
     "RendererPool",
+    "TextPart",
+    "ThinkingPart",
+    "ToolCall",
+    "ToolCallFunction",
+    "ToolSpec",
     "build_supervised_sample",
     "build_trajectory_step",
     "create_renderer",

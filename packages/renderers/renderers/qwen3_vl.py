@@ -16,7 +16,7 @@ from PIL import Image
 from transformers import AutoProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import ParsedResponse, RenderedTokens
+from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
 from renderers.parsing import parse_qwen3
 
 _TOOLS_HEADER = (
@@ -91,7 +91,7 @@ class Qwen3VLRenderer:
         )
 
     @classmethod
-    def _has_multimodal_content(cls, messages: list[dict[str, Any]]) -> bool:
+    def _has_multimodal_content(cls, messages: list[Message]) -> bool:
         for message in messages:
             content = message.get("content")
             if not isinstance(content, list):
@@ -127,7 +127,7 @@ class Qwen3VLRenderer:
 
     @classmethod
     def _prepare_messages_for_processor(
-        cls, messages: list[dict[str, Any]]
+        cls, messages: list[Message]
     ) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         for message in messages:
@@ -223,9 +223,9 @@ class Qwen3VLRenderer:
 
     def render(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
         if self._has_multimodal_content(messages):
@@ -281,7 +281,7 @@ class Qwen3VLRenderer:
         video_count = 0
 
         for i, msg in enumerate(messages):
-            role = msg.get("role")
+            role = msg["role"]
 
             if role == "system":
                 continue
@@ -329,9 +329,9 @@ class Qwen3VLRenderer:
 
     def render_ids(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
         if self._has_multimodal_content(messages):
@@ -367,7 +367,7 @@ class Qwen3VLRenderer:
 
     def _render_assistant(
         self,
-        msg: dict[str, Any],
+        msg: Message,
         msg_idx: int,
         *,
         emit_special,
@@ -409,10 +409,10 @@ class Qwen3VLRenderer:
         emit_special(self._im_end, msg_idx)
         emit_text("\n", msg_idx)
 
-    def _render_tool(self, messages, msg_idx, content, *, emit_special, emit_text):
-        prev_is_tool = msg_idx > 0 and messages[msg_idx - 1].get("role") == "tool"
+    def _render_tool(self, messages: list[Message], msg_idx: int, content: str, *, emit_special, emit_text) -> None:
+        prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
-            msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
         )
 
         if not prev_is_tool:

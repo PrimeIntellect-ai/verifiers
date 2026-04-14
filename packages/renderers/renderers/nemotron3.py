@@ -1,7 +1,15 @@
-"""Qwen3.5 Renderer — hard-coded Python that mirrors the Qwen3.5 Jinja chat template.
+"""Nemotron 3 Renderer — hard-coded Python that mirrors the Nemotron 3 chat template.
 
-Produces token-for-token identical output to tokenizer.apply_chat_template() while
-also tracking which message produced each token (for per-token loss masks).
+Nemotron 3 uses the same <|im_start|>/<|im_end|> format as Qwen3.5 but differs in:
+
+1. Tool declarations: XML format inside <tools>...</tools> (not JSON-per-line).
+2. System message ordering: system prompt goes BEFORE tools block.
+3. Thinking block scope: <think></think> is prepended to ALL assistant messages
+   that lack thinking content (not just those after the last user query).
+4. Think separator: single \\n after </think> (not \\n\\n like Qwen3.5).
+5. Empty system message: always prepends an empty system message if none exists.
+6. Disable-thinking generation suffix: <think></think> with no trailing newlines.
+7. Tool response format: trailing newline after </tool_response>.
 """
 
 from __future__ import annotations
@@ -15,10 +23,14 @@ from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
 from renderers.parsing import parse_qwen35
 
 # ---------------------------------------------------------------------------
-# Tool system prompt constants (must match the Jinja template exactly)
+# Tool system prompt constants
 # ---------------------------------------------------------------------------
 
-_TOOLS_HEADER = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
+_TOOLS_HEADER = (
+    "# Tools\n\n"
+    "You have access to the following functions:\n\n"
+    "<tools>"
+)
 
 _TOOLS_FOOTER = "\n</tools>"
 
@@ -40,8 +52,24 @@ _TOOLS_INSTRUCTIONS = (
 )
 
 
-class Qwen35Renderer:
-    """Deterministic message → token renderer for Qwen3.5 models."""
+def _render_extra_keys(obj: dict[str, Any], handled_keys: set[str]) -> list[str]:
+    """Render extra dict keys as XML, mirroring the HF template's render_extra_keys macro.
+
+    Dicts and lists are JSON-encoded; scalars are string-coerced.
+    """
+    lines: list[str] = []
+    for key, value in obj.items():
+        if key in handled_keys:
+            continue
+        if isinstance(value, (dict, list)):
+            lines.append(f"<{key}>{json.dumps(value)}</{key}>")
+        else:
+            lines.append(f"<{key}>{value!s}</{key}>")
+    return lines
+
+
+class Nemotron3Renderer:
+    """Deterministic message → token renderer for Nemotron 3 models."""
 
     def __init__(
         self,
@@ -76,15 +104,12 @@ class Qwen35Renderer:
         return self._tokenizer.encode(text, add_special_tokens=False)
 
     # ------------------------------------------------------------------
-    # Content rendering (mirrors the render_content Jinja macro)
+    # Content rendering
     # ------------------------------------------------------------------
 
     @staticmethod
     def _render_content(content: Any) -> str:
-        """Render message content to a text string (before tokenization).
-
-        Handles string, list (text/image/video items), and None.
-        """
+        """Render message content to a text string (before tokenization)."""
         if content is None:
             return ""
         if isinstance(content, str):
@@ -111,23 +136,67 @@ class Qwen35Renderer:
         raise TypeError(f"Unexpected content type: {type(content)}")
 
     # ------------------------------------------------------------------
-    # last_query_index computation
+    # Tool declaration formatting (XML, Nemotron 3 style)
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _last_query_index(messages: list[Message]) -> int:
-        """Find the index of the last 'real' user query (not a tool_response wrapper)."""
-        for i in range(len(messages) - 1, -1, -1):
-            msg = messages[i]
-            if msg.get("role") != "user":
-                continue
-            content = Qwen35Renderer._render_content(msg.get("content")).strip()
-            if not (
-                content.startswith("<tool_response>")
-                and content.endswith("</tool_response>")
-            ):
-                return i
-        raise ValueError("No user query found in messages.")
+    def _format_tool_declaration(tool: ToolSpec) -> str:
+        """Format a single tool declaration in Nemotron 3 XML format."""
+        lines = [
+            "<function>",
+            f"<name>{tool['name']}</name>",
+        ]
+        description = tool.get("description", "").strip()
+        if description:
+            lines.append(f"<description>{description}</description>")
+        lines.append("<parameters>")
+        params = tool.get("parameters") or {}
+        if isinstance(params, dict) and "properties" in params:
+            for param_name, param_fields in params["properties"].items():
+                lines.append("<parameter>")
+                lines.append(f"<name>{param_name}</name>")
+                if "type" in param_fields:
+                    lines.append(f"<type>{param_fields['type']!s}</type>")
+                if "description" in param_fields:
+                    lines.append(
+                        f"<description>{param_fields['description'].strip()}</description>"
+                    )
+                if "enum" in param_fields:
+                    lines.append(f"<enum>{json.dumps(param_fields['enum'])}</enum>")
+                lines.extend(
+                    _render_extra_keys(
+                        param_fields, {"name", "type", "description", "enum"}
+                    )
+                )
+                lines.append("</parameter>")
+        if isinstance(params, dict):
+            lines.extend(
+                _render_extra_keys(params, {"type", "properties", "required"})
+            )
+        if isinstance(params, dict) and "required" in params:
+            lines.append(f"<required>{json.dumps(params['required'])}</required>")
+        lines.append("</parameters>")
+        lines.extend(
+            _render_extra_keys(tool, {"type", "name", "description", "parameters"})
+        )
+        lines.append("</function>")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Message normalization
+    # ------------------------------------------------------------------
+
+    def _normalize_messages(
+        self, messages: list[Message]
+    ) -> list[Message]:
+        """Prepend empty system message if none exists.
+
+        Nemotron 3's HF template always outputs a system message block even
+        when none is provided.
+        """
+        if not messages or messages[0].get("role") != "system":
+            return [{"role": "system", "content": ""}] + list(messages)
+        return list(messages)
 
     # ------------------------------------------------------------------
     # Core render method
@@ -142,6 +211,9 @@ class Qwen35Renderer:
     ) -> RenderedTokens:
         if not messages:
             raise ValueError("No messages provided.")
+
+        # Always ensure an empty system message is present.
+        messages = self._normalize_messages(messages)
 
         tokens: list[int] = []
         indices: list[int] = []
@@ -161,28 +233,38 @@ class Qwen35Renderer:
         first_is_system = messages[0].get("role") == "system"
 
         if tools:
-            # System message index for attribution
+            # Nemotron 3: system prompt BEFORE tools block
             sys_idx = 0 if first_is_system else -1
 
             emit_special(self._im_start, sys_idx)
             emit_text("system\n", sys_idx)
 
-            # Tools header + JSON definitions
-            tool_text = _TOOLS_HEADER
-            for tool in tools:
-                tool_text += "\n" + json.dumps(tool, ensure_ascii=False)
-            tool_text += _TOOLS_FOOTER
-            tool_text += _TOOLS_INSTRUCTIONS
-
-            # Append user's system content if present
+            # Build system content: user's system text first, then tools
             if first_is_system:
                 sys_content = self._render_content(messages[0].get("content")).strip()
-                if sys_content:
-                    tool_text += "\n\n" + sys_content
+            else:
+                sys_content = ""
 
-            emit_text(tool_text, sys_idx)
+            tool_declarations = "\n".join(
+                self._format_tool_declaration(t) for t in tools
+            )
+            tools_block = (
+                _TOOLS_HEADER
+                + "\n"
+                + tool_declarations
+                + _TOOLS_FOOTER
+                + _TOOLS_INSTRUCTIONS
+            )
+
+            if sys_content:
+                full_sys = sys_content + "\n\n" + tools_block
+            else:
+                full_sys = tools_block
+
+            emit_text(full_sys, sys_idx)
             emit_special(self._im_end, sys_idx)
             emit_text("\n", sys_idx)
+
         elif first_is_system:
             sys_content = self._render_content(messages[0].get("content")).strip()
             emit_special(self._im_start, 0)
@@ -190,10 +272,7 @@ class Qwen35Renderer:
             emit_special(self._im_end, 0)
             emit_text("\n", 0)
 
-        # ── 2. Compute last_query_index ─────────────────────────────
-        last_qi = self._last_query_index(messages)
-
-        # ── 3. Iterate messages ─────────────────────────────────────
+        # ── 2. Iterate messages ─────────────────────────────────────
         for i, msg in enumerate(messages):
             role = msg["role"]
             content = self._render_content(msg.get("content")).strip()
@@ -214,7 +293,6 @@ class Qwen35Renderer:
                     msg,
                     i,
                     content,
-                    last_qi,
                     emit_special=emit_special,
                     emit_text=emit_text,
                     emit_ids=emit_ids,
@@ -232,7 +310,7 @@ class Qwen35Renderer:
             else:
                 raise ValueError(f"Unexpected message role: {role}")
 
-        # ── 4. Generation prompt ────────────────────────────────────
+        # ── 3. Generation prompt ────────────────────────────────────
         if add_generation_prompt:
             emit_special(self._im_start, -1)
             emit_text("assistant\n", -1)
@@ -240,10 +318,9 @@ class Qwen35Renderer:
                 emit_special(self._think, -1)
                 emit_text("\n", -1)
             else:
+                # Disable-thinking suffix: <think></think> with no trailing newlines
                 emit_special(self._think, -1)
-                emit_text("\n\n", -1)
                 emit_special(self._think_end, -1)
-                emit_text("\n\n", -1)
 
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
@@ -281,7 +358,6 @@ class Qwen35Renderer:
         msg: Message,
         msg_idx: int,
         content: str,
-        last_query_index: int,
         *,
         emit_special,
         emit_text,
@@ -292,9 +368,7 @@ class Qwen35Renderer:
         if isinstance(msg.get("reasoning_content"), str):
             reasoning_content = msg["reasoning_content"]
         elif "</think>" in content:
-            # Split on </think> to separate reasoning from content
             before_think_end, after_think_end = content.split("</think>", 1)
-            # Extract text after <think> (if present)
             if "<think>" in before_think_end:
                 reasoning_content = before_think_end.split("<think>")[-1].lstrip("\n")
             else:
@@ -305,16 +379,22 @@ class Qwen35Renderer:
         reasoning_content = reasoning_content.strip()
 
         emit_special(self._im_start, msg_idx)
+        emit_text("assistant\n", msg_idx)
 
-        if msg_idx > last_query_index:
-            # Include thinking block
-            emit_text("assistant\n", msg_idx)
+        # Nemotron 3: <think></think> is prepended to ALL assistant messages
+        # that lack thinking content (not just those after the last user query).
+        if reasoning_content:
+            # Has thinking: emit full think block with single \n separator
             emit_special(self._think, msg_idx)
             emit_text("\n" + reasoning_content + "\n", msg_idx)
             emit_special(self._think_end, msg_idx)
-            emit_text("\n\n" + content, msg_idx)
+            # Single \n separator (not \n\n like Qwen3.5)
+            emit_text("\n" + content, msg_idx)
         else:
-            emit_text("assistant\n" + content, msg_idx)
+            # No thinking: prepend empty <think></think>
+            emit_special(self._think, msg_idx)
+            emit_special(self._think_end, msg_idx)
+            emit_text(content, msg_idx)
 
         # Tool calls
         tool_calls = msg.get("tool_calls") or []
@@ -324,10 +404,10 @@ class Qwen35Renderer:
                 name = func.get("name", "")
                 arguments = func.get("arguments", {})
 
-                # Separator before <tool_call>
+                # Single \n separator before <tool_call>
                 if tc_idx == 0:
                     if content.strip():
-                        emit_text("\n\n", msg_idx)
+                        emit_text("\n", msg_idx)
                     # else: no separator
                 else:
                     emit_text("\n", msg_idx)
@@ -353,6 +433,8 @@ class Qwen35Renderer:
 
                 emit_text("</function>\n", msg_idx)
                 emit_special(self._tool_call_end, msg_idx)
+                # Trailing \n after </tool_call> (Nemotron 3 specific)
+                emit_text("\n", msg_idx)
 
         emit_special(self._im_end, msg_idx)
         emit_text("\n", msg_idx)
@@ -373,7 +455,8 @@ class Qwen35Renderer:
         # Consecutive tool messages are grouped under a single <|im_start|>user block
         prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
-            msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
+            msg_idx + 1 < len(messages)
+            and messages[msg_idx + 1]["role"] == "tool"
         )
 
         if not prev_is_tool:
@@ -384,6 +467,8 @@ class Qwen35Renderer:
         emit_special(self._tool_response, msg_idx)
         emit_text("\n" + content + "\n", msg_idx)
         emit_special(self._tool_response_end, msg_idx)
+        # Nemotron 3: trailing \n after </tool_response>
+        emit_text("\n", msg_idx)
 
         if not next_is_tool:
             emit_special(self._im_end, msg_idx)

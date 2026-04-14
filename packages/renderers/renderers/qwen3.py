@@ -10,11 +10,10 @@ Key differences from Qwen3.5:
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import ParsedResponse, RenderedTokens
+from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
 from renderers.parsing import parse_qwen3
 
 _TOOLS_HEADER = (
@@ -67,7 +66,7 @@ class Qwen3Renderer:
         return self._tokenizer.encode(text, add_special_tokens=False)
 
     @staticmethod
-    def _last_query_index(messages: list[dict[str, Any]]) -> int:
+    def _last_query_index(messages: list[Message]) -> int:
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             if msg.get("role") != "user":
@@ -84,9 +83,9 @@ class Qwen3Renderer:
 
     def render(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
         if not messages:
@@ -134,7 +133,7 @@ class Qwen3Renderer:
         # ── 3. Iterate messages ─────────────────────────────────────
         num_messages = len(messages)
         for i, msg in enumerate(messages):
-            role = msg.get("role")
+            role = msg["role"]
             content = msg.get("content") if isinstance(msg.get("content"), str) else ""
 
             if role == "system":
@@ -176,7 +175,13 @@ class Qwen3Renderer:
 
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
-    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
+    def render_ids(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+        add_generation_prompt: bool = False,
+    ) -> list[int]:
         return self.render(
             messages, tools=tools, add_generation_prompt=add_generation_prompt
         ).token_ids
@@ -263,10 +268,10 @@ class Qwen3Renderer:
         emit_special(self._im_end, msg_idx)
         emit_text("\n", msg_idx)
 
-    def _render_tool(self, messages, msg_idx, content, *, emit_special, emit_text):
-        prev_is_tool = msg_idx > 0 and messages[msg_idx - 1].get("role") == "tool"
+    def _render_tool(self, messages: list[Message], msg_idx: int, content: str, *, emit_special, emit_text) -> None:
+        prev_is_tool = msg_idx > 0 and messages[msg_idx - 1]["role"] == "tool"
         next_is_tool = (
-            msg_idx + 1 < len(messages) and messages[msg_idx + 1].get("role") == "tool"
+            msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
         )
 
         if not prev_is_tool:

@@ -3,7 +3,82 @@ from __future__ import annotations
 import queue
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, TypedDict, runtime_checkable
+
+
+# ---------------------------------------------------------------------------
+# Message types — strong typing for the conversation data model
+# ---------------------------------------------------------------------------
+
+
+class TextPart(TypedDict):
+    """A chunk of text content in a message."""
+
+    type: Literal["text"]
+    text: str
+
+
+class ThinkingPart(TypedDict):
+    """Model's internal reasoning (chain-of-thought) as a content part."""
+
+    type: Literal["thinking"]
+    thinking: str
+
+
+class ImagePart(TypedDict):
+    """A chunk of image content in a message (URL, data-URI, or raw bytes)."""
+
+    type: Literal["image"]
+    image: str  # URL or data URI
+
+
+ContentPart = TextPart | ImagePart | ThinkingPart
+
+# Content is either a plain string or a list of structured parts.
+Content = str | list[ContentPart]
+
+
+class ToolCallFunction(TypedDict):
+    """Function body within a tool call."""
+
+    name: str
+    arguments: dict[str, Any] | str
+
+
+class ToolCall(TypedDict, total=False):
+    """Structured tool invocation following OpenAI function-calling format."""
+
+    type: str  # "function"
+    id: str
+    function: ToolCallFunction
+
+
+class ToolSpec(TypedDict):
+    """Tool specification (OpenAI function-calling format)."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class Message(TypedDict, total=False):
+    """A single turn in a multi-turn conversation.
+
+    Required keys: role, content.
+    Optional keys mirror the OpenAI chat format for tool calling.
+    """
+
+    role: str
+    content: Content
+    tool_calls: list[ToolCall]
+    tool_call_id: str
+    name: str
+    reasoning_content: str
+
+
+# ---------------------------------------------------------------------------
+# Renderer data types
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -34,9 +109,9 @@ class Renderer(Protocol):
 
     def render(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
         """Render messages to token IDs with per-token message attribution."""
@@ -44,9 +119,9 @@ class Renderer(Protocol):
 
     def render_ids(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
         """Render messages to token IDs (without attribution metadata)."""
@@ -88,7 +163,8 @@ class RendererPool:
 
 RENDERER_REGISTRY: dict[str, type] = {}
 
-# Maps model name prefixes to renderer names. Checked in order.
+# Maps model name prefixes to renderer names. Checked in order;
+# longer prefixes first so "Qwen/Qwen3.5" matches before "Qwen/Qwen3".
 MODEL_RENDERER_MAP: dict[str, str] = {
     "Qwen/Qwen3.5": "qwen3.5",
     "Qwen/Qwen3-VL": "qwen3_vl",
@@ -97,6 +173,11 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "zai-org/GLM-4.7": "glm5",
     "THUDM/GLM-4.5": "glm4.5",
     "MiniMaxAI/MiniMax-M2": "minimax-m2",
+    "deepseek-ai/DeepSeek": "deepseek_v3",
+    "moonshotai/Kimi-K2.5": "kimi_k25",
+    "moonshotai/Kimi-K2": "kimi_k2",
+    "nvidia/Llama-3": "nemotron3",
+    "nvidia/Nemotron": "nemotron3",
 }
 
 
@@ -104,9 +185,14 @@ def _populate_registry():
     if RENDERER_REGISTRY:
         return
     from renderers.default import DefaultRenderer
+    from renderers.deepseek_v3 import DeepSeekV3Renderer
     from renderers.glm5 import GLM5Renderer
     from renderers.glm45 import GLM45Renderer
+    from renderers.gpt_oss import GptOssRenderer
+    from renderers.kimi_k2 import KimiK2Renderer
+    from renderers.kimi_k25 import KimiK25Renderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
+    from renderers.nemotron3 import Nemotron3Renderer
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen3_vl import Qwen3VLRenderer
     from renderers.qwen35 import Qwen35Renderer
@@ -120,6 +206,11 @@ def _populate_registry():
             "glm5": GLM5Renderer,
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
+            "deepseek_v3": DeepSeekV3Renderer,
+            "kimi_k2": KimiK2Renderer,
+            "kimi_k25": KimiK25Renderer,
+            "nemotron3": Nemotron3Renderer,
+            "gpt_oss": GptOssRenderer,
         }
     )
 
@@ -129,8 +220,9 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
 
     Args:
         tokenizer: HuggingFace tokenizer instance.
-        renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2',
-                  'intellect', 'default') or 'auto' to detect from model name.
+        renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5',
+                  'minimax-m2', 'deepseek_v3', 'kimi_k2', 'kimi_k25', 'nemotron3',
+                  'gpt_oss', 'default') or 'auto' to detect from model name.
     """
     _populate_registry()
 
@@ -159,10 +251,10 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
 
 def build_supervised_sample(
     renderer: Renderer,
-    messages: list[dict[str, Any]],
+    messages: list[Message],
     *,
-    role_to_mask: Callable[[dict[str, Any]], bool],
-    tools: list[dict[str, Any]] | None = None,
+    role_to_mask: Callable[[Message], bool],
+    tools: list[ToolSpec] | None = None,
     collapse_consecutive_tool_messages: bool = False,
 ) -> tuple[list[int], list[bool]]:
     """Build (token_ids, loss_mask) for supervised training.
@@ -190,10 +282,10 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
 
 def build_trajectory_step(
     renderer: Renderer,
-    prompt_messages: list[dict[str, Any]],
-    completion_messages: list[dict[str, Any]],
+    prompt_messages: list[Message],
+    completion_messages: list[Message],
     *,
-    tools: list[dict[str, Any]] | None = None,
+    tools: list[ToolSpec] | None = None,
 ) -> dict[str, Any]:
     """Build prompt_ids / completion_ids / masks for a trajectory step.
 

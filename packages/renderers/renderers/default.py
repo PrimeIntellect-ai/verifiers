@@ -7,11 +7,9 @@ rendering) and parse_response is basic text extraction.
 
 from __future__ import annotations
 
-from typing import Any
-
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import ParsedResponse, RenderedTokens
+from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
 
 
 class DefaultRenderer:
@@ -29,9 +27,9 @@ class DefaultRenderer:
 
     def render(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
         # Incremental rendering to get per-token message attribution
@@ -66,9 +64,9 @@ class DefaultRenderer:
 
     def render_ids(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
         return self._apply(

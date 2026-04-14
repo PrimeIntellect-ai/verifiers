@@ -16,7 +16,7 @@ from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import ParsedResponse, RenderedTokens
+from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
 from renderers.parsing import parse_minimax
 
 _DEFAULT_SYSTEM = (
@@ -96,9 +96,9 @@ class MiniMaxM2Renderer:
 
     def render(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         *,
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
         if not messages:
@@ -119,7 +119,7 @@ class MiniMaxM2Renderer:
         # ── Extract system message ──────────────────────────────────
         first_is_system = messages[0].get("role") == "system"
         sys_idx = 0 if first_is_system else -1
-        conversation = messages[1:] if first_is_system else messages
+        conversation: list[Message] = messages[1:] if first_is_system else messages
 
         # ── System block (always present) ───────────────────────────
         emit_special(self._bos, sys_idx)
@@ -152,7 +152,7 @@ class MiniMaxM2Renderer:
 
         # ── Iterate conversation messages ───────────────────────────
         for ci, msg in enumerate(conversation):
-            role = msg.get("role")
+            role = msg["role"]
             # Map back to original message index for attribution
             orig_idx = ci + (1 if first_is_system else 0)
 
@@ -191,7 +191,13 @@ class MiniMaxM2Renderer:
 
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
-    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
+    def render_ids(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+        add_generation_prompt: bool = False,
+    ) -> list[int]:
         return self.render(
             messages, tools=tools, add_generation_prompt=add_generation_prompt
         ).token_ids
@@ -279,12 +285,12 @@ class MiniMaxM2Renderer:
         emit_text("\n", orig_idx)
 
     def _render_tool(
-        self, conversation, conv_idx, orig_idx, msg, *, emit_special, emit_text
-    ):
-        prev_is_tool = conv_idx > 0 and conversation[conv_idx - 1].get("role") == "tool"
+        self, conversation: list[Message], conv_idx: int, orig_idx: int, msg: Message, *, emit_special, emit_text
+    ) -> None:
+        prev_is_tool = conv_idx > 0 and conversation[conv_idx - 1]["role"] == "tool"
         next_is_tool = (
             conv_idx + 1 < len(conversation)
-            and conversation[conv_idx + 1].get("role") == "tool"
+            and conversation[conv_idx + 1]["role"] == "tool"
         )
 
         if not prev_is_tool:

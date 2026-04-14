@@ -17,15 +17,15 @@ from typing import Any, cast
 import numpy as np
 from openai import AsyncOpenAI
 
-from renderers.base import Renderer
+from renderers.base import Message, Renderer, ToolSpec
 
 
 async def completions_request(
     client: AsyncOpenAI,
     renderer: Renderer,
-    messages: list[dict[str, Any]],
+    messages: list[Message],
     model: str,
-    tools: list[dict[str, Any]] | None = None,
+    tools: list[ToolSpec] | None = None,
     **sampling_args: Any,
 ) -> dict[str, Any]:
     """Render messages to tokens, call vLLM /v1/generate, return parsed result.
@@ -96,7 +96,7 @@ async def completions_request(
     }
 
 
-def _extract_images(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _extract_images(messages: list[Message]) -> list[dict[str, str]]:
     from io import BytesIO
     from pathlib import Path
 
