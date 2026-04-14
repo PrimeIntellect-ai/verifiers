@@ -2,7 +2,11 @@ from collections.abc import Mapping
 from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletion, ChatCompletionAssistantMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionMessageToolCallParam,
+)
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
@@ -250,11 +254,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
                 tool_calls=[
-                    {
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {"name": "f", "arguments": "{}"},
-                    }
+                    ChatCompletionMessageToolCallParam(
+                        id=tc_id,
+                        type="function",
+                        function={"name": "f", "arguments": "{}"},
+                    )
                     for tc_id in tool_call_ids
                 ],
             )
