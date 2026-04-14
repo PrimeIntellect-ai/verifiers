@@ -1,6 +1,8 @@
 import json
 import logging
+import shlex
 from pathlib import Path
+from typing import Any
 
 from verifiers.envs.experimental.harbor_env import HarborEnv
 
@@ -119,17 +121,19 @@ DATASETS = {
 
 
 def _build_opencode_config(
+    base_url: str,
     disabled_tools: list[str] | None = None,
     system_prompt_path: str | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
 ) -> str:
     config: dict = {
-        "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
+        "$schema": "https://opencode.ai/config.json",
         "provider": {
             "intercepted": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Intercepted",
                 "options": {
-                    "baseURL": "$OPENAI_BASE_URL",
+                    "baseURL": base_url,
                     "apiKey": "intercepted",
                     "timeout": 600000,
                 },
@@ -156,18 +160,25 @@ def _build_opencode_config(
 
         config["agent"] = {"build": build_config}
 
+    if mcp_servers:
+        mcp: dict[str, dict[str, Any]] = {}
+        for server in mcp_servers:
+            name = server["name"]
+            transport = server.get("transport", "sse")
+            if transport == "stdio":
+                cmd_list: list[str] = []
+                if server.get("command"):
+                    cmd_list.append(server["command"])
+                cmd_list.extend(server.get("args", []))
+                mcp[name] = {"type": "local", "command": cmd_list}
+            else:
+                mcp[name] = {"type": "remote", "url": server.get("url", "")}
+        config["mcp"] = mcp
+
     return json.dumps(config, indent=2)
 
 
-def _build_run_command(
-    agent_workdir: str,
-    disabled_tools: list[str] | None = None,
-    has_system_prompt: bool = False,
-) -> str:
-    # Path where we'll upload the system prompt in the sandbox
-    system_prompt_sandbox_path = "/opencode/prompt.txt" if has_system_prompt else None
-    config_json = _build_opencode_config(disabled_tools, system_prompt_sandbox_path)
-
+def _build_run_command(agent_workdir: str) -> str:
     return f"""
 set -e
 
@@ -175,18 +186,6 @@ apt-get update && apt-get install -y curl
 
 curl -fsSL https://opencode.ai/install | bash
 export PATH="$HOME/.opencode/bin:$PATH"
-
-# Create opencode config directory
-mkdir -p ~/.config/opencode
-
-# Preserve JSON schema key literal in unquoted heredoc while still expanding
-# OPENAI_BASE_URL.
-SCHEMA_DOLLAR='$'
-
-# Create opencode.json config
-cat > ~/.config/opencode/opencode.json << EOFCONFIG
-{config_json}
-EOFCONFIG
 
 mkdir -p /logs/agent
 
@@ -213,11 +212,7 @@ class OpenCodeHarborEnv(HarborEnv):
         self.disabled_tools = disabled_tools
 
         super().__init__(
-            run_command=_build_run_command(
-                agent_workdir,
-                disabled_tools=disabled_tools,
-                has_system_prompt=system_prompt_path is not None,
-            ),
+            run_command=_build_run_command(agent_workdir),
             dataset_path=dataset_path,
             tasks=tasks,
             agent_workdir=agent_workdir,
@@ -226,16 +221,16 @@ class OpenCodeHarborEnv(HarborEnv):
         )
 
     async def post_sandbox_setup(self, state) -> None:
-        """Upload Harbor task assets and optional system prompt after sandbox creation."""
+        """Upload Harbor task assets, system prompt, and OpenCode config after sandbox creation."""
         await super().post_sandbox_setup(state)
+
+        sandbox_id = state["sandbox_id"]
 
         if self.system_prompt_path:
             if not self.system_prompt_path.exists():
                 raise FileNotFoundError(
                     f"System prompt file not found: {self.system_prompt_path}"
                 )
-
-            sandbox_id = state["sandbox_id"]
             await self.sandbox_client.execute_command(
                 sandbox_id, "mkdir -p /opencode", working_dir=None
             )
@@ -243,6 +238,29 @@ class OpenCodeHarborEnv(HarborEnv):
                 sandbox_id, "/opencode/prompt.txt", str(self.system_prompt_path)
             )
             logger.info(f"Uploaded system prompt from {self.system_prompt_path}")
+
+        task_info: dict[str, Any] = state.get("info", {}) or {}
+        mcp_servers = task_info.get("mcp_servers") or []
+
+        system_prompt_sandbox_path = (
+            "/opencode/prompt.txt" if self.system_prompt_path else None
+        )
+        config_json = _build_opencode_config(
+            base_url=state["interception_base_url"],
+            disabled_tools=self.disabled_tools,
+            system_prompt_path=system_prompt_sandbox_path,
+            mcp_servers=mcp_servers,
+        )
+        escaped = shlex.quote(config_json)
+        await self.sandbox_client.execute_command(
+            sandbox_id,
+            f"mkdir -p ~/.config/opencode && echo {escaped} > ~/.config/opencode/opencode.json",
+            working_dir=None,
+        )
+        if mcp_servers:
+            logger.info(
+                f"Registered {len(mcp_servers)} MCP server(s) in OpenCode config"
+            )
 
 
 def load_environment(

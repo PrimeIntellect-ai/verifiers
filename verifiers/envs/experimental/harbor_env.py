@@ -67,13 +67,16 @@ class HarborEnv(vf.CliAgentEnv):
 
             messages = [{"role": "user", "content": instruction}]
 
+            env_config = config.get("environment", {})
+
             task_entry = {
                 "example_id": len(tasks),
                 "task": task_dir.name,
                 "prompt": messages,
                 "info": {
                     "task_dir": str(task_dir),
-                    "docker_image": config.get("environment", {}).get("docker_image"),
+                    "docker_image": env_config.get("docker_image"),
+                    "mcp_servers": env_config.get("mcp_servers", []),
                     "config": config,
                 },
             }
