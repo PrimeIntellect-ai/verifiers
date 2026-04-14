@@ -6,31 +6,45 @@ No prefix matching, no /tokenize calls, no suffix stitching.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from typing import Any, cast
 
-from renderers import Message, Renderer, ToolSpec, create_renderer
+from openai import AsyncOpenAI
+
+from renderers import Message as RendererMessage
+from renderers import Renderer, ToolSpec, create_renderer
+from renderers import ToolCall as RendererToolCall
+from renderers import ToolCallFunction
 from renderers.client import completions_request
 
-from verifiers.clients.openai_chat_completions_client import (
-    OpenAIChatCompletionsClient,
-    OpenAIChatMessages,
-    OpenAITool,
-    content_to_text,
-    handle_openai_overlong_prompt,
-)
+from verifiers.clients.client import Client
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
+    AssistantMessage,
+    ClientConfig,
     FinishReason,
+    Message,
+    Messages,
     Response,
     ResponseMessage,
     ResponseTokens,
     SamplingArgs,
+    SystemMessage,
+    TextMessage,
+    Tool,
     ToolCall,
+    ToolMessage,
     Usage,
+    UserMessage,
 )
+from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.message_utils import maybe_normalize_messages
 
 
-class RendererClient(OpenAIChatCompletionsClient):
+class RendererClient(
+    Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
+):
     """Client that tokenizes prompts client-side via a Renderer.
 
     Every turn: Renderer renders messages → sends token IDs to vLLM /v1/generate
@@ -39,66 +53,85 @@ class RendererClient(OpenAIChatCompletionsClient):
     The Renderer is created lazily from the model name on first use.
     """
 
-    def __init__(self, config, renderer: Renderer | None = None):
+    def __init__(self, config: ClientConfig, renderer: Renderer | None = None):
         super().__init__(config)
         self._renderer = renderer
         self._renderer_cache: dict[tuple[str, str], Renderer] = {}
 
+    def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
+        return setup_openai_client(config)
+
+    async def close(self) -> None:
+        await self.client.close()
+
+    # ── Renderer management ─────────────────────────────────────────
+
     def _get_renderer(self, model: str) -> Renderer:
-        if self._renderer is None:
-            from transformers import AutoTokenizer
+        if self._renderer is not None:
+            return self._renderer
+        from transformers import AutoTokenizer
 
-            renderer_name = (
-                self._config.renderer if self._config is not None else "auto"
+        renderer_name = self._config.renderer if self._config is not None else "auto"
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
+        cache_key = (renderer_model, renderer_name)
+        if cache_key not in self._renderer_cache:
+            tokenizer = AutoTokenizer.from_pretrained(
+                renderer_model, trust_remote_code=True
             )
-            renderer_model = (
-                self._config.renderer_model_name
-                if self._config is not None
-                and self._config.renderer_model_name is not None
-                else model
+            self._renderer_cache[cache_key] = create_renderer(
+                tokenizer, renderer=renderer_name
             )
-            cache_key = (renderer_model, renderer_name)
-            if cache_key not in self._renderer_cache:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    renderer_model, trust_remote_code=True
-                )
-                self._renderer_cache[cache_key] = create_renderer(
-                    tokenizer, renderer=renderer_name
-                )
-            return self._renderer_cache[cache_key]
-        return self._renderer
+        return self._renderer_cache[cache_key]
 
-    @handle_openai_overlong_prompt
+    # ── Type conversions ────────────────────────────────────────────
+
+    async def to_native_prompt(
+        self, messages: Messages
+    ) -> tuple[list[RendererMessage], dict]:
+        messages = maybe_normalize_messages(messages, field_name="prompt")
+        return [_to_renderer_message(m) for m in messages], {}
+
+    async def to_native_tool(self, tool: Tool) -> ToolSpec:
+        return ToolSpec(
+            name=tool.name,
+            description=tool.description or "",
+            parameters=tool.parameters or {},
+        )
+
+    # ── Core request cycle ──────────────────────────────────────────
+
     async def get_native_response(
         self,
-        prompt: OpenAIChatMessages,
+        prompt: list[RendererMessage],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[OpenAITool] | None = None,
-        **kwargs,
+        tools: list[ToolSpec] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
-        """Override: render messages → call /v1/generate → return raw result dict."""
         renderer = self._get_renderer(model)
 
         args = dict(sampling_args)
         if "max_tokens" in args:
             args["max_completion_tokens"] = args.pop("max_tokens")
 
-        result = await completions_request(
+        return await completions_request(
             client=self.client,
             renderer=renderer,
-            messages=cast(list[Message], prompt),
+            messages=prompt,
             model=model,
-            tools=cast(list[ToolSpec] | None, tools),
+            tools=tools,
             **args,
         )
-        return result
 
-    async def raise_from_native_response(self, response: dict[str, Any]) -> None:  # type: ignore[override]
+    async def raise_from_native_response(self, response: dict[str, Any]) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
 
-        has_content = bool(content_to_text(response.get("content")))
+        has_content = bool(response.get("content"))
         has_tool_calls = bool(response.get("tool_calls"))
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls or has_reasoning):
@@ -106,7 +139,7 @@ class RendererClient(OpenAIChatCompletionsClient):
                 "Model returned no content, reasoning, and did not call any tools"
             )
 
-    async def from_native_response(self, response: dict[str, Any]) -> Response:  # type: ignore[override]
+    async def from_native_response(self, response: dict[str, Any]) -> Response:
         """Parse the completions_request result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")
@@ -122,7 +155,7 @@ class RendererClient(OpenAIChatCompletionsClient):
                     arguments=(
                         tc["function"]["arguments"]
                         if isinstance(tc["function"]["arguments"], str)
-                        else __import__("json").dumps(tc["function"]["arguments"])
+                        else json.dumps(tc["function"]["arguments"])
                     ),
                 )
                 for i, tc in enumerate(raw_tcs)
@@ -165,6 +198,60 @@ class RendererClient(OpenAIChatCompletionsClient):
                 tool_calls=tool_calls,
             ),
         )
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _normalize_content(content: Any) -> Any:
+    """Convert Pydantic content parts to plain dicts."""
+    if isinstance(content, list):
+        return [
+            dict(p)
+            if isinstance(p, Mapping)
+            else cast(dict, p.model_dump())
+            if hasattr(p, "model_dump")
+            else p
+            for p in content
+        ]
+    return content
+
+
+def _to_renderer_message(message: Message) -> RendererMessage:
+    """Convert a verifiers Message (Pydantic model) to a renderer Message (TypedDict)."""
+    if isinstance(message, SystemMessage):
+        return RendererMessage(
+            role="system", content=_normalize_content(message.content)
+        )
+    elif isinstance(message, UserMessage):
+        return RendererMessage(role="user", content=_normalize_content(message.content))
+    elif isinstance(message, AssistantMessage):
+        msg = RendererMessage(
+            role="assistant",
+            content=_normalize_content(message.content),
+        )
+        if message.reasoning_content is not None:
+            msg["reasoning_content"] = message.reasoning_content
+        if message.tool_calls is not None:
+            msg["tool_calls"] = [
+                RendererToolCall(
+                    type="function",
+                    id=tc.id,
+                    function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
+                )
+                for tc in message.tool_calls
+            ]
+        return msg
+    elif isinstance(message, ToolMessage):
+        return RendererMessage(
+            role="tool",
+            content=_normalize_content(message.content),
+            tool_call_id=message.tool_call_id,
+        )
+    elif isinstance(message, TextMessage):
+        return RendererMessage(role="user", content=message.content)
+    else:
+        raise ValueError(f"Unknown message type: {type(message)}")
 
 
 def _parse_finish_reason(raw: str | None) -> FinishReason:
