@@ -197,6 +197,15 @@ redundant-cast = "ignore"
 [tool.ty.src]
 exclude = ["environments"]
 
+[[tool.ty.overrides]]
+include = ["verifiers/envs/experimental/composable/tasksets/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+invalid-method-override = "ignore"
+invalid-assignment = "ignore"
+not-iterable = "ignore"
+
 [tool.coverage.run]
 source = ["verifiers"]
 omit = [
