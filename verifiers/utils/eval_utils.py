@@ -71,24 +71,32 @@ def _resolve_dataset_build_timeout_seconds() -> float | None:
 def _prepare_eval_dataset(vf_env: Any, env_id: str) -> None:
     logger.info(f"Preparing evaluation dataset for {env_id}")
 
+    def build_eval_dataset() -> None:
+        vf_env.get_eval_dataset(n=1)
+
     timeout_seconds = _resolve_dataset_build_timeout_seconds()
     if timeout_seconds is None:
-        vf_env.get_eval_dataset(n=1)
+        try:
+            build_eval_dataset()
+        except BaseException as exc:
+            raise RuntimeError(
+                f"Failed to prepare evaluation dataset for {env_id}: {exc}"
+            ) from exc
         logger.info(f"Evaluation dataset ready for {env_id}")
         return
 
     result_queue: queue.SimpleQueue[BaseException | None] = queue.SimpleQueue()
 
-    def build_eval_dataset() -> None:
+    def guarded_build_eval_dataset() -> None:
         try:
-            vf_env.get_eval_dataset(n=1)
+            build_eval_dataset()
         except BaseException as exc:  # pragma: no cover - exercised via caller
             result_queue.put(exc)
         else:
             result_queue.put(None)
 
     builder_thread = threading.Thread(
-        target=build_eval_dataset,
+        target=guarded_build_eval_dataset,
         name=f"eval-dataset-prep-{env_id.replace('/', '-')}",
         daemon=True,
     )

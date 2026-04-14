@@ -51,6 +51,32 @@ async def test_run_evaluation_builds_dataset_before_starting_env_server():
 
 
 @pytest.mark.asyncio
+async def test_run_evaluation_wraps_dataset_errors_when_timeout_disabled(monkeypatch):
+    class FakeEnv:
+        def set_kwargs(self, **kwargs):
+            return None
+
+        def get_eval_dataset(self, n: int = -1, seed=None):
+            raise RuntimeError("dataset unavailable")
+
+        start_server = AsyncMock()
+        stop_server = AsyncMock()
+
+    fake_env = FakeEnv()
+    monkeypatch.setenv("VF_DATASET_BUILD_TIMEOUT", "0")
+
+    with patch("verifiers.utils.eval_utils.vf.load_environment", return_value=fake_env):
+        with pytest.raises(
+            RuntimeError,
+            match="Failed to prepare evaluation dataset for hle: dataset unavailable",
+        ):
+            await run_evaluation(make_config())
+
+    fake_env.start_server.assert_not_awaited()
+    fake_env.stop_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_run_evaluation_times_out_while_preparing_dataset(monkeypatch):
     class FakeEnv:
         def set_kwargs(self, **kwargs):
