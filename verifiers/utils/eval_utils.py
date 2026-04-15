@@ -330,8 +330,14 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"sweep.env_args — use one or the other"
             )
 
+    explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
+
     # Fixed fields: global defaults overridden by ablation-level fields
     fixed = {**global_defaults, **ablation}
+    if "endpoint_id" in explicit_keys and "model" not in explicit_keys:
+        fixed.pop("model", None)
+    if "model" in explicit_keys and "endpoint_id" not in explicit_keys:
+        fixed.pop("endpoint_id", None)
 
     # Expand cartesian product
     keys = [k for k, _ in dimensions]
@@ -351,7 +357,9 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     return expanded
 
 
-def load_toml_config(path: Path) -> list[dict]:
+def load_toml_config(
+    path: Path, extra_valid_fields: set[str] | None = None
+) -> list[dict]:
     """Loads and validates a TOML config file.
 
     Config format supports global defaults at the top level, with per-eval overrides
@@ -454,6 +462,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "save_to_hf_hub",
         "hf_hub_dataset_name",
     }
+    valid_fields |= extra_valid_fields or set()
 
     # validate global fields
     if global_defaults:
@@ -475,6 +484,10 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
+        if "endpoint_id" in eval_config and "model" not in eval_config:
+            merged.pop("model", None)
+        if "model" in eval_config and "endpoint_id" not in eval_config:
+            merged.pop("endpoint_id", None)
         merged_eval_list.append(merged)
 
     # expand [[ablation]] blocks into eval configs
