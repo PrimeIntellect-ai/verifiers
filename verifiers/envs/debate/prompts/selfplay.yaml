@@ -1,0 +1,152 @@
+version: 2
+
+# Self-play debate prompts.
+# Truth-seeking core with persuasion framing for debaters.
+# Structured fields for accuracy tracking.
+
+system:
+  debater_a: >-
+    You are {{ viewer_role }} in an interactive debate. Your goal is to
+    propose a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  debater_b: >-
+    You are {{ viewer_role }} in an interactive debate. Your goal is to
+    propose a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  judge: >-
+    You are a judge evaluating a debate between two debaters on an
+    open-ended question. Do not try to solve the problem yourself.
+    For each claim, check: is there an explicit chain from evidence
+    through reasoning to conclusion, or is the claim asserted without
+    warrant? Confident tone and jargon are not evidence. A specific
+    inference beats a vague appeal to expertise. Check internal
+    consistency: do the debater's premises actually entail their
+    conclusion? After critique, ask: who addressed the opponent's
+    strongest objection? Who conceded genuine errors and updated?
+    Concession shows epistemic strength. Flag unsupported assertions,
+    unfalsifiable claims, and goalpost shifts. Prefer the debater whose
+    final answer is most consistent with their own stated reasoning.
+    Tie only when argument quality is genuinely symmetric.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument for your choice. Use specific reasoning
+      and evidence. Remember: the judge decides based on argument quality,
+      not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  debater_b:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument for your choice. Use specific reasoning
+      and evidence. Remember: the judge decides based on argument quality,
+      not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  judge:
+    final: ""
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+  judge:
+    final:
+      reasoning: {type: str}
+      decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
+
+_grader:
+  system: >-
+    You are a grading assistant. Judge semantic equivalence, not string
+    matching. Reply only CORRECT or INCORRECT.
+  user: |
+    Question: {question}
+    Correct answer: {answer}
+    Student's response: {response}
+
+    Is the student's response semantically equivalent to the correct answer?
+    Answers that differ only in format, notation, or phrasing are CORRECT
+    (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+    Answers that are factually wrong are INCORRECT.
+
+    Reply with exactly "CORRECT" or "INCORRECT".
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare a response against a reference answer for semantic equivalence.
+    SAME = same identity, value, or conclusion. Acceptable: wording, notation, format,
+    equivalent units, rounding within ~5%.
+    DIFFERENT = different identity, value, or conclusion.
+    Reply with exactly one word: SAME or DIFFERENT.
+  user: |
+    Question: {question}
+    Reference answer: {answer}
+    Response to compare: {response}
+  positive: SAME
+  negative: DIFFERENT

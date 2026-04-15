@@ -1,0 +1,56 @@
+version: 2
+
+system:
+  judge: "You are the judge. Evaluate the debaters' arguments."
+  debater_a: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+  debater_b: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+
+question:
+  judge: "{{ task_prompt }}"
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+
+user:
+  judge:
+    final: "Which debater was more convincing?"
+  debater_a:
+    default: ""
+  debater_b:
+    default: ""
+
+fields:
+  judge:
+    final:
+      decision: {type: str, description: "debater_a or debater_b or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
+      reason: {type: str, description: "your reasoning"}
+
+_grader:
+  system: |
+    Grade: CORRECT or INCORRECT.
+    CORRECT = same claim (format/verbosity/notation differences are fine).
+    INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+    Examples:
+      CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+      CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+      INCORRECT: '0.32' vs '0.33' — different number.
+      INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+    One word.
+  user: |
+    Question: {question}
+    Target: {answer}
+    Response: {response}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare a response against a reference answer for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
+  user: |
+    Question: {question}
+    Reference answer: {answer}
+    Response to compare: {response}
+  positive: SAME
+  negative: DIFFERENT
