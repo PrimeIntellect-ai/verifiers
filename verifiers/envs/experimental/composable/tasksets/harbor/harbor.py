@@ -4,9 +4,13 @@ import json
 import logging
 import tarfile
 import tempfile
-import tomllib
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
