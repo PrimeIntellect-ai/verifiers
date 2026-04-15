@@ -10,9 +10,12 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
+import importlib
 import importlib.util
+import inspect
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -147,8 +150,200 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     return defaults
 
 
+def _extract_annotation_info(
+    annotation: Any,
+) -> tuple[str, str]:
+    """Extract (type_str, description) from a type annotation.
+
+    For Annotated[T, "description"], returns the base type string and the
+    first string metadata as the description. For plain types, returns
+    the type string and an empty description.
+    """
+    import typing
+
+    if typing.get_origin(annotation) is typing.Annotated:
+        args = typing.get_args(annotation)
+        if args:
+            base_type = args[0]
+            type_str = getattr(base_type, "__name__", str(base_type))
+            desc = ""
+            for meta in args[1:]:
+                if isinstance(meta, str):
+                    desc = meta
+                    break
+            return type_str, desc
+
+    if annotation is inspect.Parameter.empty:
+        return "", ""
+    return (
+        annotation
+        if isinstance(annotation, str)
+        else getattr(annotation, "__name__", str(annotation))
+    ), ""
+
+
+def _format_env_args_help(
+    env_id: str,
+    sig: inspect.Signature,
+    resolved_hints: dict[str, Any] | None = None,
+) -> str:
+    """Format environment arguments as a help section."""
+    lines = [f"'{env_id}' environment arguments:", ""]
+    params = [
+        (name, param)
+        for name, param in sig.parameters.items()
+        if param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
+    ]
+    if not params:
+        lines.append("  (no arguments)")
+        return "\n".join(lines)
+
+    # Extract type strings and descriptions from annotations.
+    # Use resolved_hints (from get_type_hints) when available, since
+    # `from __future__ import annotations` makes param.annotation a string.
+    type_strs = []
+    descriptions = []
+    for name, param in params:
+        ann = (resolved_hints or {}).get(name, param.annotation)
+        type_str, desc = _extract_annotation_info(ann)
+        type_strs.append(type_str)
+        descriptions.append(desc)
+
+    # Build default strings
+    default_strs = []
+    for _, param in params:
+        default = param.default
+        if default is inspect.Parameter.empty:
+            default_strs.append("(required)")
+        elif isinstance(default, str):
+            default_strs.append(f"'{default}'")
+        else:
+            default_strs.append(str(default))
+
+    # Compute column widths
+    name_width = max(len("Name"), max(len(n) for n, _ in params))
+    type_width = max(len("Type"), max((len(t) for t in type_strs), default=0))
+    default_width = max(len("Default"), max((len(d) for d in default_strs), default=0))
+    has_descriptions = any(descriptions)
+
+    # Determine available width for description column
+    import shutil
+
+    try:
+        term_width = shutil.get_terminal_size().columns
+    except Exception:
+        term_width = 120
+    # Fixed columns: 2 indent + name + 2 gap + type + 2 gap + default
+    fixed_width = 2 + name_width + 2 + type_width + 2 + default_width
+    if has_descriptions:
+        desc_avail = term_width - fixed_width - 2  # 2 gap before description
+        show_descriptions = desc_avail >= 12  # need at least 12 chars to be useful
+    else:
+        show_descriptions = False
+        desc_avail = 0
+
+    # Column headers
+    if show_descriptions:
+        desc_header = "Description"
+        header = (
+            f"  {'Name':<{name_width}}  {'Type':<{type_width}}"
+            f"  {'Default':<{default_width}}  {desc_header}"
+        )
+    else:
+        header = (
+            f"  {'Name':<{name_width}}  {'Type':<{type_width}}"
+            f"  {'Default':<{default_width}}"
+        )
+    lines.append(header)
+    # Separator line matching header width (but not exceeding terminal)
+    sep_width = min(len(header), term_width - 1)
+    lines.append("  " + "-" * (sep_width - 2))
+
+    import textwrap
+
+    # Padding to align continuation lines with the description column
+    desc_col_offset = " " * (fixed_width + 2)
+
+    for (name, _), type_str, default_str, desc in zip(
+        params, type_strs, default_strs, descriptions
+    ):
+        type_part = (
+            f"  {type_str:<{type_width}}" if type_str else " " * (type_width + 2)
+        )
+        base = f"  {name:<{name_width}}{type_part}  {default_str:<{default_width}}"
+        if show_descriptions and desc:
+            wrapped = textwrap.wrap(desc, width=desc_avail)
+            if wrapped:
+                lines.append(f"{base}  {wrapped[0]}")
+                for continuation in wrapped[1:]:
+                    lines.append(f"{desc_col_offset}{continuation}")
+            else:
+                lines.append(base)
+        else:
+            lines.append(base)
+
+    lines.append("")
+    lines.append("  pass via: --env-args '{\"arg_name\": value, ...}'")
+    return "\n".join(lines)
+
+
+def _set_env_epilog(parser: argparse.ArgumentParser) -> None:
+    """If an environment is given, set parser.epilog to show its args in -h."""
+    if "-h" not in sys.argv and "--help" not in sys.argv:
+        return
+
+    # Use argparse to extract the positional arg, stripping -h/--help so
+    # parse_known_args doesn't exit.  This correctly skips flag values
+    # (e.g. -n 10) that the naive "first non-dash arg" heuristic would catch.
+    stripped = [a for a in sys.argv[1:] if a not in ("-h", "--help")]
+    try:
+        import io
+
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            ns, _ = parser.parse_known_args(stripped)
+            env_id = getattr(ns, "env_id_or_config", None)
+        finally:
+            sys.stderr = old_stderr
+    except SystemExit:
+        env_id = None
+
+    if not env_id or env_id.endswith(".toml"):
+        return
+
+    module_name = env_id.replace("-", "_").split("/")[-1]
+    if not module_name:
+        return
+
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, ValueError):
+        parser.epilog = f"warning: environment '{env_id}' is not installed"
+        return
+
+    if not hasattr(module, "load_environment"):
+        parser.epilog = (
+            f"warning: module '{module_name}' has no load_environment function"
+        )
+        return
+
+    import typing
+
+    sig = inspect.signature(module.load_environment)
+    try:
+        resolved_hints = typing.get_type_hints(
+            module.load_environment, include_extras=True
+        )
+    except Exception:
+        resolved_hints = None
+    parser.epilog = _format_env_args_help(env_id, sig, resolved_hints)
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "env_id_or_config",
         type=str,
@@ -384,6 +579,7 @@ def main():
         default=None,
         help="Heartbeat URL for uptime monitoring",
     )
+    _set_env_epilog(parser)
     args = parser.parse_args()
 
     if args.debug:  # only set up console logging in debug mode

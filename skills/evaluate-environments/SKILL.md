@@ -82,6 +82,13 @@ prime eval run configs/eval/my-benchmark.toml
 ```
 3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
 
+## Discovering Environment Arguments
+1. View an environment's accepted arguments (name, type, default, description):
+```bash
+vf-eval my-env -h
+```
+2. Environments can document arguments using `Annotated[T, "description"]` type hints on `load_environment()` parameters, which appear in the help output.
+
 ## Common Evaluation Patterns
 1. Pass args to `load_environment()`:
 ```bash
