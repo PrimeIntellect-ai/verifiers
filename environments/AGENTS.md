@@ -328,16 +328,30 @@ Response: {response}
 Score:"""
 )
 
-async def quality_score(completion, judge_client, judge_model, judge_prompt, parser) -> float:
+async def quality_score(completion, judge_client, judge_model, judge_prompt, parser, state) -> float:
     response = parser.parse_answer(completion)
     filled_prompt = judge_prompt.format(response=response)
-    result = await judge_client.chat.completions.create(
+    result = await judge_client.get_response(
+        prompt=[vf.UserMessage(content=filled_prompt)],
         model=judge_model,
-        messages=[{"role": "user", "content": filled_prompt}],
+        sampling_args={},
+        state=state,
     )
-    # parse numeric score from result
+    # parse numeric score from result.message.content
     ...
     return score
+```
+
+`judge_client` is a `vf.Client` (typically `OpenAIChatCompletionsClient`). If you need to pass a pre-configured `AsyncOpenAI` (custom base URL, API key), wrap it:
+
+```python
+from openai import AsyncOpenAI
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+
+judge_client = OpenAIChatCompletionsClient(
+    AsyncOpenAI(api_key=..., base_url=...)
+)
+judge_rubric = vf.JudgeRubric(judge_client=judge_client, judge_model="gpt-4.1-mini")
 ```
 
 ### Rubric Groups

@@ -52,6 +52,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
     "setproctitle>=1.3.0",
+    "pyyaml",
     "regex<2026.4.4",  # 2026.4.4 missing cp312/cp313 wheels
 ]
 

@@ -201,6 +201,96 @@ class GenerateOutputs(TypedDict):
 
 Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
 
+### EpisodeSpec
+
+```python
+class EpisodeSpec(CustomBaseModel):
+    base_example_id: int | str
+    episode_id: str
+    input: dict[str, Any]
+```
+
+Describes one sampled multi-actor episode derived from a base example.
+
+### Member
+
+```python
+class Member(CustomBaseModel):
+    member_id: str
+    role_id: str
+    seat_id: str
+```
+
+Semantic identity for one actor-local member within an episode.
+
+### TurnReq
+
+```python
+class TurnReq(CustomBaseModel):
+    episode_id: str
+    member_id: str
+    turn_id: str
+    prompt: Messages | str
+    stop_sequences: list[str] | list[int]
+```
+
+Runner-facing request object for one eligible actor-local step in a multi-actor episode.
+
+### TurnResp
+
+```python
+class TurnResp(CustomBaseModel):
+    episode_id: str
+    member_id: str
+    turn_id: str
+    content: Messages | str
+    token_count: int | None
+    raw_response: dict[str, Any] | None
+```
+
+Runner-facing response object paired to a `TurnReq`.
+
+### EpisodeStart
+
+```python
+class EpisodeStart(CustomBaseModel):
+    episode: EpisodeSpec
+    members: list[Member]
+    ready_turns: list[TurnReq]
+```
+
+The initial episode payload plus the first set of ready turns.
+
+### MemberResult
+
+```python
+class MemberResult(CustomBaseModel):
+    member_id: str
+    role_id: str
+    seat_id: str
+    trajectory: list[TrajectoryStep]
+    reward: float | None
+    metrics: dict[str, float | int]
+    logs: dict[str, Any]
+```
+
+Serialized output for one role member within a completed multi-actor episode.
+
+### EpisodeResult
+
+```python
+class EpisodeResult(CustomBaseModel):
+    base_example_id: int | str
+    episode_id: str
+    members: list[MemberResult]
+    outcome: dict[str, Any] | None
+    metrics: dict[str, float | int]
+    logs: dict[str, Any]
+```
+
+Completed multi-actor episode output preserving both the episode-level result and
+per-member outputs.
+
 ### GenerateMetadata
 
 ```python
@@ -278,6 +368,31 @@ class Environment(ABC):
         **kwargs,
     ): ...
 ```
+
+#### MultiActorEnv
+
+```python
+@runtime_checkable
+class MultiActorEnv(Protocol):
+    def get_eval_examples(self, n: int = -1) -> list[dict[str, Any]]: ...
+    def start_episode(
+        self,
+        example: dict[str, Any],
+        sample_index: int,
+    ) -> EpisodeStart: ...
+    async def submit_ready_turns(
+        self,
+        responses: list[TurnResp],
+    ) -> list[TurnReq]: ...
+    async def finalize_episode(
+        self,
+        episode_id: str,
+    ) -> EpisodeResult: ...
+```
+
+Protocol for environments that expose explicit multi-actor episode sessions.
+This is a new surface and keeps the current sample-group meaning intact without
+changing `Environment.run_group()`.
 
 Abstract base class for all environments.
 

@@ -378,6 +378,60 @@ class GenerateOutputs(TypedDict):
     metadata: GenerateMetadata
 
 
+class EpisodeSpec(CustomBaseModel):
+    base_example_id: int | str
+    episode_id: str
+    input: dict[str, Any]
+
+
+class Member(CustomBaseModel):
+    member_id: str
+    role_id: str
+    seat_id: str
+
+
+class TurnReq(CustomBaseModel):
+    episode_id: str
+    member_id: str
+    turn_id: str
+    prompt: Messages | str
+    stop_sequences: list[str] | list[int] = Field(default_factory=list)
+
+
+class TurnResp(CustomBaseModel):
+    episode_id: str
+    member_id: str
+    turn_id: str
+    content: Messages | str
+    token_count: int | None = None
+    raw_response: dict[str, Any] | None = None
+
+
+class EpisodeStart(CustomBaseModel):
+    episode: EpisodeSpec
+    members: list[Member]
+    ready_turns: list[TurnReq]
+
+
+class MemberResult(CustomBaseModel):
+    member_id: str
+    role_id: str
+    seat_id: str
+    trajectory: list[TrajectoryStep]
+    reward: float | None = None
+    metrics: dict[str, float | int] = Field(default_factory=dict)
+    logs: dict[str, Any] = Field(default_factory=dict)
+
+
+class EpisodeResult(CustomBaseModel):
+    base_example_id: int | str
+    episode_id: str
+    members: list[MemberResult]
+    outcome: dict[str, Any] | None = None
+    metrics: dict[str, float | int] = Field(default_factory=dict)
+    logs: dict[str, Any] = Field(default_factory=dict)
+
+
 class RolloutScore(TypedDict):
     """TypedDict for rollout scores."""
 

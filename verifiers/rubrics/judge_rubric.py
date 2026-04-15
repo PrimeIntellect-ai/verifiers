@@ -1,11 +1,10 @@
 from typing import Any
 
-from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
-
+from verifiers.clients import Client
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, State
-from verifiers.utils.async_utils import maybe_await
+from verifiers.types import ClientConfig, Messages, State, UserMessage
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \
 and a response, determine if the response is correct.
@@ -33,13 +32,17 @@ class JudgeRubric(Rubric):
         self,
         parser: Parser | None = None,
         parallelize_scoring: bool = False,
-        judge_client: AsyncOpenAI | None = None,
+        judge_client: Client | None = None,
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
     ):
         super().__init__(parser=parser)
-        self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
+        self.judge_client: Client = (
+            judge_client
+            if judge_client is not None
+            else OpenAIChatCompletionsClient(ClientConfig())
+        )
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
         self.judge_sampling_args = judge_sampling_args or {}
@@ -88,50 +91,14 @@ class JudgeRubric(Rubric):
             judge_args.pop("max_completion_tokens")
         judge_args = {k: v for k, v in judge_args.items() if v is not None}
 
-        try:
-            judge_response = await maybe_await(
-                self.judge_client.chat.completions.create,
-                model=self.judge_model,
-                messages=[{"role": "user", "content": judge_prompt}],
-                **judge_args,
-            )
-            judge_response = str(judge_response.choices[0].message.content)
-        except RateLimitError as e:
-            self.logger.warning(
-                f"Rate limit exceeded when calling judge model '{self.judge_model}'. "
-                f"Try reducing concurrency or waiting before retrying. Error: {str(e)}"
-            )
-            raise RuntimeError(
-                f"Judge model rate limit exceeded. Try reducing concurrency or waiting before retrying. "
-                f"Model: {self.judge_model}, Error: {str(e)}"
-            ) from e
-        except APITimeoutError as e:
-            self.logger.warning(
-                f"Timeout when calling judge model '{self.judge_model}'. "
-                f"Increase timeout in judge_sampling_args or check model responsiveness. Error: {str(e)}"
-            )
-            raise RuntimeError(
-                f"Judge model timeout. Increase timeout in judge_sampling_args or check model responsiveness. "
-                f"Model: {self.judge_model}, Error: {str(e)}"
-            ) from e
-        except APIError as e:
-            self.logger.warning(
-                f"API error when calling judge model '{self.judge_model}'. "
-                f"Check model availability and API key. Error: {str(e)}"
-            )
-            raise RuntimeError(
-                f"Judge model API error. Check model availability and API key. "
-                f"Model: {self.judge_model}, Error: {str(e)}"
-            ) from e
-        except Exception as e:
-            self.logger.warning(
-                f"Unexpected error when calling judge model '{self.judge_model}'. "
-                f"Error: {str(e)}"
-            )
-            raise RuntimeError(
-                f"Unexpected error when calling judge model '{self.judge_model}'. "
-                f"Error: {str(e)}"
-            ) from e
+        judge_messages: Messages = [UserMessage(content=judge_prompt)]
+        response_obj = await self.judge_client.get_response(
+            prompt=judge_messages,
+            model=self.judge_model,
+            sampling_args=judge_args,
+            state=state,
+        )
+        judge_response = str(response_obj.message.content or "")
 
         if state:
             if not isinstance(cached, dict):

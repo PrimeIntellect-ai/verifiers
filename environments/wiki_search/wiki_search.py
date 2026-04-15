@@ -9,6 +9,7 @@ from datasets import load_dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.rubrics.judge_rubric import JudgeRubric
 
 CHROMA_DB_DIR = ".chroma_db"
@@ -260,8 +261,8 @@ def load_environment(
     
     If a response contains incoherent text, respond with "no" even if the correct answer is also present.
     """
-    judge_client = AsyncOpenAI(
-        base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, "")
+    judge_client = OpenAIChatCompletionsClient(
+        AsyncOpenAI(base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, ""))
     )
     judge_rubric = JudgeRubric(
         judge_client=judge_client,

@@ -5,6 +5,7 @@ from datasets import load_dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 
 
 def load_environment(
@@ -77,8 +78,8 @@ Respond in the following format:
 <explanation>Your detailed explanation here</explanation>"""
 
     parser = vf.Parser()
-    judge_client = AsyncOpenAI(
-        api_key=os.getenv(judge_api_key_var, ""), base_url=judge_base_url
+    judge_client = OpenAIChatCompletionsClient(
+        AsyncOpenAI(api_key=os.getenv(judge_api_key_var, ""), base_url=judge_base_url)
     )
 
     judge_prompt = """Evaluate this toxicity classification task.

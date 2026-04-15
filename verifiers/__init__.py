@@ -57,6 +57,7 @@ __all__ = [
     "OpenEnvEnv",
     "Environment",
     "MultiTurnEnv",
+    "MultiActorEnv",
     "SingleTurnEnv",
     "PythonEnv",
     "SandboxEnv",
@@ -106,6 +107,7 @@ _LAZY_IMPORTS = {
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
+    "MultiActorEnv": "verifiers.envs.multi_actor_env:MultiActorEnv",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
@@ -183,6 +185,7 @@ if TYPE_CHECKING:
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.multi_actor_env import MultiActorEnv  # noqa: F401
     from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
