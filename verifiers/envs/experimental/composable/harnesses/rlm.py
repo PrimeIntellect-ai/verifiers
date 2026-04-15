@@ -58,7 +58,7 @@ export PATH="$HOME/.local/bin:$PATH"
 export RLM_MODEL=$OPENAI_MODEL
 export OPENAI_API_KEY=intercepted
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
-cd {workdir}
+cd "${{AGENT_WORKDIR:-{workdir}}}"
 uv run --project {shlex.quote(checkout_path)} --all-packages rlm "$(cat {instruction_path})"
 """
     return f"bash -lc {shlex.quote(script)}"
