@@ -388,7 +388,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_parser().parse_args(argv)
+    parser = build_parser()
+    if argv is None:
+        return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None):
