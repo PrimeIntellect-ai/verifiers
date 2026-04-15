@@ -147,7 +147,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     return defaults
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "env_id_or_config",
@@ -384,7 +384,15 @@ def main():
         default=None,
         help="Heartbeat URL for uptime monitoring",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
 
     if args.debug:  # only set up console logging in debug mode
         setup_logging(get_log_level(args.verbose))
