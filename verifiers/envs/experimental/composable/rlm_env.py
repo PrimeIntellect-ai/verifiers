@@ -6,6 +6,7 @@ import json
 import shlex
 import tarfile
 import tempfile
+from importlib.abc import Traversable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -48,76 +49,11 @@ class RlmComposableEnv(ComposableEnv):
         self.install_env = dict(install_env) if install_env else None
         self.uploaded_skills_dir = uploaded_skills_dir
 
-    async def post_sandbox_setup(self, state: State) -> None:
-        """Task setup → upload task assets → install RLM agent."""
-        sandbox_id = state["sandbox_id"]
-
-        state["sandbox_client"] = self.sandbox_client
-        spec = self._get_spec(state)
-        if spec:
-            state["test_timeout"] = spec.timeout_minutes * 60
-        elif self.harness.sandbox_spec:
-            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
-        else:
-            state["test_timeout"] = 900
-
-        await self.taskset.setup(state)
-
-        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
-        if self.harness.system_prompt:
-            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
-        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
-        await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
-        )
-
-        info = state.get("info") or {}
-        instruction = self.taskset.get_instruction(info)
-        if instruction.strip():
-            await self.upload_content(
-                sandbox_id, instruction, self.harness.instruction_path
-            )
-
-        if self.harness.system_prompt:
-            await self.upload_content(
-                sandbox_id, self.harness.system_prompt, self.harness.system_prompt_path
-            )
-
-        skills_dir = self._discover_taskset_skills_dir()
-        if skills_dir is not None:
-            await self._upload_skills_dir(sandbox_id, skills_dir)
-
-        if self.harness.install_script:
-            self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
-            execute_kwargs: dict[str, Any] = {"timeout": 300}
-            if self.install_env:
-                execute_kwargs["env"] = self.install_env
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                self.harness.install_script,
-                **execute_kwargs,
-            )
-            if result.exit_code != 0:
-                output = (result.stdout or "") + (result.stderr or "")
-                raise vf.SandboxError(
-                    f"Agent install failed (exit={result.exit_code}): {output[:500]}"
-                )
-
     async def post_rollout(self, state: State) -> None:
-        """Collect agent logs and RLM session metrics after the rollout."""
-        sandbox_id = state.get("sandbox_id")
-        if sandbox_id and self.harness.log_path and "agent_logs" not in state:
-            try:
-                log_path = shlex.quote(self.harness.log_path)
-                result = await self.sandbox_client.execute_command(
-                    sandbox_id,
-                    f"cat {log_path} 2>/dev/null || echo '<no logs>'",
-                    working_dir=None,
-                )
-                state["agent_logs"] = (result.stdout or "").strip()
-            except Exception as e:
-                self.logger.warning(f"Failed to collect agent logs: {e}")
+        """Collect RLM session metrics after the rollout."""
+        await super().post_rollout(state)
 
+        sandbox_id = state.get("sandbox_id")
         if sandbox_id:
             info = state.get("info") or {}
             workdir = self.taskset.get_workdir(info)
@@ -137,20 +73,27 @@ class RlmComposableEnv(ComposableEnv):
             except Exception as e:
                 self.logger.warning(f"Failed to read rlm session metrics: {e}")
 
-        await super().post_rollout(state)
+    async def _after_harness_inputs_uploaded(self, state: State) -> None:
+        sandbox_id = state["sandbox_id"]
+        skills_dir = self._discover_taskset_skills_dir()
+        if skills_dir is not None:
+            await self._upload_skills_dir(sandbox_id, skills_dir)
 
-    def _discover_taskset_skills_dir(self) -> Path | None:
+    def _get_install_execute_kwargs(self) -> dict[str, Any]:
+        execute_kwargs = super()._get_install_execute_kwargs()
+        if self.install_env:
+            execute_kwargs["env"] = self.install_env
+        return execute_kwargs
+
+    def _discover_taskset_skills_dir(self) -> Traversable | Path | None:
         module = importlib.import_module(self.taskset.__class__.__module__)
 
         package_name = self._module_package_name(module)
         if package_name:
             try:
                 candidate = resources.files(package_name) / "skills"
-                if candidate.is_dir():
-                    with resources.as_file(candidate) as local_path:
-                        local_dir = Path(local_path)
-                        if local_dir.is_dir() and any(local_dir.iterdir()):
-                            return local_dir
+                if candidate.is_dir() and any(candidate.iterdir()):
+                    return candidate
             except Exception:
                 pass
 
@@ -168,7 +111,9 @@ class RlmComposableEnv(ComposableEnv):
         package_name = getattr(module, "__package__", None)
         return package_name or None
 
-    async def _upload_skills_dir(self, sandbox_id: str, skills_dir: Path) -> None:
+    async def _upload_skills_dir(
+        self, sandbox_id: str, skills_dir: Traversable | Path
+    ) -> None:
         remote_tar = "/tmp/rlm-skills.tar.gz"
         tmp_path = self._build_skills_archive(skills_dir)
         try:
@@ -190,9 +135,21 @@ class RlmComposableEnv(ComposableEnv):
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def _build_skills_archive(self, skills_dir: Path) -> Path:
+    def _build_skills_archive(self, skills_dir: Traversable | Path) -> Path:
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
         with tarfile.open(tar_path, "w:gz") as tar:
-            tar.add(skills_dir, arcname=self.uploaded_skills_dir.lstrip("/"))
+            self._add_skills_dir_to_archive(tar, skills_dir)
         return tar_path
+
+    def _add_skills_dir_to_archive(
+        self,
+        tar: tarfile.TarFile,
+        skills_dir: Traversable | Path,
+    ) -> None:
+        if isinstance(skills_dir, Path):
+            tar.add(skills_dir, arcname=self.uploaded_skills_dir.lstrip("/"))
+            return
+
+        with resources.as_file(skills_dir) as local_path:
+            tar.add(local_path, arcname=self.uploaded_skills_dir.lstrip("/"))

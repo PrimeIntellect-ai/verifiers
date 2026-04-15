@@ -132,55 +132,12 @@ class ComposableEnv(CliAgentEnv):
         """Task setup → upload instruction → upload system prompt → install agent."""
         sandbox_id = state["sandbox_id"]
 
-        # Populate sandbox context in state (once, used by setup/evaluate/validate)
-        state["sandbox_client"] = self.sandbox_client
-        spec = self._get_spec(state)
-        if spec:
-            state["test_timeout"] = spec.timeout_minutes * 60
-        elif self.harness.sandbox_spec:
-            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
-        else:
-            state["test_timeout"] = 900
-
-        # 1. Task setup
+        await self._populate_sandbox_context(state)
         await self.taskset.setup(state)
-
-        # 2. Create parent dirs for instruction + system prompt in one roundtrip
-        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
-        if self.harness.system_prompt:
-            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
-        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
-        await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
-        )
-
-        # 3. Upload instruction to harness-declared path
-        info = state.get("info") or {}
-        instruction = self.taskset.get_instruction(info)
-        if instruction.strip():
-            await self.upload_content(
-                sandbox_id, instruction, self.harness.instruction_path
-            )
-
-        # 4. Upload system prompt to harness-declared path
-        if self.harness.system_prompt:
-            await self.upload_content(
-                sandbox_id, self.harness.system_prompt, self.harness.system_prompt_path
-            )
-
-        # 5. Install agent binary
-        if self.harness.install_script:
-            self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                self.harness.install_script,
-                timeout=300,
-            )
-            if result.exit_code != 0:
-                output = (result.stdout or "") + (result.stderr or "")
-                raise vf.SandboxError(
-                    f"Agent install failed (exit={result.exit_code}): {output[:500]}"
-                )
+        await self._create_harness_input_dirs(sandbox_id)
+        await self._upload_harness_inputs(sandbox_id, state)
+        await self._after_harness_inputs_uploaded(state)
+        await self._install_agent(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs after the agent finishes.
@@ -203,3 +160,60 @@ class ComposableEnv(CliAgentEnv):
                 self.logger.warning(f"Failed to collect agent logs: {e}")
 
         await super().post_rollout(state)
+
+    async def _populate_sandbox_context(self, state: State) -> None:
+        """Populate sandbox-specific context used by setup/evaluate hooks."""
+        state["sandbox_client"] = self.sandbox_client
+        spec = self._get_spec(state)
+        if spec:
+            state["test_timeout"] = spec.timeout_minutes * 60
+        elif self.harness.sandbox_spec:
+            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
+        else:
+            state["test_timeout"] = 900
+
+    async def _create_harness_input_dirs(self, sandbox_id: str) -> None:
+        """Create parent directories for harness-managed task assets."""
+        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
+        if self.harness.system_prompt:
+            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
+        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
+        await self.sandbox_client.execute_command(
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
+        )
+
+    async def _upload_harness_inputs(self, sandbox_id: str, state: State) -> None:
+        """Upload instruction and optional system prompt to harness-declared paths."""
+        info = state.get("info") or {}
+        instruction = self.taskset.get_instruction(info)
+        if instruction.strip():
+            await self.upload_content(
+                sandbox_id, instruction, self.harness.instruction_path
+            )
+
+        if self.harness.system_prompt:
+            await self.upload_content(
+                sandbox_id, self.harness.system_prompt, self.harness.system_prompt_path
+            )
+
+    async def _after_harness_inputs_uploaded(self, state: State) -> None:
+        """Hook for subclasses to upload additional task assets before install."""
+
+    def _get_install_execute_kwargs(self) -> dict[str, Any]:
+        """Keyword arguments passed to sandbox install command execution."""
+        return {"timeout": 300}
+
+    async def _install_agent(self, sandbox_id: str) -> None:
+        """Install the agent inside the sandbox when an install script is present."""
+        if self.harness.install_script:
+            self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                self.harness.install_script,
+                **self._get_install_execute_kwargs(),
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise vf.SandboxError(
+                    f"Agent install failed (exit={result.exit_code}): {output[:500]}"
+                )
