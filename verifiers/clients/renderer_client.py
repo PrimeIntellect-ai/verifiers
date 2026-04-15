@@ -1,7 +1,8 @@
 """Renderer-based client.
 
 All tokenization happens client-side via a Renderer from the renderers package.
-No prefix matching, no /tokenize calls, no suffix stitching.
+For multi-turn rollouts, the client preserves exact sampled completion tokens
+and only renders the newly appended environment messages.
 
 A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
@@ -9,6 +10,7 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from collections.abc import Mapping
@@ -17,7 +19,13 @@ from typing import Any, ClassVar, cast
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
-from renderers import Renderer, RendererPool, ToolSpec, create_renderer
+from renderers import (
+    Renderer,
+    RendererPool,
+    ToolSpec,
+    build_incremental_prompt_ids,
+    create_renderer,
+)
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.client import completions_request
@@ -53,8 +61,8 @@ class RendererClient(
 ):
     """Client that tokenizes prompts client-side via a Renderer.
 
-    Every turn: Renderer renders messages → sends token IDs to vLLM /v1/generate
-    → gets completion tokens → Renderer parses back to structured message.
+    First turn: Renderer renders messages → sends token IDs to vLLM /v1/generate.
+    Later turns reuse exact sampled tokens and render only new environment messages.
 
     A class-level RendererPool (keyed by model) is shared across all instances
     so that concurrent rollouts tokenize in parallel threads.
@@ -96,9 +104,7 @@ class RendererClient(
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
 
-                def factory(
-                    _name=renderer_name, _model=renderer_model
-                ) -> Renderer:
+                def factory(_name=renderer_name, _model=renderer_model) -> Renderer:
                     from transformers import AutoTokenizer
 
                     tokenizer = AutoTokenizer.from_pretrained(
@@ -143,12 +149,20 @@ class RendererClient(
         if "max_tokens" in args:
             args["max_completion_tokens"] = args.pop("max_tokens")
 
+        prompt_ids = await _get_incremental_prompt_ids(
+            renderer=renderer,
+            prompt=prompt,
+            state=kwargs.get("state"),
+            tools=tools,
+        )
+
         return await completions_request(
             client=self.client,
             renderer=renderer,
             messages=prompt,
             model=model,
             tools=tools,
+            prompt_ids=prompt_ids,
             **args,
         )
 
@@ -226,6 +240,161 @@ class RendererClient(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
+    if isinstance(renderer, RendererPool):
+
+        def _work():
+            with renderer.checkout() as r:
+                return fn(r)
+
+        return await asyncio.to_thread(_work)
+    return fn(renderer)
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _normalize_for_comparison(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return _normalize_for_comparison(value.model_dump(exclude_none=True))
+    if isinstance(value, Mapping):
+        return {
+            str(k): _normalize_for_comparison(v)
+            for k, v in value.items()
+            if v is not None
+        }
+    if isinstance(value, list):
+        return [_normalize_for_comparison(v) for v in value]
+    return value
+
+
+def _coerce_renderer_message(message: Any) -> RendererMessage:
+    if isinstance(message, Mapping):
+        return cast(
+            RendererMessage,
+            {
+                str(k): _normalize_content(v)
+                for k, v in message.items()
+                if v is not None
+            },
+        )
+    return _to_renderer_message(cast(Message, message))
+
+
+def _message_role(message: Any) -> str | None:
+    role = _get_value(message, "role")
+    return role if isinstance(role, str) else None
+
+
+def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
+    if not messages:
+        return False
+
+    roles = [_message_role(message) for message in messages]
+    if roles[-1] == "user":
+        return all(role == "tool" for role in roles[:-1])
+    return all(role == "tool" for role in roles)
+
+
+def _has_multimodal_content(messages: list[RendererMessage]) -> bool:
+    for message in messages:
+        content = _get_value(message, "content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if _get_value(part, "type") != "text":
+                return True
+    return False
+
+
+def _step_is_truncated(step: Any) -> bool:
+    if bool(_get_value(step, "is_truncated", False)):
+        return True
+
+    tokens = _get_value(step, "tokens")
+    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
+        return True
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    return bool(_get_value(message, "is_truncated", False))
+
+
+def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
+    tokens = _get_value(step, "tokens")
+    if tokens is None:
+        return None
+
+    prompt_ids = _get_value(tokens, "prompt_ids")
+    completion_ids = _get_value(tokens, "completion_ids")
+    if not prompt_ids or not completion_ids:
+        return None
+    return list(prompt_ids), list(completion_ids)
+
+
+def _step_rendered_messages(step: Any) -> list[RendererMessage]:
+    prompt = list(_get_value(step, "prompt", []) or [])
+    completion = list(_get_value(step, "completion", []) or [])
+    return [_coerce_renderer_message(message) for message in prompt + completion]
+
+
+async def _get_incremental_prompt_ids(
+    *,
+    renderer: Renderer | RendererPool,
+    prompt: list[RendererMessage],
+    state: Any,
+    tools: list[ToolSpec] | None,
+) -> list[int] | None:
+    if not state or _has_multimodal_content(prompt):
+        return None
+
+    trajectory = _get_value(state, "trajectory")
+    if not trajectory:
+        return None
+
+    normalized_prompt = _normalize_for_comparison(prompt)
+    for step in reversed(list(trajectory)):
+        if _step_is_truncated(step):
+            continue
+
+        token_ids = _step_token_ids(step)
+        if token_ids is None:
+            continue
+
+        previous_messages = _step_rendered_messages(step)
+        if not previous_messages or len(previous_messages) >= len(prompt):
+            continue
+        if _has_multimodal_content(previous_messages):
+            continue
+
+        prefix_len = len(previous_messages)
+        if normalized_prompt[:prefix_len] != _normalize_for_comparison(
+            previous_messages
+        ):
+            continue
+
+        tail = prompt[prefix_len:]
+        if not _is_valid_incremental_tail(tail):
+            continue
+
+        previous_prompt_ids, previous_completion_ids = token_ids
+        return await _run_with_renderer(
+            renderer,
+            lambda r: build_incremental_prompt_ids(
+                r,
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
+            ),
+        )
+
+    return None
 
 
 def _normalize_content(content: Any) -> Any:

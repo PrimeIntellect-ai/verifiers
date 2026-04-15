@@ -38,6 +38,7 @@ async def completions_request(
     messages: list[Message],
     model: str,
     tools: list[ToolSpec] | None = None,
+    prompt_ids: list[int] | None = None,
     **sampling_args: Any,
 ) -> dict[str, Any]:
     """Render messages to tokens, call vLLM /v1/generate, return parsed result.
@@ -55,10 +56,14 @@ async def completions_request(
 
     # -- Prepare: tokenize prompt + extract images --
     def _prepare(r: Renderer):
-        prompt_ids = r.render_ids(messages, tools=tools, add_generation_prompt=True)
+        prepared_prompt_ids = (
+            list(prompt_ids)
+            if prompt_ids is not None
+            else r.render_ids(messages, tools=tools, add_generation_prompt=True)
+        )
         stop_token_ids = r.get_stop_token_ids()
         images = _extract_images(messages)
-        return prompt_ids, stop_token_ids, images
+        return prepared_prompt_ids, stop_token_ids, images
 
     if pool is not None:
         prompt_ids, stop_token_ids, images = await _run_pooled(pool, _prepare)

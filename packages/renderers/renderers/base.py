@@ -103,6 +103,36 @@ class ParsedResponse:
     tool_calls: list[dict[str, Any]] | None = None
 
 
+@dataclass
+class RenderedConversation:
+    """Exact token state for a rendered conversation."""
+
+    prompt_ids: list[int]
+    completion_ids: list[int] = field(default_factory=list)
+    completion_logprobs: list[float] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)
+    parsed_completion: ParsedResponse | None = None
+
+    @property
+    def token_ids(self) -> list[int]:
+        return self.prompt_ids + self.completion_ids
+
+    def with_completion(
+        self,
+        completion_ids: list[int],
+        *,
+        completion_logprobs: list[float] | None = None,
+        parsed_completion: ParsedResponse | None = None,
+    ) -> "RenderedConversation":
+        return RenderedConversation(
+            prompt_ids=list(self.prompt_ids),
+            completion_ids=list(completion_ids),
+            completion_logprobs=list(completion_logprobs or []),
+            messages=list(self.messages),
+            parsed_completion=parsed_completion,
+        )
+
+
 @runtime_checkable
 class Renderer(Protocol):
     """Owns message ↔ token conversion for a specific model family."""
@@ -225,9 +255,7 @@ def create_renderer_pool(
     threads achieve real parallelism.
     """
 
-    def factory(
-        _name=tokenizer_name_or_path, _renderer=renderer
-    ) -> Renderer:
+    def factory(_name=tokenizer_name_or_path, _renderer=renderer) -> Renderer:
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(_name, trust_remote_code=True)
@@ -299,6 +327,72 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
         if a[idx] != b[idx]:
             return idx
     return max_len
+
+
+def build_incremental_prompt_ids(
+    renderer: Renderer,
+    previous_prompt_ids: list[int],
+    previous_completion_ids: list[int],
+    new_messages: list[Message],
+    *,
+    tools: list[ToolSpec] | None = None,
+) -> list[int] | None:
+    """Append new environment messages to exact previous tokens.
+
+    This mirrors the old token route's bridge trick: render a dummy assistant
+    message followed by the new environment messages, then keep only the suffix
+    after the dummy assistant boundary.  The sampled assistant tokens themselves
+    are never re-rendered.
+    """
+    if not previous_prompt_ids or not previous_completion_ids or not new_messages:
+        return None
+
+    previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+    try:
+        stop_token_ids = set(renderer.get_stop_token_ids())
+    except Exception:
+        stop_token_ids = set()
+
+    boundary_idx = len(previous_ids) - 1
+    if stop_token_ids:
+        for idx in range(len(previous_ids) - 1, len(previous_prompt_ids) - 1, -1):
+            if previous_ids[idx] in stop_token_ids:
+                boundary_idx = idx
+                break
+    previous_ids = previous_ids[: boundary_idx + 1]
+    boundary_token_id = previous_ids[-1]
+
+    dummy_assistant: Message = {"role": "assistant", "content": "x"}
+
+    try:
+        bridge_full_ids = renderer.render_ids(
+            [dummy_assistant, *new_messages],
+            tools=tools,
+            add_generation_prompt=True,
+        )
+        bridge_base_ids = renderer.render_ids(
+            [dummy_assistant],
+            tools=tools,
+            add_generation_prompt=False,
+        )
+    except Exception:
+        return None
+
+    if bridge_full_ids[: len(bridge_base_ids)] != bridge_base_ids:
+        return None
+
+    gap: int | None = None
+    for idx in range(len(bridge_base_ids) - 1, -1, -1):
+        if bridge_base_ids[idx] == boundary_token_id:
+            gap = len(bridge_base_ids) - idx - 1
+            break
+    if gap is None:
+        return None
+
+    bridge_ids = list(bridge_full_ids[len(bridge_base_ids) - gap :])
+    if bridge_ids and bridge_ids[0] == boundary_token_id:
+        bridge_ids = bridge_ids[1:]
+    return previous_ids + bridge_ids
 
 
 def build_trajectory_step(

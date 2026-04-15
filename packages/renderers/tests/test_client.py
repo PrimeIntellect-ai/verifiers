@@ -103,3 +103,24 @@ async def test_completions_request_builds_generate_body_and_parses_response():
         "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         "routed_experts": [[[1]], [[2]]],
     }
+
+
+class _NoRenderRenderer(_FakeRenderer):
+    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
+        raise AssertionError("prebuilt prompt ids should skip render_ids")
+
+
+@pytest.mark.asyncio
+async def test_completions_request_uses_prebuilt_prompt_ids_without_rendering():
+    client = _FakeClient()
+
+    result = await completions_request(
+        client=client,
+        renderer=_NoRenderRenderer(),
+        messages=[{"role": "user", "content": "hi"}],
+        model="test-model",
+        prompt_ids=[11, 12, 13],
+    )
+
+    assert client.calls[0]["body"]["prompt_token_ids"] == [11, 12, 13]
+    assert result["prompt_ids"] == [11, 12, 13]
