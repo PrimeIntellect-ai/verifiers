@@ -228,6 +228,12 @@ def main():
         help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
     )
     parser.add_argument(
+        "--session-id-routing",
+        default=False,
+        action="store_true",
+        help="Send X-Session-ID header (from example_id) for DP-aware sticky routing via vllm-router.",
+    )
+    parser.add_argument(
         "--num-examples",
         "-n",
         type=int,
@@ -628,13 +634,16 @@ def main():
             ]
 
         assert primary_api_base_url is not None
+        extra_headers_from_state: dict[str, str] = {}
+        if raw.get("session_id_routing"):
+            extra_headers_from_state["X-Session-ID"] = "example_id"
         client_config = ClientConfig(
             client_type=cast(ClientType, client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
-            extra_headers_from_state={"X-Session-ID": "example_id"},
+            extra_headers_from_state=extra_headers_from_state,
         )
 
         # Backward-compatible TOML field: resume_path
