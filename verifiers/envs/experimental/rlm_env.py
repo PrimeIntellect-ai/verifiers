@@ -78,6 +78,10 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.interception_utils import (
+    generate_interception_token,
+    has_valid_bearer_auth,
+)
 from verifiers.utils.message_utils import concat_messages, from_raw_message
 from verifiers.utils.response_utils import (
     parse_response_message,
@@ -554,6 +558,8 @@ def _build_python_worker_script_template() -> str:
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
+            '_RLM_AUTH_TOKEN = os.environ.get("RLM_AUTH_TOKEN", "")',
+            '_RLM_AUTH_HEADERS = {"Authorization": f"Bearer {_RLM_AUTH_TOKEN}"} if _RLM_AUTH_TOKEN else {}',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
             "except Exception:",
@@ -572,6 +578,7 @@ def _build_python_worker_script_template() -> str:
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
             "        json=payload,",
+            "        headers=_RLM_AUTH_HEADERS,",
             "        timeout=SUB_LLM_TIMEOUT,",
             "    )",
             "    resp.raise_for_status()",
@@ -704,6 +711,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
+    _RLM_AUTH_TOKEN = os.environ.get("RLM_AUTH_TOKEN", "")
 
 
     def _decode_arg(raw: str):
@@ -723,15 +731,19 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             "kwargs": kwargs,
         }
 
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": ROOT_TOOL_USER_AGENT,
+        }
+        if _RLM_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {_RLM_AUTH_TOKEN}"
+
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             ROOT_TOOL_URL,
             data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": ROOT_TOOL_USER_AGENT,
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -2619,6 +2631,7 @@ class RLMEnv(vf.StatefulToolEnv):
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
+            "RLM_AUTH_TOKEN": state.get("interception_auth_token", ""),
         }
 
     def _compute_fs_metadata(
@@ -3237,6 +3250,10 @@ class RLMEnv(vf.StatefulToolEnv):
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
 
+        auth_error = self._check_rollout_auth(request, context)
+        if auth_error is not None:
+            return auth_error
+
         try:
             request_body = await request.json()
         except Exception as e:
@@ -3314,12 +3331,25 @@ class RLMEnv(vf.StatefulToolEnv):
             response_body["result_repr"] = repr(result_value)
         return web.json_response(response_body)
 
+    def _check_rollout_auth(self, request: Any, context: dict) -> web.Response | None:
+        """Check bearer token for a rollout request. Returns error response or None."""
+        if not has_valid_bearer_auth(
+            request.headers.get("Authorization", ""),
+            context.get("auth_token"),
+        ):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        return None
+
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
+
+        auth_error = self._check_rollout_auth(request, context)
+        if auth_error is not None:
+            return auth_error
 
         try:
             request_body = await request.json()
@@ -3452,11 +3482,15 @@ class RLMEnv(vf.StatefulToolEnv):
         state["interception_url"] = interception_url
         state["root_tool_url"] = root_tool_url
 
+        auth_token = generate_interception_token()
+        state["interception_auth_token"] = auth_token
+
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
             "state": state,
+            "auth_token": auth_token,
         }
         return state
 

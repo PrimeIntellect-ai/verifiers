@@ -1,3 +1,5 @@
+import pytest
+
 from verifiers.types import (
     Response,
     ResponseMessage,
@@ -7,6 +9,7 @@ from verifiers.types import (
 )
 from verifiers.utils.interception_utils import (
     create_empty_completion,
+    has_valid_bearer_auth,
     serialize_intercept_response,
 )
 
@@ -61,3 +64,23 @@ def test_serialize_intercept_response_passthrough_native_chat_completion():
     assert payload["object"] == "chat.completion"
     assert payload["model"] == "native-model"
     assert len(payload["choices"]) == 1
+
+
+def test_serialize_intercept_response_rejects_invalid_input_type():
+    with pytest.raises(TypeError, match="Unsupported intercepted response type: str"):
+        serialize_intercept_response("0")
+
+
+@pytest.mark.parametrize(
+    ("auth_header", "expected_token", "expected_valid"),
+    [
+        ("Bearer secret-token", "secret-token", True),
+        ("Bearer wrong-token", "secret-token", False),
+        ("", "secret-token", False),
+        ("", None, True),
+    ],
+)
+def test_has_valid_bearer_auth(
+    auth_header: str, expected_token: str | None, expected_valid: bool
+):
+    assert has_valid_bearer_auth(auth_header, expected_token) is expected_valid

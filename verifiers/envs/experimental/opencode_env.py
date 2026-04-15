@@ -358,7 +358,7 @@ class OpenCodeEnv(CliAgentEnv):
                     "name": "${OPENAI_MODEL%%/*}",
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
-                        "apiKey": "intercepted",
+                        "apiKey": "${OPENAI_API_KEY:-intercepted}",
                         "timeout": self.provider_timeout_ms,
                     },
                     "models": {

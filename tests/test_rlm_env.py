@@ -645,6 +645,7 @@ class TestBashToolHelper:
         argv: list[str],
         stdin_data: str = "",
         response_data: dict | None = None,
+        env_overrides: dict[str, str] | None = None,
     ) -> tuple[str, str, int, dict | None]:
         helper_source = extract_bash_helper_source()
         stdout_buffer = io.StringIO()
@@ -652,6 +653,8 @@ class TestBashToolHelper:
         env = {
             "RLM_ROOT_TOOL_URL": "http://example.invalid/",
         }
+        if env_overrides:
+            env.update(env_overrides)
         captured_payload: dict | None = None
         with patch("urllib.request.urlopen") as mock_urlopen:
 
@@ -664,6 +667,7 @@ class TestBashToolHelper:
                     "tool_name": data.get("tool_name"),
                     "args": args,
                     "kwargs": kwargs,
+                    "headers": dict(req.header_items()),
                 }
                 return response
 
@@ -818,6 +822,35 @@ class TestBashToolHelper:
         assert stderr == ""
         parsed = json.loads(stdout.strip())
         assert parsed == ["first", "second"]
+
+    def test_root_tool_auth_header_added_when_token_present(self):
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", json.dumps({"args": [1]})],
+            env_overrides={"RLM_AUTH_TOKEN": "secret-token"},
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "ok" in stdout
+        assert captured is not None
+        assert captured["headers"]["Authorization"] == "Bearer secret-token"
+
+
+class TestRLMAuthCheck:
+    def test_check_rollout_auth_accepts_matching_bearer_token(self):
+        env = build_env(make_dataset({}))
+        request = MagicMock(headers={"Authorization": "Bearer secret-token"})
+
+        assert env._check_rollout_auth(request, {"auth_token": "secret-token"}) is None
+
+    def test_check_rollout_auth_rejects_wrong_bearer_token(self):
+        env = build_env(make_dataset({}))
+        request = MagicMock(headers={"Authorization": "Bearer wrong-token"})
+
+        response = env._check_rollout_auth(request, {"auth_token": "secret-token"})
+
+        assert response is not None
+        assert response.status == 401
+        assert json.loads(response.text)["error"] == "Unauthorized"
 
 
 # =============================================================================

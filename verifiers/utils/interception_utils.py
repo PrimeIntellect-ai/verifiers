@@ -1,11 +1,13 @@
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
+import secrets
 import time
 import uuid
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from aiohttp import web
 from openai.types.chat import (
@@ -27,6 +29,21 @@ from verifiers.types import Response
 from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class SupportsModelDump(Protocol):
+    def model_dump(self) -> dict[str, Any]: ...
+
+
+def has_valid_bearer_auth(auth_header: str, expected_token: str | None) -> bool:
+    """Return whether the bearer auth header matches the expected token."""
+    if not expected_token:
+        return True
+    bearer_token = (
+        auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
+    )
+    return secrets.compare_digest(bearer_token, expected_token)
 
 
 class InterceptionServer:
@@ -99,10 +116,13 @@ class InterceptionServer:
                     self._site = None
                     self._app = None
 
-    def register_rollout(self, rollout_id: str) -> asyncio.Queue:
+    def register_rollout(
+        self, rollout_id: str, auth_token: str | None = None
+    ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
+            "auth_token": auth_token,
         }
         return request_queue
 
@@ -133,10 +153,27 @@ class InterceptionServer:
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
 
+        if not has_valid_bearer_auth(
+            request.headers.get("Authorization", ""),
+            context.get("auth_token"),
+        ):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         try:
             request_body = await request.json()
         except Exception as e:
             return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+
+        if not isinstance(request_body, dict):
+            return web.json_response(
+                {"error": "Request body must be a JSON object"}, status=400
+            )
+        if "messages" not in request_body:
+            return web.json_response(
+                {"error": "Request body must include 'messages'"}, status=400
+            )
+        if not isinstance(request_body["messages"], list):
+            return web.json_response({"error": "'messages' must be a list"}, status=400)
 
         _log_request(rollout_id, request_body)
 
@@ -228,6 +265,11 @@ class InterceptionServer:
         except ConnectionResetError:
             logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
         return response
+
+
+def generate_interception_token() -> str:
+    """Generate a cryptographically random token for rollout authentication."""
+    return secrets.token_hex(32)
 
 
 def deliver_response(
@@ -394,7 +436,9 @@ def _response_content_to_text(content: Any) -> str:
     return ""
 
 
-def serialize_intercept_response(response: Any) -> dict[str, Any]:
+def serialize_intercept_response(
+    response: Response | SupportsModelDump | Mapping[str, object],
+) -> dict[str, Any]:
     """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
     if isinstance(response, Response):
         message = response.message
@@ -439,9 +483,20 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
 
         return output
 
-    if hasattr(response, "model_dump"):
-        return response.model_dump()
-    return dict(response)
+    if isinstance(response, SupportsModelDump):
+        model_dump = response.model_dump()
+        if isinstance(model_dump, Mapping):
+            return dict(model_dump)
+        raise TypeError("model_dump() must return a mapping")
+
+    if isinstance(response, Mapping):
+        return dict(response)
+
+    raise TypeError(
+        "Unsupported intercepted response type: "
+        f"{type(response).__name__}. Expected Response, model_dump()-compatible "
+        "object, or mapping."
+    )
 
 
 def _log_request(rollout_id: str, body: dict) -> None:
