@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 from verifiers.clients.client import Client
+from verifiers.clients.nemorl_chat_completions_client import (
+    NeMoRLChatCompletionsClient,
+)
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
@@ -26,12 +29,15 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
                 return OpenAIChatCompletionsTokenClient(client_or_config)
             case "anthropic_messages":
                 return AnthropicMessagesClient(client_or_config)
+            case "nemorl_chat_completions":
+                return NeMoRLChatCompletionsClient(client_or_config)
     else:
         raise ValueError(f"Unsupported client type: {type(client_or_config)}")
 
 
 __all__ = [
     "AnthropicMessagesClient",
+    "NeMoRLChatCompletionsClient",
     "OpenAICompletionsClient",
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",
