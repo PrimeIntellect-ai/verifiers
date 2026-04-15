@@ -1,7 +1,9 @@
 """Tests for the composable architecture: Task, TaskSet, SandboxTaskSet, SandboxSpec."""
 
+import importlib
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -9,11 +11,13 @@ import verifiers as vf
 from verifiers.envs.experimental.composable import (
     ComposableEnv,
     Harness,
+    RlmComposableEnv,
     SandboxSpec,
     SandboxTaskSet,
     Task,
     TaskSet,
 )
+from verifiers.envs.experimental.composable.harnesses.rlm import build_install_script
 
 
 # ── Mock Rubrics ──────────────────────────────────────────────────────
@@ -78,6 +82,28 @@ def _make_dataset(n=3):
             "answer": ["" for _ in range(n)],
         }
     )
+
+
+def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
+    package_name = f"rlm_fixture_{tmp_path.name.replace('-', '_')}"
+    pkg_dir = tmp_path / package_name
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "taskset_mod.py").write_text("MARKER = 1\n")
+
+    if with_skills:
+        skill_dir = pkg_dir / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: demo\n---\n")
+        (skill_dir / "pyproject.toml").write_text(
+            "[project]\nname = 'rlm-skill-demo'\nversion = '0.0.0'\n"
+        )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    mod = importlib.import_module(f"{package_name}.taskset_mod")
+    monkeypatch.setattr(MockSandboxTaskSet, "__module__", mod.__name__)
+    return mod
 
 
 # ── SandboxSpec ─────────────────────────────────────────────────────────
@@ -258,3 +284,151 @@ async def test_composable_env_quotes_log_path_when_collecting_logs():
         working_dir=None,
     )
     assert state["agent_logs"] == "agent log"
+
+
+def test_rlm_composable_env_is_exported():
+    assert RlmComposableEnv is not None
+
+
+def test_rlm_harness_install_script_copies_uploaded_skills_before_sync():
+    script = build_install_script()
+    assert "/task/rlm-skills" in script
+    assert script.index("/task/rlm-skills") < script.index(
+        'uv sync --project "$RLM_CHECKOUT_PATH" --all-packages'
+    )
+
+
+@pytest.mark.asyncio
+async def test_rlm_composable_env_install_runs_without_skills(tmp_path, monkeypatch):
+    _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = RlmComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-rlm",
+            instruction_path="/tmp/with space/prompt.txt",
+            system_prompt="system",
+            system_prompt_path="/tmp/other path/system.txt",
+        ),
+        install_env={"GH_TOKEN": "secret"},
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    assert env.upload_file.await_count == 0
+    assert env.sandbox_client.execute_command.await_args_list == [
+        call(
+            "sbx",
+            "mkdir -p '/tmp/other path' '/tmp/with space'",
+            timeout=10,
+        ),
+        call(
+            "sbx",
+            "install-rlm",
+            timeout=300,
+            env={"GH_TOKEN": "secret"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rlm_composable_env_uploads_skills_before_install(tmp_path, monkeypatch):
+    _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = RlmComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true", install_script="install-rlm"),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    env.upload_file.assert_awaited_once()
+    upload_call = env.upload_file.await_args
+    assert upload_call.args[0] == "sbx"
+    assert upload_call.args[1] == "/tmp/rlm-skills.tar.gz"
+
+    install_call = env.sandbox_client.execute_command.await_args_list[-1]
+    assert install_call == call("sbx", "install-rlm", timeout=300)
+    extract_call = env.sandbox_client.execute_command.await_args_list[1]
+    assert extract_call == call(
+        "sbx",
+        "mkdir -p /task && tar -xzf /tmp/rlm-skills.tar.gz -C / && rm -f /tmp/rlm-skills.tar.gz",
+        timeout=60,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rlm_composable_env_collects_logs_and_metrics():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = RlmComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            log_path="/tmp/log dir/agent.log",
+        ),
+    )
+    metrics = {
+        "turns": 3,
+        "stop_reason": "done",
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+    }
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            side_effect=[
+                SimpleNamespace(stdout="agent log\n", stderr="", exit_code=0),
+                SimpleNamespace(
+                    stdout=json.dumps({"metrics": metrics}),
+                    stderr="",
+                    exit_code=0,
+                ),
+            ]
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+    }
+
+    await env.post_rollout(state)
+
+    assert env.sandbox_client.execute_command.await_args_list == [
+        call(
+            "sbx",
+            "cat '/tmp/log dir/agent.log' 2>/dev/null || echo '<no logs>'",
+            working_dir=None,
+        ),
+        call(
+            "sbx",
+            'f=$(ls /testbed/.rlm/sessions/*/meta.json 2>/dev/null | head -1) && cat "$f" || echo "{}"',
+            working_dir=None,
+        ),
+    ]
+    assert state["agent_logs"] == "agent log"
+    assert state["rlm_turns"] == 3
+    assert state["rlm_stop_reason"] == "done"
+    assert state["rlm_prompt_tokens"] == 100
+    assert state["rlm_completion_tokens"] == 25

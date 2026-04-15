@@ -42,6 +42,10 @@ fi
 
 rm -rf "$RLM_CHECKOUT_PATH"
 git clone --depth 1 "$CLONE_URL" "$RLM_CHECKOUT_PATH"
+if [ -d /task/rlm-skills ] && find /task/rlm-skills -mindepth 1 -maxdepth 1 | read -r _; then
+  mkdir -p "$RLM_CHECKOUT_PATH/skills"
+  cp -R /task/rlm-skills/. "$RLM_CHECKOUT_PATH/skills/"
+fi
 uv sync --project "$RLM_CHECKOUT_PATH" --all-packages
 """
     return f"bash -lc {shlex.quote(script)}"
