@@ -124,3 +124,29 @@ async def test_completions_request_uses_prebuilt_prompt_ids_without_rendering():
 
     assert client.calls[0]["body"]["prompt_token_ids"] == [11, 12, 13]
     assert result["prompt_ids"] == [11, 12, 13]
+
+
+@pytest.mark.asyncio
+async def test_completions_request_with_prebuilt_prompt_ids_still_extracts_images():
+    client = _FakeClient()
+    image_url = "data:image/png;base64,aGVsbG8="
+
+    await completions_request(
+        client=client,
+        renderer=_NoRenderRenderer(),
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ],
+        model="test-model",
+        prompt_ids=[11, 12, 13],
+    )
+
+    assert client.calls[0]["body"]["images"] == [
+        {"data": "aGVsbG8=", "media_type": "image/png"}
+    ]

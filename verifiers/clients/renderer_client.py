@@ -301,17 +301,6 @@ def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _has_multimodal_content(messages: list[RendererMessage]) -> bool:
-    for message in messages:
-        content = _get_value(message, "content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if _get_value(part, "type") != "text":
-                return True
-    return False
-
-
 def _step_is_truncated(step: Any) -> bool:
     if bool(_get_value(step, "is_truncated", False)):
         return True
@@ -350,7 +339,7 @@ async def _get_incremental_prompt_ids(
     state: Any,
     tools: list[ToolSpec] | None,
 ) -> list[int] | None:
-    if not state or _has_multimodal_content(prompt):
+    if not state:
         return None
 
     trajectory = _get_value(state, "trajectory")
@@ -369,9 +358,6 @@ async def _get_incremental_prompt_ids(
         previous_messages = _step_rendered_messages(step)
         if not previous_messages or len(previous_messages) >= len(prompt):
             continue
-        if _has_multimodal_content(previous_messages):
-            continue
-
         prefix_len = len(previous_messages)
         if normalized_prompt[:prefix_len] != _normalize_for_comparison(
             previous_messages

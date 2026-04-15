@@ -207,3 +207,62 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
     )
 
     assert result == [1, 2, 3, 99, 40, 50]
+
+
+@pytest.mark.asyncio
+async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
+    renderer = _BridgeRenderer(bridge_base=[10, 99], bridge_full=[10, 99, 40, 50])
+    prompt_messages = [
+        SystemMessage(content="s"),
+        UserMessage(
+            content=[
+                {"type": "text", "text": "inspect"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+            ]
+        ),
+    ]
+    completion_messages = [
+        AssistantMessage(
+            content=None,
+            tool_calls=[ToolCall(id="call_0", name="lookup", arguments="{}")],
+        )
+    ]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(
+            ToolMessage(
+                content=[
+                    {"type": "text", "text": "result"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,def"},
+                    },
+                ],
+                tool_call_id="call_0",
+            )
+        ),
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    state = {
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "completion_ids": [3, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+            }
+        ]
+    }
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=prompt, state=state, tools=None
+    )
+
+    assert result == [1, 2, 3, 99, 40, 50]
