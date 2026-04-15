@@ -330,8 +330,14 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"sweep.env_args — use one or the other"
             )
 
+    explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
+
     # Fixed fields: global defaults overridden by ablation-level fields
     fixed = {**global_defaults, **ablation}
+    if "endpoint_id" in explicit_keys and "model" not in explicit_keys:
+        fixed.pop("model", None)
+    if "model" in explicit_keys and "endpoint_id" not in explicit_keys:
+        fixed.pop("endpoint_id", None)
 
     # Expand cartesian product
     keys = [k for k, _ in dimensions]
