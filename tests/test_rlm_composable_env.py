@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 import verifiers as vf
-from verifiers.envs.experimental.composable import Harness, RlmComposableEnv, SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable import (
+    Harness,
+    RlmComposableEnv,
+    SandboxSpec,
+    SandboxTaskSet,
+)
 from verifiers.envs.experimental.composable.harnesses.rlm import build_install_script
 
 
