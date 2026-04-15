@@ -10,27 +10,56 @@ DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_TOOLS = "bash,edit"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
+DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 
 
-def build_install_script(rlm_repo_url: str = DEFAULT_RLM_REPO_URL) -> str:
-    raw_base = rlm_repo_url.removesuffix(".git").replace(
-        "github.com", "raw.githubusercontent.com"
-    )
-    url = f"https://${{GH_TOKEN}}@{raw_base}/main/install.sh"
-    return f"(curl -fsSL {url} || wget -qO- {url}) > /tmp/rlm-install.sh && bash /tmp/rlm-install.sh"
+def build_install_script(
+    rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    checkout_path: str = DEFAULT_RLM_CHECKOUT_PATH,
+) -> str:
+    script = f"""\
+set -eo pipefail
+
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl git > /dev/null 2>&1
+
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+
+export PATH="$HOME/.local/bin:$PATH"
+RLM_REPO_URL={shlex.quote(rlm_repo_url)}
+RLM_CHECKOUT_PATH={shlex.quote(checkout_path)}
+
+case "$RLM_REPO_URL" in
+  http://*|https://*|git@*) CLONE_URL="$RLM_REPO_URL" ;;
+  *) CLONE_URL="https://$RLM_REPO_URL" ;;
+esac
+
+if [ -n "${{GH_TOKEN:-}}" ] && printf '%s' "$CLONE_URL" | grep -q '^https://github.com/'; then
+  CLONE_URL="${{CLONE_URL/https:\\/\\/github.com\\//https:\\/\\/${{GH_TOKEN}}@github.com/}}"
+fi
+
+rm -rf "$RLM_CHECKOUT_PATH"
+git clone --depth 1 "$CLONE_URL" "$RLM_CHECKOUT_PATH"
+uv sync --project "$RLM_CHECKOUT_PATH" --all-packages
+"""
+    return f"bash -lc {shlex.quote(script)}"
 
 
 def build_run_command(
     instruction_path: str = "/task/instruction.md",
     workdir: str = "/testbed",
+    checkout_path: str = DEFAULT_RLM_CHECKOUT_PATH,
 ) -> str:
     script = f"""\
 set -eo pipefail
+export PATH="$HOME/.local/bin:$PATH"
 export RLM_MODEL=$OPENAI_MODEL
 export OPENAI_API_KEY=intercepted
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd {workdir}
-rlm "$(cat {instruction_path})"
+uv run --project {shlex.quote(checkout_path)} --all-packages rlm "$(cat {instruction_path})"
 """
     return f"bash -lc {shlex.quote(script)}"
 
@@ -39,11 +68,12 @@ def rlm_harness(
     workdir: str = "/testbed",
     instruction_path: str = "/task/instruction.md",
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    checkout_path: str = DEFAULT_RLM_CHECKOUT_PATH,
     append_to_system_prompt: str | None = None,
 ) -> Harness:
     return Harness(
-        install_script=build_install_script(rlm_repo_url),
-        run_command=build_run_command(instruction_path, workdir),
+        install_script=build_install_script(rlm_repo_url, checkout_path),
+        run_command=build_run_command(instruction_path, workdir, checkout_path),
         system_prompt=append_to_system_prompt,
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
         instruction_path=instruction_path,
