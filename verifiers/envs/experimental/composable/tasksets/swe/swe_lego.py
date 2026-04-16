@@ -112,21 +112,27 @@ class SWELegoRubric(vf.Rubric):
 
 
 class SWELegoTaskSet(SandboxTaskSet):
-    """TaskSet for SWE-Lego/SWE-Lego-Synthetic-Data (SWE-smith instances).
+    """TaskSet for SWE-Lego-Real-Data (real GitHub issues, public Docker images).
 
-    Uses public Docker Hub images (chaofantao/autocode07:swesmith.*) —
-    no registry credentials required. Test execution is constructed at
-    runtime from the dataset's FAIL_TO_PASS / PASS_TO_PASS fields.
+    Defaults to ``PrimeIntellect/SWE-Lego-Real-Data`` — a filtered fork of
+    ``SWE-Lego/SWE-Lego-Real-Data`` that drops rows with truncated pytest
+    parametrize test IDs. Images come from ``jierun/sweb.eval.x86_64.*``
+    (public on Docker Hub).
+
+    Test execution is constructed at runtime from the dataset's
+    FAIL_TO_PASS / PASS_TO_PASS fields. ``test_patch`` (adds the failing
+    tests to the repo) is applied in ``setup()`` so both gold-patch
+    validation and live agent rollouts score against the correct tests.
     """
 
     default_workdir = "/testbed"
 
     def __init__(
         self,
-        dataset_name: str = "SWE-Lego/SWE-Lego-Synthetic-Data",
+        dataset_name: str = "PrimeIntellect/SWE-Lego-Real-Data",
         split: str = "resolved",
         filter_repos: list[str] | None = None,
-        ds_num_proc: int | None = 4,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
     ):
         self.dataset_name = dataset_name
@@ -192,12 +198,19 @@ class SWELegoTaskSet(SandboxTaskSet):
         return dict(ENV_VARS_SWE_LEGO)
 
     async def setup(self, state) -> None:
-        """Prep the sandbox: /root/.venv symlink and ripgrep binary.
+        """Prep the sandbox before the agent runs:
 
-        SWE-bench eval images (jierun/*) have very slow apt sources — an
-        ``apt-get update`` takes ~150s. The rlm harness install script calls
-        ``apt-get install ripgrep`` conditionally, so we install rg ourselves
-        via a direct binary download to skip apt entirely.
+        1. Link ``/root/.venv`` to the testbed conda env (checks both common
+           paths; ``ln -sf`` returns 0 even when the target is missing so we
+           must test ``-d`` explicitly).
+        2. Install ripgrep via a direct binary download. SWE-bench eval images
+           (``jierun/*``) have slow apt sources (``apt-get update`` ~150s); the
+           rlm harness installs rg via apt when missing, so we pre-install the
+           static musl binary to skip apt.
+        3. Apply ``test_patch`` from the dataset. SWE-bench instances carry
+           the failing tests in a separate patch that must be applied before
+           pytest can collect them — required for both gold-patch validation
+           and live agent scoring.
         """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
@@ -205,7 +218,7 @@ class SWELegoTaskSet(SandboxTaskSet):
         linked = False
         for venv_src in ("/opt/miniconda3/envs/testbed", "/opt/conda/envs/testbed"):
             result = await sandbox_client.execute_command(
-                sandbox_id, f"ln -sf {venv_src} /root/.venv"
+                sandbox_id, f"[ -d {venv_src} ] && ln -sf {venv_src} /root/.venv"
             )
             if result.exit_code == 0:
                 linked = True
@@ -230,6 +243,12 @@ class SWELegoTaskSet(SandboxTaskSet):
             logger.warning(
                 f"[{sandbox_id}] ripgrep install failed (exit={result.exit_code}); "
                 f"rlm install will fall back to apt-get"
+            )
+
+        test_patch = (state.get("info") or {}).get("test_patch") or ""
+        if test_patch.strip():
+            await self._apply_patch_file(
+                sandbox_client, sandbox_id, test_patch, "test_patch"
             )
 
     async def _run_tests(
@@ -309,13 +328,13 @@ class SWELegoTaskSet(SandboxTaskSet):
     async def _apply_gold_patch(
         self, sandbox_client: Any, sandbox_id: str, state: dict
     ) -> None:
+        """Apply the gold code patch.
+
+        ``test_patch`` is applied separately in ``setup()`` so both the
+        gold-patch validation path and the live agent scoring path see the
+        F2P tests.
+        """
         info = state["info"]
-        # Apply test_patch first (adds failing tests), then patch (fixes code).
-        test_patch = info.get("test_patch", "")
-        if test_patch and test_patch.strip():
-            await self._apply_patch_file(
-                sandbox_client, sandbox_id, test_patch, "test_patch"
-            )
         patch = info.get("patch", "")
         if not patch or not patch.strip():
             raise RuntimeError("No gold patch in info['patch']")
