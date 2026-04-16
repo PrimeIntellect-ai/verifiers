@@ -21,7 +21,8 @@ def build_install_script(
         "github.com", "raw.githubusercontent.com"
     )
     return (
-        f"RAW_BASE={shlex.quote(raw_base)}"
+        "command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl; }"
+        f" && RAW_BASE={shlex.quote(raw_base)}"
         f" && RLM_INSTALL_BRANCH={shlex.quote(rlm_branch)}"
         ' && URL="https://${GH_TOKEN:+${GH_TOKEN}@}${RAW_BASE}/${RLM_INSTALL_BRANCH}/install.sh"'
         ' && curl -fsSL "$URL" > /tmp/rlm-install.sh'
