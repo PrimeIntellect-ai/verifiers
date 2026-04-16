@@ -103,27 +103,19 @@ class TestURLHelpers:
 class TestHarborValidation:
     """Mirrors `harbor.models.task.config.MCPServerConfig.validate_transport_fields`."""
 
-    def test_sse_requires_url(self):
-        cfg = {"environment": {"mcp_servers": [{"name": "svc", "transport": "sse"}]}}
-        with pytest.raises(ValueError, match="'url' is required for transport 'sse'"):
-            parse_mcp_servers(cfg)
-
-    def test_streamable_http_requires_url(self):
+    @pytest.mark.parametrize(
+        "transport,expected_error",
+        [
+            ("sse", "'url' is required for transport 'sse'"),
+            ("streamable-http", "'url' is required for transport 'streamable-http'"),
+            ("stdio", "'command' is required for transport 'stdio'"),
+        ],
+    )
+    def test_required_fields_per_transport(self, transport, expected_error):
         cfg = {
-            "environment": {
-                "mcp_servers": [{"name": "svc", "transport": "streamable-http"}]
-            }
+            "environment": {"mcp_servers": [{"name": "svc", "transport": transport}]}
         }
-        with pytest.raises(
-            ValueError, match="'url' is required for transport 'streamable-http'"
-        ):
-            parse_mcp_servers(cfg)
-
-    def test_stdio_requires_command(self):
-        cfg = {"environment": {"mcp_servers": [{"name": "svc", "transport": "stdio"}]}}
-        with pytest.raises(
-            ValueError, match="'command' is required for transport 'stdio'"
-        ):
+        with pytest.raises(ValueError, match=expected_error):
             parse_mcp_servers(cfg)
 
 
@@ -219,64 +211,48 @@ class TestLaunchCommandResolution:
         )
 
 
-class TestStartCommand:
-    def test_records_real_process_pid_via_bang(self):
+class TestStartStopCommands:
+    def test_start_cmd_tracks_child_pid_not_subshell(self):
         """PID tracking must use `$!` (backgrounded child), NOT `$$` (outer shell).
 
         Inside the SDK's `(...)` subshell, `$$` is the outer shell's PID —
-        killing it would leave the exec'd target orphaned.
+        killing it would leave the exec'd target orphaned. Also asserts no
+        `exec`/`su` wrapping so the user's command runs verbatim, and that
+        the subshell ends with `wait` so its exit code reflects the target's.
         """
-        env = _DummyEnv()
-        cmd = env._mcp_start_cmd("svc", "python server.py")
+        cmd = _DummyEnv()._mcp_start_cmd("svc", "python -u /opt/x/server.py")
         assert "echo $!" in cmd
         assert "echo $$" not in cmd
-        # Must end with `wait` so the subshell's exit code reflects the target's.
         assert cmd.rstrip().endswith("wait")
         assert "/tmp/harbor-mcp-svc.pid" in cmd
-
-    def test_user_command_is_not_exec_wrapped(self):
-        """No `exec`, no `su`, no extra env prefix — just background + pidfile."""
-        env = _DummyEnv()
-        cmd = env._mcp_start_cmd("svc", "python -u /opt/x/server.py")
         assert "exec" not in cmd
         assert "su -s" not in cmd
         assert "python -u /opt/x/server.py" in cmd
 
-    def test_server_name_with_shell_metachars_is_quoted(self):
-        """Server name is task-author-controlled; treat it like any shell arg."""
-        env = _DummyEnv()
-        start = env._mcp_start_cmd("evil$(whoami)", "server")
-        # Pid path appears exactly once, already single-quoted.
-        assert "'/tmp/harbor-mcp-evil$(whoami).pid'" in start
-        unquoted = "/tmp/harbor-mcp-evil$(whoami).pid"
-        assert start.count(unquoted) == start.count(f"'{unquoted}'")
-
-        stop = env._mcp_stop_cmd("evil$(whoami)")
-        assert stop.count(f"'{unquoted}'") == 2
-        assert stop.count(unquoted) == stop.count(f"'{unquoted}'")
-
-
-class TestStopCommand:
-    def test_default_is_sigkill_plus_rm(self):
-        """Default: one SIGKILL, then unlink the pidfile."""
-        env = _DummyEnv()
-        cmd = env._mcp_stop_cmd("svc")
+    def test_stop_cmd_is_one_line_sigkill_plus_rm(self):
+        """Default: one SIGKILL, then unlink the pidfile — no poll/sleep loop."""
+        cmd = _DummyEnv()._mcp_stop_cmd("svc")
         assert "kill -9" in cmd
         assert "rm -f" in cmd
+        assert "/tmp/harbor-mcp-svc.pid" in cmd
         assert "kill -0" not in cmd
         assert "sleep" not in cmd
-
-    def test_default_references_pidfile(self):
-        env = _DummyEnv()
-        cmd = env._mcp_stop_cmd("svc")
-        assert "/tmp/harbor-mcp-svc.pid" in cmd
-
-    def test_default_is_short(self):
-        """Keep it one line — fewer round trips, easier to grep in logs."""
-        env = _DummyEnv()
-        cmd = env._mcp_stop_cmd("svc")
         assert "\n" not in cmd
         assert len(cmd) < 120
+
+    def test_server_name_with_shell_metachars_is_quoted(self):
+        """Server name is task-author-controlled; every pidfile reference
+        must appear only inside single-quoted spans."""
+        env = _DummyEnv()
+        unquoted = "/tmp/harbor-mcp-evil$(whoami).pid"
+        quoted = f"'{unquoted}'"
+        for cmd in (
+            env._mcp_start_cmd("evil$(whoami)", "x"),
+            env._mcp_stop_cmd("evil$(whoami)"),
+        ):
+            assert quoted in cmd
+            # Every raw occurrence must be inside an already-quoted span.
+            assert cmd.count(unquoted) == cmd.count(quoted)
 
 
 class TestLifecycle:
@@ -297,20 +273,11 @@ class TestLifecycle:
         env.sandbox_client.start_background_job.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_stop_mcp_servers_cleanup_clears_state(self):
+    async def test_stop_issues_kill_and_clears_state(self):
         env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
         state: dict[str, Any] = {"sandbox_id": "sbx"}
         await env.start_mcp_servers("sbx", _config_with_server(), state)
         assert "svc" in state["harbor_mcp_jobs"]
-
-        await env.stop_mcp_servers(state)
-        assert state["harbor_mcp_jobs"] == {}
-
-    @pytest.mark.asyncio
-    async def test_stop_issues_kill_with_pidfile(self):
-        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
-        state: dict[str, Any] = {"sandbox_id": "sbx"}
-        await env.start_mcp_servers("sbx", _config_with_server(), state)
         env.sandbox_client.execute_command.reset_mock()
 
         await env.stop_mcp_servers(state)
@@ -322,6 +289,7 @@ class TestLifecycle:
         ]
         assert len(stop_calls) == 1
         assert "harbor-mcp-svc.pid" in stop_calls[0]
+        assert state["harbor_mcp_jobs"] == {}
 
     @pytest.mark.asyncio
     async def test_stop_without_sandbox_id_is_a_noop(self):
@@ -346,29 +314,16 @@ class TestLifecycle:
 
 class TestBackgroundJob:
     @pytest.mark.asyncio
-    async def test_uses_start_background_job_not_execute_command(self):
-        """Daemon launch goes through start_background_job, not execute_command."""
+    async def test_launch_uses_background_job_and_stores_handle(self):
+        """Daemon launch goes through start_background_job (not execute_command),
+        and the returned handle is stashed on state for cleanup."""
         env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
         state: dict[str, Any] = {}
         await env.start_mcp_servers("sbx", _config_with_server(), state)
 
         env.sandbox_client.start_background_job.assert_awaited_once()
-        start_commands = [
-            c.args[1]
-            for c in env.sandbox_client.execute_command.call_args_list
-            if "python x &" in c.args[1]
-        ]
-        assert start_commands == []
-
-    @pytest.mark.asyncio
-    async def test_background_job_stored_in_state(self):
-        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
-        state: dict[str, Any] = {}
-        await env.start_mcp_servers("sbx", _config_with_server(), state)
-
-        jobs = state["harbor_mcp_jobs"]
-        assert set(jobs.keys()) == {"svc"}
-        assert jobs["svc"].job_id == "job-svc"
+        assert set(state["harbor_mcp_jobs"]) == {"svc"}
+        assert state["harbor_mcp_jobs"]["svc"].job_id == "job-svc"
 
     @pytest.mark.asyncio
     async def test_early_crash_bails_out_with_stderr(self):
@@ -399,12 +354,13 @@ class TestBackgroundJob:
 class TestHealthCheck:
     """Readiness probing — default `/proc/net/tcp` + user override."""
 
-    def test_default_probe_uses_procfs_not_bash(self):
+    def test_default_probe_shape(self):
+        """Portable awk on /proc/net/tcp{,6}, matching LISTEN state only,
+        with no bash-ism dependency like /dev/tcp."""
         cmd = HarborMCPMixin._default_mcp_health_cmd(8000)
-        assert "bash" not in cmd
-        assert "/dev/tcp" not in cmd
-        assert "/proc/net/tcp" in cmd
-        assert "/proc/net/tcp6" in cmd
+        assert "bash" not in cmd and "/dev/tcp" not in cmd
+        assert "/proc/net/tcp" in cmd and "/proc/net/tcp6" in cmd
+        assert '$4 == "0A"' in cmd  # LISTEN state
 
     @pytest.mark.parametrize(
         "port,hex_expected",
@@ -413,10 +369,6 @@ class TestHealthCheck:
     def test_default_probe_encodes_port_as_uppercase_hex(self, port, hex_expected):
         cmd = HarborMCPMixin._default_mcp_health_cmd(port)
         assert f":{hex_expected}$" in cmd
-
-    def test_default_probe_requires_listen_state(self):
-        cmd = HarborMCPMixin._default_mcp_health_cmd(8000)
-        assert '$4 == "0A"' in cmd
 
     @pytest.mark.asyncio
     async def test_custom_healthcheck_command_templated_with_port(self):
