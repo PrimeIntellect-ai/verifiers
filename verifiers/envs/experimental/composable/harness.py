@@ -16,7 +16,7 @@ connects them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -75,6 +75,13 @@ class Harness:
     metrics_keys:
         Optional whitelist of metric keys to surface.  ``None`` means
         surface all keys found.
+    env_vars:
+        Harness-owned sandbox env vars forwarded to the agent at
+        runtime. Merged into the sandbox env by ``ComposableEnv`` with
+        the lowest precedence — values set via
+        ``CLIAgentEnv(environment_vars=...)`` or by the task win.
+        Lets a harness declare agent defaults (e.g. the rlm harness
+        setting ``OPENAI_API_KEY=intercepted``) in one place.
     """
 
     install_script: str | None = None
@@ -90,6 +97,7 @@ class Harness:
     metrics_prefix: str = ""
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
+    env_vars: dict[str, str] = field(default_factory=dict)
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""
