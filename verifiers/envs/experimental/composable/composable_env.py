@@ -123,6 +123,10 @@ class ComposableEnv(CliAgentEnv):
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
+        # Harness env vars act as defaults — only fill keys the user
+        # (via ``CLIAgentEnv(environment_vars=...)``) did not set.
+        for k, v in self.harness.env_vars.items():
+            env_vars.setdefault(k, v)
         info = state.get("info") or {}
         task_env_vars = self.taskset.get_env_vars()
         if task_env_vars:

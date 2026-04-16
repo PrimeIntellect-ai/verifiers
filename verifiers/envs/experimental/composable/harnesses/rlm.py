@@ -12,6 +12,19 @@ DEFAULT_RLM_TOOLS = "bash,edit"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 
+# Harness-owned sandbox env vars for the rlm agent. Kept intentionally
+# minimal: OPENAI_API_KEY=intercepted routes inference through the
+# verifiers interception tunnel (sandbox plumbing, not an rlm knob);
+# RLM_MAX_TURNS raises rlm's dev default (30) to a value appropriate
+# for longer sandbox-based rollouts. Every other rlm-side knob
+# (RLM_MAX_TURNS_IN_CONTEXT, RLM_EXEC_TIMEOUT, RLM_ENABLED_TOOLS, ...)
+# is left to rlm's own defaults; callers pass overrides via
+# ``rlm_harness(env_vars={...})``.
+DEFAULT_RLM_ENV_VARS: dict[str, str] = {
+    "OPENAI_API_KEY": "intercepted",
+    "RLM_MAX_TURNS": str(DEFAULT_RLM_MAX_TURNS),
+}
+
 
 def build_install_script(
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
@@ -68,7 +81,10 @@ def rlm_harness(
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_branch: str = DEFAULT_RLM_BRANCH,
     append_to_system_prompt: str | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> Harness:
+    """Build the rlm harness. ``env_vars`` layers on top of
+    ``DEFAULT_RLM_ENV_VARS``; user keys win."""
     return Harness(
         install_script=build_install_script(rlm_repo_url, rlm_branch),
         run_command=build_run_command(instruction_path, workdir),
@@ -79,4 +95,5 @@ def rlm_harness(
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
+        env_vars={**DEFAULT_RLM_ENV_VARS, **(env_vars or {})},
     )
