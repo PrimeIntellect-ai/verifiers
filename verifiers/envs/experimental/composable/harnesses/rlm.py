@@ -7,17 +7,29 @@ import shlex
 from verifiers.envs.experimental.composable import Harness
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
+DEFAULT_RLM_BRANCH = "main"
 DEFAULT_RLM_TOOLS = "bash,edit"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 
 
-def build_install_script(rlm_repo_url: str = DEFAULT_RLM_REPO_URL) -> str:
+def build_install_script(
+    rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    rlm_branch: str = DEFAULT_RLM_BRANCH,
+) -> str:
     raw_base = rlm_repo_url.removesuffix(".git").replace(
         "github.com", "raw.githubusercontent.com"
     )
-    url = f"https://${{GH_TOKEN}}@{raw_base}/main/install.sh"
-    return f"(curl -fsSL {url} || wget -qO- {url}) > /tmp/rlm-install.sh && bash /tmp/rlm-install.sh"
+    return (
+        "command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl; }"
+        f" && RAW_BASE={shlex.quote(raw_base)}"
+        f" && RLM_INSTALL_BRANCH={shlex.quote(rlm_branch)}"
+        ' && URL="https://${GH_TOKEN:+${GH_TOKEN}@}${RAW_BASE}/${RLM_INSTALL_BRANCH}/install.sh"'
+        ' && curl -fsSL "$URL" > /tmp/rlm-install.sh'
+        f" && RLM_REPO_URL={shlex.quote(rlm_repo_url)}"
+        f" RLM_REPO_BRANCH={shlex.quote(rlm_branch)}"
+        " bash /tmp/rlm-install.sh"
+    )
 
 
 def build_run_command(
@@ -55,10 +67,11 @@ def rlm_harness(
     workdir: str = "/testbed",
     instruction_path: str = "/task/instruction.md",
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    rlm_branch: str = DEFAULT_RLM_BRANCH,
     append_to_system_prompt: str | None = None,
 ) -> Harness:
     return Harness(
-        install_script=build_install_script(rlm_repo_url),
+        install_script=build_install_script(rlm_repo_url, rlm_branch),
         run_command=build_run_command(instruction_path, workdir),
         system_prompt=append_to_system_prompt,
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
