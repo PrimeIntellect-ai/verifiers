@@ -13,6 +13,8 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
 
+REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
+
 ENV_VARS_SWE_LEGO = {
     "PATH": (
         "/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/bin:"
@@ -156,7 +158,10 @@ class SWELegoTaskSet(SandboxTaskSet):
         return info["problem_statement"]
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec:
-        return SandboxSpec(image=info["image_name"])
+        # Images must be mirrored to our registry before use.
+        # Original: chaofantao/autocode07:swesmith.x86_64.<repo>
+        # Mirrored: {REGISTRY_PREFIX}/chaofantao/autocode07:swesmith.x86_64.<repo>
+        return SandboxSpec(image=f"{REGISTRY_PREFIX}/{info['image_name']}")
 
     def get_workdir(self, info: dict) -> str:
         return "/testbed"
