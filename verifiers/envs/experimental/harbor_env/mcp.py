@@ -116,11 +116,16 @@ class HarborMCPMixin:
         """Shell command to launch `server`, or `None` to skip it."""
         return self.mcp_launch_commands.get(server.name)
 
-    def mcp_agent_env_vars(self, config: dict[str, Any]) -> dict[str, str]:
-        """Publish `HARBOR_MCP_<NAME>_URL=<loopback url>` for every declared server."""
+    async def mcp_agent_env_vars(
+        self, config: dict[str, Any], state: vf.State
+    ) -> dict[str, str]:
+        """Publish `HARBOR_MCP_<NAME>_URL` for every declared network server."""
         env_vars: dict[str, str] = {}
         for server in parse_mcp_servers(config):
-            url = mcp_agent_url(server)
+            if not server.is_network or not server.url:
+                continue
+            command = await self.mcp_launch_command(server, state)
+            url = mcp_agent_url(server) if command is not None else server.url
             if url is None:
                 continue
             key = f"HARBOR_MCP_{server.name.upper().replace('-', '_')}_URL"
@@ -131,9 +136,8 @@ class HarborMCPMixin:
         self, sandbox_id: str, config: dict[str, Any], state: vf.State
     ) -> None:
         """Start every framework-managed MCP server declared in ``config``."""
-        servers = parse_mcp_servers(config)
-        await self._patch_mcp_etc_hosts(sandbox_id, servers)
-        for server in servers:
+        framework_managed: list[tuple[HarborMCPServer, str]] = []
+        for server in parse_mcp_servers(config):
             if not server.is_network:
                 continue
             command = await self.mcp_launch_command(server, state)
@@ -143,6 +147,10 @@ class HarborMCPMixin:
                     server.name,
                 )
                 continue
+            framework_managed.append((server, command))
+
+        await self._patch_mcp_etc_hosts(sandbox_id, [s for s, _ in framework_managed])
+        for server, command in framework_managed:
             await self._start_mcp_server(sandbox_id, server, command, state)
 
     @vf.cleanup(priority=1)

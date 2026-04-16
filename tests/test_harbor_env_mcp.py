@@ -485,8 +485,9 @@ class TestHarborHealthcheckSemantics:
 
 
 class TestEnvVarPublishing:
-    def test_publishes_url_for_every_declared_server(self):
-        env = _DummyEnv()
+    @pytest.mark.asyncio
+    async def test_framework_managed_url_is_rewritten_to_loopback(self):
+        env = _DummyEnv(mcp_launch_commands={"one": "cmd1", "two": "cmd2"})
         cfg = {
             "environment": {
                 "mcp_servers": [
@@ -503,12 +504,57 @@ class TestEnvVarPublishing:
                 ]
             }
         }
-        assert env.mcp_agent_env_vars(cfg) == {
+        assert await env.mcp_agent_env_vars(cfg, {}) == {
             "HARBOR_MCP_ONE_URL": "http://127.0.0.1:1/mcp",
             "HARBOR_MCP_TWO_URL": "http://127.0.0.1:2/mcp",
         }
 
-    def test_stdio_servers_are_not_published(self):
+    @pytest.mark.asyncio
+    async def test_externally_managed_url_is_preserved_verbatim(self):
+        """Remote managed endpoints in task.toml must reach the agent as-is —
+        rewriting them to 127.0.0.1 would strand the agent on a closed port."""
+        env = _DummyEnv()  # no launch command for "remote"
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "remote",
+                        "transport": "streamable-http",
+                        "url": "https://mcp.example.com/mcp",
+                    }
+                ]
+            }
+        }
+        assert await env.mcp_agent_env_vars(cfg, {}) == {
+            "HARBOR_MCP_REMOTE_URL": "https://mcp.example.com/mcp",
+        }
+
+    @pytest.mark.asyncio
+    async def test_mix_of_managed_and_external_servers(self):
+        env = _DummyEnv(mcp_launch_commands={"local": "cmd"})
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "local",
+                        "transport": "streamable-http",
+                        "url": "http://local-svc:9000/mcp",
+                    },
+                    {
+                        "name": "remote",
+                        "transport": "streamable-http",
+                        "url": "https://mcp.example.com/mcp",
+                    },
+                ]
+            }
+        }
+        assert await env.mcp_agent_env_vars(cfg, {}) == {
+            "HARBOR_MCP_LOCAL_URL": "http://127.0.0.1:9000/mcp",
+            "HARBOR_MCP_REMOTE_URL": "https://mcp.example.com/mcp",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stdio_servers_are_not_published(self):
         """Stdio servers don't have URLs — nothing to publish."""
         env = _DummyEnv()
         cfg = {
@@ -518,10 +564,11 @@ class TestEnvVarPublishing:
                 ]
             }
         }
-        assert env.mcp_agent_env_vars(cfg) == {}
+        assert await env.mcp_agent_env_vars(cfg, {}) == {}
 
-    def test_server_name_is_normalized_to_upper_snake(self):
-        env = _DummyEnv()
+    @pytest.mark.asyncio
+    async def test_server_name_is_normalized_to_upper_snake(self):
+        env = _DummyEnv(mcp_launch_commands={"my-cool-server": "x"})
         cfg = {
             "environment": {
                 "mcp_servers": [
@@ -533,7 +580,7 @@ class TestEnvVarPublishing:
                 ]
             }
         }
-        assert "HARBOR_MCP_MY_COOL_SERVER_URL" in env.mcp_agent_env_vars(cfg)
+        assert "HARBOR_MCP_MY_COOL_SERVER_URL" in await env.mcp_agent_env_vars(cfg, {})
 
 
 class TestEtcHosts:
@@ -569,12 +616,41 @@ class TestEtcHosts:
         assert not any("/etc/hosts" in c for c in commands)
 
     @pytest.mark.asyncio
-    async def test_patches_externally_managed_server_hosts_too(self):
-        """Servers without launch commands still need /etc/hosts aliasing so
-        the agent can reach them by the task.toml hostname."""
+    async def test_does_not_patch_externally_managed_server_hosts(self):
+        """Externally managed servers may be real remote endpoints — aliasing
+        their hostname to 127.0.0.1 would make them unreachable."""
         env = _DummyEnv()  # no launch commands
         await env.start_mcp_servers("sbx", _config_with_server(), {})
         commands = [
             call.args[1] for call in env.sandbox_client.execute_command.call_args_list
         ]
-        assert any("svc-host" in c and "/etc/hosts" in c for c in commands)
+        assert not any("/etc/hosts" in c for c in commands)
+
+    @pytest.mark.asyncio
+    async def test_patches_only_framework_managed_hosts_in_mixed_config(self):
+        env = _DummyEnv(mcp_launch_commands={"local": "cmd"})
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "local",
+                        "transport": "streamable-http",
+                        "url": "http://local-svc:9000/mcp",
+                    },
+                    {
+                        "name": "remote",
+                        "transport": "streamable-http",
+                        "url": "https://mcp.example.com/mcp",
+                    },
+                ]
+            }
+        }
+        await env.start_mcp_servers("sbx", cfg, {})
+        etc_hosts_cmds = [
+            call.args[1]
+            for call in env.sandbox_client.execute_command.call_args_list
+            if "/etc/hosts" in call.args[1]
+        ]
+        assert len(etc_hosts_cmds) == 1
+        assert "local-svc" in etc_hosts_cmds[0]
+        assert "mcp.example.com" not in etc_hosts_cmds[0]
