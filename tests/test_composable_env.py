@@ -371,7 +371,7 @@ async def test_composable_env_uploads_task_dirs(tmp_path, monkeypatch):
         harness=Harness(
             run_command="true",
             install_script="install-agent",
-            upload_dir_mapping={"skills": "/task/skills"},
+            skills_path="/task/skills",
         ),
     )
     env.sandbox_client = SimpleNamespace(
@@ -411,7 +411,7 @@ async def test_composable_env_no_upload_when_no_dirs(tmp_path, monkeypatch):
         harness=Harness(
             run_command="true",
             install_script="install-agent",
-            upload_dir_mapping={"skills": "/task/skills"},
+            skills_path="/task/skills",
         ),
     )
     env.sandbox_client = SimpleNamespace(

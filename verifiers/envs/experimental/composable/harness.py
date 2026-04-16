@@ -47,13 +47,17 @@ class Harness:
         Default sandbox resources when the task doesn't provide a
         SandboxSpec (e.g. math + OpenCode — the agent needs a sandbox
         but the task doesn't specify one).
+    skills_path:
+        Sandbox path where taskset skills are uploaded.  Setting this
+        is the recommended way to enable skills upload.  Equivalent to
+        ``upload_dir_mapping={"skills": skills_path}``.
+        Example: ``"/task/rlm-skills"``.
     upload_dir_mapping:
         Maps logical directory names (declared by
         ``TaskSet.get_upload_dirs()``) to absolute sandbox paths.
-        Example: ``{"skills": "/task/rlm-skills"}`` tells ComposableEnv
-        to upload the taskset's ``"skills"`` directory to
-        ``/task/rlm-skills`` in the sandbox.  Only names present in the
-        mapping are uploaded; others are silently ignored.
+        ``skills_path`` is merged into this mapping automatically.
+        Use for non-skills directories; for skills prefer
+        ``skills_path``.
     metrics_path:
         Glob pattern for a JSON metrics file inside the sandbox,
         collected after the rollout.  May contain ``{workdir}`` which is
@@ -80,8 +84,16 @@ class Harness:
     instruction_path: str = "/task/instruction.md"
     log_path: str | None = None
     sandbox_spec: SandboxSpec | None = None
+    skills_path: str | None = None
     upload_dir_mapping: dict[str, str] | None = None
     metrics_path: str | None = None
     metrics_prefix: str = ""
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
+
+    def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
+        """Return the merged upload mapping (skills_path + upload_dir_mapping)."""
+        mapping = dict(self.upload_dir_mapping) if self.upload_dir_mapping else {}
+        if self.skills_path:
+            mapping.setdefault("skills", self.skills_path)
+        return mapping or None

@@ -76,7 +76,7 @@ def rlm_harness(
         system_prompt=append_to_system_prompt,
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
         instruction_path=instruction_path,
-        upload_dir_mapping={"skills": "/task/rlm-skills"},
+        skills_path="/task/rlm-skills",
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",

@@ -103,9 +103,9 @@ def test_rlm_harness_sets_metrics_fields():
     assert harness.metrics_prefix == "rlm_"
 
 
-def test_rlm_harness_sets_upload_dir_mapping():
+def test_rlm_harness_sets_skills_path():
     harness = rlm_harness()
-    assert harness.upload_dir_mapping == {"skills": "/task/rlm-skills"}
+    assert harness.skills_path == "/task/rlm-skills"
 
 
 # ── install_env ──────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ async def test_rlm_install_runs_without_skills(tmp_path, monkeypatch):
             instruction_path="/tmp/with space/prompt.txt",
             system_prompt="system",
             system_prompt_path="/tmp/other path/system.txt",
-            upload_dir_mapping={"skills": "/task/rlm-skills"},
+            skills_path="/task/rlm-skills",
         ),
         install_env={"GH_TOKEN": "secret"},
     )
@@ -167,7 +167,7 @@ async def test_rlm_uploads_skills_before_install(tmp_path, monkeypatch):
         harness=Harness(
             run_command="true",
             install_script="install-rlm",
-            upload_dir_mapping={"skills": "/task/rlm-skills"},
+            skills_path="/task/rlm-skills",
         ),
     )
     env.sandbox_client = SimpleNamespace(

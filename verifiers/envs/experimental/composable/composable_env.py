@@ -216,7 +216,7 @@ class ComposableEnv(CliAgentEnv):
         Only directories whose logical name appears in both are uploaded.
         """
         upload_dirs = self.taskset.get_upload_dirs()
-        mapping = self.harness.upload_dir_mapping
+        mapping = self.harness.get_effective_upload_dir_mapping()
         if not upload_dirs or not mapping:
             return
         sandbox_id = state["sandbox_id"]
