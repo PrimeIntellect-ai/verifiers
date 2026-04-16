@@ -11,6 +11,7 @@ DEFAULT_RLM_TOOLS = "bash,edit"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 
+
 def build_install_script(rlm_repo_url: str = DEFAULT_RLM_REPO_URL) -> str:
     raw_base = rlm_repo_url.removesuffix(".git").replace(
         "github.com", "raw.githubusercontent.com"
