@@ -20,9 +20,11 @@ def build_install_script(
     raw_base = rlm_repo_url.removesuffix(".git").replace(
         "github.com", "raw.githubusercontent.com"
     )
-    url = f"https://${{GH_TOKEN}}@{raw_base}/{rlm_branch}/install.sh"
     return (
-        f"(curl -fsSL {url} || wget -qO- {url}) > /tmp/rlm-install.sh"
+        f"RAW_BASE={shlex.quote(raw_base)}"
+        f" && RLM_INSTALL_BRANCH={shlex.quote(rlm_branch)}"
+        ' && URL="https://${GH_TOKEN:+${GH_TOKEN}@}${RAW_BASE}/${RLM_INSTALL_BRANCH}/install.sh"'
+        ' && (curl -fsSL "$URL" || wget -qO- "$URL") > /tmp/rlm-install.sh'
         f" && RLM_REPO_URL={shlex.quote(rlm_repo_url)}"
         f" RLM_REPO_BRANCH={shlex.quote(rlm_branch)}"
         " bash /tmp/rlm-install.sh"
