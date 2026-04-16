@@ -31,6 +31,8 @@ class Harness:
     ----------
     install_script:
         Shell command to install the agent binary in the sandbox.
+    install_timeout:
+        Timeout in seconds for the install script. Defaults to 300.
     run_command:
         Shell command to start the agent.
     system_prompt:
@@ -50,6 +52,7 @@ class Harness:
     """
 
     install_script: str | None = None
+    install_timeout: int = 300
     run_command: str = ""
     system_prompt: str | None = None
     system_prompt_path: str = "/task/system_prompt.txt"

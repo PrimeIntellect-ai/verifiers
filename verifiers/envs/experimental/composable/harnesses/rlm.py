@@ -69,9 +69,11 @@ def rlm_harness(
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_branch: str = DEFAULT_RLM_BRANCH,
     append_to_system_prompt: str | None = None,
+    install_timeout: int = 600,
 ) -> Harness:
     return Harness(
         install_script=build_install_script(rlm_repo_url, rlm_branch),
+        install_timeout=install_timeout,
         run_command=build_run_command(instruction_path, workdir),
         system_prompt=append_to_system_prompt,
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,

@@ -174,7 +174,7 @@ class ComposableEnv(CliAgentEnv):
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
                 self.harness.install_script,
-                timeout=300,
+                timeout=self.harness.install_timeout,
             )
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
