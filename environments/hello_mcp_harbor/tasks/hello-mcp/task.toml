@@ -1,0 +1,23 @@
+schema_version = "1.1"
+
+[task]
+name = "verifiers/hello-mcp-harbor"
+description = "Smoke test for framework-managed MCP in HarborEnv."
+authors = []
+keywords = ["demo", "mcp", "harbor"]
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+allow_internet = true
+
+[[environment.mcp_servers]]
+name = "mcp-server"
+transport = "streamable-http"
+url = "http://localhost:8000/mcp"

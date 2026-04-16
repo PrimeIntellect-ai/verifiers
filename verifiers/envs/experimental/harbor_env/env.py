@@ -137,9 +137,14 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
+        await self.pre_mcp_setup(state)
         await self.start_mcp_servers_for_phase(
             sandbox_id, config, state, phase=DEFAULT_PHASE
         )
+
+    async def pre_mcp_setup(self, state: vf.State) -> None:
+        """Use this to install dependencies or upload code that the MCP servers declared in `task.toml` need."""
+        return None
 
     async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""

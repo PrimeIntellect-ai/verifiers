@@ -1,30 +1,39 @@
 """Framework-managed MCP server lifecycle for Harbor-format tasks.
 
-Harbor's `task.toml` can declare MCP servers under `[[environment.mcp_servers]]`:
+task.toml stays pure Harbor. In native Harbor, network-transport MCP servers
+come from a ``docker-compose.yaml`` sidecar, so the task file only needs to
+advertise the server's URL — not how to start it. Harbor's
+:class:`harbor.models.task.config.MCPServerConfig` has exactly five fields:
+``name``, ``transport``, ``url``, ``command``, ``args``.
 
-```toml
-[[environment.mcp_servers]]
-name = "mcp-server"
-transport = "streamable-http"
-url = "http://mcp-server:8000/mcp"
+Prime sandboxes are single-container, so HarborEnv has to start the servers
+itself. All of that "how to start" detail lives on the Python side, wired up
+via :class:`HarborMCPLauncher` instances passed to
+:meth:`HarborMCPMixin.__init__` (or returned from the
+:meth:`HarborMCPMixin.mcp_launcher_for` hook for dynamic cases).
 
-# Optional sub-table consumed only by HarborEnv. Harbor itself ignores it.
-[environment.mcp_servers.launch]
-command = ".venv/bin/python -u server.py"
-cwd = "/opt/mcp-server"
-user = "environment"
-env = { MCP_CALLER_UID = "10001" }
-phases = ["agent"]           # when the server should be running
-```
+Typical usage::
 
-In native Harbor, network-transport servers are provided by the task's own
-`docker-compose.yaml` sidecars. Prime sandboxes are single-container, so we
-emulate that by starting the server *inside* the same sandbox via
-`sandbox_client.start_background_job` (which handles daemonization, stdout/
-stderr capture, and exit-code tracking for us). Because the sandbox client
-runs commands as root, we can `su` to any user even on a `nosuid` filesystem
-— the same effect as Harbor's setuid wrapper, without needing setuid
-binaries.
+    class MyHarborEnv(HarborEnv):
+        def __init__(self, **kwargs):
+            super().__init__(
+                mcp_launchers={
+                    "mcp-server": HarborMCPLauncher(
+                        command=".venv/bin/python -u server.py",
+                        cwd="/opt/mcp-server",
+                        user="environment",
+                        phases=["agent"],
+                    ),
+                },
+                **kwargs,
+            )
+
+The resulting MCP server process is launched via
+``sandbox_client.start_background_job`` (which handles daemonization,
+stdout/stderr capture, and exit-code tracking). Because the sandbox client
+runs commands as root, we can ``su`` to any user even on a ``nosuid``
+filesystem — the same effect as Harbor's setuid wrapper, without needing
+setuid binaries.
 
 Where behavior overlaps with Harbor proper, we deliberately mirror it:
 
@@ -63,23 +72,23 @@ DEFAULT_PHASE = "agent"
 
 @dataclass
 class HarborMCPServer:
-    """An MCP server entry parsed from `[[environment.mcp_servers]]` in task.toml."""
+    """An MCP server entry parsed from `[[environment.mcp_servers]]` in task.toml.
+
+    Fields mirror :class:`harbor.models.task.config.MCPServerConfig` exactly —
+    HarborEnv does not extend Harbor's task.toml schema. How HarborEnv should
+    *start* a declared server is a Python-side concern; see
+    :class:`HarborMCPLauncher` and :meth:`HarborMCPMixin.mcp_launcher_for`.
+    """
 
     name: str
     transport: str
     command: str | None = None
     args: list[str] = field(default_factory=list)
     url: str | None = None
-    phases: list[str] = field(default_factory=lambda: [DEFAULT_PHASE])
-    launch: dict[str, Any] | None = None
-    raw: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_network(self) -> bool:
         return self.transport in NETWORK_TRANSPORTS
-
-    def active_in(self, phase: str) -> bool:
-        return phase in self.phases
 
 
 @dataclass
@@ -117,13 +126,24 @@ class HarborMCPHealthcheck:
 class HarborMCPLauncher:
     """How to start a network-transport MCP server inside the sandbox.
 
-    `command` is handed to `sandbox_client.start_background_job` (which wraps
-    it in its own `nohup sh -c` shim). When `user` is set, the command is
-    further wrapped in `su -s /bin/sh <user> -c` (sandbox commands run as
-    root, so this works even on nosuid filesystems).
+    All HarborEnv-specific configuration for a task.toml-declared MCP server
+    lives on this class. It is *never* serialized to task.toml — Harbor tasks
+    stay pure Harbor.
 
-    `healthcheck` controls readiness probing. See :class:`HarborMCPHealthcheck`.
-    When ``None``, the mixin's ``default_mcp_healthcheck`` is used.
+    ``command`` is handed to ``sandbox_client.start_background_job`` (which
+    wraps it in its own ``nohup sh -c`` shim). When ``user`` is set, the
+    command is further wrapped in ``su -s /bin/sh <user> -c`` (sandbox
+    commands run as root, so this works even on ``nosuid`` filesystems).
+
+    ``phases`` restricts which rollout phases the server should be running in.
+    Defaults to ``["agent"]`` — HarborEnv's standard flow starts the server
+    during :meth:`HarborEnv.post_sandbox_setup` and stops it before
+    :meth:`HarborEnv.compute_reward` unless ``"verifier"`` is also listed.
+    Set to ``["agent", "verifier"]`` to keep the same server up across both.
+
+    ``healthcheck`` controls readiness probing. See
+    :class:`HarborMCPHealthcheck`. When ``None``, the mixin's
+    ``default_mcp_healthcheck`` is used.
     """
 
     command: str
@@ -134,20 +154,11 @@ class HarborMCPLauncher:
     transport_env_var: str = "MCP_TRANSPORT"
     port_env_var: str = "MCP_PORT"
     host_env_var: str = "MCP_BIND_HOST"
+    phases: list[str] = field(default_factory=lambda: [DEFAULT_PHASE])
     healthcheck: HarborMCPHealthcheck | None = None
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HarborMCPLauncher":
-        """Build a launcher from a task.toml `launch` sub-table."""
-        allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        kwargs = {k: v for k, v in data.items() if k in allowed}
-        if "env" in kwargs and kwargs["env"] is None:
-            kwargs["env"] = {}
-        if isinstance(kwargs.get("healthcheck"), dict):
-            kwargs["healthcheck"] = HarborMCPHealthcheck.from_dict(
-                kwargs["healthcheck"]
-            )
-        return cls(**kwargs)
+    def active_in(self, phase: str) -> bool:
+        return phase in self.phases
 
 
 def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
@@ -156,14 +167,8 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
     Applies the same transport-field validation as Harbor's
     :class:`harbor.models.task.config.MCPServerConfig`: SSE/streamable-http
     transports require ``url``, stdio requires ``command``. Entries that
-    violate these constraints raise ``ValueError``.
-
-    Accepts two per-entry sub-tables that Harbor ignores but HarborEnv uses:
-
-    * ``launch`` — a :class:`HarborMCPLauncher` sub-table, telling HarborEnv
-      how to start the server inside the sandbox.
-    * ``phases`` — list of phases (``"agent"`` / ``"verifier"``) during
-      which the server should be running. Defaults to ``["agent"]``.
+    violate these constraints raise ``ValueError``. Extra keys in the entry
+    are ignored (matching pydantic's default ``extra="ignore"``).
     """
     raw_list = (config.get("environment") or {}).get("mcp_servers") or []
     servers: list[HarborMCPServer] = []
@@ -188,16 +193,6 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
                 f"MCP server {name!r}: 'command' is required for transport 'stdio'"
             )
 
-        phases_raw = entry.get("phases")
-        if isinstance(phases_raw, list) and phases_raw:
-            phases = [str(p) for p in phases_raw]
-        else:
-            phases = [DEFAULT_PHASE]
-
-        launch = entry.get("launch")
-        if launch is not None and not isinstance(launch, dict):
-            launch = None
-
         servers.append(
             HarborMCPServer(
                 name=str(name),
@@ -205,9 +200,6 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
                 command=command,
                 args=list(entry.get("args") or []),
                 url=url,
-                phases=phases,
-                launch=dict(launch) if launch else None,
-                raw=dict(entry),
             )
         )
     return servers
@@ -260,16 +252,14 @@ class HarborMCPMixin:
     ) -> HarborMCPLauncher | None:
         """Return the launcher for `server` in `phase`, or None to skip it.
 
-        Default precedence:
-          1. task.toml `[environment.mcp_servers.launch]` sub-table
-          2. `mcp_launchers={<name>: HarborMCPLauncher(...)}` constructor arg
-          3. None (treat as externally managed)
+        Default: look up the constructor's ``mcp_launchers`` dict by server
+        name. Servers with no matching launcher are treated as externally
+        managed (e.g. Harbor-style docker-compose sidecars — not something
+        HarborEnv starts).
 
-        Subclasses override this to compute env vars at start time (e.g.
-        BTB sets `MCP_CALLER_UID` per phase).
+        Subclasses override this for dynamic behavior — e.g. returning
+        different launchers per phase, or computing env vars at start time.
         """
-        if server.launch:
-            return HarborMCPLauncher.from_dict(server.launch)
         return self.mcp_launchers.get(server.name)
 
     def mcp_extra_env(
@@ -290,10 +280,18 @@ class HarborMCPMixin:
         The agent's run_command can template these (e.g. OpenCode config):
         a server declared as `http://mcp-server:8000/mcp` is published as
         `HARBOR_MCP_MCP_SERVER_URL=http://127.0.0.1:8000/mcp`.
+
+        A server is considered "reachable in `phase`" if it either:
+
+        * has a launcher whose ``phases`` include ``phase``, or
+        * has no launcher at all (externally managed — assumed always up).
         """
         env_vars: dict[str, str] = {}
+        # Cheap, read-only lookup so we don't need rollout state.
+        empty_state: vf.State = {}  # type: ignore[assignment]
         for server in parse_mcp_servers(config):
-            if not server.active_in(phase):
+            launcher = self.mcp_launcher_for(server, empty_state, phase)
+            if launcher is not None and not launcher.active_in(phase):
                 continue
             url = mcp_agent_url(server)
             if url is None:
@@ -309,7 +307,7 @@ class HarborMCPMixin:
         state: vf.State,
         phase: str = DEFAULT_PHASE,
     ) -> None:
-        """Start every MCP server whose `phases` include `phase`."""
+        """Start every framework-managed MCP server that's active in `phase`."""
         servers = parse_mcp_servers(config)
         state["harbor_mcp_servers"] = servers
         state.setdefault("harbor_mcp_started", [])
@@ -319,7 +317,7 @@ class HarborMCPMixin:
         await self._patch_mcp_etc_hosts(sandbox_id, servers)
 
         for server in servers:
-            if not server.is_network or not server.active_in(phase):
+            if not server.is_network:
                 continue
             launcher = self.mcp_launcher_for(server, state, phase)
             if launcher is None:
@@ -329,6 +327,8 @@ class HarborMCPMixin:
                     server.name,
                     server.transport,
                 )
+                continue
+            if not launcher.active_in(phase):
                 continue
             await self._start_mcp_server(
                 sandbox_id, server, launcher, state, phase=phase
@@ -355,18 +355,24 @@ class HarborMCPMixin:
         started: list[str] = list(state.get("harbor_mcp_started") or [])
         by_name = {s.name: s for s in servers}
 
+        # Stop everything currently running that doesn't belong in `phase`.
         for name in started:
             server = by_name.get(name)
-            if server is None or not server.active_in(phase):
+            if server is None:
+                await self._stop_mcp_server(sandbox_id, name, state)
+                continue
+            launcher = self.mcp_launcher_for(server, state, phase)
+            if launcher is None or not launcher.active_in(phase):
                 await self._stop_mcp_server(sandbox_id, name, state)
 
+        # Start anything that's missing and should be up.
         for server in servers:
-            if not server.is_network or not server.active_in(phase):
+            if not server.is_network:
                 continue
             if server.name in (state.get("harbor_mcp_started") or []):
                 continue
             launcher = self.mcp_launcher_for(server, state, phase)
-            if launcher is None:
+            if launcher is None or not launcher.active_in(phase):
                 continue
             await self._start_mcp_server(
                 sandbox_id, server, launcher, state, phase=phase

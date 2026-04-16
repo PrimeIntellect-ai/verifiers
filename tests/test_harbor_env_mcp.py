@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,63 +40,36 @@ class TestParseMCPServers:
         assert servers[0].is_network
         assert not servers[1].is_network
 
-    def test_defaults_to_agent_phase(self):
-        cfg = {
-            "environment": {
-                "mcp_servers": [{"name": "svc", "transport": "stdio", "command": "x"}]
-            }
-        }
-        (server,) = parse_mcp_servers(cfg)
-        assert server.phases == [DEFAULT_PHASE]
-
-    def test_phases_are_normalized_to_strings(self):
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "svc",
-                        "transport": "streamable-http",
-                        "url": "http://svc:1/mcp",
-                        "phases": ["agent", "verifier"],
-                    }
-                ]
-            }
-        }
-        (server,) = parse_mcp_servers(cfg)
-        assert server.active_in("agent")
-        assert server.active_in("verifier")
-        assert not server.active_in("other")
-
-    def test_launch_subtable_round_trips(self):
-        launch = {
-            "command": ".venv/bin/python -u server.py",
-            "cwd": "/opt/x",
-            "user": "env-user",
-            "env": {"K": "V"},
-        }
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "svc",
-                        "transport": "streamable-http",
-                        "url": "http://svc:1/mcp",
-                        "launch": launch,
-                    }
-                ]
-            }
-        }
-        (server,) = parse_mcp_servers(cfg)
-        assert server.launch == launch
-        built = HarborMCPLauncher.from_dict(server.launch)
-        assert built.command == launch["command"]
-        assert built.cwd == launch["cwd"]
-        assert built.user == launch["user"]
-        assert built.env == launch["env"]
-
     def test_skips_entries_without_name(self):
         cfg = {"environment": {"mcp_servers": [{"transport": "stdio"}]}}
         assert parse_mcp_servers(cfg) == []
+
+    def test_does_not_leak_harbor_env_only_fields(self):
+        """HarborEnv-specific keys (e.g. `launch`, `phases`) must live on the
+        Python launcher, not in task.toml — Harbor's schema stays pure."""
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "svc",
+                        "transport": "streamable-http",
+                        "url": "http://svc:1/mcp",
+                        "launch": {"command": "should-be-ignored"},
+                        "phases": ["verifier"],
+                    }
+                ]
+            }
+        }
+        (server,) = parse_mcp_servers(cfg)
+        # Parsed server must expose only Harbor's 5 fields.
+        for forbidden in ("launch", "phases", "raw"):
+            assert not hasattr(server, forbidden), (
+                f"HarborMCPServer leaks `{forbidden}`; keep task.toml pure Harbor"
+            )
+        # Extra keys in the entry are silently ignored.
+        assert server.name == "svc"
+        assert server.transport == "streamable-http"
+        assert server.url == "http://svc:1/mcp"
 
 
 class TestURLHelpers:
@@ -177,35 +149,23 @@ class _DummyEnv(HarborMCPMixin):
         )
 
 
-def _config_with_server(
-    *,
-    phases: Iterable[str] | None = None,
-    launch: dict[str, Any] | None = None,
-    name: str = "svc",
-    port: int = 8000,
-) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "name": name,
-        "transport": "streamable-http",
-        "url": f"http://svc-host:{port}/mcp",
+def _config_with_server(*, name: str = "svc", port: int = 8000) -> dict[str, Any]:
+    """Pure-Harbor task.toml fragment with one streamable-http MCP server."""
+    return {
+        "environment": {
+            "mcp_servers": [
+                {
+                    "name": name,
+                    "transport": "streamable-http",
+                    "url": f"http://svc-host:{port}/mcp",
+                }
+            ]
+        }
     }
-    if phases is not None:
-        entry["phases"] = list(phases)
-    if launch is not None:
-        entry["launch"] = launch
-    return {"environment": {"mcp_servers": [entry]}}
 
 
 class TestLauncherResolution:
-    def test_task_toml_launch_beats_constructor(self):
-        cfg_launch = {"command": "toml-cmd"}
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="ctor-cmd")})
-        (server,) = parse_mcp_servers(_config_with_server(launch=cfg_launch))
-        launcher = env.mcp_launcher_for(server, state={}, phase="agent")
-        assert launcher is not None
-        assert launcher.command == "toml-cmd"
-
-    def test_falls_back_to_constructor(self):
+    def test_returns_launcher_from_constructor_dict(self):
         env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="ctor-cmd")})
         (server,) = parse_mcp_servers(_config_with_server())
         launcher = env.mcp_launcher_for(server, state={}, phase="agent")
@@ -213,9 +173,30 @@ class TestLauncherResolution:
         assert launcher.command == "ctor-cmd"
 
     def test_returns_none_when_unregistered(self):
+        """No launcher registered → server is treated as externally managed
+        (e.g. a Harbor-style docker-compose sidecar)."""
         env = _DummyEnv()
         (server,) = parse_mcp_servers(_config_with_server())
         assert env.mcp_launcher_for(server, state={}, phase="agent") is None
+
+    def test_subclass_override_beats_constructor(self):
+        """Subclasses can override `mcp_launcher_for` for dynamic behavior."""
+
+        class DynamicEnv(_DummyEnv):
+            def mcp_launcher_for(self, server, state, phase):
+                # Ignores constructor dict; always returns phase-tagged command.
+                return HarborMCPLauncher(command=f"cmd-for-{phase}")
+
+        env = DynamicEnv(mcp_launchers={"svc": HarborMCPLauncher(command="ctor-cmd")})
+        (server,) = parse_mcp_servers(_config_with_server())
+        assert (
+            env.mcp_launcher_for(server, state={}, phase="agent").command
+            == "cmd-for-agent"
+        )
+        assert (
+            env.mcp_launcher_for(server, state={}, phase="verifier").command
+            == "cmd-for-verifier"
+        )
 
 
 class TestStartCommand:
@@ -341,63 +322,50 @@ class TestStopCommand:
         assert "sleep 5" in cmd
 
 
+def _two_server_config() -> dict[str, Any]:
+    """task.toml declaring two servers; phases are assigned via launchers."""
+    return {
+        "environment": {
+            "mcp_servers": [
+                {
+                    "name": "agent-svc",
+                    "transport": "streamable-http",
+                    "url": "http://x:8000/mcp",
+                },
+                {
+                    "name": "verifier-svc",
+                    "transport": "streamable-http",
+                    "url": "http://x:9000/mcp",
+                },
+            ]
+        }
+    }
+
+
 class TestLifecycle:
     @pytest.mark.asyncio
     async def test_starts_only_servers_for_current_phase(self):
         env = _DummyEnv(
             mcp_launchers={
-                "svc": HarborMCPLauncher(command="x"),
-                "verifier-svc": HarborMCPLauncher(command="y"),
+                "agent-svc": HarborMCPLauncher(command="a", phases=["agent"]),
+                "verifier-svc": HarborMCPLauncher(command="v", phases=["verifier"]),
             }
         )
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "svc",
-                        "transport": "streamable-http",
-                        "url": "http://svc:8000/mcp",
-                        "phases": ["agent"],
-                    },
-                    {
-                        "name": "verifier-svc",
-                        "transport": "streamable-http",
-                        "url": "http://svc:9000/mcp",
-                        "phases": ["verifier"],
-                    },
-                ]
-            }
-        }
         state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase=DEFAULT_PHASE)
-        assert state["harbor_mcp_started"] == ["svc"]
+        await env.start_mcp_servers_for_phase(
+            "sbx", _two_server_config(), state, phase=DEFAULT_PHASE
+        )
+        assert state["harbor_mcp_started"] == ["agent-svc"]
 
     @pytest.mark.asyncio
     async def test_restart_swaps_phase_servers(self):
         env = _DummyEnv(
             mcp_launchers={
-                "agent-svc": HarborMCPLauncher(command="a"),
-                "verifier-svc": HarborMCPLauncher(command="v"),
+                "agent-svc": HarborMCPLauncher(command="a", phases=["agent"]),
+                "verifier-svc": HarborMCPLauncher(command="v", phases=["verifier"]),
             }
         )
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "agent-svc",
-                        "transport": "streamable-http",
-                        "url": "http://x:8000/mcp",
-                        "phases": ["agent"],
-                    },
-                    {
-                        "name": "verifier-svc",
-                        "transport": "streamable-http",
-                        "url": "http://x:9000/mcp",
-                        "phases": ["verifier"],
-                    },
-                ]
-            }
-        }
+        cfg = _two_server_config()
         state: dict[str, Any] = {}
         await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
         assert state["harbor_mcp_started"] == ["agent-svc"]
@@ -408,9 +376,11 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_restart_leaves_multi_phase_server_alone(self):
         env = _DummyEnv(
-            mcp_launchers={"svc": HarborMCPLauncher(command="x")},
+            mcp_launchers={
+                "svc": HarborMCPLauncher(command="x", phases=["agent", "verifier"])
+            },
         )
-        cfg = _config_with_server(phases=["agent", "verifier"])
+        cfg = _config_with_server()
         state: dict[str, Any] = {}
         await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
         env.sandbox_client.execute_command.reset_mock()
@@ -418,7 +388,7 @@ class TestLifecycle:
 
         await env.restart_mcp_for_phase("sbx", state, phase="verifier")
 
-        # Server applies to both phases → no new job started, no stop command.
+        # Launcher applies to both phases → no new job started, no stop command.
         env.sandbox_client.start_background_job.assert_not_awaited()
         stop_cmds = [
             c.args[1]
@@ -629,7 +599,13 @@ class TestEtcHosts:
 
 class TestEnvVarPublishing:
     def test_publishes_only_servers_active_in_phase(self):
-        env = _DummyEnv()
+        """Phases are determined by the Python launcher, not task.toml."""
+        env = _DummyEnv(
+            mcp_launchers={
+                "only-agent": HarborMCPLauncher(command="a", phases=["agent"]),
+                "only-verifier": HarborMCPLauncher(command="v", phases=["verifier"]),
+            }
+        )
         cfg = {
             "environment": {
                 "mcp_servers": [
@@ -637,13 +613,11 @@ class TestEnvVarPublishing:
                         "name": "only-agent",
                         "transport": "streamable-http",
                         "url": "http://x:1/mcp",
-                        "phases": ["agent"],
                     },
                     {
                         "name": "only-verifier",
                         "transport": "streamable-http",
                         "url": "http://x:2/mcp",
-                        "phases": ["verifier"],
                     },
                 ]
             }
@@ -652,6 +626,16 @@ class TestEnvVarPublishing:
         verifier = env.mcp_agent_env_vars(cfg, phase="verifier")
         assert agent == {"HARBOR_MCP_ONLY_AGENT_URL": "http://127.0.0.1:1/mcp"}
         assert verifier == {"HARBOR_MCP_ONLY_VERIFIER_URL": "http://127.0.0.1:2/mcp"}
+
+    def test_externally_managed_server_is_always_published(self):
+        """A server with no launcher is treated as always-up (Harbor-style
+        sidecar) — its URL is published in every phase."""
+        env = _DummyEnv()  # no launchers
+        cfg = _config_with_server()
+        for phase in ("agent", "verifier", "custom"):
+            assert env.mcp_agent_env_vars(cfg, phase=phase) == {
+                "HARBOR_MCP_SVC_URL": "http://127.0.0.1:8000/mcp"
+            }
 
 
 class TestHarborValidation:
@@ -813,18 +797,19 @@ class TestHarborHealthcheckParsing:
         assert hc.start_interval_sec == 1.0
         assert hc.retries == 5
 
-    def test_launcher_parses_nested_healthcheck_subtable(self):
-        launcher = HarborMCPLauncher.from_dict(
-            {
-                "command": ".venv/bin/python server.py",
-                "healthcheck": {
-                    "command": "curl -fs http://127.0.0.1:{port}/health",
-                    "retries": 10,
-                    "start_period_sec": 5.0,
-                },
-            }
+    def test_launcher_accepts_healthcheck_instance(self):
+        """Composing a launcher with a Healthcheck is a plain dataclass ctor —
+        HarborEnv doesn't expose task.toml-side healthcheck parsing since the
+        launcher itself lives on the Python side."""
+        launcher = HarborMCPLauncher(
+            command=".venv/bin/python server.py",
+            healthcheck=HarborMCPHealthcheck(
+                command="curl -fs http://127.0.0.1:{port}/health",
+                retries=10,
+                start_period_sec=5.0,
+            ),
         )
-        assert isinstance(launcher.healthcheck, HarborMCPHealthcheck)
+        assert launcher.healthcheck is not None
         assert launcher.healthcheck.command == "curl -fs http://127.0.0.1:{port}/health"
         assert launcher.healthcheck.retries == 10
         assert launcher.healthcheck.start_period_sec == 5.0
