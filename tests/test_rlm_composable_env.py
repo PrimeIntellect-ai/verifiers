@@ -77,12 +77,11 @@ def test_rlm_composable_env_is_exported():
     assert RlmComposableEnv is not None
 
 
-def test_rlm_harness_install_script_copies_uploaded_skills_before_sync():
+def test_rlm_harness_install_script_downloads_repo_install_sh():
     script = build_install_script()
-    assert "/task/rlm-skills" in script
-    assert script.index("/task/rlm-skills") < script.index(
-        'uv sync --project "$RLM_CHECKOUT_PATH" --all-packages'
-    )
+    assert "raw.githubusercontent.com" in script
+    assert "install.sh" in script
+    assert "bash /tmp/rlm-install.sh" in script
 
 
 @pytest.mark.asyncio

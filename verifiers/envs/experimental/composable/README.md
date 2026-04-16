@@ -16,7 +16,7 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged.
 
-**RlmComposableEnv** — an RLM-specific `ComposableEnv` variant that uploads a taskset's sibling `skills/` directory when present, scopes install-only env vars to the RLM install step, and surfaces `.rlm` session metrics into rollout state.
+**RlmComposableEnv** — an RLM-specific `ComposableEnv` variant that uploads a taskset's sibling `skills/` directory to `/task/rlm-skills`, scopes install-only env vars to the RLM install step, and surfaces `.rlm` session metrics into rollout state. The RLM `install.sh` path then merges those uploaded skills into the checkout before installation.
 
 ## Usage
 
@@ -46,7 +46,7 @@ harness = opencode_harness(system_prompt="You are a coding agent...")
 env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
 ```
 
-For RLM-backed agents, prefer `RlmComposableEnv` with `rlm_harness(...)`. It preserves the same task/harness split while automatically uploading taskset-local RLM skills and collecting `rlm_*` session metrics.
+For RLM-backed agents, prefer `RlmComposableEnv` with `rlm_harness(...)`. It preserves the same task/harness split while automatically uploading taskset-local RLM skills to `/task/rlm-skills`, then relying on `rlm/install.sh` to merge them into the checkout before skill installation, while still collecting `rlm_*` session metrics.
 
 ## Writing a new TaskSet
 
