@@ -15,7 +15,7 @@ logger = logging.getLogger("verifiers.envs.HelloMCPHarborEnv")
 def _build_run_command(agent_workdir: str) -> str:
     """Install OpenCode and point it at the task.toml-declared MCP server."""
     config: dict = {
-        "$schema": "https://opencode.ai/config.json",
+        "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
             "intercepted": {
                 "npm": "@ai-sdk/openai-compatible",
@@ -52,7 +52,9 @@ curl -fsSL https://opencode.ai/install | bash
 export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
-cat > ~/.config/opencode/opencode.json << 'EOFCONFIG'
+
+SCHEMA_DOLLAR='$'
+cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 
@@ -97,7 +99,6 @@ def load_environment(
     cpu_cores: int = 2,
     memory_gb: int = 4,
     disk_size_gb: int = 10,
-    timeout_minutes: int = 30,
     max_turns: int = 8,
 ) -> HelloMCPHarborEnv:
     return HelloMCPHarborEnv(
@@ -119,6 +120,5 @@ def load_environment(
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
         disk_size_gb=disk_size_gb,
-        timeout_minutes=timeout_minutes,
         max_turns=max_turns,
     )

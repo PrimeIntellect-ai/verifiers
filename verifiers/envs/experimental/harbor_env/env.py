@@ -34,8 +34,12 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
-        self.mcp_launch_commands = mcp_launch_commands or {}
-        self.mcp_healthcheck = mcp_healthcheck or HarborMCPHealthcheck()
+        self.mcp_launch_commands = (
+            mcp_launch_commands if mcp_launch_commands is not None else {}
+        )
+        self.mcp_healthcheck = (
+            mcp_healthcheck if mcp_healthcheck is not None else HarborMCPHealthcheck()
+        )
 
         kwargs["docker_image"] = docker_image
 
