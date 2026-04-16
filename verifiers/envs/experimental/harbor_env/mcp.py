@@ -19,10 +19,12 @@ phases = ["agent"]           # when the server should be running
 
 In native Harbor, network-transport servers are provided by the task's own
 `docker-compose.yaml` sidecars. Prime sandboxes are single-container, so we
-emulate that by starting the server *inside* the same sandbox using
-`sandbox_client.execute_command`. Because that API runs commands as root, we
-can `su` to any user even on a `nosuid` filesystem — the same effect as
-Harbor's setuid wrapper, without needing setuid binaries.
+emulate that by starting the server *inside* the same sandbox via
+`sandbox_client.start_background_job` (which handles daemonization, stdout/
+stderr capture, and exit-code tracking for us). Because the sandbox client
+runs commands as root, we can `su` to any user even on a `nosuid` filesystem
+— the same effect as Harbor's setuid wrapper, without needing setuid
+binaries.
 
 This module intentionally avoids assuming any particular interpreter inside
 the sandbox image: health checks use bash `/dev/tcp`, and the launch command
@@ -209,10 +211,6 @@ class HarborMCPMixin:
         """
         return {}
 
-    # --------------------------------------------------------------------- #
-    # Env-var publishing                                                    #
-    # --------------------------------------------------------------------- #
-
     def mcp_agent_env_vars(
         self, config: dict[str, Any], phase: str = DEFAULT_PHASE
     ) -> dict[str, str]:
@@ -232,10 +230,6 @@ class HarborMCPMixin:
             key = f"HARBOR_MCP_{server.name.upper().replace('-', '_')}_URL"
             env_vars[key] = url
         return env_vars
-
-    # --------------------------------------------------------------------- #
-    # Lifecycle                                                             #
-    # --------------------------------------------------------------------- #
 
     async def start_mcp_servers_for_phase(
         self,
@@ -336,7 +330,13 @@ class HarborMCPMixin:
         *,
         phase: str,
     ) -> None:
-        """Start a single MCP server and wait for it to accept connections."""
+        """Start a single MCP server and wait for it to accept connections.
+
+        Uses :meth:`sandbox_client.start_background_job` so the SDK owns
+        detachment, stdout/stderr capture, and exit-code tracking. We keep a
+        separate PID file so we can stop the process at phase transitions
+        (the SDK has no cancel API at time of writing).
+        """
         if not server.is_network:
             raise ValueError(
                 f"MCP server {server.name!r} has stdio transport; the framework "
@@ -351,10 +351,15 @@ class HarborMCPMixin:
         extra_env = self.mcp_extra_env(server, state, phase) or {}
         cmd = self._mcp_start_cmd(server, launcher, port, extra_env)
 
-        await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
-            sandbox_id, cmd, working_dir=None
+        job = await self.sandbox_client.start_background_job(  # type: ignore[attr-defined]
+            sandbox_id=sandbox_id,
+            command=cmd,
+            working_dir=None,
         )
-        await self._wait_for_mcp_server(sandbox_id, server.name, port)
+        jobs: dict[str, Any] = state.setdefault("harbor_mcp_jobs", {})
+        jobs[server.name] = job
+
+        await self._wait_for_mcp_server(sandbox_id, server.name, port, job)
 
         started: list[str] = state.setdefault("harbor_mcp_started", [])
         if server.name not in started:
@@ -375,14 +380,40 @@ class HarborMCPMixin:
             if name in started:
                 started.remove(name)
                 state["harbor_mcp_started"] = started
+            jobs = state.get("harbor_mcp_jobs") or {}
+            jobs.pop(name, None)
+            state["harbor_mcp_jobs"] = jobs
 
-    async def _wait_for_mcp_server(self, sandbox_id: str, name: str, port: int) -> None:
+    async def _wait_for_mcp_server(
+        self,
+        sandbox_id: str,
+        name: str,
+        port: int,
+        job: Any | None = None,
+    ) -> None:
         """Poll until the server is accepting TCP connections on `localhost:port`.
+
+        If a `BackgroundJob` handle is provided, the job's completion status is
+        checked in the same loop — a crashed server bails out immediately with
+        its real stderr rather than waiting for the full retry budget.
 
         Uses bash's `/dev/tcp` so we don't assume Python in the sandbox image.
         """
         health_cmd = f"bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}' 2>/dev/null"
         for attempt in range(self.mcp_health_check_retries):
+            if job is not None:
+                status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
+                    sandbox_id, job
+                )
+                if getattr(status, "completed", False):
+                    stderr = (getattr(status, "stderr", "") or "").strip()
+                    exit_code = getattr(status, "exit_code", None)
+                    raise vf.SandboxError(
+                        f"MCP server {name!r} on port {port} exited before "
+                        f"becoming healthy (exit_code={exit_code}). "
+                        f"Stderr:\n{stderr}"
+                    )
+
             result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
                 sandbox_id, health_cmd, working_dir=None, timeout=10
             )
@@ -396,15 +427,20 @@ class HarborMCPMixin:
                 return
             await asyncio.sleep(self.mcp_health_check_interval)
 
-        log_tail = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
-            sandbox_id,
-            f"tail -n 40 {self._mcp_log_file(name)} 2>/dev/null || true",
-            working_dir=None,
-        )
+        log_tail = ""
+        if job is not None:
+            try:
+                status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
+                    sandbox_id, job
+                )
+                log_tail = (getattr(status, "stderr", "") or "").strip()[-2000:]
+            except Exception as e:  # noqa: BLE001 — best-effort log retrieval
+                logger.debug("Failed to fetch MCP log tail for %r: %s", name, e)
+
         raise vf.SandboxError(
             f"MCP server {name!r} on port {port} failed health check after "
             f"{self.mcp_health_check_retries} attempts. "
-            f"Recent log tail:\n{(getattr(log_tail, 'stdout', '') or '').strip()}"
+            f"Recent log tail:\n{log_tail}"
         )
 
     async def _patch_mcp_etc_hosts(
@@ -446,7 +482,20 @@ class HarborMCPMixin:
         port: int,
         extra_env: dict[str, str],
     ) -> str:
-        """Build the shell command that launches one MCP server."""
+        """Build the shell command that launches one MCP server.
+
+        Intended to be handed to :meth:`sandbox_client.start_background_job`,
+        which already wraps the command in ``nohup sh -c '(...) > stdout 2> stderr; echo $? > exit'``.
+        So here we just:
+
+        1. ``cd`` into the launcher's working directory (if any).
+        2. Record ``$$`` (the shell's PID) into a pidfile, so :meth:`_mcp_stop_cmd`
+           can kill the process later. After ``exec`` the PID belongs to the
+           target binary.
+        3. ``exec`` the target command with inline env-var assignments. Inline
+           assignments are required because env vars set via
+           ``start_background_job(env=...)`` would be stripped by ``su``.
+        """
         env_pairs: dict[str, str] = {
             launcher.transport_env_var: server.transport,
             launcher.port_env_var: str(port),
@@ -459,13 +508,10 @@ class HarborMCPMixin:
             f"{k}={shlex.quote(str(v))}" for k, v in env_pairs.items()
         )
 
-        pid_file = self._mcp_pid_file(server.name)
-        log_file = self._mcp_log_file(server.name)
+        pid_file = shlex.quote(self._mcp_pid_file(server.name))
         cd_prefix = f"cd {shlex.quote(launcher.cwd)} && " if launcher.cwd else ""
         inner = (
-            f"{cd_prefix}{env_prefix} "
-            f"nohup {launcher.command} > {log_file} 2>&1 & "
-            f"echo $! > {pid_file}"
+            f"{cd_prefix}echo $$ > {pid_file} && {env_prefix} exec {launcher.command}"
         )
 
         if launcher.user:
@@ -475,7 +521,7 @@ class HarborMCPMixin:
     @staticmethod
     def _mcp_stop_cmd(name: str) -> str:
         """Idempotent SIGTERM-then-SIGKILL by PID file. No-ops if not running."""
-        pid_file = HarborMCPMixin._mcp_pid_file(name)
+        pid_file = shlex.quote(HarborMCPMixin._mcp_pid_file(name))
         return (
             f"if [ -f {pid_file} ]; then "
             f'pid="$(cat {pid_file})"; '
@@ -492,7 +538,3 @@ class HarborMCPMixin:
     @staticmethod
     def _mcp_pid_file(name: str) -> str:
         return f"/tmp/harbor-mcp-{name}.pid"
-
-    @staticmethod
-    def _mcp_log_file(name: str) -> str:
-        return f"/tmp/harbor-mcp-{name}.log"

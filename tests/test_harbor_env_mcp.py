@@ -128,13 +128,42 @@ class TestURLHelpers:
 # --------------------------------------------------------------------------- #
 
 
+def _make_background_job(name: str) -> MagicMock:
+    """Stand-in for `prime_sandboxes.BackgroundJob`."""
+    job = MagicMock()
+    job.job_id = f"job-{name}"
+    job.stdout_log_file = f"/tmp/job_{name}.stdout.log"
+    job.stderr_log_file = f"/tmp/job_{name}.stderr.log"
+    job.exit_file = f"/tmp/job_{name}.exit"
+    return job
+
+
 class _DummyEnv(HarborMCPMixin):
     """Bare mixin host for unit testing; bypasses CliAgentEnv setup."""
 
     def __init__(self, *, mcp_launchers: dict[str, HarborMCPLauncher] | None = None):
         self.sandbox_client = MagicMock()
+        # `execute_command` is used for health probes, /etc/hosts patches, stop cmds.
         self.sandbox_client.execute_command = AsyncMock(
             return_value=MagicMock(exit_code=0, stdout="")
+        )
+        # `start_background_job` launches the MCP daemon.
+        self.started_jobs: list[tuple[str, str]] = []
+
+        async def _start_bg(sandbox_id, command, working_dir=None, env=None):
+            # Derive a stable job id from the pid file referenced in the command;
+            # fall back to a counter if the pattern isn't present.
+            import re
+
+            m = re.search(r"harbor-mcp-([^.]+)\.pid", command)
+            name = m.group(1) if m else f"anon-{len(self.started_jobs)}"
+            self.started_jobs.append((name, command))
+            return _make_background_job(name)
+
+        self.sandbox_client.start_background_job = AsyncMock(side_effect=_start_bg)
+        # `get_background_job` — default to "still running"
+        self.sandbox_client.get_background_job = AsyncMock(
+            return_value=MagicMock(completed=False, exit_code=None, stderr="")
         )
         self.mcp_launchers = mcp_launchers or {}
         self.mcp_health_check_retries = 1
@@ -202,7 +231,14 @@ class TestStartCommand:
         assert "MCP_BIND_HOST=127.0.0.1" in cmd
         assert "STATIC=1" in cmd
         assert "EXTRA=2" in cmd
-        assert "nohup .venv/bin/python -u server.py" in cmd
+        # The SDK's start_background_job wraps in nohup for us, so our inner
+        # command should exec directly (no nohup, no log redirection, no `&`).
+        assert "exec .venv/bin/python -u server.py" in cmd
+        assert "nohup" not in cmd
+        assert ".log" not in cmd  # SDK owns stdout/stderr capture
+        assert " & " not in cmd  # exec runs in the foreground of the sh -c body
+        # PID must be recorded so _mcp_stop_cmd can kill the process later.
+        assert "echo $$ > /tmp/harbor-mcp-svc.pid" in cmd
 
     def test_no_su_without_user(self):
         env = _DummyEnv()
@@ -210,7 +246,9 @@ class TestStartCommand:
             name="svc", transport="streamable-http", url="http://svc:8000/mcp"
         )
         launcher = HarborMCPLauncher(command="server")
-        assert "su -s" not in env._mcp_start_cmd(server, launcher, 8000, {})
+        cmd = env._mcp_start_cmd(server, launcher, 8000, {})
+        assert "su -s" not in cmd
+        assert "exec server" in cmd
 
     def test_extra_env_overrides_launcher_env(self):
         env = _DummyEnv()
@@ -221,6 +259,34 @@ class TestStartCommand:
         cmd = env._mcp_start_cmd(server, launcher, 8000, {"K": "new"})
         assert "K=new" in cmd
         assert "K=old" not in cmd
+
+    def test_server_name_with_shell_metachars_is_quoted(self):
+        """Server name is task-author-controlled; treat it like any other shell arg.
+
+        Particularly matters for the no-user branch of `_mcp_start_cmd` (no outer
+        `su -c 'shlex.quote(inner)'` wrapper) and every call site in
+        `_mcp_stop_cmd` (which goes straight to `execute_command`).
+        """
+        env = _DummyEnv()
+        # Name containing a shell-special sequence. The generated commands
+        # must keep the `$(...)` literal, not let the outer sh -c evaluate it.
+        server = HarborMCPServer(
+            name="evil$(whoami)",
+            transport="streamable-http",
+            url="http://svc:8000/mcp",
+        )
+        launcher = HarborMCPLauncher(command="server")  # no user → no outer su quoting
+        start = env._mcp_start_cmd(server, launcher, 8000, {})
+        # The pid path must appear exactly once, already single-quoted.
+        assert "'/tmp/harbor-mcp-evil$(whoami).pid'" in start
+        # And it must NOT appear in unquoted form anywhere.
+        unquoted = "/tmp/harbor-mcp-evil$(whoami).pid"
+        assert start.count(unquoted) == start.count(f"'{unquoted}'")
+
+        stop = env._mcp_stop_cmd("evil$(whoami)")
+        # All three uses of the pid file in the stop command must be quoted.
+        assert stop.count(f"'{unquoted}'") == 3
+        assert stop.count(unquoted) == stop.count(f"'{unquoted}'")
 
 
 class TestLifecycle:
@@ -296,17 +362,18 @@ class TestLifecycle:
         state: dict[str, Any] = {}
         await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
         env.sandbox_client.execute_command.reset_mock()
+        env.sandbox_client.start_background_job.reset_mock()
 
         await env.restart_mcp_for_phase("sbx", state, phase="verifier")
 
-        # Server should not be stopped/started again.
-        commands = [
-            c.args[1] for c in env.sandbox_client.execute_command.call_args_list
+        # Server applies to both phases → no new job started, no stop command.
+        env.sandbox_client.start_background_job.assert_not_awaited()
+        stop_cmds = [
+            c.args[1]
+            for c in env.sandbox_client.execute_command.call_args_list
+            if "harbor-mcp-svc.pid" in c.args[1] and "if [ -f" in c.args[1]
         ]
-        assert all("nohup" not in c for c in commands)
-        assert all(
-            "harbor-mcp-svc.pid" not in c or "if [ -f" not in c for c in commands
-        )
+        assert stop_cmds == []
         assert state["harbor_mcp_started"] == ["svc"]
 
     @pytest.mark.asyncio
@@ -329,6 +396,74 @@ class TestLifecycle:
 
         await env.stop_mcp_servers(state)
         assert state["harbor_mcp_started"] == []
+
+
+class TestBackgroundJob:
+    @pytest.mark.asyncio
+    async def test_uses_start_background_job_not_execute_command(self):
+        """Daemon launch should go through start_background_job, not execute_command."""
+        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="python x")})
+        cfg = _config_with_server()
+        state: dict[str, Any] = {}
+        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+
+        env.sandbox_client.start_background_job.assert_awaited_once()
+        # The only execute_command calls should be /etc/hosts patch + the TCP
+        # health probe — never the MCP start command itself.
+        start_commands = [
+            c.args[1]
+            for c in env.sandbox_client.execute_command.call_args_list
+            if "exec python x" in c.args[1]
+        ]
+        assert start_commands == []
+
+    @pytest.mark.asyncio
+    async def test_background_job_stored_in_state(self):
+        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
+        cfg = _config_with_server()
+        state: dict[str, Any] = {}
+        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+
+        jobs = state["harbor_mcp_jobs"]
+        assert set(jobs.keys()) == {"svc"}
+        assert jobs["svc"].job_id == "job-svc"
+
+    @pytest.mark.asyncio
+    async def test_stop_clears_job_handle(self):
+        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
+        cfg = _config_with_server()
+        state: dict[str, Any] = {"sandbox_id": "sbx"}
+        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+        assert "svc" in state["harbor_mcp_jobs"]
+
+        await env._stop_mcp_server("sbx", "svc", state)
+        assert "svc" not in state["harbor_mcp_jobs"]
+
+    @pytest.mark.asyncio
+    async def test_early_crash_bails_out_with_stderr(self):
+        """If the daemon exits before the port opens, fail fast with its stderr."""
+        import verifiers as vf
+
+        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
+        # Daemon reports "already exited with stack trace" on first poll.
+        env.sandbox_client.get_background_job = AsyncMock(
+            return_value=MagicMock(
+                completed=True,
+                exit_code=1,
+                stderr="ImportError: missing widget",
+            )
+        )
+        # TCP probe would still say "not listening", but we shouldn't need it.
+        env.sandbox_client.execute_command = AsyncMock(
+            return_value=MagicMock(exit_code=1, stdout="")
+        )
+        env.mcp_health_check_retries = 5  # plenty, to prove we bail on 1st iteration.
+
+        cfg = _config_with_server()
+        state: dict[str, Any] = {}
+        with pytest.raises(vf.SandboxError, match="exited before becoming healthy"):
+            await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+        assert env.sandbox_client.get_background_job.await_count == 1
 
 
 class TestEtcHosts:
