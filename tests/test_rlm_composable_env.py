@@ -91,9 +91,9 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
 
 def test_rlm_harness_install_script_downloads_repo_install_sh():
     script = build_install_script()
-    assert "raw.githubusercontent.com" in script
-    assert "install.sh" in script
-    assert "bash /tmp/rlm-install.sh" in script
+    assert "git clone --depth 1 --branch main" in script
+    assert "github.com/PrimeIntellect-ai/rlm.git" in script
+    assert "bash /tmp/rlm-checkout/install.sh" in script
 
 
 def test_rlm_harness_sets_metrics_fields():
