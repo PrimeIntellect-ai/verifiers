@@ -31,6 +31,14 @@ export RLM_MODEL=$OPENAI_MODEL
 export OPENAI_API_KEY=intercepted
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
+
+# If the sandbox has a .venv, run the ipython kernel inside it so the
+# agent can inline-import project packages (numpy, pandas, etc.).
+if [ -x .venv/bin/python3 ]; then
+    .venv/bin/python3 -m pip install -q ipykernel nest_asyncio 2>/dev/null || true
+    export RLM_KERNEL_PYTHON="$(pwd)/.venv/bin/python3"
+fi
+
 rlm "$(cat {instruction_path})"
 """
     return f"bash -lc {shlex.quote(script)}"
