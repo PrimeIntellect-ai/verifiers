@@ -18,14 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
-    """CliAgentEnv subclass that loads Harbor-format tasks.
-
-    MCP server support is opt-in: pass ``mcp_launch_commands={name: cmd}``
-    keyed on the ``name`` of each ``[[environment.mcp_servers]]`` entry in
-    task.toml. Task files themselves remain pure Harbor format — how to
-    *start* a server is a Python-side concern. See
-    :mod:`verifiers.envs.experimental.harbor_env.mcp` for details.
-    """
+    """CliAgentEnv subclass that loads Harbor-format tasks."""
 
     def __init__(
         self,
@@ -140,11 +133,7 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         await self.start_mcp_servers(sandbox_id, config, state)
 
     async def pre_mcp_setup(self, state: vf.State) -> None:
-        """Hook for installing dependencies or uploading code needed by MCP servers.
-
-        Called after task assets are on disk but before MCP servers are
-        launched. Default is a no-op.
-        """
+        """Hook for installing dependencies or uploading code needed by MCP servers."""
         return None
 
     async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:

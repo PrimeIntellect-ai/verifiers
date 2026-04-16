@@ -117,17 +117,7 @@ class HarborMCPMixin:
         return self.mcp_launch_commands.get(server.name)
 
     def mcp_agent_env_vars(self, config: dict[str, Any]) -> dict[str, str]:
-        """``HARBOR_MCP_<NAME>_URL`` env vars for every declared server.
-
-        The agent's run_command can template these (e.g. into OpenCode's
-        config): a server declared as ``http://mcp-server:8000/mcp`` is
-        published as ``HARBOR_MCP_MCP_SERVER_URL=http://127.0.0.1:8000/mcp``.
-
-        For agents that read ``[[environment.mcp_servers]]`` URLs directly
-        (Claude Code, Codex), :meth:`_patch_mcp_etc_hosts` makes the
-        task.toml URL resolve to loopback, so no env-var substitution is
-        needed.
-        """
+        """Publish `HARBOR_MCP_<NAME>_URL=<loopback url>` for every declared server."""
         env_vars: dict[str, str] = {}
         for server in parse_mcp_servers(config):
             url = mcp_agent_url(server)
@@ -271,14 +261,7 @@ class HarborMCPMixin:
     async def _patch_mcp_etc_hosts(
         self, sandbox_id: str, servers: list[HarborMCPServer]
     ) -> None:
-        """Ensure task.toml service-name URLs resolve to 127.0.0.1.
-
-        Harbor tasks typically reference MCP servers by docker-compose service
-        name (``http://mcp-server:8000/mcp``). There's no compose network in a
-        Prime sandbox, so we alias the hostname to loopback. This lets agents
-        that read task.toml URLs directly (Claude Code, Codex) work without
-        any Prime-specific URL substitution.
-        """
+        """Alias each task.toml MCP hostname to 127.0.0.1 via `/etc/hosts`."""
         hosts: set[str] = set()
         for server in servers:
             if not server.url:
@@ -290,11 +273,6 @@ class HarborMCPMixin:
         if not hosts:
             return
 
-        # ``grep -qxF`` (exact-line, fixed-string) keeps this idempotent
-        # across repeated calls without risk of cross-hostname collisions
-        # like "mcp-server" spuriously matching an existing "mcp-server-2"
-        # entry (which ``-w`` would do since ``-`` is a non-word character).
-        # Hostnames come from task.toml, so shell-quote them.
         statements = " && ".join(
             f"(grep -qxF {shlex.quote(f'127.0.0.1 {h}')} /etc/hosts || "
             f"echo {shlex.quote(f'127.0.0.1 {h}')} >> /etc/hosts)"
@@ -309,44 +287,18 @@ class HarborMCPMixin:
         return f"/tmp/harbor-mcp-{name}.pid"
 
     def _mcp_start_cmd(self, name: str, command: str) -> str:
-        """Wrap ``command`` so we can stop the real process later.
-
-        ``start_background_job`` wraps whatever we return in
-        ``sh -c '(…) > stdout 2> stderr; echo $? > exit'`` — i.e. a subshell.
-        Inside a ``(...)`` subshell ``$$`` is the *outer* shell's PID, not the
-        subshell's, so the classic ``echo $$ > pidfile; exec cmd`` trick writes
-        the wrong PID. Instead we background the user's command and capture
-        ``$!`` (the last backgrounded job's PID, which *is* the target
-        binary's PID), then ``wait`` so the subshell's exit code still
-        reflects the target's exit code.
-        """
+        """Background `command` and record its PID via `$!` so stop can SIGKILL it."""
         pid_file = shlex.quote(self._mcp_pid_file(name))
         return f"{command} & echo $! > {pid_file}; wait"
 
     def _mcp_stop_cmd(self, name: str) -> str:
-        """SIGKILL the recorded PID and remove the pidfile.
-
-        MCP daemons serving stateless RPC have nothing to flush on shutdown.
-        Overridable: subclasses that do need SIGTERM grace can return any
-        shell string.
-        """
+        """SIGKILL the recorded PID and remove the pidfile."""
         pid_file = shlex.quote(self._mcp_pid_file(name))
         return f'kill -9 "$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}'
 
     @staticmethod
     def _default_mcp_health_cmd(port: int) -> str:
-        """Portable TCP LISTEN probe via ``/proc/net/tcp{,6}``.
-
-        ``/proc/net/tcp`` lines look like::
-
-            sl  local_address rem_address   st …
-             0: 0100007F:1F40 00000000:0000 0A …
-
-        Column 4 is the connection state (``0A`` = LISTEN) and the port in
-        column 2 is uppercase hex. Exits 0 iff some listener's local port
-        matches ``port``. Works on every Linux image with ``/proc`` mounted
-        and busybox ``awk``.
-        """
+        """Exit 0 iff some TCP listener is in LISTEN state on `port` (awk on `/proc/net/tcp{,6}`)."""
         port_hex = f"{port:04X}"
         return (
             f'awk \'$4 == "0A" && $2 ~ /:{port_hex}$/ '
