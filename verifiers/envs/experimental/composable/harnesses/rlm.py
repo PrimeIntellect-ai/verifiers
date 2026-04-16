@@ -34,8 +34,7 @@ cd "${{AGENT_WORKDIR:-{workdir}}}"
 
 # If the sandbox has a .venv, run the ipython kernel inside it so the
 # agent can inline-import project packages (numpy, pandas, etc.).
-if [ -x .venv/bin/python3 ]; then
-    .venv/bin/python3 -m pip install -q ipykernel nest_asyncio 2>/dev/null || true
+if [ -x .venv/bin/python3 ] && .venv/bin/python3 -m pip install -q ipykernel nest_asyncio 2>/dev/null; then
     export RLM_KERNEL_PYTHON="$(pwd)/.venv/bin/python3"
 fi
 
