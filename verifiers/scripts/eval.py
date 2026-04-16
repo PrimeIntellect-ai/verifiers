@@ -676,6 +676,7 @@ def main(argv: list[str] | None = None):
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
+            extra_headers_from_state={"X-Session-ID": "example_id"},
         )
 
         # Backward-compatible TOML field: resume_path
