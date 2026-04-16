@@ -296,6 +296,8 @@ class ComposableEnv(CliAgentEnv):
 
     async def _collect_harness_metrics(self, sandbox_id: str, state: State) -> None:
         """Read a JSON metrics file from the sandbox and surface keys in state."""
+        if not self.harness.metrics_path:
+            return
         info = state.get("info") or {}
         workdir = self.taskset.get_workdir(info)
         metrics_glob = self.harness.metrics_path.format(workdir=workdir)
