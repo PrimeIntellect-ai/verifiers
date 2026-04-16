@@ -224,7 +224,7 @@ class SWELegoTaskSet(SandboxTaskSet):
             "}"
         )
         result = await sandbox_client.execute_command(
-            sandbox_id, rg_install, timeout=60
+            sandbox_id, rg_install, timeout=120
         )
         if result.exit_code != 0:
             logger.warning(
