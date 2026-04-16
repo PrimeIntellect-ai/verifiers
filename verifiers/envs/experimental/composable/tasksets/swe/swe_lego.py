@@ -244,42 +244,53 @@ class SWELegoTaskSet(SandboxTaskSet):
             return 0.0
         return 1.0 if "SWELEGO_EXIT_CODE=0" in test_output else 0.0
 
-    async def _apply_gold_patch(
-        self, sandbox_client: Any, sandbox_id: str, state: dict
+    async def _apply_patch_file(
+        self, sandbox_client: Any, sandbox_id: str, patch: str, label: str
     ) -> None:
-        info = state["info"]
-        patch = info.get("patch", "")
-        if not patch or not patch.strip():
-            raise RuntimeError("No gold patch in info['patch']")
-
         with tempfile.NamedTemporaryFile(suffix=".patch", mode="w", delete=False) as f:
             f.write(patch)
             f.flush()
             local_path = f.name
 
+        remote_path = f"/tmp/{label}.patch"
         try:
-            await sandbox_client.upload_file(sandbox_id, "/tmp/gold.patch", local_path)
+            await sandbox_client.upload_file(sandbox_id, remote_path, local_path)
         finally:
             Path(local_path).unlink(missing_ok=True)
 
         result = await sandbox_client.execute_command(
             sandbox_id,
-            "git apply --whitespace=fix /tmp/gold.patch",
+            f"git apply --whitespace=fix {remote_path}",
             working_dir="/testbed",
             timeout=30,
         )
         if result.exit_code != 0:
             result = await sandbox_client.execute_command(
                 sandbox_id,
-                "patch --fuzz=5 -p1 -i /tmp/gold.patch",
+                f"patch --fuzz=5 -p1 -i {remote_path}",
                 working_dir="/testbed",
                 timeout=30,
             )
             if result.exit_code != 0:
                 stderr = (result.stderr or "")[:500]
                 raise RuntimeError(
-                    f"Gold patch apply failed: exit_code={result.exit_code} stderr={stderr}"
+                    f"{label} apply failed: exit_code={result.exit_code} stderr={stderr}"
                 )
+
+    async def _apply_gold_patch(
+        self, sandbox_client: Any, sandbox_id: str, state: dict
+    ) -> None:
+        info = state["info"]
+        # Apply test_patch first (adds failing tests), then patch (fixes code).
+        test_patch = info.get("test_patch", "")
+        if test_patch and test_patch.strip():
+            await self._apply_patch_file(
+                sandbox_client, sandbox_id, test_patch, "test_patch"
+            )
+        patch = info.get("patch", "")
+        if not patch or not patch.strip():
+            raise RuntimeError("No gold patch in info['patch']")
+        await self._apply_patch_file(sandbox_client, sandbox_id, patch, "gold")
 
     def get_rubric(self):
         return SWELegoRubric(self)
