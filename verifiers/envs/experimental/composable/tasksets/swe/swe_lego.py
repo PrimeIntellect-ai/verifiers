@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shlex
 import tempfile
@@ -150,6 +151,32 @@ class SWELegoTaskSet(SandboxTaskSet):
         if self.filter_repos:
             filter_set = frozenset(self.filter_repos)
             dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
+        # Some datasets (e.g. Real-Data) have struct columns with variable sub-keys
+        # (e.g. install_config.JUPYTER_PLATFORM_DIRS). Arrow can't infer a consistent
+        # schema across batches, so pre-serialize them to JSON strings.
+        struct_cols = [
+            col
+            for col, feat in dataset.features.items()
+            if hasattr(feat, "__class__")
+            and feat.__class__.__name__
+            not in (
+                "Value",
+                "Sequence",
+                "ClassLabel",
+                "Translation",
+                "List",
+            )
+            and not isinstance(feat, list)
+        ]
+        if struct_cols:
+            dataset = dataset.map(
+                lambda x: {
+                    col: json.dumps(x[col]) if x[col] is not None else None
+                    for col in struct_cols
+                },
+                num_proc=None,
+                load_from_cache_file=False,
+            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:
