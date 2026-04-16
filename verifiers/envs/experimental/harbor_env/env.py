@@ -12,20 +12,20 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
 
-from .mcp import (
-    DEFAULT_PHASE,
-    HarborMCPHealthcheck,
-    HarborMCPLauncher,
-    HarborMCPMixin,
-)
+from .mcp import HarborMCPHealthcheck, HarborMCPMixin
 
 logger = logging.getLogger(__name__)
 
-_VERIFIER_PHASE = "verifier"
-
 
 class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
-    """CliAgentEnv subclass that loads Harbor-format tasks."""
+    """CliAgentEnv subclass that loads Harbor-format tasks.
+
+    MCP server support is opt-in: pass ``mcp_launch_commands={name: cmd}``
+    keyed on the ``name`` of each ``[[environment.mcp_servers]]`` entry in
+    task.toml. Task files themselves remain pure Harbor format — how to
+    *start* a server is a Python-side concern. See
+    :mod:`verifiers.envs.experimental.harbor_env.mcp` for details.
+    """
 
     def __init__(
         self,
@@ -34,15 +34,15 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         tasks: list[str] | None = None,
         agent_workdir: str = "/app",
         docker_image: str = "python:3.11-slim",
-        mcp_launchers: dict[str, HarborMCPLauncher] | None = None,
-        default_mcp_healthcheck: HarborMCPHealthcheck | None = None,
+        mcp_launch_commands: dict[str, str] | None = None,
+        mcp_healthcheck: HarborMCPHealthcheck | None = None,
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
-        self.mcp_launchers = mcp_launchers or {}
-        self.default_mcp_healthcheck = default_mcp_healthcheck or HarborMCPHealthcheck()
+        self.mcp_launch_commands = mcp_launch_commands or {}
+        self.mcp_healthcheck = mcp_healthcheck or HarborMCPHealthcheck()
 
         kwargs["docker_image"] = docker_image
 
@@ -116,14 +116,12 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
 
         config: dict[str, Any] = (state.get("info") or {}).get("config", {}) or {}
-        for key, value in self.mcp_agent_env_vars(
-            config, state, phase=DEFAULT_PHASE
-        ).items():
+        for key, value in self.mcp_agent_env_vars(config).items():
             env_vars.setdefault(key, value)
         return env_vars
 
     async def post_sandbox_setup(self, state: vf.State) -> None:
-        """Upload Harbor task assets and start `agent`-phase MCP servers."""
+        """Upload Harbor task assets and start declared MCP servers."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
         task_dir_str = task_info.get("task_dir", "")
         if not task_dir_str:
@@ -136,16 +134,17 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
 
         sandbox_id = state["sandbox_id"]
         await self.prepare_harbor_task(sandbox_id, task_dir)
-        state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
         await self.pre_mcp_setup(state)
-        await self.start_mcp_servers_for_phase(
-            sandbox_id, config, state, phase=DEFAULT_PHASE
-        )
+        await self.start_mcp_servers(sandbox_id, config, state)
 
     async def pre_mcp_setup(self, state: vf.State) -> None:
-        """Use this to install dependencies or upload code that the MCP servers declared in `task.toml` need."""
+        """Hook for installing dependencies or uploading code needed by MCP servers.
+
+        Called after task assets are on disk but before MCP servers are
+        launched. Default is a no-op.
+        """
         return None
 
     async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:
@@ -240,7 +239,6 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
 
         try:
             await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
-            await self.restart_mcp_for_phase(sandbox_id, state, _VERIFIER_PHASE)
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
             results = await self.run_background_job(

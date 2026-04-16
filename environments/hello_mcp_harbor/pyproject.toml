@@ -6,8 +6,8 @@ tags = ["eval", "cli_agent", "harbor", "mcp", "demo"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.10.dev4",
-    "prime-sandboxes>=0.2.10",
+    "verifiers>=0.1.12.dev3",
+    "prime-sandboxes>=0.2.19",
 ]
 
 [build-system]

@@ -7,7 +7,6 @@ from pathlib import Path
 from verifiers.envs.experimental.harbor_env import (
     HarborEnv,
     HarborMCPHealthcheck,
-    HarborMCPLauncher,
 )
 
 MCP_SERVER_SOURCE = Path(__file__).parent / "mcp_server" / "server.py"
@@ -16,15 +15,16 @@ logger = logging.getLogger("verifiers.envs.HelloMCPHarborEnv")
 
 
 def _build_run_command(agent_workdir: str) -> str:
-    """OpenCode install + config that registers the framework-managed MCP server.
+    """Install OpenCode and point it at the task.toml-declared MCP server.
 
-    ``$HARBOR_MCP_MCP_SERVER_URL`` is published by ``HarborEnv.build_env_vars``
-    for every ``[[environment.mcp_servers]]`` entry that's active in the
-    current phase. OpenCode's config supports ``$VAR`` substitution, so we
-    reference it verbatim — no Python-side URL rewriting needed.
+    The MCP server is declared in ``task.toml`` as
+    ``http://mcp-server:8000/mcp`` — exactly the same URL Harbor's own
+    hello-mcp uses. ``HarborMCPMixin._patch_mcp_etc_hosts`` aliases
+    ``mcp-server`` to ``127.0.0.1`` inside the sandbox, so the URL works
+    verbatim in the OpenCode config (no ``$VAR`` substitution needed).
     """
     config: dict = {
-        "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
+        "$schema": "https://opencode.ai/config.json",
         "provider": {
             "intercepted": {
                 "npm": "@ai-sdk/openai-compatible",
@@ -46,12 +46,15 @@ def _build_run_command(agent_workdir: str) -> str:
         "mcp": {
             "mcp-server": {
                 "type": "remote",
-                "url": "$HARBOR_MCP_MCP_SERVER_URL",
+                "url": "http://mcp-server:8000/mcp",
             }
         },
     }
     config_json = json.dumps(config, indent=2)
 
+    # Heredoc uses a single-quoted delimiter so bash does NOT expand `$schema`,
+    # `$OPENAI_BASE_URL`, etc. OpenCode expands its own `$VAR` references at
+    # config-read time.
     return f"""
 set -e
 
@@ -61,8 +64,7 @@ curl -fsSL https://opencode.ai/install | bash
 export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
-SCHEMA_DOLLAR='$'
-cat > ~/.config/opencode/opencode.json << EOFCONFIG
+cat > ~/.config/opencode/opencode.json << 'EOFCONFIG'
 {config_json}
 EOFCONFIG
 
@@ -72,34 +74,15 @@ opencode run "$(cat /task/instruction.md)" 2>&1 | tee /logs/agent/opencode.txt
 """
 
 
-_MCP_LAUNCHERS: dict[str, HarborMCPLauncher] = {
-    # task.toml declares the `mcp-server` entry (name/transport/url).
-    # HarborEnv doesn't know how to start it in-container — that's this
-    # launcher's job. Keeping launcher config on the Python side means
-    # task.toml stays pure Harbor format.
-    "mcp-server": HarborMCPLauncher(
-        command="python /opt/mcp-server/server.py",
-        phases=["agent"],
-        healthcheck=HarborMCPHealthcheck(
-            retries=10,
-            interval_sec=1.0,
-            start_period_sec=3.0,
-            start_interval_sec=1.0,
-            timeout_sec=5.0,
-        ),
-    ),
+_MCP_LAUNCH_COMMANDS: dict[str, str] = {
+    # Matches the `name` field in tasks/hello-mcp/task.toml. `pre_mcp_setup`
+    # uploads server.py to /opt/mcp-server before this command runs.
+    "mcp-server": "python /opt/mcp-server/server.py",
 }
 
 
 class HelloMCPHarborEnv(HarborEnv):
-    """HarborEnv subclass that uploads the MCP server code before it's started.
-
-    The ``mcp-server`` entry declared in ``task.toml`` is matched to the
-    launcher in ``_MCP_LAUNCHERS`` (passed as ``mcp_launchers=`` to the base
-    constructor). ``pre_mcp_setup`` puts ``server.py`` on the sandbox
-    filesystem and installs its one Python dependency before the framework
-    fires that launcher.
-    """
+    """HarborEnv subclass that uploads the MCP server code before it's started."""
 
     async def pre_mcp_setup(self, state) -> None:
         """Install fastmcp + upload server.py before the MCP server starts."""
@@ -142,7 +125,13 @@ def load_environment(
         tasks=tasks,
         agent_workdir=agent_workdir,
         docker_image=docker_image,
-        mcp_launchers=_MCP_LAUNCHERS,
+        mcp_launch_commands=_MCP_LAUNCH_COMMANDS,
+        mcp_healthcheck=HarborMCPHealthcheck(
+            retries=10,
+            interval_sec=1.0,
+            start_period_sec=3.0,
+            timeout_sec=5.0,
+        ),
         timeout_seconds=timeout_seconds,
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,

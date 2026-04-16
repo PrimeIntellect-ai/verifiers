@@ -12,7 +12,11 @@ import asyncio, os
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-URL = os.environ.get("HARBOR_MCP_MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+# task.toml declares this server at http://mcp-server:8000/mcp. Under
+# HarborEnv, /etc/hosts aliases `mcp-server` to 127.0.0.1. Under native
+# `harbor run -a oracle` with a docker-compose sidecar, `mcp-server` is
+# the compose service name. Either way, this URL works.
+URL = os.environ.get("HARBOR_MCP_MCP_SERVER_URL", "http://mcp-server:8000/mcp")
 
 
 async def main():

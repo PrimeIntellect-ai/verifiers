@@ -6,9 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from verifiers.envs.experimental.harbor_env import (
-    DEFAULT_PHASE,
     HarborMCPHealthcheck,
-    HarborMCPLauncher,
     HarborMCPMixin,
     HarborMCPServer,
     mcp_agent_url,
@@ -45,8 +43,8 @@ class TestParseMCPServers:
         assert parse_mcp_servers(cfg) == []
 
     def test_does_not_leak_harbor_env_only_fields(self):
-        """HarborEnv-specific keys (e.g. `launch`, `phases`) must live on the
-        Python launcher, not in task.toml — Harbor's schema stays pure."""
+        """HarborEnv-specific keys must never land on HarborMCPServer —
+        task.toml stays pure Harbor."""
         cfg = {
             "environment": {
                 "mcp_servers": [
@@ -61,12 +59,10 @@ class TestParseMCPServers:
             }
         }
         (server,) = parse_mcp_servers(cfg)
-        # Parsed server must expose only Harbor's 5 fields.
         for forbidden in ("launch", "phases", "raw"):
             assert not hasattr(server, forbidden), (
                 f"HarborMCPServer leaks `{forbidden}`; keep task.toml pure Harbor"
             )
-        # Extra keys in the entry are silently ignored.
         assert server.name == "svc"
         assert server.transport == "streamable-http"
         assert server.url == "http://svc:1/mcp"
@@ -96,8 +92,35 @@ class TestURLHelpers:
         assert mcp_agent_url(s) is None
 
 
+class TestHarborValidation:
+    """Mirrors `harbor.models.task.config.MCPServerConfig.validate_transport_fields`."""
+
+    def test_sse_requires_url(self):
+        cfg = {"environment": {"mcp_servers": [{"name": "svc", "transport": "sse"}]}}
+        with pytest.raises(ValueError, match="'url' is required for transport 'sse'"):
+            parse_mcp_servers(cfg)
+
+    def test_streamable_http_requires_url(self):
+        cfg = {
+            "environment": {
+                "mcp_servers": [{"name": "svc", "transport": "streamable-http"}]
+            }
+        }
+        with pytest.raises(
+            ValueError, match="'url' is required for transport 'streamable-http'"
+        ):
+            parse_mcp_servers(cfg)
+
+    def test_stdio_requires_command(self):
+        cfg = {"environment": {"mcp_servers": [{"name": "svc", "transport": "stdio"}]}}
+        with pytest.raises(
+            ValueError, match="'command' is required for transport 'stdio'"
+        ):
+            parse_mcp_servers(cfg)
+
+
 # --------------------------------------------------------------------------- #
-# Mixin behaviour                                                             #
+# Mixin behavior                                                              #
 # --------------------------------------------------------------------------- #
 
 
@@ -114,18 +137,18 @@ def _make_background_job(name: str) -> MagicMock:
 class _DummyEnv(HarborMCPMixin):
     """Bare mixin host for unit testing; bypasses CliAgentEnv setup."""
 
-    def __init__(self, *, mcp_launchers: dict[str, HarborMCPLauncher] | None = None):
+    def __init__(
+        self,
+        *,
+        mcp_launch_commands: dict[str, str] | None = None,
+    ):
         self.sandbox_client = MagicMock()
-        # `execute_command` is used for health probes, /etc/hosts patches, stop cmds.
         self.sandbox_client.execute_command = AsyncMock(
             return_value=MagicMock(exit_code=0, stdout="")
         )
-        # `start_background_job` launches the MCP daemon.
         self.started_jobs: list[tuple[str, str]] = []
 
         async def _start_bg(sandbox_id, command, working_dir=None, env=None):
-            # Derive a stable job id from the pid file referenced in the command;
-            # fall back to a counter if the pattern isn't present.
             import re
 
             m = re.search(r"harbor-mcp-([^.]+)\.pid", command)
@@ -134,15 +157,13 @@ class _DummyEnv(HarborMCPMixin):
             return _make_background_job(name)
 
         self.sandbox_client.start_background_job = AsyncMock(side_effect=_start_bg)
-        # `get_background_job` — default to "still running"
         self.sandbox_client.get_background_job = AsyncMock(
             return_value=MagicMock(completed=False, exit_code=None, stderr="")
         )
-        self.mcp_launchers = mcp_launchers or {}
+        self.mcp_launch_commands = mcp_launch_commands or {}
         # Fast defaults so tests don't sleep.
-        self.default_mcp_healthcheck = HarborMCPHealthcheck(
+        self.mcp_healthcheck = HarborMCPHealthcheck(
             interval_sec=0.0,
-            start_interval_sec=0.0,
             timeout_sec=1.0,
             retries=1,
             start_period_sec=0.0,
@@ -164,132 +185,83 @@ def _config_with_server(*, name: str = "svc", port: int = 8000) -> dict[str, Any
     }
 
 
-class TestLauncherResolution:
-    def test_returns_launcher_from_constructor_dict(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="ctor-cmd")})
+class TestLaunchCommandResolution:
+    @pytest.mark.asyncio
+    async def test_returns_command_from_constructor_dict(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "ctor-cmd"})
         (server,) = parse_mcp_servers(_config_with_server())
-        launcher = env.mcp_launcher_for(server, state={}, phase="agent")
-        assert launcher is not None
-        assert launcher.command == "ctor-cmd"
+        cmd = await env.mcp_launch_command(server, state={})
+        assert cmd == "ctor-cmd"
 
-    def test_returns_none_when_unregistered(self):
-        """No launcher registered → server is treated as externally managed
-        (e.g. a Harbor-style docker-compose sidecar)."""
+    @pytest.mark.asyncio
+    async def test_returns_none_when_unregistered(self):
+        """No entry → server is externally managed (e.g. a docker-compose sidecar)."""
         env = _DummyEnv()
         (server,) = parse_mcp_servers(_config_with_server())
-        assert env.mcp_launcher_for(server, state={}, phase="agent") is None
+        assert await env.mcp_launch_command(server, state={}) is None
 
-    def test_subclass_override_beats_constructor(self):
-        """Subclasses can override `mcp_launcher_for` for dynamic behavior."""
+    @pytest.mark.asyncio
+    async def test_subclass_override_beats_constructor(self):
+        """Subclasses can override `mcp_launch_command` for dynamic behavior."""
 
         class DynamicEnv(_DummyEnv):
-            def mcp_launcher_for(self, server, state, phase):
-                # Ignores constructor dict; always returns phase-tagged command.
-                return HarborMCPLauncher(command=f"cmd-for-{phase}")
+            async def mcp_launch_command(self, server, state):
+                return f"cmd-for-{state.get('rollout_id', 'unknown')}"
 
-        env = DynamicEnv(mcp_launchers={"svc": HarborMCPLauncher(command="ctor-cmd")})
+        env = DynamicEnv(mcp_launch_commands={"svc": "ctor-cmd"})
         (server,) = parse_mcp_servers(_config_with_server())
         assert (
-            env.mcp_launcher_for(server, state={}, phase="agent").command
-            == "cmd-for-agent"
-        )
-        assert (
-            env.mcp_launcher_for(server, state={}, phase="verifier").command
-            == "cmd-for-verifier"
+            await env.mcp_launch_command(server, state={"rollout_id": "r1"})
+            == "cmd-for-r1"
         )
 
 
 class TestStartCommand:
-    def test_su_wraps_command_when_user_set(self):
-        env = _DummyEnv()
-        server = HarborMCPServer(
-            name="svc", transport="streamable-http", url="http://svc:8000/mcp"
-        )
-        launcher = HarborMCPLauncher(
-            command=".venv/bin/python -u server.py",
-            user="env-user",
-            cwd="/opt/x",
-            env={"STATIC": "1"},
-        )
-        cmd = env._mcp_start_cmd(server, launcher, 8000, {"EXTRA": "2"})
-        assert "su -s /bin/sh env-user -c" in cmd
-        assert "cd /opt/x" in cmd
-        assert "MCP_TRANSPORT=streamable-http" in cmd
-        assert "MCP_PORT=8000" in cmd
-        assert "MCP_BIND_HOST=127.0.0.1" in cmd
-        assert "STATIC=1" in cmd
-        assert "EXTRA=2" in cmd
-        # The SDK's start_background_job wraps in nohup for us, so our inner
-        # command should exec directly (no nohup, no log redirection, no `&`).
-        assert "exec .venv/bin/python -u server.py" in cmd
-        assert "nohup" not in cmd
-        assert ".log" not in cmd  # SDK owns stdout/stderr capture
-        assert " & " not in cmd  # exec runs in the foreground of the sh -c body
-        # PID must be recorded so _mcp_stop_cmd can kill the process later.
-        assert "echo $$ > /tmp/harbor-mcp-svc.pid" in cmd
+    def test_records_real_process_pid_via_bang(self):
+        """PID tracking must use `$!` (backgrounded child), NOT `$$` (outer shell).
 
-    def test_no_su_without_user(self):
-        env = _DummyEnv()
-        server = HarborMCPServer(
-            name="svc", transport="streamable-http", url="http://svc:8000/mcp"
-        )
-        launcher = HarborMCPLauncher(command="server")
-        cmd = env._mcp_start_cmd(server, launcher, 8000, {})
-        assert "su -s" not in cmd
-        assert "exec server" in cmd
-
-    def test_extra_env_overrides_launcher_env(self):
-        env = _DummyEnv()
-        server = HarborMCPServer(
-            name="svc", transport="streamable-http", url="http://svc:8000/mcp"
-        )
-        launcher = HarborMCPLauncher(command="x", env={"K": "old"})
-        cmd = env._mcp_start_cmd(server, launcher, 8000, {"K": "new"})
-        assert "K=new" in cmd
-        assert "K=old" not in cmd
-
-    def test_server_name_with_shell_metachars_is_quoted(self):
-        """Server name is task-author-controlled; treat it like any other shell arg.
-
-        Particularly matters for the no-user branch of `_mcp_start_cmd` (no outer
-        `su -c 'shlex.quote(inner)'` wrapper) and every call site in
-        `_mcp_stop_cmd` (which goes straight to `execute_command`).
+        Inside the SDK's `(...)` subshell, `$$` is the outer shell's PID —
+        killing it would leave the exec'd target orphaned.
         """
         env = _DummyEnv()
-        # Name containing a shell-special sequence. The generated commands
-        # must keep the `$(...)` literal, not let the outer sh -c evaluate it.
-        server = HarborMCPServer(
-            name="evil$(whoami)",
-            transport="streamable-http",
-            url="http://svc:8000/mcp",
-        )
-        launcher = HarborMCPLauncher(command="server")  # no user → no outer su quoting
-        start = env._mcp_start_cmd(server, launcher, 8000, {})
-        # The pid path must appear exactly once, already single-quoted.
+        cmd = env._mcp_start_cmd("svc", "python server.py")
+        assert "echo $!" in cmd
+        assert "echo $$" not in cmd
+        # Must end with `wait` so the subshell's exit code reflects the target's.
+        assert cmd.rstrip().endswith("wait")
+        assert "/tmp/harbor-mcp-svc.pid" in cmd
+
+    def test_user_command_is_not_exec_wrapped(self):
+        """No `exec`, no `su`, no extra env prefix — just background + pidfile."""
+        env = _DummyEnv()
+        cmd = env._mcp_start_cmd("svc", "python -u /opt/x/server.py")
+        assert "exec" not in cmd
+        assert "su -s" not in cmd
+        assert "python -u /opt/x/server.py" in cmd
+
+    def test_server_name_with_shell_metachars_is_quoted(self):
+        """Server name is task-author-controlled; treat it like any shell arg."""
+        env = _DummyEnv()
+        start = env._mcp_start_cmd("evil$(whoami)", "server")
+        # Pid path appears exactly once, already single-quoted.
         assert "'/tmp/harbor-mcp-evil$(whoami).pid'" in start
-        # And it must NOT appear in unquoted form anywhere.
         unquoted = "/tmp/harbor-mcp-evil$(whoami).pid"
         assert start.count(unquoted) == start.count(f"'{unquoted}'")
 
         stop = env._mcp_stop_cmd("evil$(whoami)")
-        # Both uses of the pid file in the stop command must be quoted.
         assert stop.count(f"'{unquoted}'") == 2
         assert stop.count(unquoted) == stop.count(f"'{unquoted}'")
 
 
 class TestStopCommand:
     def test_default_is_sigkill_plus_rm(self):
-        """Default: one SIGKILL, then unlink the pidfile. No graceful-shutdown theater."""
+        """Default: one SIGKILL, then unlink the pidfile."""
         env = _DummyEnv()
         cmd = env._mcp_stop_cmd("svc")
         assert "kill -9" in cmd
         assert "rm -f" in cmd
-        # No TERM-then-KILL polling in the default.
         assert "kill -0" not in cmd
         assert "sleep" not in cmd
-        # No lingering control-flow keywords — stays on one line.
-        assert "for _" not in cmd
-        assert "while" not in cmd
 
     def test_default_references_pidfile(self):
         env = _DummyEnv()
@@ -297,177 +269,110 @@ class TestStopCommand:
         assert "/tmp/harbor-mcp-svc.pid" in cmd
 
     def test_default_is_short(self):
-        """Keep it one line — fewer round trips, easier to read in logs."""
+        """Keep it one line — fewer round trips, easier to grep in logs."""
         env = _DummyEnv()
         cmd = env._mcp_stop_cmd("svc")
         assert "\n" not in cmd
-        # < 120 chars keeps it grep-friendly in sandbox exec logs.
         assert len(cmd) < 120
-
-    def test_subclass_can_override_for_graceful_shutdown(self):
-        """Users who need SIGTERM grace can override the method."""
-
-        class GracefulEnv(_DummyEnv):
-            def _mcp_stop_cmd(self, name):
-                pid_file = self._mcp_pid_file(name)
-                return (
-                    f"pid=$(cat {pid_file} 2>/dev/null); "
-                    f'[ -n "$pid" ] && kill "$pid"; sleep 5; '
-                    f'kill -9 "$pid" 2>/dev/null; rm -f {pid_file}'
-                )
-
-        env = GracefulEnv()
-        cmd = env._mcp_stop_cmd("svc")
-        assert 'kill "$pid"' in cmd
-        assert "sleep 5" in cmd
-
-
-def _two_server_config() -> dict[str, Any]:
-    """task.toml declaring two servers; phases are assigned via launchers."""
-    return {
-        "environment": {
-            "mcp_servers": [
-                {
-                    "name": "agent-svc",
-                    "transport": "streamable-http",
-                    "url": "http://x:8000/mcp",
-                },
-                {
-                    "name": "verifier-svc",
-                    "transport": "streamable-http",
-                    "url": "http://x:9000/mcp",
-                },
-            ]
-        }
-    }
 
 
 class TestLifecycle:
     @pytest.mark.asyncio
-    async def test_starts_only_servers_for_current_phase(self):
-        env = _DummyEnv(
-            mcp_launchers={
-                "agent-svc": HarborMCPLauncher(command="a", phases=["agent"]),
-                "verifier-svc": HarborMCPLauncher(command="v", phases=["verifier"]),
-            }
-        )
+    async def test_starts_server_with_registered_launch_command(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
         state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase(
-            "sbx", _two_server_config(), state, phase=DEFAULT_PHASE
-        )
-        assert state["harbor_mcp_started"] == ["agent-svc"]
-
-    @pytest.mark.asyncio
-    async def test_restart_swaps_phase_servers(self):
-        env = _DummyEnv(
-            mcp_launchers={
-                "agent-svc": HarborMCPLauncher(command="a", phases=["agent"]),
-                "verifier-svc": HarborMCPLauncher(command="v", phases=["verifier"]),
-            }
-        )
-        cfg = _two_server_config()
-        state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        assert state["harbor_mcp_started"] == ["agent-svc"]
-
-        await env.restart_mcp_for_phase("sbx", state, phase="verifier")
-        assert state["harbor_mcp_started"] == ["verifier-svc"]
-
-    @pytest.mark.asyncio
-    async def test_restart_leaves_multi_phase_server_alone(self):
-        env = _DummyEnv(
-            mcp_launchers={
-                "svc": HarborMCPLauncher(command="x", phases=["agent", "verifier"])
-            },
-        )
-        cfg = _config_with_server()
-        state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        env.sandbox_client.execute_command.reset_mock()
-        env.sandbox_client.start_background_job.reset_mock()
-
-        await env.restart_mcp_for_phase("sbx", state, phase="verifier")
-
-        # Launcher applies to both phases → no new job started, no stop command.
-        env.sandbox_client.start_background_job.assert_not_awaited()
-        stop_cmds = [
-            c.args[1]
-            for c in env.sandbox_client.execute_command.call_args_list
-            if "kill -9" in c.args[1] and "harbor-mcp-svc.pid" in c.args[1]
-        ]
-        assert stop_cmds == []
-        assert state["harbor_mcp_started"] == ["svc"]
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
+        assert set(state["harbor_mcp_jobs"].keys()) == {"svc"}
 
     @pytest.mark.asyncio
     async def test_externally_managed_server_is_skipped(self):
-        env = _DummyEnv()  # no launchers
-        cfg = _config_with_server()
+        """Declared in task.toml but no launch command → treated as externally managed."""
+        env = _DummyEnv()
         state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        assert state["harbor_mcp_started"] == []
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
+        assert state.get("harbor_mcp_jobs", {}) == {}
+        env.sandbox_client.start_background_job.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stop_mcp_servers_cleanup_clears_state(self):
-        env = _DummyEnv(
-            mcp_launchers={"svc": HarborMCPLauncher(command="x")},
-        )
-        cfg = _config_with_server()
+        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
         state: dict[str, Any] = {"sandbox_id": "sbx"}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        assert state["harbor_mcp_started"] == ["svc"]
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
+        assert "svc" in state["harbor_mcp_jobs"]
 
         await env.stop_mcp_servers(state)
-        assert state["harbor_mcp_started"] == []
+        assert state["harbor_mcp_jobs"] == {}
+
+    @pytest.mark.asyncio
+    async def test_stop_issues_kill_with_pidfile(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
+        state: dict[str, Any] = {"sandbox_id": "sbx"}
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
+        env.sandbox_client.execute_command.reset_mock()
+
+        await env.stop_mcp_servers(state)
+
+        stop_calls = [
+            c.args[1]
+            for c in env.sandbox_client.execute_command.call_args_list
+            if "kill -9" in c.args[1]
+        ]
+        assert len(stop_calls) == 1
+        assert "harbor-mcp-svc.pid" in stop_calls[0]
+
+    @pytest.mark.asyncio
+    async def test_stop_without_sandbox_id_is_a_noop(self):
+        env = _DummyEnv()
+        await env.stop_mcp_servers({})  # no sandbox_id
+        env.sandbox_client.execute_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stdio_server_is_ignored(self):
+        """Stdio transports have no network endpoint — mixin must not try to start them."""
+        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {"name": "svc", "transport": "stdio", "command": "python x.py"}
+                ]
+            }
+        }
+        await env.start_mcp_servers("sbx", cfg, {})
+        env.sandbox_client.start_background_job.assert_not_awaited()
 
 
 class TestBackgroundJob:
     @pytest.mark.asyncio
     async def test_uses_start_background_job_not_execute_command(self):
-        """Daemon launch should go through start_background_job, not execute_command."""
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="python x")})
-        cfg = _config_with_server()
+        """Daemon launch goes through start_background_job, not execute_command."""
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
         state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
 
         env.sandbox_client.start_background_job.assert_awaited_once()
-        # The only execute_command calls should be /etc/hosts patch + the TCP
-        # health probe — never the MCP start command itself.
         start_commands = [
             c.args[1]
             for c in env.sandbox_client.execute_command.call_args_list
-            if "exec python x" in c.args[1]
+            if "python x &" in c.args[1]
         ]
         assert start_commands == []
 
     @pytest.mark.asyncio
     async def test_background_job_stored_in_state(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = _config_with_server()
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
         state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+        await env.start_mcp_servers("sbx", _config_with_server(), state)
 
         jobs = state["harbor_mcp_jobs"]
         assert set(jobs.keys()) == {"svc"}
         assert jobs["svc"].job_id == "job-svc"
 
     @pytest.mark.asyncio
-    async def test_stop_clears_job_handle(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = _config_with_server()
-        state: dict[str, Any] = {"sandbox_id": "sbx"}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        assert "svc" in state["harbor_mcp_jobs"]
-
-        await env._stop_mcp_server("sbx", "svc", state)
-        assert "svc" not in state["harbor_mcp_jobs"]
-
-    @pytest.mark.asyncio
     async def test_early_crash_bails_out_with_stderr(self):
         """If the daemon exits before the port opens, fail fast with its stderr."""
         import verifiers as vf
 
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        # Daemon reports "already exited with stack trace" on first poll.
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
         env.sandbox_client.get_background_job = AsyncMock(
             return_value=MagicMock(
                 completed=True,
@@ -475,19 +380,16 @@ class TestBackgroundJob:
                 stderr="ImportError: missing widget",
             )
         )
-        # TCP probe would still say "not listening", but we shouldn't need it.
         env.sandbox_client.execute_command = AsyncMock(
             return_value=MagicMock(exit_code=1, stdout="")
         )
-        # Large retry budget — we need to prove we bail on the 1st iteration.
-        env.default_mcp_healthcheck = HarborMCPHealthcheck(
-            retries=5, interval_sec=0.0, start_interval_sec=0.0, timeout_sec=1.0
+        env.mcp_healthcheck = HarborMCPHealthcheck(
+            retries=5, interval_sec=0.0, timeout_sec=1.0
         )
 
-        cfg = _config_with_server()
-        state: dict[str, Any] = {}
         with pytest.raises(vf.SandboxError, match="exited before becoming healthy"):
-            await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+            await env.start_mcp_servers("sbx", _config_with_server(), {})
+        # We should bail on the 1st poll, not burn the retry budget.
         assert env.sandbox_client.get_background_job.await_count == 1
 
 
@@ -510,31 +412,19 @@ class TestHealthCheck:
         assert f":{hex_expected}$" in cmd
 
     def test_default_probe_requires_listen_state(self):
-        # State `0A` means LISTEN in /proc/net/tcp; we must filter on it so
-        # we don't accept an ESTABLISHED connection FROM a coincidentally-
-        # matching ephemeral port.
         cmd = HarborMCPMixin._default_mcp_health_cmd(8000)
         assert '$4 == "0A"' in cmd
 
     @pytest.mark.asyncio
-    async def test_launcher_override_takes_precedence(self):
-        env = _DummyEnv(
-            mcp_launchers={
-                "svc": HarborMCPLauncher(
-                    command="x",
-                    healthcheck=HarborMCPHealthcheck(
-                        command="curl -fs http://127.0.0.1:{port}/health",
-                        interval_sec=0.0,
-                        start_interval_sec=0.0,
-                        timeout_sec=1.0,
-                        retries=1,
-                    ),
-                )
-            }
+    async def test_custom_healthcheck_command_templated_with_port(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
+        env.mcp_healthcheck = HarborMCPHealthcheck(
+            command="curl -fs http://127.0.0.1:{port}/health",
+            interval_sec=0.0,
+            timeout_sec=1.0,
+            retries=1,
         )
-        cfg = _config_with_server()
-        state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
 
         health_calls = [
             c.args[1]
@@ -550,9 +440,8 @@ class TestHealthCheck:
 
     @pytest.mark.asyncio
     async def test_default_probe_issued_when_no_override(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = _config_with_server()
-        await env.start_mcp_servers_for_phase("sbx", cfg, {}, phase="agent")
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
 
         health_calls = [
             c.args[1]
@@ -562,210 +451,19 @@ class TestHealthCheck:
         assert len(health_calls) == 1
         assert ":1F40$" in health_calls[0]
 
-
-class TestEtcHosts:
     @pytest.mark.asyncio
-    async def test_patches_non_loopback_hosts(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = _config_with_server()
-        await env.start_mcp_servers_for_phase("sbx", cfg, {}, phase="agent")
-        commands = [
-            call.args[1] for call in env.sandbox_client.execute_command.call_args_list
-        ]
-        assert any("svc-host" in c and "/etc/hosts" in c for c in commands), (
-            "expected /etc/hosts patch for service-name URL"
-        )
-
-    @pytest.mark.asyncio
-    async def test_skips_loopback_hosts(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "svc",
-                        "transport": "streamable-http",
-                        "url": "http://localhost:8000/mcp",
-                    }
-                ]
-            }
-        }
-        await env.start_mcp_servers_for_phase("sbx", cfg, {}, phase="agent")
-        commands = [
-            call.args[1] for call in env.sandbox_client.execute_command.call_args_list
-        ]
-        assert not any("/etc/hosts" in c for c in commands)
-
-
-class TestEnvVarPublishing:
-    def test_publishes_only_servers_active_in_phase(self):
-        """Phases are determined by the Python launcher, not task.toml."""
-        env = _DummyEnv(
-            mcp_launchers={
-                "only-agent": HarborMCPLauncher(command="a", phases=["agent"]),
-                "only-verifier": HarborMCPLauncher(command="v", phases=["verifier"]),
-            }
-        )
-        cfg = {
-            "environment": {
-                "mcp_servers": [
-                    {
-                        "name": "only-agent",
-                        "transport": "streamable-http",
-                        "url": "http://x:1/mcp",
-                    },
-                    {
-                        "name": "only-verifier",
-                        "transport": "streamable-http",
-                        "url": "http://x:2/mcp",
-                    },
-                ]
-            }
-        }
-        agent = env.mcp_agent_env_vars(cfg, phase="agent")
-        verifier = env.mcp_agent_env_vars(cfg, phase="verifier")
-        assert agent == {"HARBOR_MCP_ONLY_AGENT_URL": "http://127.0.0.1:1/mcp"}
-        assert verifier == {"HARBOR_MCP_ONLY_VERIFIER_URL": "http://127.0.0.1:2/mcp"}
-
-    def test_externally_managed_server_is_always_published(self):
-        """A server with no launcher is treated as always-up (Harbor-style
-        sidecar) — its URL is published in every phase."""
-        env = _DummyEnv()  # no launchers
-        cfg = _config_with_server()
-        for phase in ("agent", "verifier", "custom"):
-            assert env.mcp_agent_env_vars(cfg, phase=phase) == {
-                "HARBOR_MCP_SVC_URL": "http://127.0.0.1:8000/mcp"
-            }
-
-
-class TestHarborValidation:
-    """Mirrors `harbor.models.task.config.MCPServerConfig.validate_transport_fields`."""
-
-    def test_sse_requires_url(self):
-        cfg = {
-            "environment": {
-                "mcp_servers": [{"name": "svc", "transport": "sse"}],
-            }
-        }
-        with pytest.raises(ValueError, match="'url' is required for transport 'sse'"):
-            parse_mcp_servers(cfg)
-
-    def test_streamable_http_requires_url(self):
-        cfg = {
-            "environment": {
-                "mcp_servers": [{"name": "svc", "transport": "streamable-http"}],
-            }
-        }
-        with pytest.raises(
-            ValueError, match="'url' is required for transport 'streamable-http'"
-        ):
-            parse_mcp_servers(cfg)
-
-    def test_stdio_requires_command(self):
-        cfg = {
-            "environment": {
-                "mcp_servers": [{"name": "svc", "transport": "stdio"}],
-            }
-        }
-        with pytest.raises(
-            ValueError, match="'command' is required for transport 'stdio'"
-        ):
-            parse_mcp_servers(cfg)
-
-
-class TestHarborHealthcheckSemantics:
-    """Mirrors `harbor.environments.base.run_healthcheck` retry/start-period logic."""
-
-    @pytest.mark.asyncio
-    async def test_launch_succeeds_when_probe_passes_first_try(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        cfg = _config_with_server()
-        await env.start_mcp_servers_for_phase("sbx", cfg, {}, phase="agent")
-        # Exactly one probe attempt should have run.
-        probes = [
-            c
-            for c in env.sandbox_client.execute_command.call_args_list
-            if "/proc/net/tcp" in c.args[1]
-        ]
-        assert len(probes) == 1
-
-    @staticmethod
-    def _probe_count(env) -> int:
-        """Count probe calls (exclude /etc/hosts patching etc.)."""
-        return sum(
-            1
-            for c in env.sandbox_client.execute_command.call_args_list
-            if "dummy" in c.args[1] or "/proc/net/tcp" in c.args[1]
-        )
-
-    @pytest.mark.asyncio
-    async def test_failures_during_start_period_do_not_count(self):
-        """Harbor parity: failures during `start_period_sec` never exhaust retries."""
-        # Eight failures with retries=3 would normally exceed the budget. With a
-        # start_period covering all of them, we should pass once the probe
-        # flips to healthy.
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        env.default_mcp_healthcheck = HarborMCPHealthcheck(
-            command="dummy {port}",
-            retries=3,
-            interval_sec=0.0,
-            start_period_sec=1000.0,  # cover all failures below
-            start_interval_sec=0.0,
-            timeout_sec=1.0,
-        )
-        # /etc/hosts patch + 8 failures + 1 success.
-        results = (
-            [MagicMock(exit_code=0)]  # /etc/hosts patch
-            + [MagicMock(exit_code=1)] * 8
-            + [MagicMock(exit_code=0)]
-        )
-        env.sandbox_client.execute_command = AsyncMock(side_effect=list(results))
-
-        cfg = _config_with_server()
-        state: dict[str, Any] = {}
-        await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        assert self._probe_count(env) == 9
-
-    @pytest.mark.asyncio
-    async def test_retry_budget_enforced_after_start_period(self):
-        """Harbor parity: consecutive failures after start period fail at `retries`."""
-        import verifiers as vf
-
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        env.default_mcp_healthcheck = HarborMCPHealthcheck(
-            command="dummy {port}",
-            retries=2,
-            interval_sec=0.0,
-            start_period_sec=0.0,  # no grace period
-            start_interval_sec=0.0,
-            timeout_sec=1.0,
-        )
-        env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(exit_code=1)
-        )
-
-        cfg = _config_with_server()
-        state: dict[str, Any] = {}
-        with pytest.raises(vf.SandboxError, match="after 2 consecutive retries"):
-            await env.start_mcp_servers_for_phase("sbx", cfg, state, phase="agent")
-        # Exactly `retries` probes before giving up.
-        assert self._probe_count(env) == 2
-
-    @pytest.mark.asyncio
-    async def test_per_probe_timeout_is_respected(self):
-        env = _DummyEnv(mcp_launchers={"svc": HarborMCPLauncher(command="x")})
-        env.default_mcp_healthcheck = HarborMCPHealthcheck(
+    async def test_probe_timeout_is_respected(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
+        env.mcp_healthcheck = HarborMCPHealthcheck(
             command="dummy {port}",
             retries=1,
             interval_sec=0.0,
-            start_interval_sec=0.0,
             timeout_sec=7.5,
         )
         env.sandbox_client.execute_command = AsyncMock(
             return_value=MagicMock(exit_code=0)
         )
-        cfg = _config_with_server()
-        await env.start_mcp_servers_for_phase("sbx", cfg, {}, phase="agent")
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
 
         probe_calls = [
             c
@@ -777,39 +475,151 @@ class TestHarborHealthcheckSemantics:
         assert probe_calls[0].kwargs["timeout"] == 7
 
 
-class TestHarborHealthcheckParsing:
-    def test_from_dict_roundtrip(self):
-        hc = HarborMCPHealthcheck.from_dict(
-            {
-                "command": "true {port}",
-                "interval_sec": 1.5,
-                "timeout_sec": 3.0,
-                "start_period_sec": 10.0,
-                "start_interval_sec": 1.0,
-                "retries": 5,
-                "ignored_field": "ignored",
-            }
-        )
-        assert hc.command == "true {port}"
-        assert hc.interval_sec == 1.5
-        assert hc.timeout_sec == 3.0
-        assert hc.start_period_sec == 10.0
-        assert hc.start_interval_sec == 1.0
-        assert hc.retries == 5
+class TestHarborHealthcheckSemantics:
+    """Mirrors `harbor.environments.base.run_healthcheck` retry/start-period logic."""
 
-    def test_launcher_accepts_healthcheck_instance(self):
-        """Composing a launcher with a Healthcheck is a plain dataclass ctor —
-        HarborEnv doesn't expose task.toml-side healthcheck parsing since the
-        launcher itself lives on the Python side."""
-        launcher = HarborMCPLauncher(
-            command=".venv/bin/python server.py",
-            healthcheck=HarborMCPHealthcheck(
-                command="curl -fs http://127.0.0.1:{port}/health",
-                retries=10,
-                start_period_sec=5.0,
-            ),
+    @staticmethod
+    def _probe_count(env) -> int:
+        return sum(
+            1
+            for c in env.sandbox_client.execute_command.call_args_list
+            if "dummy" in c.args[1] or "/proc/net/tcp" in c.args[1]
         )
-        assert launcher.healthcheck is not None
-        assert launcher.healthcheck.command == "curl -fs http://127.0.0.1:{port}/health"
-        assert launcher.healthcheck.retries == 10
-        assert launcher.healthcheck.start_period_sec == 5.0
+
+    @pytest.mark.asyncio
+    async def test_failures_during_start_period_do_not_count(self):
+        """Failures during `start_period_sec` never exhaust retries."""
+        env = _DummyEnv(mcp_launch_commands={"svc": "x"})
+        env.mcp_healthcheck = HarborMCPHealthcheck(
+            command="dummy {port}",
+            retries=3,
+            interval_sec=0.0,
+            start_period_sec=1000.0,  # cover all failures below
+            timeout_sec=1.0,
+        )
+        results = (
+            [MagicMock(exit_code=0)]  # /etc/hosts patch
+            + [MagicMock(exit_code=1)] * 8
+            + [MagicMock(exit_code=0)]
+        )
+        env.sandbox_client.execute_command = AsyncMock(side_effect=list(results))
+
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
+        assert self._probe_count(env) == 9
+
+    @pytest.mark.asyncio
+    async def test_retry_budget_enforced_after_start_period(self):
+        """Consecutive failures after start period fail at `retries`."""
+        import verifiers as vf
+
+        env = _DummyEnv(mcp_launch_commands={"svc": "x"})
+        env.mcp_healthcheck = HarborMCPHealthcheck(
+            command="dummy {port}",
+            retries=2,
+            interval_sec=0.0,
+            start_period_sec=0.0,
+            timeout_sec=1.0,
+        )
+        env.sandbox_client.execute_command = AsyncMock(
+            return_value=MagicMock(exit_code=1)
+        )
+
+        with pytest.raises(vf.SandboxError, match="after 2 consecutive retries"):
+            await env.start_mcp_servers("sbx", _config_with_server(), {})
+        assert self._probe_count(env) == 2
+
+
+class TestEnvVarPublishing:
+    def test_publishes_url_for_every_declared_server(self):
+        env = _DummyEnv()
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "one",
+                        "transport": "streamable-http",
+                        "url": "http://x:1/mcp",
+                    },
+                    {
+                        "name": "two",
+                        "transport": "streamable-http",
+                        "url": "http://x:2/mcp",
+                    },
+                ]
+            }
+        }
+        assert env.mcp_agent_env_vars(cfg) == {
+            "HARBOR_MCP_ONE_URL": "http://127.0.0.1:1/mcp",
+            "HARBOR_MCP_TWO_URL": "http://127.0.0.1:2/mcp",
+        }
+
+    def test_stdio_servers_are_not_published(self):
+        """Stdio servers don't have URLs — nothing to publish."""
+        env = _DummyEnv()
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {"name": "stdio-srv", "transport": "stdio", "command": "x"}
+                ]
+            }
+        }
+        assert env.mcp_agent_env_vars(cfg) == {}
+
+    def test_server_name_is_normalized_to_upper_snake(self):
+        env = _DummyEnv()
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "my-cool-server",
+                        "transport": "streamable-http",
+                        "url": "http://x:1/mcp",
+                    }
+                ]
+            }
+        }
+        assert "HARBOR_MCP_MY_COOL_SERVER_URL" in env.mcp_agent_env_vars(cfg)
+
+
+class TestEtcHosts:
+    @pytest.mark.asyncio
+    async def test_patches_non_loopback_hosts(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "x"})
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
+        commands = [
+            call.args[1] for call in env.sandbox_client.execute_command.call_args_list
+        ]
+        assert any("svc-host" in c and "/etc/hosts" in c for c in commands), (
+            "expected /etc/hosts patch for service-name URL"
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_loopback_hosts(self):
+        env = _DummyEnv(mcp_launch_commands={"svc": "x"})
+        cfg = {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": "svc",
+                        "transport": "streamable-http",
+                        "url": "http://localhost:8000/mcp",
+                    }
+                ]
+            }
+        }
+        await env.start_mcp_servers("sbx", cfg, {})
+        commands = [
+            call.args[1] for call in env.sandbox_client.execute_command.call_args_list
+        ]
+        assert not any("/etc/hosts" in c for c in commands)
+
+    @pytest.mark.asyncio
+    async def test_patches_externally_managed_server_hosts_too(self):
+        """Servers without launch commands still need /etc/hosts aliasing so
+        the agent can reach them by the task.toml hostname."""
+        env = _DummyEnv()  # no launch commands
+        await env.start_mcp_servers("sbx", _config_with_server(), {})
+        commands = [
+            call.args[1] for call in env.sandbox_client.execute_command.call_args_list
+        ]
+        assert any("svc-host" in c and "/etc/hosts" in c for c in commands)

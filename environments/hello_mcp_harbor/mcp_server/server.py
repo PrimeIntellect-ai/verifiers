@@ -1,4 +1,8 @@
-import os
+"""Simple MCP server that exposes a get_secret tool.
+
+Identical to Harbor's own ``examples/tasks/hello-mcp/environment/mcp-server/server.py``
+so this task file is portable between HarborEnv and native ``harbor run``.
+"""
 
 from fastmcp import FastMCP
 
@@ -14,7 +18,4 @@ def get_secret() -> str:
 
 
 if __name__ == "__main__":
-    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
-    port = int(os.environ.get("MCP_PORT", "8000"))
-    host = os.environ.get("MCP_BIND_HOST", "0.0.0.0")
-    mcp.run(transport=transport, host=host, port=port)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
