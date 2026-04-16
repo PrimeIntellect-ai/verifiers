@@ -7,6 +7,53 @@ This folder contains installable example environments that showcase common usage
 - **Install an environment from this GitHub repo**: `prime env install math-python --from-repo`
 - **Evaluate**: `prime eval run math-python` (defaults to openai/gpt-4.1-mini, small sample)
 
+
+## Installation Methods
+
+Environments can be installed in two ways:
+
+### 1. From Prime Intellect Hub (Recommended)
+
+```bash
+# Install from the Hub (requires prime CLI)
+prime env install primeintellect/math-python
+
+# Or install from local repo
+prime env install math-python --from-repo
+```
+
+This is the primary method and works for **all 23 environments** in this repository. The Hub provides versioning, dependency resolution, and integration with `prime eval run`.
+
+### 2. From Pip Index (Limited)
+
+```bash
+# Some environments are available on the pip index
+pip install prime-env-math-python  # Example format
+```
+
+**Note:** Only a subset of environments are published to the pip index (`hub.primeintellect.ai/ob1/simple/`). For the complete list of available environments, use the Hub directly.
+
+### Which Method Should I Use?
+
+| Use Case | Method |
+|----------|--------|
+| **Local development & evaluation** | `prime env install` from Hub |
+| **CI/CD pipelines** | `prime env install` in workflow |
+| **Dependency in pyproject.toml** | Use Hub with `prime env install` |
+| **Standalone pip install** | Check pip index availability |
+
+### For Framework Integration
+
+When integrating environments into training frameworks (like `prime-rl`), use the Hub method:
+
+```bash
+# In your project setup
+prime env install primeintellect/math-python
+prime eval run math-python -m openai/gpt-4.1-mini
+```
+
+This ensures you get the latest version with proper dependency resolution.
+
 ## Common usage patterns and examples
 
 ### SingleTurnEnv (prompt → single response)
