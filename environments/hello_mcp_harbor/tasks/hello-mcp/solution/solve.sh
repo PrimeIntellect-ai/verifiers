@@ -1,6 +1,4 @@
 #!/bin/bash
-# Oracle solution (not used by `prime eval run` — kept so `harbor run -a oracle`
-# works against this task too).
 
 set -e
 

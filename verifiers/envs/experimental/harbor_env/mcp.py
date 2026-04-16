@@ -1,32 +1,4 @@
-"""Framework-managed MCP server lifecycle for Harbor-format tasks.
-
-task.toml stays pure Harbor. In native Harbor, network-transport MCP servers
-come from a ``docker-compose.yaml`` sidecar, so the task file only needs to
-advertise the server's URL — not how to start it. Harbor's
-:class:`harbor.models.task.config.MCPServerConfig` has exactly five fields:
-``name``, ``transport``, ``url``, ``command``, ``args``.
-
-Prime sandboxes are single-container, so HarborEnv has to start the servers
-itself. All "how to start" detail lives on the Python side as a
-``dict[str, str]`` of shell commands keyed by server name, passed to
-:meth:`HarborMCPMixin.__init__`::
-
-    class MyHarborEnv(HarborEnv):
-        def __init__(self, **kwargs):
-            super().__init__(
-                mcp_launch_commands={
-                    "mcp-server": "python /opt/mcp-server/server.py",
-                },
-                **kwargs,
-            )
-
-For anything more dynamic (injecting secrets, computing a port, switching on
-rollout state) override :meth:`HarborMCPMixin.mcp_launch_command`.
-
-Servers declared in ``task.toml`` with no matching launch command are treated
-as externally managed (e.g. a Harbor-style docker-compose sidecar) — the
-mixin leaves them alone but still publishes their URL to the agent.
-"""
+"""MCP server lifecycle for Harbor-format tasks."""
 
 from __future__ import annotations
 
@@ -48,11 +20,7 @@ NETWORK_TRANSPORTS: frozenset[str] = frozenset({"streamable-http", "http", "sse"
 
 @dataclass
 class HarborMCPServer:
-    """An MCP server entry parsed from ``[[environment.mcp_servers]]`` in task.toml.
-
-    Fields mirror :class:`harbor.models.task.config.MCPServerConfig` exactly —
-    HarborEnv does not extend Harbor's task.toml schema.
-    """
+    """An MCP server entry parsed from [[environment.mcp_servers]] in task.toml."""
 
     name: str
     transport: str
@@ -67,18 +35,7 @@ class HarborMCPServer:
 
 @dataclass
 class HarborMCPHealthcheck:
-    """Readiness probe applied to every framework-managed MCP server.
-
-    Semantics mirror Harbor's ``HealthcheckConfig``: failures during
-    ``start_period_sec`` don't count toward retries; afterwards, ``retries``
-    consecutive failures fail the probe, each spaced by ``interval_sec`` and
-    bounded by ``timeout_sec``.
-
-    When ``command`` is ``None`` the default ``/proc/net/tcp`` LISTEN scan is
-    used — it only depends on ``awk`` and works on every Linux image. A
-    user-supplied command is templated with ``str.format(port=...)`` so it
-    may reference ``{port}``, e.g. ``curl -fsS http://127.0.0.1:{port}/health``.
-    """
+    """Readiness probe applied to the MCP server."""
 
     command: str | None = None
     retries: int = 30
@@ -88,13 +45,7 @@ class HarborMCPHealthcheck:
 
 
 def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
-    """Normalize ``[[environment.mcp_servers]]`` into typed entries.
-
-    Applies the same transport-field validation as Harbor's
-    :class:`harbor.models.task.config.MCPServerConfig`: SSE/streamable-http
-    transports require ``url``, stdio requires ``command``. Extra keys are
-    silently ignored (matching pydantic's default ``extra="ignore"``).
-    """
+    """Parse [[environment.mcp_servers]]."""
     raw_list = (config.get("environment") or {}).get("mcp_servers") or []
     servers: list[HarborMCPServer] = []
     for entry in raw_list:
@@ -104,7 +55,7 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
         if not name:
             continue
 
-        transport = str(entry.get("transport", "stdio"))
+        transport = str(entry.get("transport", "sse"))
         command = entry.get("command")
         url = entry.get("url")
 
@@ -154,31 +105,15 @@ def mcp_agent_url(server: HarborMCPServer) -> str | None:
 
 
 class HarborMCPMixin:
-    """Mix into a ``SandboxMixin``-using env to get framework-managed MCP servers.
-
-    Subclasses configure servers by passing ``mcp_launch_commands={name: cmd}``
-    at construction; names match the ``name`` field in each
-    ``[[environment.mcp_servers]]`` entry in task.toml. Override
-    :meth:`mcp_launch_command` for dynamic behavior (e.g. injecting secrets
-    from the host at start time).
-    """
+    """Mixin to get framework-managed MCP servers."""
 
     mcp_launch_commands: dict[str, str]
     mcp_healthcheck: HarborMCPHealthcheck
 
-    # --------------------------------------------------------------------- #
-    # Subclass hooks                                                        #
-    # --------------------------------------------------------------------- #
-
     async def mcp_launch_command(
         self, server: HarborMCPServer, state: vf.State
     ) -> str | None:
-        """Shell command to launch ``server``, or ``None`` to skip it.
-
-        Default: look up ``server.name`` in ``self.mcp_launch_commands``.
-        Servers with no entry are treated as externally managed (e.g. a
-        Harbor-style docker-compose sidecar) — HarborEnv leaves them alone.
-        """
+        """Shell command to launch `server`, or `None` to skip it."""
         return self.mcp_launch_commands.get(server.name)
 
     def mcp_agent_env_vars(self, config: dict[str, Any]) -> dict[str, str]:
@@ -220,7 +155,7 @@ class HarborMCPMixin:
                 continue
             await self._start_mcp_server(sandbox_id, server, command, state)
 
-    @vf.cleanup
+    @vf.cleanup(priority=1)
     async def stop_mcp_servers(self, state: vf.State) -> None:
         """Stop every framework-managed MCP server for this rollout."""
         sandbox_id = state.get("sandbox_id")
@@ -235,10 +170,6 @@ class HarborMCPMixin:
             except Exception as e:  # noqa: BLE001 — best-effort cleanup
                 logger.debug("Failed to stop MCP server %r: %s", name, e)
         state["harbor_mcp_jobs"] = {}
-
-    # --------------------------------------------------------------------- #
-    # Internals                                                             #
-    # --------------------------------------------------------------------- #
 
     async def _start_mcp_server(
         self,
@@ -268,12 +199,7 @@ class HarborMCPMixin:
     async def _wait_for_mcp_server(
         self, sandbox_id: str, name: str, port: int, job: Any
     ) -> None:
-        """Poll until the server is ready on ``localhost:port``.
-
-        Mirrors Harbor's healthcheck retry/start-period semantics. If the
-        launched background job exits before the port opens, bails out
-        immediately with its real stderr rather than burning the retry budget.
-        """
+        """Poll until the server is ready on localhost:port."""
         hc = self.mcp_healthcheck
         health_cmd = (
             hc.command.format(port=port)
@@ -364,18 +290,19 @@ class HarborMCPMixin:
         if not hosts:
             return
 
-        # ``grep -qw`` (whole-word match) keeps this idempotent across repeated
-        # calls. Hostnames come from task.toml, so shell-quote them.
+        # ``grep -qxF`` (exact-line, fixed-string) keeps this idempotent
+        # across repeated calls without risk of cross-hostname collisions
+        # like "mcp-server" spuriously matching an existing "mcp-server-2"
+        # entry (which ``-w`` would do since ``-`` is a non-word character).
+        # Hostnames come from task.toml, so shell-quote them.
         statements = " && ".join(
-            f"(grep -qw {shlex.quote(h)} /etc/hosts || "
+            f"(grep -qxF {shlex.quote(f'127.0.0.1 {h}')} /etc/hosts || "
             f"echo {shlex.quote(f'127.0.0.1 {h}')} >> /etc/hosts)"
             for h in sorted(hosts)
         )
         await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
             sandbox_id, statements, working_dir=None
         )
-
-    # ----- Shell helpers --------------------------------------------------- #
 
     @staticmethod
     def _mcp_pid_file(name: str) -> str:

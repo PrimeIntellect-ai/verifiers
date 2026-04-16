@@ -42,6 +42,14 @@ class TestParseMCPServers:
         cfg = {"environment": {"mcp_servers": [{"transport": "stdio"}]}}
         assert parse_mcp_servers(cfg) == []
 
+    def test_default_transport_matches_harbor(self):
+        """Harbor's MCPServerConfig.transport defaults to 'sse'. Stay consistent."""
+        cfg = {
+            "environment": {"mcp_servers": [{"name": "svc", "url": "http://svc:1/mcp"}]}
+        }
+        (server,) = parse_mcp_servers(cfg)
+        assert server.transport == "sse"
+
     def test_does_not_leak_harbor_env_only_fields(self):
         """HarborEnv-specific keys must never land on HarborMCPServer —
         task.toml stays pure Harbor."""
@@ -117,11 +125,6 @@ class TestHarborValidation:
             ValueError, match="'command' is required for transport 'stdio'"
         ):
             parse_mcp_servers(cfg)
-
-
-# --------------------------------------------------------------------------- #
-# Mixin behavior                                                              #
-# --------------------------------------------------------------------------- #
 
 
 def _make_background_job(name: str) -> MagicMock:

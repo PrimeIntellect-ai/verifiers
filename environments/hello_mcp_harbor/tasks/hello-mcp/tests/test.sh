@@ -1,6 +1,4 @@
 #!/bin/bash
-# Verifier entrypoint. HarborEnv runs this as `bash test.sh` from /tests.
-# Installs uv + pytest, runs the assertion, writes reward to /logs/verifier.
 
 set -u
 

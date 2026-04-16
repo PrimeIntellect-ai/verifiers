@@ -9,20 +9,11 @@ from verifiers.envs.experimental.harbor_env import (
     HarborMCPHealthcheck,
 )
 
-MCP_SERVER_SOURCE = Path(__file__).parent / "mcp_server" / "server.py"
-
 logger = logging.getLogger("verifiers.envs.HelloMCPHarborEnv")
 
 
 def _build_run_command(agent_workdir: str) -> str:
-    """Install OpenCode and point it at the task.toml-declared MCP server.
-
-    The MCP server is declared in ``task.toml`` as
-    ``http://mcp-server:8000/mcp`` — exactly the same URL Harbor's own
-    hello-mcp uses. ``HarborMCPMixin._patch_mcp_etc_hosts`` aliases
-    ``mcp-server`` to ``127.0.0.1`` inside the sandbox, so the URL works
-    verbatim in the OpenCode config (no ``$VAR`` substitution needed).
-    """
+    """Install OpenCode and point it at the task.toml-declared MCP server."""
     config: dict = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -52,9 +43,6 @@ def _build_run_command(agent_workdir: str) -> str:
     }
     config_json = json.dumps(config, indent=2)
 
-    # Heredoc uses a single-quoted delimiter so bash does NOT expand `$schema`,
-    # `$OPENAI_BASE_URL`, etc. OpenCode expands its own `$VAR` references at
-    # config-read time.
     return f"""
 set -e
 
@@ -72,13 +60,6 @@ mkdir -p /logs/agent
 cd {agent_workdir}
 opencode run "$(cat /task/instruction.md)" 2>&1 | tee /logs/agent/opencode.txt
 """
-
-
-_MCP_LAUNCH_COMMANDS: dict[str, str] = {
-    # Matches the `name` field in tasks/hello-mcp/task.toml. `pre_mcp_setup`
-    # uploads server.py to /opt/mcp-server before this command runs.
-    "mcp-server": "python /opt/mcp-server/server.py",
-}
 
 
 class HelloMCPHarborEnv(HarborEnv):
@@ -103,7 +84,7 @@ class HelloMCPHarborEnv(HarborEnv):
         await self.sandbox_client.upload_file(
             sandbox_id,
             "/opt/mcp-server/server.py",
-            str(MCP_SERVER_SOURCE),
+            str(Path(__file__).parent / "mcp_server" / "server.py"),
         )
 
 
@@ -125,7 +106,9 @@ def load_environment(
         tasks=tasks,
         agent_workdir=agent_workdir,
         docker_image=docker_image,
-        mcp_launch_commands=_MCP_LAUNCH_COMMANDS,
+        mcp_launch_commands={
+            "mcp-server": "python /opt/mcp-server/server.py",
+        },
         mcp_healthcheck=HarborMCPHealthcheck(
             retries=10,
             interval_sec=1.0,

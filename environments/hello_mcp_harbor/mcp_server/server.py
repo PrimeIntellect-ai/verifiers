@@ -1,9 +1,3 @@
-"""Simple MCP server that exposes a get_secret tool.
-
-Identical to Harbor's own ``examples/tasks/hello-mcp/environment/mcp-server/server.py``
-so this task file is portable between HarborEnv and native ``harbor run``.
-"""
-
 from fastmcp import FastMCP
 
 mcp = FastMCP("hello-mcp")
