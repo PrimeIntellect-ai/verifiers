@@ -36,8 +36,14 @@ harnesses that need a per-instance workdir while still using a static
 
 from __future__ import annotations
 
+import importlib.resources as resources
+import json
 import logging
 import shlex
+import tarfile
+import tempfile
+from importlib.abc import Traversable
+from pathlib import Path
 from typing import Any
 
 import verifiers as vf
@@ -67,6 +73,8 @@ class ComposableEnv(CliAgentEnv):
         self,
         taskset: TaskSet,
         harness: Harness,
+        *,
+        install_env: dict[str, str] | None = None,
         **kwargs: Any,
     ):
         kwargs["dataset"] = taskset.get_dataset()
@@ -76,6 +84,7 @@ class ComposableEnv(CliAgentEnv):
 
         self.taskset = taskset
         self.harness = harness
+        self.install_env = dict(install_env) if install_env else None
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
@@ -140,7 +149,7 @@ class ComposableEnv(CliAgentEnv):
         await self._install_agent(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
-        """Collect agent logs after the agent finishes.
+        """Collect agent logs and harness metrics after the agent finishes.
 
         Scoring is handled entirely by the rubric (via ``score_rollout``),
         not here.  Use ``keep_sandbox_for_scoring=True`` so the sandbox
@@ -158,6 +167,9 @@ class ComposableEnv(CliAgentEnv):
                 state["agent_logs"] = (result.stdout or "").strip()
             except Exception as e:
                 self.logger.warning(f"Failed to collect agent logs: {e}")
+
+        if sandbox_id and self.harness.metrics_path:
+            await self._collect_harness_metrics(sandbox_id, state)
 
         await super().post_rollout(state)
 
@@ -197,11 +209,28 @@ class ComposableEnv(CliAgentEnv):
             )
 
     async def _after_harness_inputs_uploaded(self, state: State) -> None:
-        """Hook for subclasses to upload additional task assets before install."""
+        """Upload task-declared directories to harness-declared sandbox paths.
+
+        Joins ``TaskSet.get_upload_dirs()`` (logical name → local source)
+        with ``Harness.upload_dir_mapping`` (logical name → sandbox path).
+        Only directories whose logical name appears in both are uploaded.
+        """
+        upload_dirs = self.taskset.get_upload_dirs()
+        mapping = self.harness.upload_dir_mapping
+        if not upload_dirs or not mapping:
+            return
+        sandbox_id = state["sandbox_id"]
+        for name, local_source in upload_dirs.items():
+            remote_dest = mapping.get(name)
+            if remote_dest is not None:
+                await self._upload_dir(sandbox_id, local_source, remote_dest)
 
     def _get_install_execute_kwargs(self) -> dict[str, Any]:
         """Keyword arguments passed to sandbox install command execution."""
-        return {"timeout": 300}
+        kwargs: dict[str, Any] = {"timeout": 300}
+        if self.install_env:
+            kwargs["env"] = self.install_env
+        return kwargs
 
     async def _install_agent(self, sandbox_id: str) -> None:
         """Install the agent inside the sandbox when an install script is present."""
@@ -217,3 +246,73 @@ class ComposableEnv(CliAgentEnv):
                 raise vf.SandboxError(
                     f"Agent install failed (exit={result.exit_code}): {output[:500]}"
                 )
+
+    # -- Directory upload ------------------------------------------------------
+
+    async def _upload_dir(
+        self,
+        sandbox_id: str,
+        local_source: Traversable | Path,
+        remote_dest: str,
+    ) -> None:
+        """Tar, upload, and extract a directory into the sandbox."""
+        remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
+        tmp_path = self._build_dir_archive(local_source, remote_dest)
+        try:
+            await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
+            dest_parent = shlex.quote(str(Path(remote_dest).parent))
+            quoted_remote_tar = shlex.quote(remote_tar)
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                f"mkdir -p {dest_parent} && "
+                f"tar -xzf {quoted_remote_tar} -C / && "
+                f"rm -f {quoted_remote_tar}",
+                timeout=60,
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise vf.SandboxError(
+                    f"Upload dir extract failed (exit={result.exit_code}): {output[:500]}"
+                )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def _build_dir_archive(
+        self, local_source: Traversable | Path, remote_dest: str
+    ) -> Path:
+        """Build a tar.gz archive of a directory, rooted at *remote_dest*."""
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+            tar_path = Path(tmp_file.name)
+        arcname = remote_dest.lstrip("/")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            if isinstance(local_source, Path):
+                tar.add(local_source, arcname=arcname)
+            else:
+                with resources.as_file(local_source) as local_path:
+                    tar.add(local_path, arcname=arcname)
+        return tar_path
+
+    # -- Harness metrics collection --------------------------------------------
+
+    async def _collect_harness_metrics(self, sandbox_id: str, state: State) -> None:
+        """Read a JSON metrics file from the sandbox and surface keys in state."""
+        info = state.get("info") or {}
+        workdir = self.taskset.get_workdir(info)
+        metrics_glob = self.harness.metrics_path.format(workdir=workdir)
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                f"f=$(ls {metrics_glob} 2>/dev/null | head -1) "
+                '&& cat "$f" || echo "{}"',
+                working_dir=None,
+            )
+            data = json.loads((result.stdout or "{}").strip())
+            if self.harness.metrics_key:
+                data = data.get(self.harness.metrics_key, {})
+            prefix = self.harness.metrics_prefix
+            allowed = self.harness.metrics_keys
+            for key, value in data.items():
+                if allowed is None or key in allowed:
+                    state[f"{prefix}{key}"] = value
+        except Exception as e:
+            self.logger.warning(f"Failed to collect harness metrics: {e}")

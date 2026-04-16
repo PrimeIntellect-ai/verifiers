@@ -26,10 +26,51 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
 
 from __future__ import annotations
 
+import importlib
+import importlib.resources as resources
 from dataclasses import dataclass
+from importlib.abc import Traversable
+from pathlib import Path
+from types import ModuleType
 from typing import Any, Callable
 
 from verifiers.types import Messages, State
+
+
+def _module_package_name(module: ModuleType) -> str | None:
+    """Return the package name for a module, or None if not in a package."""
+    if hasattr(module, "__path__"):
+        return module.__name__
+    package_name = getattr(module, "__package__", None)
+    return package_name or None
+
+
+def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path | None:
+    """Find a sibling directory relative to a TaskSet's defining module.
+
+    Looks for a directory named *dirname* next to the module that defines
+    *taskset_cls*.  Works with installed packages (via ``importlib.resources``)
+    and plain filesystem paths.
+
+    Returns ``None`` if no such directory exists or is empty.
+    """
+    module = importlib.import_module(taskset_cls.__module__)
+
+    package_name = _module_package_name(module)
+    if package_name:
+        try:
+            candidate = resources.files(package_name) / dirname
+            if candidate.is_dir() and any(candidate.iterdir()):
+                return candidate
+        except Exception:
+            pass
+
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        candidate_path = Path(module_file).resolve().parent / dirname
+        if candidate_path.is_dir() and any(candidate_path.iterdir()):
+            return candidate_path
+    return None
 
 
 @dataclass
@@ -132,6 +173,27 @@ class TaskSet:
         return "/app"
 
     def get_env_vars(self) -> dict[str, str]:
+        return {}
+
+    def get_upload_dirs(self) -> dict[str, Traversable | Path]:
+        """Directories to upload to the sandbox before agent install.
+
+        Returns a mapping of ``{logical_name: local_source}`` where
+        *logical_name* is a short label (e.g. ``"skills"``) and
+        *local_source* is a ``Path`` or ``importlib.abc.Traversable``
+        pointing to a local directory.
+
+        The *logical_name* is resolved to a sandbox path by the harness's
+        ``upload_dir_mapping``.  Only directories whose logical name
+        appears in the mapping are uploaded.
+
+        Use :func:`discover_sibling_dir` to auto-discover directories
+        co-located with the taskset module::
+
+            def get_upload_dirs(self):
+                skills = discover_sibling_dir(type(self), "skills")
+                return {"skills": skills} if skills else {}
+        """
         return {}
 
     async def setup(self, state: State) -> None:
@@ -334,6 +396,7 @@ class SandboxTaskSet(TaskSet):
         validate_instance(state) -> bool  (optional)
         get_workdir(info) -> str  (optional, default "/app")
         get_env_vars() -> dict  (optional)
+        get_upload_dirs() -> dict  (optional, dirs to upload before install)
 
     All methods receive ``state`` which contains sandbox context:
     - ``state["sandbox_client"]`` — the async sandbox client

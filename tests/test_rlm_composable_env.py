@@ -1,4 +1,9 @@
-"""Tests for RLM-specific composable environment behavior."""
+"""Tests for RLM harness integration with ComposableEnv.
+
+Validates that rlm_harness() produces a Harness with the correct metrics
+fields, that RlmComposableEnv is a backward-compatible alias, and that
+the install script is generated correctly.
+"""
 
 import importlib
 import json
@@ -9,12 +14,17 @@ import pytest
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import (
+    ComposableEnv,
     Harness,
     RlmComposableEnv,
     SandboxSpec,
     SandboxTaskSet,
+    discover_sibling_dir,
 )
-from verifiers.envs.experimental.composable.harnesses.rlm import build_install_script
+from verifiers.envs.experimental.composable.harnesses.rlm import (
+    build_install_script,
+    rlm_harness,
+)
 
 
 class MockSandboxRubric(vf.Rubric):
@@ -38,6 +48,12 @@ class MockSandboxTaskSet(SandboxTaskSet):
 
     def get_workdir(self, info):
         return "/testbed"
+
+
+class MockSandboxTaskSetWithSkills(MockSandboxTaskSet):
+    def get_upload_dirs(self):
+        skills = discover_sibling_dir(type(self), "skills")
+        return {"skills": skills} if skills else {}
 
 
 def _make_dataset(n=3):
@@ -69,12 +85,18 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.invalidate_caches()
     mod = importlib.import_module(f"{package_name}.taskset_mod")
-    monkeypatch.setattr(MockSandboxTaskSet, "__module__", mod.__name__)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
     return mod
 
 
-def test_rlm_composable_env_is_exported():
-    assert RlmComposableEnv is not None
+# ── Backward compatibility ───────────────────────────────────────────────
+
+
+def test_rlm_composable_env_is_alias_for_composable_env():
+    assert RlmComposableEnv is ComposableEnv
+
+
+# ── RLM harness ──────────────────────────────────────────────────────────
 
 
 def test_rlm_harness_install_script_downloads_repo_install_sh():
@@ -84,11 +106,26 @@ def test_rlm_harness_install_script_downloads_repo_install_sh():
     assert "bash /tmp/rlm-install.sh" in script
 
 
+def test_rlm_harness_sets_metrics_fields():
+    harness = rlm_harness()
+    assert harness.metrics_path == "{workdir}/.rlm/sessions/*/meta.json"
+    assert harness.metrics_key == "metrics"
+    assert harness.metrics_prefix == "rlm_"
+
+
+def test_rlm_harness_sets_upload_dir_mapping():
+    harness = rlm_harness()
+    assert harness.upload_dir_mapping == {"skills": "/task/rlm-skills"}
+
+
+# ── install_env ──────────────────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_rlm_composable_env_install_runs_without_skills(tmp_path, monkeypatch):
+async def test_rlm_install_runs_without_skills(tmp_path, monkeypatch):
     _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
-    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
-    env = RlmComposableEnv(
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
         taskset=taskset,
         harness=Harness(
             run_command="true",
@@ -96,6 +133,7 @@ async def test_rlm_composable_env_install_runs_without_skills(tmp_path, monkeypa
             instruction_path="/tmp/with space/prompt.txt",
             system_prompt="system",
             system_prompt_path="/tmp/other path/system.txt",
+            upload_dir_mapping={"skills": "/task/rlm-skills"},
         ),
         install_env={"GH_TOKEN": "secret"},
     )
@@ -127,13 +165,20 @@ async def test_rlm_composable_env_install_runs_without_skills(tmp_path, monkeypa
     ]
 
 
+# ── Skills upload ────────────────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_rlm_composable_env_uploads_skills_before_install(tmp_path, monkeypatch):
+async def test_rlm_uploads_skills_before_install(tmp_path, monkeypatch):
     _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
-    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
-    env = RlmComposableEnv(
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
         taskset=taskset,
-        harness=Harness(run_command="true", install_script="install-rlm"),
+        harness=Harness(
+            run_command="true",
+            install_script="install-rlm",
+            upload_dir_mapping={"skills": "/task/rlm-skills"},
+        ),
     )
     env.sandbox_client = SimpleNamespace(
         execute_command=AsyncMock(
@@ -150,34 +195,41 @@ async def test_rlm_composable_env_uploads_skills_before_install(tmp_path, monkey
     env.upload_file.assert_awaited_once()
     upload_call = env.upload_file.await_args
     assert upload_call.args[0] == "sbx"
-    assert upload_call.args[1] == "/tmp/rlm-skills.tar.gz"
+    assert upload_call.args[1] == "/tmp/_upload_task_rlm-skills.tar.gz"
 
     install_call = env.sandbox_client.execute_command.await_args_list[-1]
     assert install_call == call("sbx", "install-rlm", timeout=300)
     extract_call = env.sandbox_client.execute_command.await_args_list[1]
     assert extract_call == call(
         "sbx",
-        "mkdir -p /task && tar -xzf /tmp/rlm-skills.tar.gz -C / && rm -f /tmp/rlm-skills.tar.gz",
+        "mkdir -p /task && tar -xzf /tmp/_upload_task_rlm-skills.tar.gz -C / && rm -f /tmp/_upload_task_rlm-skills.tar.gz",
         timeout=60,
     )
 
 
+# ── RLM metrics via harness fields ──────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_rlm_composable_env_collects_logs_and_metrics():
+async def test_rlm_collects_logs_and_metrics():
     taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
-    env = RlmComposableEnv(
-        taskset=taskset,
-        harness=Harness(
-            run_command="true",
-            log_path="/tmp/log dir/agent.log",
-        ),
-    )
     metrics = {
         "turns": 3,
         "stop_reason": "done",
         "prompt_tokens": 100,
         "completion_tokens": 25,
     }
+    harness = rlm_harness()
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command=harness.run_command,
+            log_path="/tmp/log dir/agent.log",
+            metrics_path=harness.metrics_path,
+            metrics_key=harness.metrics_key,
+            metrics_prefix=harness.metrics_prefix,
+        ),
+    )
     env.sandbox_client = SimpleNamespace(
         execute_command=AsyncMock(
             side_effect=[

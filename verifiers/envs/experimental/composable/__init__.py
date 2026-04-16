@@ -3,10 +3,14 @@ from verifiers.envs.experimental.composable.task import (
     Task,
     TaskSet,
     SandboxTaskSet,
+    discover_sibling_dir,
 )
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.composable_env import ComposableEnv
-from verifiers.envs.experimental.composable.rlm_env import RlmComposableEnv
+
+# Backward-compatible alias — RlmComposableEnv is no longer a separate class.
+# All its functionality (install_env, upload dirs, metrics) is now in ComposableEnv.
+RlmComposableEnv = ComposableEnv
 
 __all__ = [
     "SandboxSpec",
@@ -16,4 +20,5 @@ __all__ = [
     "Harness",
     "ComposableEnv",
     "RlmComposableEnv",
+    "discover_sibling_dir",
 ]

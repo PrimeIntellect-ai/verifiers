@@ -47,6 +47,30 @@ class Harness:
         Default sandbox resources when the task doesn't provide a
         SandboxSpec (e.g. math + OpenCode — the agent needs a sandbox
         but the task doesn't specify one).
+    upload_dir_mapping:
+        Maps logical directory names (declared by
+        ``TaskSet.get_upload_dirs()``) to absolute sandbox paths.
+        Example: ``{"skills": "/task/rlm-skills"}`` tells ComposableEnv
+        to upload the taskset's ``"skills"`` directory to
+        ``/task/rlm-skills`` in the sandbox.  Only names present in the
+        mapping are uploaded; others are silently ignored.
+    metrics_path:
+        Glob pattern for a JSON metrics file inside the sandbox,
+        collected after the rollout.  May contain ``{workdir}`` which is
+        resolved to ``taskset.get_workdir(info)`` at runtime.
+        Example: ``"{workdir}/.rlm/sessions/*/meta.json"``.
+    metrics_prefix:
+        String prepended to each metric key when surfaced in rollout
+        state.  Example: ``"rlm_"`` turns ``"turns"`` into
+        ``"rlm_turns"``.
+    metrics_key:
+        Optional key to drill into within the JSON file.  If set, only
+        the value at this key is used as the metrics dict.  Example:
+        ``"metrics"`` reads ``json["metrics"]`` instead of the top-level
+        object.
+    metrics_keys:
+        Optional whitelist of metric keys to surface.  ``None`` means
+        surface all keys found.
     """
 
     install_script: str | None = None
@@ -56,3 +80,8 @@ class Harness:
     instruction_path: str = "/task/instruction.md"
     log_path: str | None = None
     sandbox_spec: SandboxSpec | None = None
+    upload_dir_mapping: dict[str, str] | None = None
+    metrics_path: str | None = None
+    metrics_prefix: str = ""
+    metrics_key: str | None = None
+    metrics_keys: list[str] | None = None
