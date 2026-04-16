@@ -192,16 +192,45 @@ class SWELegoTaskSet(SandboxTaskSet):
         return dict(ENV_VARS_SWE_LEGO)
 
     async def setup(self, state) -> None:
-        """Create /root/.venv symlink so agents can find the testbed env."""
+        """Prep the sandbox: /root/.venv symlink and ripgrep binary.
+
+        SWE-bench eval images (jierun/*) have very slow apt sources — an
+        ``apt-get update`` takes ~150s. The rlm harness install script calls
+        ``apt-get install ripgrep`` conditionally, so we install rg ourselves
+        via a direct binary download to skip apt entirely.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
+
+        linked = False
         for venv_src in ("/opt/miniconda3/envs/testbed", "/opt/conda/envs/testbed"):
             result = await sandbox_client.execute_command(
                 sandbox_id, f"ln -sf {venv_src} /root/.venv"
             )
             if result.exit_code == 0:
-                return
-        logger.warning(f"[{sandbox_id}] Could not create /root/.venv symlink")
+                linked = True
+                break
+        if not linked:
+            logger.warning(f"[{sandbox_id}] Could not create /root/.venv symlink")
+
+        rg_install = (
+            "command -v rg >/dev/null 2>&1 || { "
+            "V=14.1.1; "
+            "curl -sSL "
+            "https://github.com/BurntSushi/ripgrep/releases/download/"
+            "${V}/ripgrep-${V}-x86_64-unknown-linux-musl.tar.gz "
+            "| tar xz -C /tmp "
+            "&& install -m 755 /tmp/ripgrep-${V}-x86_64-unknown-linux-musl/rg /usr/local/bin/rg; "
+            "}"
+        )
+        result = await sandbox_client.execute_command(
+            sandbox_id, rg_install, timeout=60
+        )
+        if result.exit_code != 0:
+            logger.warning(
+                f"[{sandbox_id}] ripgrep install failed (exit={result.exit_code}); "
+                f"rlm install will fall back to apt-get"
+            )
 
     async def _run_tests(
         self,
