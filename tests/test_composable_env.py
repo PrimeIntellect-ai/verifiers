@@ -346,7 +346,7 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
 
 
 class MockSandboxTaskSetWithSkills(SandboxTaskSet):
-    """SandboxTaskSet that declares a skills upload dir."""
+    """SandboxTaskSet — skills auto-discovered via get_skills_dir()."""
 
     def get_instruction(self, info):
         return f"Fix bug #{info.get('id', 0)}"
@@ -359,10 +359,6 @@ class MockSandboxTaskSetWithSkills(SandboxTaskSet):
 
     def get_workdir(self, info):
         return "/testbed"
-
-    def get_upload_dirs(self):
-        skills = discover_sibling_dir(type(self), "skills")
-        return {"skills": skills} if skills else {}
 
 
 @pytest.mark.asyncio
@@ -448,6 +444,38 @@ def test_discover_sibling_dir_returns_none_without_skills(tmp_path, monkeypatch)
     monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
     result = discover_sibling_dir(MockSandboxTaskSetWithSkills, "skills")
     assert result is None
+
+
+# ── get_skills_dir / auto-discovery ──────────────────────────────────────
+
+
+def test_get_skills_dir_auto_discovers(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_skills_dir() is not None
+
+
+def test_get_skills_dir_returns_none_without_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_skills_dir() is None
+
+
+def test_get_upload_dirs_includes_skills_automatically(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    upload_dirs = taskset.get_upload_dirs()
+    assert "skills" in upload_dirs
+
+
+def test_get_upload_dirs_empty_without_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_upload_dirs() == {}
 
 
 # ── Harness metrics collection ───────────────────────────────────────────

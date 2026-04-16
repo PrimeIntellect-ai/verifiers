@@ -17,7 +17,6 @@ from verifiers.envs.experimental.composable import (
     Harness,
     SandboxSpec,
     SandboxTaskSet,
-    discover_sibling_dir,
 )
 from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
@@ -49,9 +48,9 @@ class MockSandboxTaskSet(SandboxTaskSet):
 
 
 class MockSandboxTaskSetWithSkills(MockSandboxTaskSet):
-    def get_upload_dirs(self):
-        skills = discover_sibling_dir(type(self), "skills")
-        return {"skills": skills} if skills else {}
+    """Skills auto-discovered via get_skills_dir() — module monkeypatched in tests."""
+
+    pass
 
 
 def _make_dataset(n=3):

@@ -175,6 +175,15 @@ class TaskSet:
     def get_env_vars(self) -> dict[str, str]:
         return {}
 
+    def get_skills_dir(self) -> Traversable | Path | None:
+        """Return the taskset's skills directory, or None.
+
+        By default, auto-discovers a sibling ``skills/`` directory next
+        to the module that defines this taskset class.  Override to
+        disable (return ``None``) or point to a different location.
+        """
+        return discover_sibling_dir(type(self), "skills")
+
     def get_upload_dirs(self) -> dict[str, Traversable | Path]:
         """Directories to upload to the sandbox before agent install.
 
@@ -187,14 +196,15 @@ class TaskSet:
         ``upload_dir_mapping``.  Only directories whose logical name
         appears in the mapping are uploaded.
 
-        Use :func:`discover_sibling_dir` to auto-discover directories
-        co-located with the taskset module::
-
-            def get_upload_dirs(self):
-                skills = discover_sibling_dir(type(self), "skills")
-                return {"skills": skills} if skills else {}
+        By default, includes the skills directory from
+        :meth:`get_skills_dir` under the ``"skills"`` key.  Override to
+        add additional directories or disable skills upload.
         """
-        return {}
+        dirs: dict[str, Traversable | Path] = {}
+        skills = self.get_skills_dir()
+        if skills is not None:
+            dirs["skills"] = skills
+        return dirs
 
     async def setup(self, state: State) -> None:
         pass
@@ -396,6 +406,7 @@ class SandboxTaskSet(TaskSet):
         validate_instance(state) -> bool  (optional)
         get_workdir(info) -> str  (optional, default "/app")
         get_env_vars() -> dict  (optional)
+        get_skills_dir() -> Path | None  (optional, auto-discovered by default)
         get_upload_dirs() -> dict  (optional, dirs to upload before install)
 
     All methods receive ``state`` which contains sandbox context:

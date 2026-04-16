@@ -16,7 +16,9 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), and harness-declared metrics collection (via `Harness.metrics_path`).
 
-**discover_sibling_dir(taskset_cls, dirname)** — utility to auto-discover a directory co-located with a TaskSet's module. Works with installed packages and filesystem paths. Use from `get_upload_dirs()` to declare task assets.
+**Skills** are first-class: any taskset with a sibling `skills/` directory gets automatic upload for free. `TaskSet.get_skills_dir()` auto-discovers it, and `get_upload_dirs()` includes it under the `"skills"` key by default. The harness's `upload_dir_mapping` decides where skills land in the sandbox (e.g. RLM puts them at `/task/rlm-skills`).
+
+**discover_sibling_dir(taskset_cls, dirname)** — utility to auto-discover a directory co-located with a TaskSet's module. Works with installed packages and filesystem paths.
 
 ## Usage
 
@@ -46,14 +48,16 @@ harness = opencode_harness(system_prompt="You are a coding agent...")
 env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
 ```
 
-For RLM-backed agents, use `ComposableEnv` with `rlm_harness(...)`. The harness declares where to put uploaded directories (`upload_dir_mapping`), its metrics path, and its metrics prefix. ComposableEnv joins the taskset's logical upload dirs with the harness mapping and collects metrics automatically.
+For RLM-backed agents, use `ComposableEnv` with `rlm_harness(...)`. If your taskset has a sibling `skills/` directory, it's uploaded automatically — no override needed:
 
 ```python
-class MyRlmTaskSet(SandboxTaskSet):
-    def get_upload_dirs(self):
-        # "skills" is a logical name — the harness decides the sandbox path
-        skills = discover_sibling_dir(type(self), "skills")
-        return {"skills": skills} if skills else {}
+# my_taskset/
+# ├── __init__.py
+# ├── taskset.py     ← defines MySweTaskSet
+# └── skills/
+#     └── demo/
+#         ├── SKILL.md
+#         └── pyproject.toml
 
 env = ComposableEnv(
     taskset=taskset,
