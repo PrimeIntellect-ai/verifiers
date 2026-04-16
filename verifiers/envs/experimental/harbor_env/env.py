@@ -14,6 +14,7 @@ from verifiers.utils.import_utils import load_toml
 
 from .mcp import (
     DEFAULT_PHASE,
+    HarborMCPHealthcheck,
     HarborMCPLauncher,
     HarborMCPMixin,
 )
@@ -34,16 +35,14 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         agent_workdir: str = "/app",
         docker_image: str = "python:3.11-slim",
         mcp_launchers: dict[str, HarborMCPLauncher] | None = None,
-        mcp_health_check_retries: int = 30,
-        mcp_health_check_interval: float = 2.0,
+        default_mcp_healthcheck: HarborMCPHealthcheck | None = None,
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
         self.mcp_launchers = mcp_launchers or {}
-        self.mcp_health_check_retries = mcp_health_check_retries
-        self.mcp_health_check_interval = mcp_health_check_interval
+        self.default_mcp_healthcheck = default_mcp_healthcheck or HarborMCPHealthcheck()
 
         kwargs["docker_image"] = docker_image
 

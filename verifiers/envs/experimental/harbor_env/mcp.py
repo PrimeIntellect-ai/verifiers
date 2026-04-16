@@ -26,9 +26,18 @@ runs commands as root, we can `su` to any user even on a `nosuid` filesystem
 — the same effect as Harbor's setuid wrapper, without needing setuid
 binaries.
 
+Where behavior overlaps with Harbor proper, we deliberately mirror it:
+
+* ``[[environment.mcp_servers]]`` field names + transport validation match
+  :class:`harbor.models.task.config.MCPServerConfig`.
+* Per-server readiness checking mirrors Harbor's
+  :class:`HealthcheckConfig` / ``run_healthcheck`` semantics (start period,
+  consecutive-failure retry budget, per-probe timeout) so task authors who
+  know Harbor's health model don't have to learn a second one.
+
 This module intentionally avoids assuming any particular interpreter inside
-the sandbox image: health checks use bash `/dev/tcp`, and the launch command
-is user-supplied.
+the sandbox image: the default readiness probe uses ``awk`` + ``/proc/net/tcp``,
+and the launch command is user-supplied.
 """
 
 from __future__ import annotations
@@ -74,12 +83,47 @@ class HarborMCPServer:
 
 
 @dataclass
+class HarborMCPHealthcheck:
+    """Per-MCP-server readiness check, mirroring Harbor's `HealthcheckConfig`.
+
+    See ``harbor.models.task.config.HealthcheckConfig``. Field names,
+    defaults, and semantics are deliberately the same so a task author who
+    has read Harbor's docs doesn't have to learn a second model.
+
+    One extension: ``command`` may be ``None``, meaning "use the framework's
+    default probe" (a ``/proc/net/tcp`` LISTEN scan that depends only on
+    ``awk``). Harbor's own `HealthcheckConfig.command` is required because
+    Harbor always defers to the task author.
+
+    The ``command`` string is templated with ``str.format(port=...)``, so it
+    may reference ``{port}`` — handy for overrides like
+    ``curl -fsS http://127.0.0.1:{port}/health``.
+    """
+
+    command: str | None = None
+    interval_sec: float = 2.0
+    timeout_sec: float = 10.0
+    start_period_sec: float = 0.0
+    start_interval_sec: float = 2.0
+    retries: int = 30
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HarborMCPHealthcheck":
+        allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in allowed})
+
+
+@dataclass
 class HarborMCPLauncher:
     """How to start a network-transport MCP server inside the sandbox.
 
-    `command` is executed via `nohup` under the sandbox's default shell.
-    When `user` is set, the command is wrapped in `su -s /bin/sh <user> -c`
-    (sandbox commands run as root, so this works even on nosuid filesystems).
+    `command` is handed to `sandbox_client.start_background_job` (which wraps
+    it in its own `nohup sh -c` shim). When `user` is set, the command is
+    further wrapped in `su -s /bin/sh <user> -c` (sandbox commands run as
+    root, so this works even on nosuid filesystems).
+
+    `healthcheck` controls readiness probing. See :class:`HarborMCPHealthcheck`.
+    When ``None``, the mixin's ``default_mcp_healthcheck`` is used.
     """
 
     command: str
@@ -90,6 +134,7 @@ class HarborMCPLauncher:
     transport_env_var: str = "MCP_TRANSPORT"
     port_env_var: str = "MCP_PORT"
     host_env_var: str = "MCP_BIND_HOST"
+    healthcheck: HarborMCPHealthcheck | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HarborMCPLauncher":
@@ -98,14 +143,27 @@ class HarborMCPLauncher:
         kwargs = {k: v for k, v in data.items() if k in allowed}
         if "env" in kwargs and kwargs["env"] is None:
             kwargs["env"] = {}
+        if isinstance(kwargs.get("healthcheck"), dict):
+            kwargs["healthcheck"] = HarborMCPHealthcheck.from_dict(
+                kwargs["healthcheck"]
+            )
         return cls(**kwargs)
 
 
 def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
     """Normalize `[[environment.mcp_servers]]` into typed entries.
 
-    Accepts an optional per-entry `launch` sub-table and `phases` list. Both
-    are HarborEnv extensions — Harbor core ignores them.
+    Applies the same transport-field validation as Harbor's
+    :class:`harbor.models.task.config.MCPServerConfig`: SSE/streamable-http
+    transports require ``url``, stdio requires ``command``. Entries that
+    violate these constraints raise ``ValueError``.
+
+    Accepts two per-entry sub-tables that Harbor ignores but HarborEnv uses:
+
+    * ``launch`` — a :class:`HarborMCPLauncher` sub-table, telling HarborEnv
+      how to start the server inside the sandbox.
+    * ``phases`` — list of phases (``"agent"`` / ``"verifier"``) during
+      which the server should be running. Defaults to ``["agent"]``.
     """
     raw_list = (config.get("environment") or {}).get("mcp_servers") or []
     servers: list[HarborMCPServer] = []
@@ -115,6 +173,20 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
         name = entry.get("name")
         if not name:
             continue
+
+        transport = str(entry.get("transport", "stdio"))
+        command = entry.get("command")
+        url = entry.get("url")
+
+        # Mirror Harbor's validate_transport_fields.
+        if transport in NETWORK_TRANSPORTS and not url:
+            raise ValueError(
+                f"MCP server {name!r}: 'url' is required for transport {transport!r}"
+            )
+        if transport == "stdio" and not command:
+            raise ValueError(
+                f"MCP server {name!r}: 'command' is required for transport 'stdio'"
+            )
 
         phases_raw = entry.get("phases")
         if isinstance(phases_raw, list) and phases_raw:
@@ -129,10 +201,10 @@ def parse_mcp_servers(config: dict[str, Any]) -> list[HarborMCPServer]:
         servers.append(
             HarborMCPServer(
                 name=str(name),
-                transport=str(entry.get("transport", "stdio")),
-                command=entry.get("command"),
+                transport=transport,
+                command=command,
                 args=list(entry.get("args") or []),
-                url=entry.get("url"),
+                url=url,
                 phases=phases,
                 launch=dict(launch) if launch else None,
                 raw=dict(entry),
@@ -177,8 +249,7 @@ class HarborMCPMixin:
     # Wired up by __init__ on the concrete class. Declared here so static
     # type checkers and IDEs resolve them.
     mcp_launchers: dict[str, HarborMCPLauncher]
-    mcp_health_check_retries: int
-    mcp_health_check_interval: float
+    default_mcp_healthcheck: HarborMCPHealthcheck
 
     # --------------------------------------------------------------------- #
     # Subclass hooks                                                        #
@@ -359,7 +430,8 @@ class HarborMCPMixin:
         jobs: dict[str, Any] = state.setdefault("harbor_mcp_jobs", {})
         jobs[server.name] = job
 
-        await self._wait_for_mcp_server(sandbox_id, server.name, port, job)
+        hc = launcher.healthcheck or self.default_mcp_healthcheck
+        await self._wait_for_mcp_server(sandbox_id, server.name, port, job, hc)
 
         started: list[str] = state.setdefault("harbor_mcp_started", [])
         if server.name not in started:
@@ -390,17 +462,43 @@ class HarborMCPMixin:
         name: str,
         port: int,
         job: Any | None = None,
+        healthcheck: HarborMCPHealthcheck | None = None,
     ) -> None:
-        """Poll until the server is accepting TCP connections on `localhost:port`.
+        """Poll until the server is ready on ``localhost:port``.
 
-        If a `BackgroundJob` handle is provided, the job's completion status is
-        checked in the same loop — a crashed server bails out immediately with
-        its real stderr rather than waiting for the full retry budget.
+        Implements the same readiness semantics as Harbor's
+        :meth:`harbor.environments.base.BaseEnvironment.run_healthcheck`:
 
-        Uses bash's `/dev/tcp` so we don't assume Python in the sandbox image.
+        * During ``start_period_sec``, failures don't count toward the retry
+          budget — we just sleep ``start_interval_sec`` and re-check. This
+          gives slow-starting servers unlimited time to open their port as
+          long as they keep producing "not ready yet."
+        * After the start period, ``retries`` *consecutive* failures fail the
+          check. Successive attempts are spaced by ``interval_sec``.
+        * Each probe is bounded by ``timeout_sec``.
+
+        If a ``BackgroundJob`` handle is provided, the job's completion is
+        checked in the same loop — a crashed server bails out immediately
+        with its real stderr, bypassing the retry budget entirely.
+
+        The probe itself defaults to a ``/proc/net/tcp`` LISTEN scan
+        (see :meth:`_default_mcp_health_cmd`). Tasks can override per-server
+        with :attr:`HarborMCPHealthcheck.command`.
         """
-        health_cmd = f"bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}' 2>/dev/null"
-        for attempt in range(self.mcp_health_check_retries):
+        hc = healthcheck or self.default_mcp_healthcheck
+        health_cmd = (
+            hc.command.format(port=port)
+            if hc.command
+            else self._default_mcp_health_cmd(port)
+        )
+        probe_timeout = max(1, int(hc.timeout_sec))
+
+        loop_time = asyncio.get_event_loop().time
+        start_time = loop_time()
+        start_period_end = start_time + hc.start_period_sec
+        consecutive_failures = 0
+
+        while True:
             if job is not None:
                 status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
                     sandbox_id, job
@@ -415,33 +513,47 @@ class HarborMCPMixin:
                     )
 
             result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
-                sandbox_id, health_cmd, working_dir=None, timeout=10
+                sandbox_id, health_cmd, working_dir=None, timeout=probe_timeout
             )
             if getattr(result, "exit_code", 1) == 0:
                 logger.debug(
-                    "MCP server %r healthy on port %d after %d checks",
+                    "MCP server %r healthy on port %d (after %.2fs)",
                     name,
                     port,
-                    attempt + 1,
+                    loop_time() - start_time,
                 )
                 return
-            await asyncio.sleep(self.mcp_health_check_interval)
 
-        log_tail = ""
-        if job is not None:
-            try:
-                status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
-                    sandbox_id, job
+            in_start_period = loop_time() < start_period_end
+            logger.debug(
+                "MCP server %r health probe failed "
+                "(rc=%s, in_start_period=%s, consecutive_failures=%s)",
+                name,
+                getattr(result, "exit_code", None),
+                in_start_period,
+                consecutive_failures,
+            )
+            if in_start_period:
+                await asyncio.sleep(hc.start_interval_sec)
+                continue
+
+            consecutive_failures += 1
+            if consecutive_failures >= hc.retries:
+                log_tail = ""
+                if job is not None:
+                    try:
+                        status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
+                            sandbox_id, job
+                        )
+                        log_tail = (getattr(status, "stderr", "") or "").strip()[-2000:]
+                    except Exception as e:  # noqa: BLE001 — best-effort
+                        logger.debug("Failed to fetch MCP log tail for %r: %s", name, e)
+                raise vf.SandboxError(
+                    f"MCP server {name!r} on port {port} failed health check "
+                    f"after {hc.retries} consecutive retries. "
+                    f"Recent log tail:\n{log_tail}"
                 )
-                log_tail = (getattr(status, "stderr", "") or "").strip()[-2000:]
-            except Exception as e:  # noqa: BLE001 — best-effort log retrieval
-                logger.debug("Failed to fetch MCP log tail for %r: %s", name, e)
-
-        raise vf.SandboxError(
-            f"MCP server {name!r} on port {port} failed health check after "
-            f"{self.mcp_health_check_retries} attempts. "
-            f"Recent log tail:\n{log_tail}"
-        )
+            await asyncio.sleep(hc.interval_sec)
 
     async def _patch_mcp_etc_hosts(
         self, sandbox_id: str, servers: list[HarborMCPServer]
@@ -518,23 +630,52 @@ class HarborMCPMixin:
             return f"su -s /bin/sh {shlex.quote(launcher.user)} -c {shlex.quote(inner)}"
         return inner
 
-    @staticmethod
-    def _mcp_stop_cmd(name: str) -> str:
-        """Idempotent SIGTERM-then-SIGKILL by PID file. No-ops if not running."""
-        pid_file = shlex.quote(HarborMCPMixin._mcp_pid_file(name))
-        return (
-            f"if [ -f {pid_file} ]; then "
-            f'pid="$(cat {pid_file})"; '
-            f'kill "$pid" 2>/dev/null || true; '
-            f"for _ in 1 2 3 4 5; do "
-            f'kill -0 "$pid" 2>/dev/null || break; '
-            f"sleep 1; "
-            f"done; "
-            f'kill -9 "$pid" 2>/dev/null || true; '
-            f"rm -f {pid_file}; "
-            f"fi"
-        )
+    def _mcp_stop_cmd(self, name: str) -> str:
+        """Shell command to stop a previously launched MCP server.
+
+        Default: SIGKILL by PID file. MCP daemons serving stateless RPC have
+        nothing to flush on shutdown, and SIGKILL releases the listening
+        socket instantly — which matters at phase transitions where we want
+        to bind the same port seconds later.
+
+        Overridable: a subclass can return any shell string. Typical override
+        is a graceful shutdown for servers that do need a TERM window, e.g.::
+
+            def _mcp_stop_cmd(self, name):
+                pid_file = self._mcp_pid_file(name)
+                return (
+                    f'pid=$(cat {pid_file} 2>/dev/null); '
+                    f'[ -n "$pid" ] && kill "$pid"; sleep 2; '
+                    f'kill -9 "$pid" 2>/dev/null; rm -f {pid_file}'
+                )
+        """
+        pid_file = shlex.quote(self._mcp_pid_file(name))
+        # Reads PID, SIGKILL it (errors swallowed if missing/stale), unlink.
+        return f'kill -9 "$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}'
 
     @staticmethod
     def _mcp_pid_file(name: str) -> str:
         return f"/tmp/harbor-mcp-{name}.pid"
+
+    @staticmethod
+    def _default_mcp_health_cmd(port: int) -> str:
+        """Portable TCP LISTEN probe via `/proc/net/tcp{,6}`.
+
+        `/proc/net/tcp` lines look like::
+
+            sl  local_address rem_address   st …
+             0: 0100007F:1F40 00000000:0000 0A …
+
+        Column 4 is the connection state (`0A` = LISTEN) and the port in
+        column 2 is uppercase hex. Exits 0 iff some listener's local port
+        matches `port`. Works on every Linux with `/proc` mounted and busybox
+        `awk` (i.e. ~every container image we care about).
+        """
+        port_hex = f"{port:04X}"
+        # `awk` command is single-quoted; the only interpolations are the
+        # (validated-integer) hex port, so there's no injection risk.
+        return (
+            f'awk \'$4 == "0A" && $2 ~ /:{port_hex}$/ '
+            f"{{ok=1}} END {{exit !ok}}' "
+            f"/proc/net/tcp /proc/net/tcp6 2>/dev/null"
+        )
