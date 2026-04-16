@@ -23,6 +23,7 @@ def make_swe_taskset(
         "swebench": make_swebench_taskset,
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
+        "swelego": make_swelego_taskset,
     }
     if backend not in factories:
         raise ValueError(
@@ -65,3 +66,12 @@ def make_openswe_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return OpenSWETaskSet(**kwargs)
+
+
+def make_swelego_taskset(**kwargs: Any) -> TaskSet:
+    """SWE-Lego Synthetic TaskSet (~9k resolved instances)."""
+    from verifiers.envs.experimental.composable.tasksets.swe.swe_lego import (
+        SWELegoTaskSet,
+    )
+
+    return SWELegoTaskSet(**kwargs)
