@@ -14,7 +14,9 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **Harness** — agent-side configuration. Declares how to install and run an agent binary, and where it expects to find task-provided content (instruction, system prompt).
 
-**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged.
+**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), and harness-declared metrics collection (via `Harness.metrics_path`).
+
+**discover_sibling_dir(taskset_cls, dirname)** — utility to auto-discover a directory co-located with a TaskSet's module. Works with installed packages and filesystem paths. Use from `get_upload_dirs()` to declare task assets.
 
 ## Usage
 
@@ -42,6 +44,22 @@ results = await taskset.take(10).validate(concurrency=5)
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")
 env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
+```
+
+For RLM-backed agents, use `ComposableEnv` with `rlm_harness(...)`. The harness declares where to put uploaded directories (`upload_dir_mapping`), its metrics path, and its metrics prefix. ComposableEnv joins the taskset's logical upload dirs with the harness mapping and collects metrics automatically.
+
+```python
+class MyRlmTaskSet(SandboxTaskSet):
+    def get_upload_dirs(self):
+        # "skills" is a logical name — the harness decides the sandbox path
+        skills = discover_sibling_dir(type(self), "skills")
+        return {"skills": skills} if skills else {}
+
+env = ComposableEnv(
+    taskset=taskset,
+    harness=rlm_harness(...),  # maps "skills" → "/task/rlm-skills"
+    install_env={"GH_TOKEN": token},
+)
 ```
 
 ## Writing a new TaskSet
