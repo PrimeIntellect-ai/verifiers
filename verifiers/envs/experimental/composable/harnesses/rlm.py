@@ -17,18 +17,17 @@ def build_install_script(
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_branch: str = DEFAULT_RLM_BRANCH,
 ) -> str:
-    raw_base = rlm_repo_url.removesuffix(".git").replace(
-        "github.com", "raw.githubusercontent.com"
-    )
+    # Clone via git protocol instead of fetching install.sh from
+    # raw.githubusercontent.com which has a 60 req/hr hard cap per IP.
+    # rlm_repo_url is expected to be a bare github.com/org/repo.git path;
+    # GH_TOKEN is injected at shell expansion time for private repos.
     return (
-        "command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl; }"
-        f" && RAW_BASE={shlex.quote(raw_base)}"
-        f" && RLM_INSTALL_BRANCH={shlex.quote(rlm_branch)}"
-        ' && URL="https://${GH_TOKEN:+${GH_TOKEN}@}${RAW_BASE}/${RLM_INSTALL_BRANCH}/install.sh"'
-        ' && curl -fsSL "$URL" > /tmp/rlm-install.sh'
-        f" && RLM_REPO_URL={shlex.quote(rlm_repo_url)}"
-        f" RLM_REPO_BRANCH={shlex.quote(rlm_branch)}"
-        " bash /tmp/rlm-install.sh"
+        "command -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git; }"
+        f" && git clone --depth 1 --branch {rlm_branch}"
+        f' "https://${{GH_TOKEN:+${{GH_TOKEN}}@}}{rlm_repo_url}" /tmp/rlm-checkout'
+        f" && RLM_REPO_URL={rlm_repo_url}"
+        f" RLM_REPO_BRANCH={rlm_branch}"
+        " bash /tmp/rlm-checkout/install.sh"
     )
 
 
