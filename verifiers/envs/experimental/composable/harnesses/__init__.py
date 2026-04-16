@@ -1,4 +1,5 @@
 from verifiers.envs.experimental.composable.harnesses.rlm import (
+    DEFAULT_RLM_BRANCH,
     DEFAULT_RLM_MAX_TURNS,
     DEFAULT_RLM_REPO_URL,
     DEFAULT_RLM_TOOLS,
@@ -21,6 +22,7 @@ __all__ = [
     "rlm_harness",
     "build_rlm_install_script",
     "build_rlm_run_command",
+    "DEFAULT_RLM_BRANCH",
     "DEFAULT_RLM_REPO_URL",
     "DEFAULT_RLM_TOOLS",
     "DEFAULT_RLM_MAX_TURNS",
