@@ -24,7 +24,7 @@ def build_install_script(
         f"RAW_BASE={shlex.quote(raw_base)}"
         f" && RLM_INSTALL_BRANCH={shlex.quote(rlm_branch)}"
         ' && URL="https://${GH_TOKEN:+${GH_TOKEN}@}${RAW_BASE}/${RLM_INSTALL_BRANCH}/install.sh"'
-        ' && (curl -fsSL "$URL" || wget -qO- "$URL") > /tmp/rlm-install.sh'
+        ' && curl -fsSL "$URL" > /tmp/rlm-install.sh'
         f" && RLM_REPO_URL={shlex.quote(rlm_repo_url)}"
         f" RLM_REPO_BRANCH={shlex.quote(rlm_branch)}"
         " bash /tmp/rlm-install.sh"
