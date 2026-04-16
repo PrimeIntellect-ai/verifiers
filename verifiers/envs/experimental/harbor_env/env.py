@@ -116,7 +116,9 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
 
         config: dict[str, Any] = (state.get("info") or {}).get("config", {}) or {}
-        for key, value in self.mcp_agent_env_vars(config, phase=DEFAULT_PHASE).items():
+        for key, value in self.mcp_agent_env_vars(
+            config, state, phase=DEFAULT_PHASE
+        ).items():
             env_vars.setdefault(key, value)
         return env_vars
 

@@ -22,7 +22,6 @@ Typical usage::
                         command=".venv/bin/python -u server.py",
                         cwd="/opt/mcp-server",
                         user="environment",
-                        phases=["agent"],
                     ),
                 },
                 **kwargs,
@@ -135,11 +134,18 @@ class HarborMCPLauncher:
     command is further wrapped in ``su -s /bin/sh <user> -c`` (sandbox
     commands run as root, so this works even on ``nosuid`` filesystems).
 
+    The framework exports three env vars to the launched process so the
+    server knows what to listen on: ``MCP_TRANSPORT`` (the transport string
+    from task.toml), ``MCP_PORT`` (parsed from the URL), and
+    ``MCP_BIND_HOST=127.0.0.1`` (single-container sandboxes never need to
+    bind anything else). Servers that use different env-var names should
+    bridge in ``env=`` (e.g. ``env={"SERVER_PORT": "$MCP_PORT"}``).
+
     ``phases`` restricts which rollout phases the server should be running in.
-    Defaults to ``["agent"]`` — HarborEnv's standard flow starts the server
-    during :meth:`HarborEnv.post_sandbox_setup` and stops it before
-    :meth:`HarborEnv.compute_reward` unless ``"verifier"`` is also listed.
-    Set to ``["agent", "verifier"]`` to keep the same server up across both.
+    Defaults to ``["agent", "verifier"]`` — i.e. up for the entire trial,
+    matching native Harbor's docker-compose-sidecar behavior. Narrow it (e.g.
+    to ``["agent"]``) if you want :meth:`HarborEnv.compute_reward` to stop
+    the server before tests run.
 
     ``healthcheck`` controls readiness probing. See
     :class:`HarborMCPHealthcheck`. When ``None``, the mixin's
@@ -150,11 +156,7 @@ class HarborMCPLauncher:
     user: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
-    bind_host: str = "127.0.0.1"
-    transport_env_var: str = "MCP_TRANSPORT"
-    port_env_var: str = "MCP_PORT"
-    host_env_var: str = "MCP_BIND_HOST"
-    phases: list[str] = field(default_factory=lambda: [DEFAULT_PHASE])
+    phases: list[str] = field(default_factory=lambda: ["agent", "verifier"])
     healthcheck: HarborMCPHealthcheck | None = None
 
     def active_in(self, phase: str) -> bool:
@@ -273,7 +275,10 @@ class HarborMCPMixin:
         return {}
 
     def mcp_agent_env_vars(
-        self, config: dict[str, Any], phase: str = DEFAULT_PHASE
+        self,
+        config: dict[str, Any],
+        state: vf.State,
+        phase: str = DEFAULT_PHASE,
     ) -> dict[str, str]:
         """`HARBOR_MCP_<NAME>_URL` env vars for servers reachable in `phase`.
 
@@ -285,12 +290,13 @@ class HarborMCPMixin:
 
         * has a launcher whose ``phases`` include ``phase``, or
         * has no launcher at all (externally managed — assumed always up).
+
+        ``state`` is plumbed through to :meth:`mcp_launcher_for` so subclass
+        overrides can branch on rollout state when resolving launchers.
         """
         env_vars: dict[str, str] = {}
-        # Cheap, read-only lookup so we don't need rollout state.
-        empty_state: vf.State = {}  # type: ignore[assignment]
         for server in parse_mcp_servers(config):
-            launcher = self.mcp_launcher_for(server, empty_state, phase)
+            launcher = self.mcp_launcher_for(server, state, phase)
             if launcher is not None and not launcher.active_in(phase):
                 continue
             url = mcp_agent_url(server)
@@ -615,9 +621,9 @@ class HarborMCPMixin:
            ``start_background_job(env=...)`` would be stripped by ``su``.
         """
         env_pairs: dict[str, str] = {
-            launcher.transport_env_var: server.transport,
-            launcher.port_env_var: str(port),
-            launcher.host_env_var: launcher.bind_host,
+            "MCP_TRANSPORT": server.transport,
+            "MCP_PORT": str(port),
+            "MCP_BIND_HOST": "127.0.0.1",
         }
         env_pairs.update(launcher.env)
         env_pairs.update(extra_env)

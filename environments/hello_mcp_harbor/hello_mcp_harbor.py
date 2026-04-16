@@ -10,8 +10,7 @@ from verifiers.envs.experimental.harbor_env import (
     HarborMCPLauncher,
 )
 
-HERE = Path(__file__).parent
-MCP_SERVER_SOURCE = HERE / "mcp_server" / "server.py"
+MCP_SERVER_SOURCE = Path(__file__).parent / "mcp_server" / "server.py"
 
 logger = logging.getLogger("verifiers.envs.HelloMCPHarborEnv")
 
@@ -126,7 +125,7 @@ class HelloMCPHarborEnv(HarborEnv):
 
 
 def load_environment(
-    dataset_path: Path | str = HERE / "tasks",
+    dataset_path: Path | str = Path(__file__).parent / "tasks",
     tasks: list[str] | None = None,
     agent_workdir: str = "/app",
     docker_image: str = "python:3.11-slim",
