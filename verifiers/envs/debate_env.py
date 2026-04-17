@@ -107,15 +107,6 @@ class DebateEnv(MultiAgentEnv):
     def role_for_member(self, member_id: str) -> str:
         return self._role_for_actor.get(member_id, member_id)
 
-    # Legacy direct-call alias (old tests reach through this name).
-    def _role(self, member_id: str) -> str:
-        return self.role_for_member(member_id)
-
-    def _resolve_actor(
-        self, member_id: str
-    ) -> tuple[Client | None, str | None]:
-        return self.resolve_actor(member_id)
-
     # -- visibility policy ---------------------------------------------------
 
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
@@ -271,17 +262,6 @@ class DebateEnv(MultiAgentEnv):
             )
             return None
 
-    # -- debate_complete alias for direct-call tests -------------------------
-
-    async def debate_complete(self, state: State) -> bool:
-        """Semantic alias for the base's ``schedule_exhausted`` stop.
-
-        Not a ``@vf.stop`` -- the inherited ``schedule_exhausted`` is the
-        single source of truth; this exists so callers that still probe
-        the debate-specific name get a sane answer.
-        """
-        return await self.schedule_exhausted(state)
-
     # -- completion rendering ------------------------------------------------
 
     async def render_completion(self, state: State) -> None:
@@ -306,27 +286,6 @@ def _extract_question(state: State) -> str:
             if role == "user" and content:
                 return content
     return ""
-
-
-def _consolidate_messages(msgs: list[dict[str, str]]) -> Messages:
-    """Merge contiguous same-role non-system messages."""
-    if not msgs:
-        return msgs
-    out = [msgs[0]]
-    for msg in msgs[1:]:
-        if (
-            msg["role"] == out[-1]["role"]
-            and msg["role"] != "system"
-            and isinstance(msg["content"], str)
-            and isinstance(out[-1]["content"], str)
-        ):
-            out[-1] = {
-                "role": msg["role"],
-                "content": out[-1]["content"] + "\n\n" + msg["content"],
-            }
-        else:
-            out.append(msg)
-    return out
 
 
 # ---------------------------------------------------------------------------
