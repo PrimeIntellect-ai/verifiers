@@ -354,12 +354,14 @@ class SWEBenchTaskSet(SandboxTaskSet):
         filter_repos: list[str] | None = None,
         ds_num_proc: int | None = 8,
         ds_keep_in_memory: bool = True,
+        timeout_minutes: int = 60,
     ):
         self.dataset_name = dataset_name
         self.skip_install = skip_install
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
+        self.timeout_minutes = timeout_minutes
         super().__init__(dataset=self._build_dataset(), name="swe/swebench")
 
     def _build_dataset(self) -> Any:
@@ -390,7 +392,10 @@ class SWEBenchTaskSet(SandboxTaskSet):
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
         test_spec = _make_test_spec_with_retry(info, namespace="swebench")
-        return SandboxSpec(image=f"{REGISTRY_PREFIX}/{test_spec.instance_image_key}")
+        return SandboxSpec(
+            image=f"{REGISTRY_PREFIX}/{test_spec.instance_image_key}",
+            timeout_minutes=self.timeout_minutes,
+        )
 
     def get_workdir(self, info: dict) -> str:
         return "/testbed"

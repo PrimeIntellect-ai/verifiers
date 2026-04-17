@@ -83,12 +83,14 @@ class OpenSWETaskSet(SandboxTaskSet):
         filter_repos: list[str] | None = None,
         ds_num_proc: int | None = 8,
         ds_keep_in_memory: bool = True,
+        timeout_minutes: int = 60,
     ):
         self.dataset_name = dataset_name
         self.config = config
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
+        self.timeout_minutes = timeout_minutes
         super().__init__(dataset=self._build_dataset(), name="swe/openswe")
 
     def _build_dataset(self) -> Any:
@@ -113,7 +115,10 @@ class OpenSWETaskSet(SandboxTaskSet):
         return info["problem_statement"]
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
-        return SandboxSpec(image=info["image_name"])
+        return SandboxSpec(
+            image=info["image_name"],
+            timeout_minutes=self.timeout_minutes,
+        )
 
     def get_workdir(self, info: dict) -> str:
         return "/testbed"
