@@ -66,3 +66,14 @@ class BrowserSandboxError(SandboxError):
     """Used to catch errors while interacting with browser sandboxes."""
 
     pass
+
+
+class KernelProtocolError(Error):
+    """Raised by the multi-actor kernel on protocol violations
+    (wrong actor, duplicate submission, finished episode, etc.).
+
+    Subclass of vf.Error so rollout-layer vf.Error boundaries can
+    distinguish protocol violations from other framework errors.
+    """
+
+    pass

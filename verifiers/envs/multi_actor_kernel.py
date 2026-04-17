@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
+from verifiers.errors import KernelProtocolError
+
 
 @dataclass(frozen=True)
 class TurnSlot:
@@ -86,20 +88,20 @@ def apply_action(
     content: Any,
     token_count: int,
 ) -> ActionResult:
-    """Pure reducer. Raises ValueError on protocol violations."""
+    """Pure reducer. Raises KernelProtocolError on protocol violations."""
     slot = state._active_slot if state._active_slot is not None else program.current_slot(state)
 
     if slot is None:
-        raise ValueError("No active slot — episode is finished")
+        raise KernelProtocolError("No active slot — episode is finished")
 
     if member_id not in slot.actors:
-        raise ValueError(
+        raise KernelProtocolError(
             f"Member {member_id!r} is not scheduled for slot {slot.slot_id} "
             f"(expected one of {slot.actors})"
         )
 
     if member_id in state.pending:
-        raise ValueError(
+        raise KernelProtocolError(
             f"Member {member_id!r} already submitted for slot {slot.slot_id}"
         )
 
