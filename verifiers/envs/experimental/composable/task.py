@@ -376,6 +376,15 @@ class TaskSet:
         _TIMEOUT_EXC_NAMES = frozenset(
             {"CommandTimeoutError", "BackgroundJobTimeoutError"}
         )
+        # Exception class names that indicate transient sandbox-infra
+        # failures we want to retry via max_retries. ``prime_sandboxes``
+        # raises ``APIError`` (its own class, not ``vf.InfraError``) for
+        # things like an exit-file read timeout after a background job
+        # finishes — retryable. We match by name to keep prime_sandboxes
+        # out of this module's import graph.
+        _INFRA_EXC_NAMES = frozenset(
+            {"APIError", "SandboxNotRunningError"}
+        )
 
         def _classify(
             valid: bool, exc: BaseException | None, state: dict
@@ -403,7 +412,7 @@ class TaskSet:
                     or exc_name in _TIMEOUT_EXC_NAMES
                 ):
                     return "timeout", tail
-                if isinstance(exc, vf.InfraError):
+                if isinstance(exc, vf.InfraError) or exc_name in _INFRA_EXC_NAMES:
                     return "sandbox_error", tail
                 # Gold-patch apply raises RuntimeError from within our own
                 # code (_apply_patch_file / _apply_gold_patch), so a narrow
