@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from verifiers.errors import KernelProtocolError
+from verifiers.errors import ContentParseError, KernelProtocolError
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,12 @@ class Utterance:
     public_channel: str
     private_channel: str | None
     token_count: int
+    # Per-utterance quarantine flag: populated when parse_channels rejected
+    # the raw output (unclosed/nested/multiple/stray tags). Non-None means
+    # the rollout continues but downstream consumers (rubric, bridge) know
+    # this member's channel split is unreliable — public_channel is forced
+    # to "" and private_channel to None so no malformed markup leaks.
+    parse_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,74 +106,116 @@ class StaticSchedule:
 # Channel parsing
 # ---------------------------------------------------------------------------
 
-# ``think`` and ``thinking`` are aliased: either tag name matches both
-# ``<think>`` and ``<thinking>`` so models can use either form without
-# silently failing the parse. Attribute syntax on opener/closer is allowed.
-_ALIAS_PATTERN = r"think(?:ing)?"
+# Native reasoning-model tags. Always stripped from public output, even when
+# the pack configures a different private-channel tag — otherwise a model that
+# emits ``<think>secret</think>`` under a pack with ``think_tag="reason"``
+# would leak the raw native block into the opponent view.
+_NATIVE_THINK_ALT = r"think(?:ing)?"
 
 
-def _tag_pattern(tag: str) -> str:
-    if tag in ("think", "thinking"):
-        return _ALIAS_PATTERN
-    return re.escape(tag)
+def _compile_tag(alt: str) -> tuple[re.Pattern, re.Pattern]:
+    return (
+        re.compile(rf"<(?:{alt})\b[^>]*>", re.IGNORECASE),
+        re.compile(rf"</(?:{alt})\s*>", re.IGNORECASE),
+    )
 
 
-def parse_channels(raw: str, tag: str) -> tuple[str, str | None]:
-    """Split raw model output into ``(public_channel, private_channel)``.
+def _extract_one_block(
+    raw: str, alt: str, label: str
+) -> tuple[str, str | None]:
+    """Locate at most one ``<alt>…</alt>`` block.
 
-    Contract:
-      - exactly zero or one ``<tag>...</tag>`` block is legal;
-      - no nested tags, no unclosed opener, no stray closer;
-      - multiple blocks → protocol error.
+    Returns ``(residual, inner)``: ``residual`` has the block excised
+    (no whitespace normalization), ``inner`` is the raw body between
+    opener/closer, or ``None`` if no block was present.
 
-    ``public_channel`` is ``raw`` with the block removed and
-    leading/trailing whitespace stripped. ``private_channel`` is the
-    block's inner content stripped, or ``None`` if no block was present.
-
-    Raises:
-        KernelProtocolError: malformed channel markup.
+    Raises ``ContentParseError`` on unbalanced, multiple, nested, or
+    stray-closer markup — these are model-output formatting slips,
+    quarantined per-utterance by ``apply_action``.
     """
-    pat = _tag_pattern(tag)
-    opener_re = re.compile(rf"<{pat}\b[^>]*>", re.IGNORECASE)
-    closer_re = re.compile(rf"</{pat}\s*>", re.IGNORECASE)
-
+    opener_re, closer_re = _compile_tag(alt)
     openers = list(opener_re.finditer(raw))
     closers = list(closer_re.finditer(raw))
 
     if not openers and not closers:
-        return raw.strip(), None
+        return raw, None
 
     if len(openers) != len(closers):
-        raise KernelProtocolError(
-            f"parse_channels: unbalanced <{tag}> markup "
+        raise ContentParseError(
+            f"parse_channels: unbalanced {label} markup "
             f"({len(openers)} opener(s), {len(closers)} closer(s))"
         )
 
     if len(openers) > 1:
-        # Disambiguate nested vs. sequential multiple blocks by asking
-        # whether the second opener begins before the first closer ends.
+        # Nested vs. sequential disambiguation: second opener begins
+        # before first closer ends → nesting, else distinct blocks.
         if openers[1].start() < closers[0].end():
-            raise KernelProtocolError(
-                f"parse_channels: nested <{tag}> tags are not allowed"
+            raise ContentParseError(
+                f"parse_channels: nested {label} tags are not allowed"
             )
-        raise KernelProtocolError(
-            f"parse_channels: multiple <{tag}> blocks found ({len(openers)}); "
-            "expected at most one"
+        raise ContentParseError(
+            f"parse_channels: multiple {label} blocks found "
+            f"({len(openers)}); expected at most one"
         )
 
     opener = openers[0]
     closer = closers[0]
 
     if closer.start() < opener.end():
-        raise KernelProtocolError(
-            f"parse_channels: </{tag}> appears before <{tag}> opener"
+        raise ContentParseError(
+            f"parse_channels: {label} closer appears before opener"
         )
 
     inner = raw[opener.end() : closer.start()]
+    residual = raw[: opener.start()] + raw[closer.end() :]
+    return residual, inner
 
-    public = (raw[: opener.start()] + raw[closer.end() :]).strip()
-    private = inner.strip()
-    return public, (private or None)
+
+def parse_channels(raw: str, tag: str) -> tuple[str, str | None]:
+    """Split raw model output into ``(public_channel, private_channel)``.
+
+    Two-pass whitelist strip:
+
+    1. The configured ``tag`` block (if present) carries the author's
+       intended private reasoning → ``private_channel``.
+    2. Native ``<think>``/``<thinking>`` blocks are ALWAYS stripped from
+       the public view — even when the configured tag is different —
+       and their content is DISCARDED. Native reasoning tokens are a
+       third-party artifact of the model, not author-intended private
+       commentary, and surfacing them anywhere (opponent view, private
+       channel, rubric) would leak model-internal state that the pack
+       author did not opt into.
+
+    When the configured tag aliases the native tag (``tag`` ∈
+    {"think","thinking"}), one pass covers both: the block's content
+    IS the author's private channel.
+
+    Contract: zero or one block per whitelist entry. Malformed markup
+    (unclosed / stray / multiple / nested) in EITHER whitelist entry
+    raises ``ContentParseError``, which ``apply_action`` quarantines
+    on the utterance rather than aborting the rollout.
+    """
+    configured_alt = (
+        _NATIVE_THINK_ALT if tag in ("think", "thinking") else re.escape(tag)
+    )
+
+    residual, configured_inner = _extract_one_block(
+        raw, configured_alt, f"<{tag}>"
+    )
+
+    # Second pass only when the configured tag is not already the native
+    # alias — otherwise pass 1 has already consumed any native block.
+    if configured_alt != _NATIVE_THINK_ALT:
+        residual, _discarded_native = _extract_one_block(
+            residual, _NATIVE_THINK_ALT, "<think>/<thinking>"
+        )
+    # Native-think contents are intentionally dropped on the floor.
+
+    public = residual.strip()
+    private_stripped = (
+        configured_inner.strip() if configured_inner is not None else None
+    )
+    return public, (private_stripped or None)
 
 
 def apply_action(
@@ -201,7 +249,16 @@ def apply_action(
             f"Member {member_id!r} already submitted for slot {slot.slot_id}"
         )
 
-    public, private = parse_channels(raw_content, think_tag)
+    # Quarantine parse failures on model output: one actor's formatting
+    # slip must not DoS the whole episode. Kernel-state violations (wrong
+    # actor, duplicate, finished) are raised above and still abort.
+    try:
+        public, private = parse_channels(raw_content, think_tag)
+        parse_error: str | None = None
+    except ContentParseError as exc:
+        public = ""
+        private = None
+        parse_error = str(exc)
 
     utterance = Utterance(
         member_id=member_id,
@@ -211,6 +268,7 @@ def apply_action(
         public_channel=public,
         private_channel=private,
         token_count=token_count,
+        parse_error=parse_error,
     )
 
     # Sequential: commit immediately
