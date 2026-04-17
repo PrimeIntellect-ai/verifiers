@@ -408,7 +408,8 @@ class DebateRubric(MultiAgentRubric):
         # Structured dual-write (MultiAgentRubric contract). During migration
         # we populate both the flat `metrics` dict (legacy string-keyed) and
         # these three structured dicts. Bridge prefers structured, falls back
-        # to flat. Flat writes go away in a follow-up.
+        # to flat. TODO(phase-4-followup): drop flat writes once Phase 5 lands
+        # and the bridge's legacy fallback path is removed.
         member_rewards: dict[str, float] = {}
         member_metrics: dict[str, dict[str, float]] = {m: {} for m in self.members}
         episode_metrics: dict[str, float] = {}
