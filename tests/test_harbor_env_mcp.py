@@ -240,25 +240,31 @@ class TestLaunchCommandResolution:
 
 
 class TestStartStopCommands:
-    def test_start_cmd_tracks_child_pid_not_subshell(self):
-        """PID tracking must use `$!` (backgrounded child), NOT `$$` (outer shell).
-
-        Inside the SDK's `(...)` subshell, `$$` is the outer shell's PID —
-        killing it would leave the exec'd target orphaned. Also asserts no
-        `exec`/`su` wrapping so the user's command runs verbatim, and that
-        the subshell ends with `wait` so its exit code reflects the target's.
+    def test_start_cmd_tracks_process_group_leader_pid(self):
+        """Start command must capture `$!` (the backgrounded pgroup leader),
+        not `$$` (the outer shell), and must end with `wait` so the recorded
+        exit code reflects the launched daemon's.
         """
         cmd = _DummyEnv()._mcp_start_cmd("svc", "python -u /opt/x/server.py")
         assert "echo $!" in cmd
         assert "echo $$" not in cmd
         assert cmd.rstrip().endswith("wait")
         assert "/tmp/harbor-mcp-svc.pid" in cmd
-        assert "exec" not in cmd
-        assert "su -s" not in cmd
         assert "python -u /opt/x/server.py" in cmd
 
+    def test_start_cmd_wraps_in_setsid_for_process_group_semantics(self):
+        """Wrapping the user's command in `setsid sh -c ...` is what makes
+        `$!` a process-group leader, so `kill -9 -$PID` can reap the whole
+        daemon tree on stop. Compound commands (e.g. `cd /x && python y.py`)
+        must be preserved verbatim inside the sh -c payload so their own
+        semantics are unchanged."""
+        cmd = _DummyEnv()._mcp_start_cmd("svc", "cd /opt && python server.py")
+        assert "setsid sh -c " in cmd
+        assert "'cd /opt && python server.py'" in cmd
+
     def test_stop_cmd_is_one_line_sigkill_plus_rm(self):
-        """Default: one SIGKILL, then unlink the pidfile — no poll/sleep loop."""
+        """Default: one SIGKILL to the process group, then unlink the
+        pidfile — no poll/sleep loop."""
         cmd = _DummyEnv()._mcp_stop_cmd("svc")
         assert "kill -9" in cmd
         assert "rm -f" in cmd
@@ -267,6 +273,14 @@ class TestStartStopCommands:
         assert "sleep" not in cmd
         assert "\n" not in cmd
         assert len(cmd) < 120
+
+    def test_stop_cmd_targets_process_group_not_single_pid(self):
+        """The `-` prefix on the `$(cat …)` expansion is what turns kill(1)
+        into a process-group kill — without it, SIGKILL only lands on the
+        wrapping shell and e.g. a `python` child spawned via `cd && python`
+        leaks as an orphan."""
+        cmd = _DummyEnv()._mcp_stop_cmd("svc")
+        assert 'kill -9 -"$(cat' in cmd
 
     def test_server_name_with_shell_metachars_is_quoted(self):
         """Server name is task-author-controlled; every pidfile reference
@@ -281,6 +295,18 @@ class TestStartStopCommands:
             assert quoted in cmd
             # Every raw occurrence must be inside an already-quoted span.
             assert cmd.count(unquoted) == cmd.count(quoted)
+
+    def test_launch_command_with_shell_metachars_is_quoted(self):
+        """Same for the user's launch command: it's task-author-controlled,
+        must land inside a single-quoted span once wrapped in `sh -c`."""
+        env = _DummyEnv()
+        evil_cmd = "python -c 'print(1)' && touch /pwned"
+        quoted = f"'{evil_cmd}'".replace("'", "'\"'\"'")
+        # shlex-quoted output contains the evil string only inside quotes.
+        cmd = env._mcp_start_cmd("svc", evil_cmd)
+        assert "setsid sh -c " in cmd
+        # No unquoted `&& touch /pwned` outside a single-quoted span.
+        assert cmd.count(evil_cmd) == 0 or quoted in cmd
 
 
 class TestLifecycle:

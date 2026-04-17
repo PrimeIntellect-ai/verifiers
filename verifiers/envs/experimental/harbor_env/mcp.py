@@ -306,14 +306,15 @@ class HarborMCPMixin:
         return f"/tmp/harbor-mcp-{name}.pid"
 
     def _mcp_start_cmd(self, name: str, command: str) -> str:
-        """Background `command` and record its PID via `$!` so stop can SIGKILL it."""
+        """Launch `command` in its own process group and record the group leader."""
         pid_file = shlex.quote(self._mcp_pid_file(name))
-        return f"{command} & echo $! > {pid_file}; wait"
+        quoted_cmd = shlex.quote(command)
+        return f"setsid sh -c {quoted_cmd} & echo $! > {pid_file}; wait"
 
     def _mcp_stop_cmd(self, name: str) -> str:
-        """SIGKILL the recorded PID and remove the pidfile."""
+        """SIGKILL the recorded process group and remove the pidfile."""
         pid_file = shlex.quote(self._mcp_pid_file(name))
-        return f'kill -9 "$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}'
+        return f'kill -9 -"$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}'
 
     @staticmethod
     def _default_mcp_health_cmd(port: int) -> str:
