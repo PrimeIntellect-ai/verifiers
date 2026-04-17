@@ -1,12 +1,21 @@
-"""DebateEnv: kernel-driven multi-actor debate on the Environment contract."""
+"""DebateEnv: thin MultiAgentEnv subclass for debate protocols.
+
+Keeps only debate-specific concerns:
+  * DebatePrompts prompt pack
+  * XML field extraction from the public channel
+  * Opponent visibility derived from ``think_visibility``
+  * Role-ID mapping (member_id → role) and opponent attribution wrapping
+  * Final debate transcript rendered into ``state['completion']``
+
+Generic machinery (rollout loop, atomic simultaneous commit, stop
+conditions, kernel threading, lineage cache, trajectory step append) is
+inherited from :class:`MultiAgentEnv`.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
-
-_log = logging.getLogger(__name__)
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -22,40 +31,23 @@ from verifiers.envs.multi_actor_kernel import (
     SlotProgram,
     StaticSchedule,
     TurnSlot,
-    apply_action,
-    parse_channels,
+    Utterance,
 )
-from verifiers.types import (
-    Messages,
-    Response,
-    RolloutInput,
-    SamplingArgs,
-    State,
-    TrajectoryStep,
-)
-from verifiers.utils.message_utils import maybe_normalize_messages
-from verifiers.utils.response_utils import (
-    parse_response_message,
-    parse_response_tokens,
-)
+from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
+from verifiers.types import Messages, State
+
+_log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# DebateEnv
-# ---------------------------------------------------------------------------
+class DebateEnv(MultiAgentEnv):
+    """Debate-specific MultiAgentEnv.
 
-
-class DebateEnv(vf.Environment):
-    """Kernel-driven multi-actor debate environment.
-
-    Subclasses ``vf.Environment`` directly (NOT MultiTurnEnv). The kernel
-    (``multi_actor_kernel``) manages turn order; both actors call
-    ``get_model_response`` as first-class participants.
-
-    Actor resolution is mode-free:
-      - self-play: all actors use defaults (client=None, model=None)
-      - adapters: per-actor model strings (e.g. ``"base:lora_A"``)
-      - fixed opponent: one actor gets a separate client+model
+    Subclasses :class:`MultiAgentEnv` and specialises four things:
+      1. :meth:`build_prompt`  -- render via DebatePrompts
+      2. :meth:`extract_fields` -- XML field parsing from public channel
+      3. :meth:`visibility_policy` -- derived from ``think_visibility``
+      4. :meth:`role_for_member` -- via ``role_for_actor`` map
+      5. :meth:`render_completion` -- flatten trajectory into messages
     """
 
     def __init__(
@@ -68,31 +60,31 @@ class DebateEnv(vf.Environment):
         actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
-        if not members:
-            raise ValueError("DebateEnv requires a non-empty members list")
-        if len(members) != len(set(members)):
-            raise ValueError(f"DebateEnv.members contains duplicates: {members}")
+        super().__init__(
+            schedule=schedule,
+            members=members,
+            actor_overrides=actor_overrides,
+            think_tag=prompts.think_tag,
+            **kwargs,
+        )
 
-        # Cross-check 1: members must match the rubric's members exactly.
-        # Silent drift here would desync round_index (env) from per-member
-        # reward attribution (rubric) and produce plausible-but-wrong
-        # training signal. Only enforced when the rubric exposes a
-        # members attribute (DebateRubric and MultiAgentRubric do).
+        # Cross-check 1: env.members must equal rubric.members exactly.
+        # Silent drift desyncs round_index (env) from per-member reward
+        # attribution (rubric) and yields plausible-but-wrong training
+        # signal. Only enforced when the rubric exposes a members attribute.
         rubric_members = getattr(self.rubric, "members", None)
         if rubric_members is not None and list(rubric_members) != list(members):
             raise ValueError(
                 f"DebateEnv.members != rubric.members\n"
                 f"  env    : {list(members)}\n"
                 f"  rubric : {list(rubric_members)}\n"
-                f"Both must be identical (same ids, same order) — "
+                f"Both must be identical (same ids, same order) -- "
                 f"round_index and reward attribution key off them."
             )
 
-        # Cross-check 2: for StaticSchedule, the set of unique slot actors
-        # must equal the set of declared members. Dynamic SlotProgram
-        # implementations are exempt (actor set may be data-dependent;
-        # they must enforce their own invariants).
+        # Cross-check 2: for StaticSchedule, unique slot actors must equal
+        # the declared members set. Dynamic SlotProgram implementations
+        # are exempt (actor set may be data-dependent).
         if isinstance(schedule, StaticSchedule):
             slot_actors: set[str] = set()
             for slot in schedule._slots:
@@ -107,189 +99,188 @@ class DebateEnv(vf.Environment):
                     f"  in schedule only : {sorted(slot_actors - member_set)}"
                 )
 
-        self.schedule = schedule
         self.prompts = prompts
-        self.members: list[str] = list(members)
-        self._role_for_actor: dict[str, str] = role_for_actor or {}
-        self._actor_overrides: dict[str, tuple[Client | None, str | None]] = (
-            actor_overrides or {}
-        )
+        self._role_for_actor: dict[str, str] = dict(role_for_actor or {})
 
-    def _role(self, member_id: str) -> str:
+    # -- role resolution -----------------------------------------------------
+
+    def role_for_member(self, member_id: str) -> str:
         return self._role_for_actor.get(member_id, member_id)
 
-    # -- actor resolution (mode-free) ----------------------------------------
+    # Legacy direct-call alias (old tests reach through this name).
+    def _role(self, member_id: str) -> str:
+        return self.role_for_member(member_id)
 
     def _resolve_actor(
-        self, actor: str
+        self, member_id: str
     ) -> tuple[Client | None, str | None]:
-        return self._actor_overrides.get(actor, (None, None))
+        return self.resolve_actor(member_id)
 
-    # -- prompt construction (3-section) -------------------------------------
+    # -- visibility policy ---------------------------------------------------
 
-    def _build_prompt(
-        self, state: State, actor: str, phase: str
+    def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
+        if utt.member_id == viewer_id:
+            return "full"
+        speaker_role = self.role_for_member(utt.member_id)
+        viewer_role = self.role_for_member(viewer_id)
+        vis = self.prompts.think_visibility.get(speaker_role, "disabled")
+        if vis == "open":
+            return "full"
+        if vis == "visible_to_judge" and viewer_role == "judge":
+            return "full"
+        return "public_only"
+
+    # -- prompt construction -------------------------------------------------
+
+    async def build_prompt(
+        self, state: State, member_id: str, slot: TurnSlot
     ) -> Messages:
+        """Render the prompt for ``member_id`` at ``slot``.
+
+        Monotonic-extension invariant (base-class contract): for a fixed
+        member, the slot-N+1 prompt is equal byte-for-byte to the slot-N
+        prompt on its leading messages and only adds a suffix. To achieve
+        this, each own-turn in the transcript is rendered as the pair
+        ``[instruction_that_preceded_it, assistant=raw_content]`` -- i.e.
+        we re-render the instruction for that turn's phase/round_index.
+        Opponent turns are rendered as wrapped user messages. The
+        current turn's instruction + optional assistant-prefill sit at
+        the tail. No contiguous-user-message consolidation (that would
+        split one message into two across boundaries that shift when
+        history grows).
+        """
         kernel_state: KernelState = state["_kernel"]
-        role = self._role(actor)
+        role = self.role_for_member(member_id)
         question = _extract_question(state)
 
-        num_slots = len(self.schedule) if hasattr(self.schedule, "__len__") else 0
-        num_actors = len(self.members)
-        num_rounds = num_slots // num_actors
-        round_index = kernel_state.slot_index // num_actors
-
-        ctx = build_context(
-            task_prompt=question,
-            viewer_role=role,
-            phase=phase,
-            round_index=round_index,
-            num_rounds=num_rounds,
-            answer=state.get("answer", ""),
+        num_slots = (
+            len(self.schedule) if hasattr(self.schedule, "__len__") else 0
         )
+        num_actors = max(len(self.members), 1)
+        num_rounds = max(num_slots // num_actors, 1)
 
-        # 1. System: who you are (phase-independent — prefix-cache stable)
+        def _ctx_for(round_idx: int, phase: str) -> dict[str, Any]:
+            return build_context(
+                task_prompt=question,
+                viewer_role=role,
+                phase=phase,
+                round_index=round_idx,
+                num_rounds=num_rounds,
+                answer=state.get("answer", ""),
+            )
+
+        current_round = kernel_state.slot_index // num_actors
+        ctx_current = _ctx_for(current_round, slot.phase)
+
         msgs: list[dict[str, str]] = [
-            {"role": "system", "content": self.prompts.render_system(role, ctx)},
+            {"role": "system", "content": self.prompts.render_system(role, ctx_current)},
         ]
 
-        # Question (first user message)
-        q_text = self.prompts.render_question(role, ctx)
+        q_text = self.prompts.render_question(role, ctx_current)
         if q_text:
             msgs.append({"role": "user", "content": q_text})
 
-        # 2. History: what was said, think-stripped for opponents
-        msgs.extend(self._format_history(kernel_state, actor))
+        viewer_role = role
+        for utt in kernel_state.transcript:
+            if utt.member_id == member_id:
+                # Own turn: re-emit the instruction that preceded it,
+                # then the assistant commit. Re-rendering is deterministic
+                # so this value is stable across calls.
+                utt_round = utt.slot_id // num_actors
+                past_ctx = _ctx_for(utt_round, utt.phase)
+                past_instr = self.prompts.render_instruction(
+                    role, utt.phase, past_ctx
+                )
+                if past_instr:
+                    msgs.append({"role": "user", "content": past_instr})
+                msgs.append({"role": "assistant", "content": utt.raw_content})
+            else:
+                vis = self.visibility_policy(utt, member_id)
+                content = utt.raw_content if vis == "full" else utt.public_channel
+                speaker_role = self.role_for_member(utt.member_id)
+                content = self.prompts.wrap_opponent(
+                    utt.phase,
+                    content,
+                    member_id=utt.member_id,
+                    role_id=speaker_role,
+                    viewer_role=viewer_role,
+                )
+                msgs.append({"role": "user", "content": content})
 
-        # 3. Instruction: what to do + output format
-        instruction = self.prompts.render_instruction(role, phase, ctx)
+        instruction = self.prompts.render_instruction(role, slot.phase, ctx_current)
         if instruction:
             msgs.append({"role": "user", "content": instruction})
 
-        # Prefill (trailing assistant message)
-        prefill = self.prompts.render_prefill(role, phase, ctx)
+        prefill = self.prompts.render_prefill(role, slot.phase, ctx_current)
         if prefill:
             msgs.append({"role": "assistant", "content": prefill})
 
-        return _consolidate_messages(msgs)
+        return msgs
 
     def _format_history(
-        self, kernel_state: KernelState, actor: str
+        self, kernel_state: KernelState, viewer_id: str
     ) -> list[dict[str, str]]:
-        """Format transcript entries using structured channels.
+        """Format transcript entries for ``viewer_id``.
 
-        Viewer policy:
-          - Own utterance: render ``raw_content`` verbatim (preserves the
-            author's own think block for KV-cache coherence).
-          - Other's utterance: if speaker's think visibility permits the
-            viewer ("open", or "visible_to_judge" for a judge viewer),
-            render ``raw_content`` (think block intact); otherwise render
-            ``public_channel`` (think block already stripped at commit).
+        Own utterances → assistant role, ``raw_content`` verbatim (KV cache
+        coherence). Others → user role, content selected by
+        :meth:`visibility_policy` and wrapped with speaker attribution.
         """
-        role = self._role(actor)
+        viewer_role = self.role_for_member(viewer_id)
         msgs: list[dict[str, str]] = []
         for utt in kernel_state.transcript:
-            if utt.member_id == actor:
+            if utt.member_id == viewer_id:
                 msgs.append({"role": "assistant", "content": utt.raw_content})
                 continue
-            speaker_role = self._role(utt.member_id)
-            vis = self.prompts.think_visibility.get(speaker_role, "disabled")
-            think_visible = vis == "open" or (
-                vis == "visible_to_judge" and role == "judge"
-            )
-            content = utt.raw_content if think_visible else utt.public_channel
+            vis = self.visibility_policy(utt, viewer_id)
+            content = utt.raw_content if vis == "full" else utt.public_channel
+            speaker_role = self.role_for_member(utt.member_id)
             content = self.prompts.wrap_opponent(
                 utt.phase,
                 content,
                 member_id=utt.member_id,
                 role_id=speaker_role,
-                viewer_role=role,
+                viewer_role=viewer_role,
             )
             msgs.append({"role": "user", "content": content})
         return msgs
 
-    # -- trajectory step creation --------------------------------------------
-
-    async def _add_debate_step(
-        self,
-        state: State,
-        prompt_messages: Messages,
-        response: Response,
-        member_id: str,
-        phase: str,
-        fields: dict[str, Any] | None = None,
-    ) -> None:
-        completion_messages = await parse_response_message(response)
-        tokens = await parse_response_tokens(response, self.max_seq_len)
-        response_is_truncated = response.message.is_truncated or False
-        is_truncated = response_is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
-        )
-        role_id = self._role(member_id)
-        extras: dict[str, Any] = {
-            "member_id": member_id,
-            "role_id": role_id,
-            "phase": phase,
-        }
-        if fields is not None:
-            extras["fields"] = fields
-        step = TrajectoryStep(
-            prompt=prompt_messages,
-            completion=completion_messages,
-            response=response,
-            tokens=tokens,
-            reward=None,
-            advantage=None,
-            is_truncated=is_truncated,
-            trajectory_id=state["trajectory_id"],
-            extras=extras,
-        )
-        state["trajectory"].append(step)
-
     # -- field extraction ----------------------------------------------------
 
-    def _extract_fields(
-        self, content: str, actor: str, phase: str
+    async def extract_fields(
+        self, public_channel: str, member_id: str, slot: TurnSlot
     ) -> dict[str, Any] | None:
-        """Extract structured fields from response, if specs are defined.
+        """Extract XML fields from the public channel, per role+phase specs.
 
-        Parse ambiguity (duplicate schema tags, raised as ValueError from
-        parsing.parse) is a per-step, per-member signal — not a terminal
-        rollout error. We log loudly and return None so the step still gets
-        appended to the trajectory with fields=None; the rubric's
-        failed_members path then emits extraction_failed/{mid}=1.0 and
-        suppresses accuracy/{mid}. Terminating the rollout would discard
-        other members' valid commits and hide the failure as state['error']
-        while the rubric silently graded stale earlier steps.
+        Parse ambiguity (duplicate schema tags, raised as ValueError) is a
+        per-step signal: we log and return None so the step is still
+        appended and the rubric's failed_members path fires
+        ``extraction_failed/{mid}=1.0``. Terminating would discard other
+        members' valid commits.
         """
-        role = self._role(actor)
-        specs = self.prompts.get_field_specs(role, phase)
+        role = self.role_for_member(member_id)
+        specs = self.prompts.get_field_specs(role, slot.phase)
         if not specs:
             return None
-        cleaned, _ = parse_channels(content, self.prompts.think_tag)
         try:
-            return extract_fields(cleaned, specs)
+            return extract_fields(public_channel, specs)
         except ValueError as exc:
             _log.warning(
-                "field extraction failed for actor=%s phase=%s: %s",
-                actor, phase, exc,
+                "field extraction failed for member=%s phase=%s: %s",
+                member_id, slot.phase, exc,
             )
             return None
 
-    # -- stop conditions -----------------------------------------------------
+    # -- debate_complete alias for direct-call tests -------------------------
 
-    @vf.stop(priority=100)
-    async def has_error(self, state: State) -> bool:
-        return state.get("error") is not None
-
-    @vf.stop
     async def debate_complete(self, state: State) -> bool:
-        kernel_state = state.get("_kernel")
-        return kernel_state is not None and self.schedule.current_slot(kernel_state) is None
+        """Semantic alias for the base's ``schedule_exhausted`` stop.
 
-    @vf.stop
-    async def prompt_too_long(self, state: State) -> bool:
-        return state.get("prompt_too_long", False)
+        Not a ``@vf.stop`` -- the inherited ``schedule_exhausted`` is the
+        single source of truth; this exists so callers that still probe
+        the debate-specific name get a sane answer.
+        """
+        return await self.schedule_exhausted(state)
 
     # -- completion rendering ------------------------------------------------
 
@@ -299,113 +290,14 @@ class DebateEnv(vf.Environment):
             completion_msgs.extend(step["completion"])
         state["completion"] = completion_msgs
 
-    # -- main rollout loop ---------------------------------------------------
-
-    async def rollout(
-        self,
-        input: RolloutInput,
-        client: Client,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> State:
-        state = await self.init_state(input, client, model, sampling_args)
-        try:
-            kernel_state = KernelState(slot_index=0)
-            state["_kernel"] = kernel_state
-
-            while not await self.is_completed(state):
-                slot = self.schedule.current_slot(state["_kernel"])
-                if slot is None:
-                    break
-
-                try:
-                    if len(slot.actors) > 1:
-                        await self._run_simultaneous_slot(state, slot)
-                    else:
-                        await self._run_sequential_slot(state, slot)
-                except vf.OverlongPromptError:
-                    state["prompt_too_long"] = True
-                    state["is_truncated"] = True
-                except vf.Error as e:
-                    state["error"] = e
-
-            await self.render_completion(state)
-            return state
-        except asyncio.CancelledError:
-            await self._cleanup(state)
-            raise
-
-    async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:
-        actor = slot.actors[0]
-        prompt = self._build_prompt(state, actor, slot.phase)
-        prompt = maybe_normalize_messages(prompt, field_name="debate_prompt")
-        actor_client, actor_model = self._resolve_actor(actor)
-        response = await self.get_model_response(
-            state, prompt, client=actor_client, model=actor_model
-        )
-        content = response.message.content or ""
-        token_count = _completion_token_count(response)
-
-        fields = self._extract_fields(content, actor, slot.phase)
-
-        result = apply_action(
-            state["_kernel"], self.schedule, actor, content, token_count,
-            think_tag=self.prompts.think_tag,
-        )
-        state["_kernel"] = result.new_state
-        await self._add_debate_step(
-            state, prompt, response, actor, slot.phase, fields=fields
-        )
-
-    async def _run_simultaneous_slot(self, state: State, slot: TurnSlot) -> None:
-        prompts = [
-            maybe_normalize_messages(
-                self._build_prompt(state, a, slot.phase),
-                field_name="debate_prompt",
-            )
-            for a in slot.actors
-        ]
-        overrides = [self._resolve_actor(a) for a in slot.actors]
-
-        responses = await asyncio.gather(*[
-            self.get_model_response(state, p, client=o[0], model=o[1])
-            for p, o in zip(prompts, overrides)
-        ])
-
-        for actor, prompt, response in zip(slot.actors, prompts, responses):
-            content = response.message.content or ""
-            token_count = _completion_token_count(response)
-
-            fields = self._extract_fields(content, actor, slot.phase)
-
-            result = apply_action(
-                state["_kernel"], self.schedule, actor, content, token_count,
-                think_tag=self.prompts.think_tag,
-            )
-            state["_kernel"] = result.new_state
-            await self._add_debate_step(
-                state, prompt, response, actor, slot.phase, fields=fields
-            )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _completion_token_count(response: Response) -> int:
-    """Extract completion token count from a Response."""
-    if response.message.tokens and response.message.tokens.completion_ids:
-        return len(response.message.tokens.completion_ids)
-    return 0
-
-
 def _extract_question(state: State) -> str:
-    """Extract the question text from state['prompt'] (the dataset messages).
-
-    The prompt field is a list of messages from the dataset row. The first
-    user-role message contains the question text.
-    """
+    """Extract the question text from ``state['prompt']`` (dataset messages)."""
     prompt = state.get("prompt")
     if prompt:
         for msg in prompt:
@@ -443,34 +335,13 @@ def _consolidate_messages(msgs: list[dict[str, str]]) -> Messages:
 
 
 def _validate_judge_templates(prompts: DebatePrompts) -> None:
-    """Fail loud at load time on two judge-template footguns:
+    """Fail loud on two judge-template footguns:
 
-    1. ``template.user_format_string`` is empty. The 1B→1C transition
-       added a raw-format-string carrier on ``JudgeTemplate`` so
-       ``JudgeRubric.judge`` can run ``.format(question=..., answer=...,
-       response=...)`` instead of Jinja. Production loader populates it
-       from ``block["user"]``, but a hand-constructed ``JudgeTemplate``
-       (or a YAML pack with an empty ``user`` block) would silently
-       leave it as the ``""`` default and the grader would render a
-       0-byte prompt at score time. Reject empty.
-
-    2. A verdict token exactly matches an ``EnumScoring`` value of any
-       ``answer`` field in the pack. The rubric classifies verdicts by
-       exact-token compare against ``template.positive`` /
-       ``template.negative`` (see ``_normalize_verdict_token``), so
-       overlap between verdict tokens themselves is not a bug —
-       ``CORRECT``/``INCORRECT`` is the canonical grader pair and both
-       must be accepted even though one is a substring of the other.
-       The collision we *do* reject is when a verdict token coincides
-       with a canonical answer option (e.g. ``positive="A"`` while an
-       MCQ answer field ranges over ``{A,B,C,D}``). In that case the
-       grader's verdict and a debater commit are indistinguishable in
-       transcript greps and downstream tooling that greps for the
-       verdict would silently misattribute it.
-
-    ``template.positive``/``template.negative`` are already normalized
-    (uppercased, first-word, punct-stripped) at pack-load time, so
-    comparisons here upper-case the enum side only.
+    1. ``user_format_string`` empty -> JudgeRubric would render a 0-byte
+       prompt at score time. Reject.
+    2. Verdict token collides with an ``EnumScoring`` value of any
+       ``answer`` field -> transcript greps misattribute judge output
+       to a debater commit. Reject.
     """
     for kind, template in prompts.judges.items():
         if not template.user_format_string.strip():
@@ -506,7 +377,7 @@ def _validate_judge_templates(prompts: DebatePrompts) -> None:
 def load_environment(**kwargs: Any) -> DebateEnv:
     """Construct a DebateEnv from a prompt pack and a static schedule.
 
-    Usage (direct import — the only supported path)::
+    Usage::
 
         from verifiers.envs.debate_env import load_environment
 
@@ -523,45 +394,17 @@ def load_environment(**kwargs: Any) -> DebateEnv:
             eval_dataset=my_dataset,
         )
 
-    Required kwargs:
-        schedule_slots: list of dicts with keys ``slot_id``, ``actors``, ``phase``
-        members: list of member_id strings (e.g. ["A", "B"])
-        truth_role: role_id whose victory = episode success
-
-    Prompt configuration (exactly one of):
-        prompts_ref: str — YAML ref for :func:`resolve_prompts` (e.g. "default",
-            "selfplay", or a filesystem path to a YAML pack)
-        prompts: DebatePrompts — pre-loaded DebatePrompts instance
-
-    Optional kwargs:
-        role_for_actor, actor_overrides, judge_client, judge_model,
-        dataset / eval_dataset, and any other Environment kwargs.
-
-        For the judge, callers can either pass a pre-built
-        ``judge_client`` (a ``vf.Client`` instance such as
-        ``OpenAIChatCompletionsClient(AsyncOpenAI(...))``), or pass
-        credentials via ``judge_api_key`` / ``judge_base_url`` and let
-        the factory construct the client with
-        ``max_retries=judge_max_retries`` (default 10). Prefer the
-        factory construction path so retry budget stays consistent
-        across callers.
-
-    .. note::
-       This factory is **not** reachable via ``vf.load_environment("debate_env")``.
-       The framework loader at :mod:`verifiers.utils.env_utils` resolves
-       ``env_id`` to a **top-level** module name (``importlib.import_module(env_id)``),
-       but this module lives at :mod:`verifiers.envs.debate_env`. Calling
-       ``vf.load_environment("debate_env")`` raises
-       ``ValueError: Could not import 'debate_env' environment`` (wrapping
-       ``ModuleNotFoundError: No module named 'debate_env'``). Use the direct
-       import shown above — that is the contract every production caller relies on.
+    Required:
+        schedule_slots, members, truth_role.
+    Prompt source (exactly one): ``prompts_ref`` or ``prompts``.
+    Optional: role_for_actor, actor_overrides, judge_client, judge_model,
+    judge_api_key, judge_base_url, judge_max_retries, dataset/eval_dataset.
     """
     from verifiers.envs.debate_rubric import (
         DebateRubric,
         any_field_needs_open_ended,
     )
 
-    # Build schedule
     raw_slots = kwargs.pop("schedule_slots")
     slots = tuple(
         TurnSlot(
@@ -573,7 +416,6 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     )
     schedule = StaticSchedule(slots)
 
-    # Resolve prompts
     prompts_ref = kwargs.pop("prompts_ref", None)
     prompts = kwargs.pop("prompts", None)
     if prompts is not None:
@@ -584,12 +426,8 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     else:
         raise ValueError("Must provide either 'prompts_ref' or 'prompts'")
 
-    # Fail loud on judge-template footguns (empty format string, verdict
-    # token collisions) before we burn any rollout budget. See
-    # _validate_judge_templates for the two failure modes.
     _validate_judge_templates(prompts)
 
-    # Build rubric
     members = kwargs.pop("members")
     truth_role = kwargs.pop("truth_role")
     judge_client = kwargs.pop("judge_client", None)
@@ -598,13 +436,6 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     judge_base_url = kwargs.pop("judge_base_url", None)
     judge_max_retries = kwargs.pop("judge_max_retries", 10)
 
-    # Construction path for callers that pass credentials instead of a
-    # pre-built client. max_retries defaults to 10 (matching the
-    # framework ClientConfig default) rather than the OpenAI SDK's
-    # default of 2, because transient judge outages retry through
-    # maybe_retry at the rollout layer plus the SDK's own retry — the
-    # two compound, and an under-provisioned SDK retry budget burns
-    # rollouts on recoverable flakes.
     if judge_client is None and (judge_api_key or judge_base_url):
         from openai import AsyncOpenAI
         from verifiers.clients.openai_chat_completions_client import (
@@ -618,14 +449,6 @@ def load_environment(**kwargs: Any) -> DebateEnv:
             )
         )
 
-    # Eager judge_client validation: fail at load time, not score time.
-    # We only demand a judge_client when the pack declares LLM-judge
-    # templates AND at least one 'answer' field routes through the LLM
-    # grader path (non-EnumScoring). Packs that ship _grader/_matcher as
-    # dead-code fallback but score every answer field via classify_enum
-    # (e.g. selfplay MCQ) must still load without a judge client.
-    # DebateRubric.__init__ mirrors this gate as a belt-and-braces safety
-    # net for callers who bypass this factory.
     if (
         prompts.judges
         and any_field_needs_open_ended(prompts.fields)
@@ -639,7 +462,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
             "the LLM grader, but judge_client was not provided. Open-ended "
             "grading requires a vf.Client-wrapped judge client (e.g. "
             "OpenAIChatCompletionsClient(AsyncOpenAI(...))). Raw provider "
-            "SDK clients are no longer accepted — wrap them first."
+            "SDK clients are no longer accepted -- wrap them first."
         )
     if judge_client is not None and not isinstance(judge_client, Client):
         raise TypeError(
@@ -656,7 +479,6 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         judge_model=judge_model,
     )
 
-    # Actor overrides and role mapping
     role_for_actor = kwargs.pop("role_for_actor", None)
     actor_overrides = kwargs.pop("actor_overrides", None)
 
