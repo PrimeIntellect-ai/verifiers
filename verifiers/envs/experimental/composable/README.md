@@ -14,7 +14,11 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **Harness** — agent-side configuration. Declares how to install and run an agent binary, and where it expects to find task-provided content (instruction, system prompt).
 
-**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged.
+**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), and harness-declared metrics collection (via `Harness.metrics_path`).
+
+**Skills** are first-class: any taskset with a sibling `skills/` directory gets automatic upload for free. `TaskSet.get_skills_dir()` auto-discovers it, and `get_upload_dirs()` includes it under the `"skills"` key by default. The harness's `upload_dir_mapping` decides where skills land in the sandbox (e.g. RLM puts them at `/task/rlm-skills`).
+
+**discover_sibling_dir(taskset_cls, dirname)** — utility to auto-discover a directory co-located with a TaskSet's module. Works with installed packages and filesystem paths.
 
 ## Usage
 
@@ -42,6 +46,24 @@ results = await taskset.take(10).validate(concurrency=5)
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")
 env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
+```
+
+For RLM-backed agents, use `ComposableEnv` with `rlm_harness(...)`. If your taskset has a sibling `skills/` directory, it's uploaded automatically — no override needed:
+
+```python
+# my_taskset/
+# ├── __init__.py
+# ├── taskset.py     ← defines MySweTaskSet
+# └── skills/
+#     └── demo/
+#         ├── SKILL.md
+#         └── pyproject.toml
+
+env = ComposableEnv(
+    taskset=taskset,
+    harness=rlm_harness(...),  # maps "skills" → "/task/rlm-skills"
+    install_env={"GH_TOKEN": token},
+)
 ```
 
 ## Writing a new TaskSet
