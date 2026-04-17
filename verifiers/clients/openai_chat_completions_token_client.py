@@ -108,7 +108,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        # Multi-agent envs set state["_lineage_key"] = member_id so prefix
+        # matching only consults steps authored by the same speaker. For
+        # single-actor envs the key is absent and behavior is unchanged.
+        lineage_key = state.get("_lineage_key") if isinstance(state, dict) else None
+        prompt_ids = await self.get_prompt_ids(
+            state, prompt, tools, lineage_key=lineage_key
+        )
         if prompt_ids is None:
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
@@ -136,6 +142,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        *,
+        lineage_key: str | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -163,7 +171,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         async def find_largest_prefix_match() -> tuple[list[int], bool, int] | None:
             """Scan trajectory backwards for the step whose messages form the
             longest prefix of prompt_messages. Returns
-            (token_ids, is_truncated, prefix_len) or None."""
+            (token_ids, is_truncated, prefix_len) or None.
+
+            When ``lineage_key`` is provided, only steps whose
+            ``extras["member_id"]`` matches are considered. This keeps
+            per-speaker prefix caches from colliding in multi-agent
+            rollouts where speakers' prompts share a dataset prefix but
+            diverge in history."""
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
@@ -171,6 +185,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue
+                if lineage_key is not None:
+                    extras = step.get("extras") or {}
+                    if extras.get("member_id") != lineage_key:
+                        continue
                 step_messages = cast(Any, [*step["prompt"], *step["completion"]])
                 step_prompt_messages, _ = await self.to_native_prompt(step_messages)
                 normalized_step_messages = normalize_for_comparison(
