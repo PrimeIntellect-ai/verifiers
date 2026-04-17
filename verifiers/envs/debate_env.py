@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.debate.fields import EnumScoring
 from verifiers.envs.debate.parsing import extract_fields
@@ -128,6 +127,26 @@ class DebateEnv(MultiAgentEnv):
 
     # -- visibility policy ---------------------------------------------------
 
+    def _render_opponent_message(
+        self, utt: Utterance, viewer_id: str, viewer_role: str
+    ) -> dict[str, str]:
+        """Render one opponent utterance as a user message for ``viewer_id``.
+
+        Selects raw vs. public channel per visibility_policy and wraps with
+        speaker attribution. Shared by ``build_prompt`` and ``_format_history``.
+        """
+        vis = self.visibility_policy(utt, viewer_id)
+        content = utt.raw_content if vis == "full" else utt.public_channel
+        speaker_role = self.role_for_member(utt.member_id)
+        content = self.prompts.wrap_opponent(
+            utt.phase,
+            content,
+            member_id=utt.member_id,
+            role_id=speaker_role,
+            viewer_role=viewer_role,
+        )
+        return {"role": "user", "content": content}
+
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         if utt.member_id == viewer_id:
             return "full"
@@ -217,17 +236,7 @@ class DebateEnv(MultiAgentEnv):
                 msgs.append({"role": "assistant", "content": utt.raw_content})
                 own_round_so_far += 1
             else:
-                vis = self.visibility_policy(utt, member_id)
-                content = utt.raw_content if vis == "full" else utt.public_channel
-                speaker_role = self.role_for_member(utt.member_id)
-                content = self.prompts.wrap_opponent(
-                    utt.phase,
-                    content,
-                    member_id=utt.member_id,
-                    role_id=speaker_role,
-                    viewer_role=viewer_role,
-                )
-                msgs.append({"role": "user", "content": content})
+                msgs.append(self._render_opponent_message(utt, member_id, viewer_role))
 
         instruction = self.prompts.render_instruction(role, slot.phase, ctx_current)
         if instruction:
@@ -253,18 +262,8 @@ class DebateEnv(MultiAgentEnv):
         for utt in kernel_state.transcript:
             if utt.member_id == viewer_id:
                 msgs.append({"role": "assistant", "content": utt.raw_content})
-                continue
-            vis = self.visibility_policy(utt, viewer_id)
-            content = utt.raw_content if vis == "full" else utt.public_channel
-            speaker_role = self.role_for_member(utt.member_id)
-            content = self.prompts.wrap_opponent(
-                utt.phase,
-                content,
-                member_id=utt.member_id,
-                role_id=speaker_role,
-                viewer_role=viewer_role,
-            )
-            msgs.append({"role": "user", "content": content})
+            else:
+                msgs.append(self._render_opponent_message(utt, viewer_id, viewer_role))
         return msgs
 
     # -- field extraction ----------------------------------------------------
@@ -296,10 +295,9 @@ class DebateEnv(MultiAgentEnv):
     # -- completion rendering ------------------------------------------------
 
     async def render_completion(self, state: State) -> None:
-        completion_msgs: list[dict[str, Any]] = []
-        for step in state["trajectory"]:
-            completion_msgs.extend(step["completion"])
-        state["completion"] = completion_msgs
+        state["completion"] = [
+            msg for step in state["trajectory"] for msg in step["completion"]
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -309,13 +307,11 @@ class DebateEnv(MultiAgentEnv):
 
 def _extract_question(state: State) -> str:
     """Extract the question text from ``state['prompt']`` (dataset messages)."""
-    prompt = state.get("prompt")
-    if prompt:
-        for msg in prompt:
-            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-            role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-            if role == "user" and content:
-                return content
+    for msg in state.get("prompt") or []:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        if role == "user" and content:
+            return content
     return ""
 
 
