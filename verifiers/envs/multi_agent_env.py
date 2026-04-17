@@ -165,6 +165,22 @@ class MultiAgentEnv(vf.Environment):
         """Map member_id → role_id. Default: identity."""
         return member_id
 
+    # -- prompt preparation --------------------------------------------------
+
+    async def _prepare_prompt(
+        self, state: State, actor: str, slot: TurnSlot
+    ) -> Messages:
+        """Subclass build_prompt → fold consecutive users → normalize.
+
+        Fold before normalization: collapses consecutive user runs into
+        single messages so chat-template rendering stays in-distribution
+        AND so the token-stitch tail reduces to a _is_valid_env_tail-
+        accepted shape (single trailing user, no (user,user) pairs).
+        """
+        prompt = await self.build_prompt(state, actor, slot)
+        prompt = fold_consecutive_user_messages(prompt)
+        return maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
+
     # -- stop conditions (priority-ordered) ----------------------------------
 
     @vf.stop(priority=100)
@@ -222,13 +238,7 @@ class MultiAgentEnv(vf.Environment):
         self, state: State, slot: TurnSlot
     ) -> None:
         actor = slot.actors[0]
-        prompt = await self.build_prompt(state, actor, slot)
-        # Fold before normalization: collapses consecutive user runs into
-        # single messages so chat-template rendering stays in-distribution
-        # AND so the token-stitch tail reduces to a _is_valid_env_tail-
-        # accepted shape (single trailing user, no (user,user) pairs).
-        prompt = fold_consecutive_user_messages(prompt)
-        prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
+        prompt = await self._prepare_prompt(state, actor, slot)
         actor_client, actor_model = self.resolve_actor(actor)
         state["_lineage_key"] = actor
         response = await self.get_model_response(
@@ -244,7 +254,8 @@ class MultiAgentEnv(vf.Environment):
         state["_kernel"] = result.new_state
         utt = result.committed[0]
         fields = await self.extract_fields(utt.public_channel, actor, slot)
-        await self._append_step(state, prompt, response, utt, fields)
+        step = await self._build_step(state, prompt, response, utt, fields)
+        state["trajectory"].append(step)
         await self.on_step_committed(state, utt, fields)
 
     @final
@@ -272,15 +283,7 @@ class MultiAgentEnv(vf.Environment):
              writes and they're both non-await: if we reach phase 4, the
              slot succeeds atomically.
         """
-        prompts = [
-            maybe_normalize_messages(
-                fold_consecutive_user_messages(
-                    await self.build_prompt(state, a, slot)
-                ),
-                field_name="multi_agent_prompt",
-            )
-            for a in slot.actors
-        ]
+        prompts = [await self._prepare_prompt(state, a, slot) for a in slot.actors]
         overrides = [self.resolve_actor(a) for a in slot.actors]
 
         # Per-actor state views isolate ``_lineage_key`` across concurrent
@@ -308,23 +311,18 @@ class MultiAgentEnv(vf.Environment):
                 s, p, client=o[0], model=o[1]
             )
 
+        # OverlongPromptError listed first so it's handled before the
+        # broader vf.Error branch (it's a vf.Error subclass); both branches
+        # re-raise the first exception after logging any suppressed peers.
         try:
             async with asyncio.TaskGroup() as tg:
                 for i in range(len(slot.actors)):
                     tg.create_task(_run_one(i))
         except* vf.OverlongPromptError as eg:
-            if len(eg.exceptions) > 1:
-                _log.warning(
-                    "simultaneous-slot %d suppressed peer exceptions: %r",
-                    slot.slot_id, eg.exceptions[1:],
-                )
+            _log_suppressed_peers(slot.slot_id, eg.exceptions)
             raise eg.exceptions[0]
         except* vf.Error as eg:
-            if len(eg.exceptions) > 1:
-                _log.warning(
-                    "simultaneous-slot %d suppressed peer exceptions: %r",
-                    slot.slot_id, eg.exceptions[1:],
-                )
+            _log_suppressed_peers(slot.slot_id, eg.exceptions)
             raise eg.exceptions[0]
 
         # Phase 2: stage the fold into a LOCAL kernel + build trajectory
@@ -379,9 +377,9 @@ class MultiAgentEnv(vf.Environment):
     ) -> TrajectoryStep:
         """Build a TrajectoryStep without mutating state.
 
-        Separated from ``_append_step`` so the simultaneous-slot atomic
-        staging phase can construct every step (async: token parsing) and
-        bail cleanly if any one raises, leaving state untouched.
+        State is only mutated by the caller's ``trajectory.append``; the
+        simultaneous-slot atomic staging phase constructs every step first
+        (async: token parsing) and bails cleanly if any one raises.
         """
         completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)
@@ -408,19 +406,15 @@ class MultiAgentEnv(vf.Environment):
             extras=extras,
         )
 
-    async def _append_step(
-        self,
-        state: State,
-        prompt: Messages,
-        response: Response,
-        utt: Utterance,
-        fields: dict[str, Any] | None,
-    ) -> None:
-        step = await self._build_step(state, prompt, response, utt, fields)
-        state["trajectory"].append(step)
-
-
 def _completion_token_count(response: Response) -> int:
     if response.message.tokens and response.message.tokens.completion_ids:
         return len(response.message.tokens.completion_ids)
     return 0
+
+
+def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -> None:
+    if len(exceptions) > 1:
+        _log.warning(
+            "simultaneous-slot %d suppressed peer exceptions: %r",
+            slot_id, exceptions[1:],
+        )
