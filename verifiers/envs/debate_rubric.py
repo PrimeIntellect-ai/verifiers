@@ -350,8 +350,6 @@ class DebateRubric(MultiAgentRubric):
         state["error_info"] = {"error_type": error_type, "error_phase": error_phase}
         state["commits"] = {}
         state["member_rewards"] = {m: 0.0 for m in self.members}
-        state["member_metrics"] = {m: {} for m in self.members}
-        state["episode_metrics"] = {"errored_rollout": 1.0}
 
     async def score_rollout(self, state: State) -> None:
         # Short-circuit on rollouts the rollout loop already marked broken
@@ -396,15 +394,11 @@ class DebateRubric(MultiAgentRubric):
         truth KeyError propagation."""
         roles, answers, answer_specs, failed_members = self._extract_debate_state(state)
         question = _extract_question(state)
+        # ``metrics`` is the wandb logging channel — orchestrator aggregates
+        # it via pandas. ``member_rewards`` is the bridge channel — reads
+        # per-member reward without string-matching ``reward/{mid}``.
         metrics: dict[str, float] = {}
-        # Structured dual-write (MultiAgentRubric contract). During migration
-        # we populate both the flat `metrics` dict (legacy string-keyed) and
-        # these three structured dicts. Bridge prefers structured, falls back
-        # to flat. TODO(phase-4-followup): drop flat writes once Phase 5 lands
-        # and the bridge's legacy fallback path is removed.
         member_rewards: dict[str, float] = {}
-        member_metrics: dict[str, dict[str, float]] = {m: {} for m in self.members}
-        episode_metrics: dict[str, float] = {}
 
         # W: winner
         winning_role = self.outcome_fn(state)
@@ -455,7 +449,6 @@ class DebateRubric(MultiAgentRubric):
                 if s.get("extras", {}).get("member_id") == mid
             )
             metrics[f"turns/{mid}"] = float(turns)
-            member_metrics[mid]["turns"] = float(turns)
 
         # G: accuracy (per-member; gated on YAML declaring answer fields for
         # that member's role). extraction_failed/{mid} disambiguates
@@ -480,11 +473,8 @@ class DebateRubric(MultiAgentRubric):
                     acc = 1.0 if correct else 0.0
                     metrics[f"accuracy/{mid}"] = acc
                     metrics[f"extraction_failed/{mid}"] = 0.0
-                    member_metrics[mid]["accuracy"] = acc
-                    member_metrics[mid]["extraction_failed"] = 0.0
                 elif mid in failed_members:
                     metrics[f"extraction_failed/{mid}"] = 1.0
-                    member_metrics[mid]["extraction_failed"] = 1.0
 
         # Flip diagnostics (eval-only; no training reward path touches these)
         # Per member, walk all commits, grade first and last against GT, count
@@ -499,8 +489,6 @@ class DebateRubric(MultiAgentRubric):
             num_unique = len(set(seq))
             metrics[f"num_commits/{mid}"] = float(num_commits)
             metrics[f"num_unique_commits/{mid}"] = float(num_unique)
-            member_metrics[mid]["commits"] = float(num_commits)
-            member_metrics[mid]["num_unique_commits"] = float(num_unique)
 
             if not seq or not target:
                 continue
@@ -512,7 +500,6 @@ class DebateRubric(MultiAgentRubric):
                 continue
             spec = answer_specs.get(mid)
             metrics[f"final_correct/{mid}"] = final_correct
-            member_metrics[mid]["final_correct"] = final_correct
             # initial_correct needs a separate grade only if seq[0] differs
             # from the canonical (latest) answer.
             canonical = answers.get(mid)
@@ -524,7 +511,6 @@ class DebateRubric(MultiAgentRubric):
                 )
                 init_val = 1.0 if initial_correct else 0.0
             metrics[f"initial_correct/{mid}"] = init_val
-            member_metrics[mid]["initial_correct"] = init_val
 
         # M: agreement (conditional on 2+ debater answers)
         debater_answers = [
@@ -537,9 +523,7 @@ class DebateRubric(MultiAgentRubric):
             b_mid, b_ans = debater_answers[1]
             spec = answer_specs.get(a_mid) or answer_specs.get(b_mid)
             same = await self._match(a_ans, b_ans, question, spec, state)
-            agreement = 1.0 if same else 0.0
-            metrics["agreement"] = agreement
-            episode_metrics["agreement"] = agreement
+            metrics["agreement"] = 1.0 if same else 0.0
 
         # Winner index
         if winning_role is not None:
@@ -554,12 +538,9 @@ class DebateRubric(MultiAgentRubric):
         else:
             winner_val = -1.0
         metrics["winner"] = winner_val
-        episode_metrics["winner"] = winner_val
 
         state["metrics"] = metrics
         state["member_rewards"] = member_rewards
-        state["member_metrics"] = member_metrics
-        state["episode_metrics"] = episode_metrics
 
     async def score_group(self, states: list[State]) -> None:
         # score_rollout captures vf.Error onto state["error"] itself (never
