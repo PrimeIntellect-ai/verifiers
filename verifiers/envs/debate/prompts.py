@@ -310,37 +310,47 @@ def resolve_prompts(ref: str) -> DebatePrompts:
 # silently broken and the stitcher can no longer reuse the prior prefix.
 # User/instruction blocks are allowed to reference these (they live at the
 # tail, not the prefix).
-_PER_TURN_VARS = (
-    "round_index",
-    "phase",
-    "is_opening_round",
-    "is_last_round",
-    "slot_id",
-    "member_id",
-)
-_PER_TURN_VAR_RE = re.compile(
-    r"\{\{\s*(?:" + "|".join(_PER_TURN_VARS) + r")\b"
+_PER_TURN_VARS = frozenset(
+    {
+        "round_index",
+        "num_rounds",
+        "phase",
+        "is_first_round",
+        "is_last_round",
+        "slot_id",
+        "member_id",
+    }
 )
 
 
 def _reject_per_turn_vars(template: str, *, where: str) -> None:
-    """Scan a template for direct per-turn variable references.
+    """AST-scan a Jinja template for per-turn variable references.
 
-    Catches ``{{ round_index }}``-style expression tags. Does NOT catch
-    indirect references (``{{ data[round_index] }}``), statement tags
-    (``{% if phase == 'open' %}``), or macro-scoped evasions. This is a
-    helpful-error-message layer for common author mistakes; the hard
-    correctness boundary is the runtime monotonic-prefix test, not this
-    regex.
+    Walks the parsed AST and rejects ANY reference — expression tag
+    (``{{ round_index }}``), statement tag (``{% if is_last_round %}``),
+    attribute access (``{{ ctx.round_index }}``), index access
+    (``{{ data[round_index] }}``), set directive (``{% set r =
+    round_index %}``) — to any name in ``_PER_TURN_VARS``.
+
+    The hard correctness boundary is the runtime monotonic-prefix test;
+    this scan is a load-time author-facing guard that catches the
+    common mistake early with a diagnostic message.
     """
-    match = _PER_TURN_VAR_RE.search(template)
-    if match is not None:
-        raise ValueError(
-            f"{where}: template references per-turn variable "
-            f"{match.group(0)!r}. System and question blocks render once "
-            "per slot and must be turn-invariant so the prompt prefix is "
-            "stable across slots. Move per-turn content to the 'user' block."
-        )
+    try:
+        ast = _jinja_env.parse(template)
+    except jinja2.TemplateSyntaxError:
+        # Syntax errors surface later when render is called; not our
+        # concern here.
+        return
+    for node in ast.find_all(jinja2.nodes.Name):
+        if node.name in _PER_TURN_VARS:
+            raise ValueError(
+                f"{where}: template references per-turn variable "
+                f"{node.name!r}. System and question blocks render once "
+                "per slot and must be turn-invariant so the prompt "
+                "prefix is stable across slots. Move per-turn content "
+                "to the 'user' block."
+            )
 
 
 def _validate(d: dict) -> None:

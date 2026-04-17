@@ -107,6 +107,25 @@ class DebateEnv(MultiAgentEnv):
     def role_for_member(self, member_id: str) -> str:
         return self._role_for_actor.get(member_id, member_id)
 
+    def _member_round_count(self, member_id: str) -> int:
+        """Count schedule slots where ``member_id`` participates as actor.
+
+        Correct under:
+          - sequential schedules (one actor per slot) — gives slots/N.
+          - simultaneous schedules (N actors per slot) — gives per-member
+            slot count, not the full slot count.
+          - judge-inclusive schedules where a member (e.g. judge) appears
+            in fewer slots than debaters.
+        Falls back to 1 for dynamic (non-iterable) schedules; construction-
+        time cross-check rejects mismatch between members and schedule
+        actor set for the static case.
+        """
+        slots = getattr(self.schedule, "_slots", None)
+        if slots is None:
+            return 1
+        count = sum(1 for slot in slots if member_id in slot.actors)
+        return max(count, 1)
+
     # -- visibility policy ---------------------------------------------------
 
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
@@ -144,11 +163,15 @@ class DebateEnv(MultiAgentEnv):
         role = self.role_for_member(member_id)
         question = _extract_question(state)
 
-        num_slots = (
-            len(self.schedule) if hasattr(self.schedule, "__len__") else 0
-        )
-        num_actors = max(len(self.members), 1)
-        num_rounds = max(num_slots // num_actors, 1)
+        # Per-member num_rounds: count slots where this member participates
+        # as an actor. Independent of global slot count so simultaneous
+        # schedules (N actors in 1 slot) and judge-inclusive schedules (one
+        # member participates in fewer slots) both give correct
+        # is_first_round / is_last_round flags. For schedules that don't
+        # expose slot iteration (dynamic), fall back to 1 — the static
+        # check above already rejects that case at construction for non-
+        # dynamic schedules.
+        num_rounds = self._member_round_count(member_id)
 
         def _ctx_for(round_idx: int, phase: str) -> dict[str, Any]:
             return build_context(
