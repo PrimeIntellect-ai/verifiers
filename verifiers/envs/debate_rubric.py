@@ -15,6 +15,7 @@ from verifiers.envs.debate.prompts import (
 )
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.judge_rubric import JudgeRubric
+from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
 from verifiers.types import State
 
 OutcomeFn = Callable[[State], str | None]
@@ -57,7 +58,7 @@ def any_field_needs_open_ended(
     return False
 
 
-class DebateRubric(vf.Rubric):
+class DebateRubric(MultiAgentRubric):
     """Scores a debate via three concerns:
 
     - **W (Winner)**: judge decision -> per-member + episode reward
@@ -361,6 +362,9 @@ class DebateRubric(vf.Rubric):
                 "error_phase": "rollout",
             }
             state["commits"] = {}
+            state["member_rewards"] = {m: 0.0 for m in self.members}
+            state["member_metrics"] = {m: {} for m in self.members}
+            state["episode_metrics"] = {"errored_rollout": 1.0}
             return
 
         try:
@@ -388,6 +392,9 @@ class DebateRubric(vf.Rubric):
                 "error_phase": "scoring",
             }
             state["commits"] = {}
+            state["member_rewards"] = {m: 0.0 for m in self.members}
+            state["member_metrics"] = {m: {} for m in self.members}
+            state["episode_metrics"] = {"errored_rollout": 1.0}
             return
 
     async def _score_rollout_body(self, state: State, target: Any) -> None:
@@ -398,6 +405,13 @@ class DebateRubric(vf.Rubric):
         roles, answers, answer_specs, failed_members = self._extract_debate_state(state)
         question = _extract_question(state)
         metrics: dict[str, float] = {}
+        # Structured dual-write (MultiAgentRubric contract). During migration
+        # we populate both the flat `metrics` dict (legacy string-keyed) and
+        # these three structured dicts. Bridge prefers structured, falls back
+        # to flat. Flat writes go away in a follow-up.
+        member_rewards: dict[str, float] = {}
+        member_metrics: dict[str, dict[str, float]] = {m: {} for m in self.members}
+        episode_metrics: dict[str, float] = {}
 
         # W: winner
         winning_role = self.outcome_fn(state)
@@ -437,17 +451,18 @@ class DebateRubric(vf.Rubric):
         for mid in self.members:
             role = roles.get(mid, mid)
             if winning_role is not None:
-                metrics[f"reward/{mid}"] = 1.0 if role == winning_role else 0.0
+                r = 1.0 if role == winning_role else 0.0
             else:
-                metrics[f"reward/{mid}"] = (
-                    state["reward"] if mid == truth_member else 0.0
-                )
+                r = state["reward"] if mid == truth_member else 0.0
+            metrics[f"reward/{mid}"] = r
+            member_rewards[mid] = r
             turns = sum(
                 1
                 for s in state.get("trajectory", [])
                 if s.get("extras", {}).get("member_id") == mid
             )
             metrics[f"turns/{mid}"] = float(turns)
+            member_metrics[mid]["turns"] = float(turns)
 
         # G: accuracy (per-member; gated on YAML declaring answer fields for
         # that member's role). extraction_failed/{mid} disambiguates
@@ -469,10 +484,14 @@ class DebateRubric(vf.Rubric):
                     correct = await self._grade(
                         answers[mid], target, question, answer_specs.get(mid), state
                     )
-                    metrics[f"accuracy/{mid}"] = 1.0 if correct else 0.0
+                    acc = 1.0 if correct else 0.0
+                    metrics[f"accuracy/{mid}"] = acc
                     metrics[f"extraction_failed/{mid}"] = 0.0
+                    member_metrics[mid]["accuracy"] = acc
+                    member_metrics[mid]["extraction_failed"] = 0.0
                 elif mid in failed_members:
                     metrics[f"extraction_failed/{mid}"] = 1.0
+                    member_metrics[mid]["extraction_failed"] = 1.0
 
         # Flip diagnostics (eval-only; no training reward path touches these)
         # Per member, walk all commits, grade first and last against GT, count
@@ -487,6 +506,8 @@ class DebateRubric(vf.Rubric):
             num_unique = len(set(seq))
             metrics[f"num_commits/{mid}"] = float(num_commits)
             metrics[f"num_unique_commits/{mid}"] = float(num_unique)
+            member_metrics[mid]["commits"] = float(num_commits)
+            member_metrics[mid]["num_unique_commits"] = float(num_unique)
 
             if not seq or not target:
                 continue
@@ -498,18 +519,19 @@ class DebateRubric(vf.Rubric):
                 continue
             spec = answer_specs.get(mid)
             metrics[f"final_correct/{mid}"] = final_correct
+            member_metrics[mid]["final_correct"] = final_correct
             # initial_correct needs a separate grade only if seq[0] differs
             # from the canonical (latest) answer.
             canonical = answers.get(mid)
             if seq[0] == canonical:
-                metrics[f"initial_correct/{mid}"] = final_correct
+                init_val = final_correct
             else:
                 initial_correct = await self._grade(
                     seq[0], target, question, spec, state
                 )
-                metrics[f"initial_correct/{mid}"] = (
-                    1.0 if initial_correct else 0.0
-                )
+                init_val = 1.0 if initial_correct else 0.0
+            metrics[f"initial_correct/{mid}"] = init_val
+            member_metrics[mid]["initial_correct"] = init_val
 
         # M: agreement (conditional on 2+ debater answers)
         debater_answers = [
@@ -522,22 +544,29 @@ class DebateRubric(vf.Rubric):
             b_mid, b_ans = debater_answers[1]
             spec = answer_specs.get(a_mid) or answer_specs.get(b_mid)
             same = await self._match(a_ans, b_ans, question, spec, state)
-            metrics["agreement"] = 1.0 if same else 0.0
+            agreement = 1.0 if same else 0.0
+            metrics["agreement"] = agreement
+            episode_metrics["agreement"] = agreement
 
         # Winner index
         if winning_role is not None:
             winner_member = next(
                 (m for m in self.members if roles.get(m) == winning_role), None
             )
-            metrics["winner"] = (
+            winner_val = (
                 float(self.members.index(winner_member))
                 if winner_member
                 else -1.0
             )
         else:
-            metrics["winner"] = -1.0
+            winner_val = -1.0
+        metrics["winner"] = winner_val
+        episode_metrics["winner"] = winner_val
 
         state["metrics"] = metrics
+        state["member_rewards"] = member_rewards
+        state["member_metrics"] = member_metrics
+        state["episode_metrics"] = episode_metrics
 
     async def score_group(self, states: list[State]) -> None:
         # score_rollout captures vf.Error onto state["error"] itself (never
