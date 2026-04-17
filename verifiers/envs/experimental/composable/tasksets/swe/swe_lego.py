@@ -364,16 +364,21 @@ class SWELegoTaskSet(SandboxTaskSet):
         return SWELegoRubric(self)
 
     async def validate_instance(self, state) -> bool:
-        """Apply gold patch, run tests, and check if reward > 0."""
+        """Apply gold patch, run tests, and check if reward > 0.
+
+        Exceptions propagate to the caller (``TaskSet.validate``) so that
+        ``CommandTimeoutError`` / ``vf.InfraError`` / gold-apply failures
+        can be classified correctly by their type instead of being flattened
+        into ``test_failed``. Agent rollouts use ``SWELegoRubric.solved``
+        (not this method), which keeps its own try/except so a transient
+        failure still scores 0 rather than crashing the rollout.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        try:
-            await self._apply_gold_patch(sandbox_client, sandbox_id, state)
-            test_output = await self._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
-            )
-            state["test_output"] = test_output
-            info = state.get("info") or {}
-            return self._calculate_reward(test_output, info) > 0
-        except Exception:
-            return False
+        await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        test_output = await self._run_tests(
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+        )
+        state["test_output"] = test_output
+        info = state.get("info") or {}
+        return self._calculate_reward(test_output, info) > 0
