@@ -229,7 +229,7 @@ class TrajectoryStep(TypedDict):
 
 class BaseRolloutInput(TypedDict):
     prompt: Messages
-    example_id: int
+    example_id: int | str
     task: str
 
 
@@ -268,7 +268,7 @@ class RolloutOutput(dict):
     """
 
     # Required fields
-    example_id: int
+    example_id: int | str
     task: str
     prompt: Messages | None
     completion: Messages | None

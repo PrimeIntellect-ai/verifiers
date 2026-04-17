@@ -33,9 +33,10 @@ def format_dataset(
     """
     Create `example_id` and `prompt` columns if not present.
     """
-    # if "id" column is present and not int, rename it to "src_id"
+    # example_id may be int or str (e.g., HuggingFace dataset UIDs). Anything
+    # else gets relocated to src_id and we generate an integer default below.
     if "example_id" in dataset.column_names and not isinstance(
-        dataset["example_id"][0], int
+        dataset["example_id"][0], (int, str)
     ):
         dataset = dataset.rename_column("example_id", "src_id")
     if "example_id" not in dataset.column_names:
