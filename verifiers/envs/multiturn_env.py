@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import time
 from abc import abstractmethod
+from contextlib import suppress
 from typing import final
 
 import verifiers as vf
@@ -35,9 +37,15 @@ class MultiTurnMonitorRubric(vf.Rubric):
 
 
 class MultiTurnEnv(vf.Environment):
-    def __init__(self, max_turns: int = -1, **kwargs):
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.timeout_seconds = timeout_seconds
         self.max_total_completion_tokens: int = -1
 
         self.add_rubric(MultiTurnMonitorRubric())
@@ -66,6 +74,15 @@ class MultiTurnEnv(vf.Environment):
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
+
+    @vf.stop
+    async def timeout_reached(self, state: State) -> bool:
+        if self.timeout_seconds is None:
+            return False
+        if time.time() - state["timing"]["start_time"] <= self.timeout_seconds:
+            return False
+        state["timed_out"] = True
+        return True
 
     @vf.stop
     async def max_total_completion_tokens_reached(self, state: State) -> bool:
@@ -151,7 +168,11 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
-        try:
+        rollout_task: asyncio.Task[State] | None = None
+
+        async def run_rollout_loop() -> State:
+            nonlocal state
+
             try:
                 state = await self.setup_state(state)
             except vf.Error as e:
@@ -175,6 +196,32 @@ class MultiTurnEnv(vf.Environment):
                         state["error"] = e
             await self.render_completion(state)
             return state
+
+        try:
+            if self.timeout_seconds is None:
+                return await run_rollout_loop()
+
+            rollout_task = asyncio.create_task(run_rollout_loop())
+            done, _ = await asyncio.wait({rollout_task}, timeout=self.timeout_seconds)
+            if rollout_task in done:
+                return await rollout_task
+
+            rollout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await rollout_task
+
+            state["timed_out"] = True
+            state["is_completed"] = True
+            state["is_truncated"] = True
+            state["stop_condition"] = "timeout_reached"
+            await self._render_timing(state)
+            await self._cleanup(state)
+            await self.render_completion(state)
+            return state
         except asyncio.CancelledError:
+            if rollout_task is not None and not rollout_task.done():
+                rollout_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await rollout_task
             await self._cleanup(state)
             raise

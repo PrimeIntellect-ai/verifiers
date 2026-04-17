@@ -230,6 +230,20 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     assert "temperature" not in sa
 
 
+def test_cli_extra_env_kwargs_support_timeout_seconds(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
+        },
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {
+        "timeout_seconds": 30,
+        "foo": "bar",
+    }
+
+
 def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
@@ -870,6 +884,17 @@ def test_load_toml_config_global_values_with_per_eval_override():
     assert result[1]["env_id"] == "env2"
     assert result[1]["model"] == "gpt-5"  # still inherits global
     assert result[1]["num_examples"] == 50  # per-eval override
+
+
+def test_load_toml_config_with_extra_env_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nenv_id = "env1"\n[eval.extra_env_kwargs]\ntimeout_seconds = 600\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["extra_env_kwargs"] == {"timeout_seconds": 600}
 
 
 def test_load_toml_config_invalid_global_field():

@@ -269,6 +269,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     def get_sandbox_resources(self, state: State) -> dict[str, Any]:
         """Get sandbox resource allocation. Override for per-instance resources."""
+        timeout_seconds = self.timeout_seconds
+        if timeout_seconds is None:
+            timeout_seconds = 0.0
         return {
             "cpu_cores": self.cpu_cores,
             "memory_gb": self.memory_gb,
@@ -276,7 +279,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "gpu_count": self.gpu_count,
             "gpu_type": None,
             "vm": self.gpu_count > 0,
-            "timeout_minutes": math.ceil(self.timeout_seconds / 60),
+            "timeout_minutes": math.ceil(timeout_seconds / 60),
         }
 
     # Keys set by build_env_vars that subclasses must not override.
