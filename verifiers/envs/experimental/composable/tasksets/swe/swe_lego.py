@@ -37,7 +37,16 @@ def _process_example(x: dict) -> dict:
 
 
 def _build_eval_script(fail_to_pass: list[str], pass_to_pass: list[str]) -> str:
-    """Construct a bash eval script from FAIL_TO_PASS and PASS_TO_PASS test lists."""
+    """Construct a bash eval script from FAIL_TO_PASS and PASS_TO_PASS test lists.
+
+    Raises ValueError if both lists are empty — scoring an instance with no
+    tests would silently produce reward=1.0 regardless of agent behavior.
+    """
+    if not fail_to_pass and not pass_to_pass:
+        raise ValueError(
+            "Both FAIL_TO_PASS and PASS_TO_PASS are empty — no tests to score."
+        )
+
     f2p_args = " ".join(shlex.quote(t) for t in fail_to_pass) if fail_to_pass else ""
     p2p_args = " ".join(shlex.quote(t) for t in pass_to_pass) if pass_to_pass else ""
 
@@ -261,6 +270,12 @@ class SWELegoTaskSet(SandboxTaskSet):
         info = state["info"]
         fail_to_pass: list[str] = info.get("FAIL_TO_PASS") or []
         pass_to_pass: list[str] = info.get("PASS_TO_PASS") or []
+
+        if not fail_to_pass and not pass_to_pass:
+            logger.warning(
+                f"[{sandbox_id}] No tests to run: FAIL_TO_PASS and PASS_TO_PASS both empty"
+            )
+            return "ERROR: no tests to score (FAIL_TO_PASS and PASS_TO_PASS both empty)"
 
         eval_script = _build_eval_script(fail_to_pass, pass_to_pass)
 
