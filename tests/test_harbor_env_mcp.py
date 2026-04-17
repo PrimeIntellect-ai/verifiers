@@ -99,6 +99,34 @@ class TestURLHelpers:
         s = HarborMCPServer(name="svc", transport="stdio", command="x")
         assert mcp_agent_url(s) is None
 
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            # Basic userinfo survives the host rewrite.
+            (
+                "http://user:pass@svc:8000/mcp",
+                "http://user:pass@127.0.0.1:8000/mcp",
+            ),
+            # Username only (no password).
+            ("http://user@svc:8000/mcp", "http://user@127.0.0.1:8000/mcp"),
+            # Percent-encoded userinfo is preserved byte-for-byte — notice the
+            # `@` inside the encoded password that would trip a naive split.
+            (
+                "http://user:p%40ss@svc:8000/mcp",
+                "http://user:p%40ss@127.0.0.1:8000/mcp",
+            ),
+            # Query strings + userinfo.
+            (
+                "http://u:p@svc:8000/mcp?x=1&y=2",
+                "http://u:p@127.0.0.1:8000/mcp?x=1&y=2",
+            ),
+        ],
+    )
+    def test_mcp_agent_url_preserves_basic_auth_userinfo(self, url: str, expected: str):
+        """Dropping `user:pass@` would silently break auth-bearing MCP URLs."""
+        s = HarborMCPServer(name="svc", transport="streamable-http", url=url)
+        assert mcp_agent_url(s) == expected
+
 
 class TestHarborValidation:
     """Mirrors `harbor.models.task.config.MCPServerConfig.validate_transport_fields`."""
@@ -338,9 +366,15 @@ class TestBackgroundJob:
                 stderr="ImportError: missing widget",
             )
         )
-        env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(exit_code=1, stdout="")
-        )
+
+        # /etc/hosts patch (run before probing) must succeed; only the
+        # healthcheck probe should fail.
+        def _exec(sbx, command, **kwargs):
+            if "/etc/hosts" in command:
+                return MagicMock(exit_code=0, stdout="")
+            return MagicMock(exit_code=1, stdout="")
+
+        env.sandbox_client.execute_command = AsyncMock(side_effect=_exec)
         env.mcp_healthcheck = HarborMCPHealthcheck(
             retries=5, interval_sec=0.0, timeout_sec=1.0
         )
@@ -475,9 +509,14 @@ class TestHarborHealthcheckSemantics:
             start_period_sec=0.0,
             timeout_sec=1.0,
         )
-        env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(exit_code=1)
-        )
+
+        # Only the probe should fail — keep the /etc/hosts patch succeeding.
+        def _exec(sbx, command, **kwargs):
+            if "/etc/hosts" in command:
+                return MagicMock(exit_code=0)
+            return MagicMock(exit_code=1)
+
+        env.sandbox_client.execute_command = AsyncMock(side_effect=_exec)
 
         with pytest.raises(vf.SandboxError, match="after 2 consecutive retries"):
             await env.start_mcp_servers("sbx", _config_with_server(), {})
@@ -654,3 +693,23 @@ class TestEtcHosts:
         assert len(etc_hosts_cmds) == 1
         assert "local-svc" in etc_hosts_cmds[0]
         assert "mcp.example.com" not in etc_hosts_cmds[0]
+
+    @pytest.mark.asyncio
+    async def test_raises_setup_error_when_etc_hosts_write_fails(self):
+        """Non-root image / read-only /etc makes `echo >> /etc/hosts` fail.
+        We must surface that immediately, not let the daemon "come up healthy"
+        on 127.0.0.1 while the agent has no way to resolve the hostname."""
+        import verifiers as vf
+
+        env = _DummyEnv(mcp_launch_commands={"svc": "cmd"})
+        # /etc/hosts write fails with a classic Permission denied.
+        env.sandbox_client.execute_command = AsyncMock(
+            return_value=MagicMock(
+                exit_code=1, stderr="bash: /etc/hosts: Permission denied"
+            )
+        )
+
+        with pytest.raises(vf.SandboxError, match="Failed to alias MCP hostnames"):
+            await env.start_mcp_servers("sbx", _config_with_server(), {})
+        # Critically, no daemon must be launched after a hosts-patch failure.
+        env.sandbox_client.start_background_job.assert_not_awaited()

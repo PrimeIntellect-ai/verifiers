@@ -100,8 +100,10 @@ def mcp_agent_url(server: HarborMCPServer) -> str | None:
         return None
     parsed = urlparse(server.url)
     port = mcp_url_port(server)
-    netloc = f"127.0.0.1:{port}" if port is not None else "127.0.0.1"
-    return urlunparse(parsed._replace(netloc=netloc))
+    host = f"127.0.0.1:{port}" if port is not None else "127.0.0.1"
+    at_idx = parsed.netloc.rfind("@")
+    userinfo = parsed.netloc[: at_idx + 1] if at_idx >= 0 else ""
+    return urlunparse(parsed._replace(netloc=f"{userinfo}{host}"))
 
 
 class HarborMCPMixin:
@@ -286,9 +288,18 @@ class HarborMCPMixin:
             f"echo {shlex.quote(f'127.0.0.1 {h}')} >> /etc/hosts)"
             for h in sorted(hosts)
         )
-        await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
+        result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
             sandbox_id, statements, working_dir=None
         )
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code != 0:
+            stderr = (getattr(result, "stderr", "") or "").strip()
+            raise vf.SandboxError(
+                f"Failed to alias MCP hostnames {sorted(hosts)} in /etc/hosts "
+                f"(exit_code={exit_code}). The sandbox user likely cannot write "
+                f"to /etc/hosts (non-root image or read-only rootfs). "
+                f"Stderr:\n{stderr}"
+            )
 
     @staticmethod
     def _mcp_pid_file(name: str) -> str:
