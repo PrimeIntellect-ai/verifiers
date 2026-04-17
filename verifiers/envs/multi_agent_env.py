@@ -271,7 +271,7 @@ class MultiAgentEnv(vf.Environment):
         # work is lost — only the lineage read is isolated.
         per_actor_states = []
         for a in slot.actors:
-            s = state.__class__(state) if hasattr(state, "__class__") else dict(state)
+            s = type(state)(state)
             s["_lineage_key"] = a
             per_actor_states.append(s)
 
@@ -280,11 +280,12 @@ class MultiAgentEnv(vf.Environment):
             for s, p, o in zip(per_actor_states, prompts, overrides)
         ])
 
-        # Stage: compute (content, tokens) triples. Parse errors from
-        # parse_channels inside apply_action would break atomicity if
-        # we interleaved commits with gathering — so we let apply_action
-        # run at commit time below and rely on the kernel's all-or-none
-        # simultaneous barrier.
+        # Atomic commit: apply_action runs against a local ``kernel``
+        # variable; state["_kernel"] is only reassigned after every actor
+        # has been folded in successfully. If any apply_action raises,
+        # the local kernel is discarded and state["_kernel"] stays at
+        # its pre-slot snapshot — all-or-none, matching the kernel's
+        # simultaneous-barrier contract.
         kernel = state["_kernel"]
         committed_utts: list[Utterance] = []
         for actor, response in zip(slot.actors, responses):
