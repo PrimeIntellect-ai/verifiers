@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import shlex
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
@@ -590,3 +591,39 @@ async def test_composable_env_no_metrics_when_path_not_set():
 
     # No execute_command calls since no log_path and no metrics_path
     env.sandbox_client.execute_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_composable_env_metrics_command_quotes_untrusted_workdir():
+    class InjectionWorkdirTaskSet(MockSandboxTaskSet):
+        def get_workdir(self, info):
+            return '/tmp/workdir$(echo hacked); rm -rf "/tmp/nope"'
+
+    taskset = InjectionWorkdirTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true", metrics_path="{workdir}/metrics*.json"),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(
+                stdout=json.dumps({"turns": 1}),
+                stderr="",
+                exit_code=0,
+            )
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+    }
+
+    await env.post_rollout(state)
+
+    command = env.sandbox_client.execute_command.await_args.args[1]
+    expected_glob = '/tmp/workdir$(echo hacked); rm -rf "/tmp/nope"/metrics*.json'
+    assert shlex.quote(expected_glob) in command

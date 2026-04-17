@@ -301,11 +301,15 @@ class ComposableEnv(CliAgentEnv):
         info = state.get("info") or {}
         workdir = self.taskset.get_workdir(info)
         metrics_glob = self.harness.metrics_path.format(workdir=workdir)
+        python_snippet = (
+            "import glob, pathlib, sys; "
+            "matches = glob.glob(sys.argv[1]); "
+            "print(pathlib.Path(matches[0]).read_text() if matches else '{}')"
+        )
         try:
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                f"f=$(ls {metrics_glob} 2>/dev/null | head -1) "
-                '&& cat "$f" || echo "{}"',
+                f"python -c {shlex.quote(python_snippet)} {shlex.quote(metrics_glob)}",
                 working_dir=None,
             )
             data = json.loads((result.stdout or "{}").strip())
