@@ -42,7 +42,10 @@ from verifiers.types import (
     State,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import maybe_normalize_messages
+from verifiers.utils.message_utils import (
+    fold_consecutive_user_messages,
+    maybe_normalize_messages,
+)
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -220,6 +223,11 @@ class MultiAgentEnv(vf.Environment):
     ) -> None:
         actor = slot.actors[0]
         prompt = await self.build_prompt(state, actor, slot)
+        # Fold before normalization: collapses consecutive user runs into
+        # single messages so chat-template rendering stays in-distribution
+        # AND so the token-stitch tail reduces to a _is_valid_env_tail-
+        # accepted shape (single trailing user, no (user,user) pairs).
+        prompt = fold_consecutive_user_messages(prompt)
         prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
         actor_client, actor_model = self.resolve_actor(actor)
         state["_lineage_key"] = actor
@@ -266,7 +274,9 @@ class MultiAgentEnv(vf.Environment):
         """
         prompts = [
             maybe_normalize_messages(
-                await self.build_prompt(state, a, slot),
+                fold_consecutive_user_messages(
+                    await self.build_prompt(state, a, slot)
+                ),
                 field_name="multi_agent_prompt",
             )
             for a in slot.actors

@@ -304,6 +304,36 @@ def resolve_prompts(ref: str) -> DebatePrompts:
 # ---------------------------------------------------------------------------
 
 
+# Per-turn template variables that MUST NOT appear in system or question
+# blocks. Those blocks render once per slot and sit in the prompt prefix —
+# if they vary with round/phase/slot, the monotonic-extension invariant is
+# silently broken and the stitcher can no longer reuse the prior prefix.
+# User/instruction blocks are allowed to reference these (they live at the
+# tail, not the prefix).
+_PER_TURN_VARS = (
+    "round_index",
+    "phase",
+    "is_opening_round",
+    "is_last_round",
+    "slot_id",
+    "member_id",
+)
+_PER_TURN_VAR_RE = re.compile(
+    r"\{\{\s*(?:" + "|".join(_PER_TURN_VARS) + r")\b"
+)
+
+
+def _reject_per_turn_vars(template: str, *, where: str) -> None:
+    match = _PER_TURN_VAR_RE.search(template)
+    if match is not None:
+        raise ValueError(
+            f"{where}: template references per-turn variable "
+            f"{match.group(0)!r}. System and question blocks render once "
+            "per slot and must be turn-invariant so the prompt prefix is "
+            "stable across slots. Move per-turn content to the 'user' block."
+        )
+
+
 def _validate(d: dict) -> None:
     if d.get("version") != 2:
         raise ValueError(f"Unsupported prompt version: {d.get('version')} (expected 2)")
@@ -324,14 +354,17 @@ def _validate(d: dict) -> None:
             )
         if not val.strip():
             raise ValueError(f"system.{role}: empty template")
+        _reject_per_turn_vars(val, where=f"system.{role}")
 
     question_block = d.get("question", {})
     for required_role in ("debater_a", "debater_b"):
         if required_role not in question_block:
             raise ValueError(f"question section missing required role '{required_role}'")
-    for role in question_block:
+    for role, val in question_block.items():
         if role not in _ROLE_NAMES:
             raise ValueError(f"Unknown role '{role}' in question")
+        if isinstance(val, str):
+            _reject_per_turn_vars(val, where=f"question.{role}")
 
     # Validate think config
     think_block = d.get("think", {})

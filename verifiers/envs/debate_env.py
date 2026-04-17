@@ -160,7 +160,14 @@ class DebateEnv(MultiAgentEnv):
                 answer=state.get("answer", ""),
             )
 
-        current_round = kernel_state.slot_index // num_actors
+        # Positional round_index: count own commits already in the
+        # transcript. Independent of slot_id values (which may be
+        # sparse/semantic for custom schedules) — the N-th own turn is
+        # always round N.
+        own_commits_so_far = sum(
+            1 for u in kernel_state.transcript if u.member_id == member_id
+        )
+        current_round = own_commits_so_far
         ctx_current = _ctx_for(current_round, slot.phase)
 
         msgs: list[dict[str, str]] = [
@@ -172,19 +179,20 @@ class DebateEnv(MultiAgentEnv):
             msgs.append({"role": "user", "content": q_text})
 
         viewer_role = role
+        # Positional round counter for own turns. Independent of slot_id
+        # arithmetic so sparse / semantic slot_id schemes don't produce
+        # nonsensical round labels in re-rendered past instructions.
+        own_round_so_far = 0
         for utt in kernel_state.transcript:
             if utt.member_id == member_id:
-                # Own turn: re-emit the instruction that preceded it,
-                # then the assistant commit. Re-rendering is deterministic
-                # so this value is stable across calls.
-                utt_round = utt.slot_id // num_actors
-                past_ctx = _ctx_for(utt_round, utt.phase)
+                past_ctx = _ctx_for(own_round_so_far, utt.phase)
                 past_instr = self.prompts.render_instruction(
                     role, utt.phase, past_ctx
                 )
                 if past_instr:
                     msgs.append({"role": "user", "content": past_instr})
                 msgs.append({"role": "assistant", "content": utt.raw_content})
+                own_round_so_far += 1
             else:
                 vis = self.visibility_policy(utt, member_id)
                 content = utt.raw_content if vis == "full" else utt.public_channel

@@ -173,6 +173,52 @@ def concat_messages(messages_list: list[Messages]) -> Messages:
     return result
 
 
+def fold_consecutive_user_messages(
+    messages: Messages | list[dict[str, Any]],
+    separator: str = "\n\n",
+) -> list[dict[str, Any]]:
+    """Collapse runs of consecutive role=user messages into one.
+
+    Multi-agent envs emit prompts with neighbouring user messages
+    (opponent turns + current-actor instruction). Chat templates render
+    this as ``<|im_start|>user\\n…<|im_end|>`` repeated, which is OOD for
+    the model and breaks the stitcher's ``_is_valid_env_tail`` gate.
+    Folding collapses each user run into a single message whose content
+    is the run's pieces joined by ``separator``.
+
+    Role-local: only user runs fold. Assistant / system / tool messages
+    pass through untouched; tool messages carry per-call metadata
+    (``tool_call_id``) that must not be merged.
+
+    Idempotent, and a no-op on message lists that never contain adjacent
+    user messages (e.g. canonical SA tool trajectories).
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg_dict = msg
+        elif hasattr(msg, "model_dump"):
+            msg_dict = msg.model_dump()
+        else:
+            # Unknown type; pass through without folding.
+            out.append(msg)  # type: ignore[arg-type]
+            continue
+
+        role = msg_dict.get("role")
+        if out and role == "user" == out[-1].get("role"):
+            prev = out[-1]
+            prev_content = prev.get("content", "") or ""
+            new_content = msg_dict.get("content", "") or ""
+            # Only fold plain-text contents. If either side is a list of
+            # content parts (multimodal), keep them separate — concatenating
+            # mixed content parts silently is worse than the alt-role OOD.
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                out[-1] = {**prev, "content": prev_content + separator + new_content}
+                continue
+        out.append(dict(msg_dict))
+    return out
+
+
 def message_to_printable(message: Any) -> Any:
     """
     Removes image_url objects from message content.
