@@ -303,8 +303,18 @@ class MultiAgentEnv(vf.Environment):
                 for i in range(len(slot.actors)):
                     tg.create_task(_run_one(i))
         except* vf.OverlongPromptError as eg:
+            if len(eg.exceptions) > 1:
+                _log.warning(
+                    "simultaneous-slot %d suppressed peer exceptions: %r",
+                    slot.slot_id, eg.exceptions[1:],
+                )
             raise eg.exceptions[0]
         except* vf.Error as eg:
+            if len(eg.exceptions) > 1:
+                _log.warning(
+                    "simultaneous-slot %d suppressed peer exceptions: %r",
+                    slot.slot_id, eg.exceptions[1:],
+                )
             raise eg.exceptions[0]
 
         # Phase 2: stage the fold into a LOCAL kernel + build trajectory
