@@ -54,6 +54,15 @@ class InterceptionServer:
             if self._app is not None:
                 return
 
+            # Silence per-turn HTTP log spam that would otherwise escape
+            # framework-level stdout/stderr capture (e.g. training-framework
+            # redirection into a log file): the OpenAI client that forwards
+            # intercepted requests uses httpx at INFO level, producing one line
+            # per forwarded call. aiohttp's own access log is suppressed via
+            # ``access_log=None`` on the AppRunner below.
+            for name in ("httpx", "httpcore"):
+                logging.getLogger(name).setLevel(logging.WARNING)
+
             app = web.Application()
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
@@ -64,7 +73,7 @@ class InterceptionServer:
                 lambda _: web.json_response({"status": "ok"}),
             )
 
-            runner = web.AppRunner(app)
+            runner = web.AppRunner(app, access_log=None)
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", self.port)
             await site.start()
