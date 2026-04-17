@@ -1,12 +1,13 @@
-"""MCQ answer normalization and think-tag stripping."""
+"""MCQ answer normalization.
+
+Callers pass already-parsed (post-``parse_channels``) text. No think-tag
+handling lives here.
+"""
 
 from __future__ import annotations
 
 import re
 
-from .think import strip_think
-
-# Defined locally to break circular import with parsing.py
 _XML_STRIP_RE = re.compile(r"</?[^>]+>")
 
 
@@ -86,8 +87,7 @@ _EXTRACTORS = [
 
 
 def normalize_mcq(text: str) -> str | None:
-    cleaned, _ = strip_think(text)
-    cleaned = _XML_STRIP_RE.sub("", cleaned).strip()
+    cleaned = _XML_STRIP_RE.sub("", text).strip()
     if not cleaned:
         return None
     for pattern in _PRE_FILTERS:

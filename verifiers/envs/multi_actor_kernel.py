@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from verifiers.errors import KernelProtocolError
 
@@ -30,10 +31,24 @@ class TurnSlot:
 
 @dataclass(frozen=True)
 class Utterance:
+    """Structured actor output committed to the transcript.
+
+    Three channels, populated once at commit time by ``parse_channels``:
+
+    - ``raw_content``: verbatim model output, never mutated. Author's view
+      renders this directly. Training bridge reads this for loss.
+    - ``public_channel``: content with ``<{think_tag}>...</{think_tag}>``
+      removed. Opponent/judge view uses this; field extractors read this.
+    - ``private_channel``: the stripped think-block contents (or None if
+      absent). May be revealed to select viewers by visibility policy.
+    """
+
     member_id: str
     slot_id: int
     phase: str
-    content: Any
+    raw_content: str
+    public_channel: str
+    private_channel: str | None
     token_count: int
 
 
@@ -81,14 +96,95 @@ class StaticSchedule:
         return len(self._slots)
 
 
+# ---------------------------------------------------------------------------
+# Channel parsing
+# ---------------------------------------------------------------------------
+
+# ``think`` and ``thinking`` are aliased: either tag name matches both
+# ``<think>`` and ``<thinking>`` so models can use either form without
+# silently failing the parse. Attribute syntax on opener/closer is allowed.
+_ALIAS_PATTERN = r"think(?:ing)?"
+
+
+def _tag_pattern(tag: str) -> str:
+    if tag in ("think", "thinking"):
+        return _ALIAS_PATTERN
+    return re.escape(tag)
+
+
+def parse_channels(raw: str, tag: str) -> tuple[str, str | None]:
+    """Split raw model output into ``(public_channel, private_channel)``.
+
+    Contract:
+      - exactly zero or one ``<tag>...</tag>`` block is legal;
+      - no nested tags, no unclosed opener, no stray closer;
+      - multiple blocks → protocol error.
+
+    ``public_channel`` is ``raw`` with the block removed and
+    leading/trailing whitespace stripped. ``private_channel`` is the
+    block's inner content stripped, or ``None`` if no block was present.
+
+    Raises:
+        KernelProtocolError: malformed channel markup.
+    """
+    pat = _tag_pattern(tag)
+    opener_re = re.compile(rf"<{pat}\b[^>]*>", re.IGNORECASE)
+    closer_re = re.compile(rf"</{pat}\s*>", re.IGNORECASE)
+
+    openers = list(opener_re.finditer(raw))
+    closers = list(closer_re.finditer(raw))
+
+    if not openers and not closers:
+        return raw.strip(), None
+
+    if len(openers) != len(closers):
+        raise KernelProtocolError(
+            f"parse_channels: unbalanced <{tag}> markup "
+            f"({len(openers)} opener(s), {len(closers)} closer(s))"
+        )
+
+    if len(openers) > 1:
+        # Disambiguate nested vs. sequential multiple blocks by asking
+        # whether the second opener begins before the first closer ends.
+        if openers[1].start() < closers[0].end():
+            raise KernelProtocolError(
+                f"parse_channels: nested <{tag}> tags are not allowed"
+            )
+        raise KernelProtocolError(
+            f"parse_channels: multiple <{tag}> blocks found ({len(openers)}); "
+            "expected at most one"
+        )
+
+    opener = openers[0]
+    closer = closers[0]
+
+    if closer.start() < opener.end():
+        raise KernelProtocolError(
+            f"parse_channels: </{tag}> appears before <{tag}> opener"
+        )
+
+    inner = raw[opener.end() : closer.start()]
+
+    public = (raw[: opener.start()] + raw[closer.end() :]).strip()
+    private = inner.strip()
+    return public, (private or None)
+
+
 def apply_action(
     state: KernelState,
     program: SlotProgram,
     member_id: str,
-    content: Any,
+    raw_content: str,
     token_count: int,
+    *,
+    think_tag: str = "thinking",
 ) -> ActionResult:
-    """Pure reducer. Raises KernelProtocolError on protocol violations."""
+    """Pure reducer. Raises KernelProtocolError on protocol violations.
+
+    ``raw_content`` is split into public/private channels via
+    ``parse_channels`` exactly once here; the resulting ``Utterance``
+    carries all three channels and downstream consumers never re-parse.
+    """
     slot = state._active_slot if state._active_slot is not None else program.current_slot(state)
 
     if slot is None:
@@ -105,11 +201,15 @@ def apply_action(
             f"Member {member_id!r} already submitted for slot {slot.slot_id}"
         )
 
+    public, private = parse_channels(raw_content, think_tag)
+
     utterance = Utterance(
         member_id=member_id,
         slot_id=slot.slot_id,
         phase=slot.phase,
-        content=content,
+        raw_content=raw_content,
+        public_channel=public,
+        private_channel=private,
         token_count=token_count,
     )
 

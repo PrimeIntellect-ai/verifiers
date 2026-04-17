@@ -17,13 +17,13 @@ from verifiers.envs.debate.prompts import (
     build_context,
     resolve_prompts,
 )
-from verifiers.envs.debate.think import redact_think, strip_think
 from verifiers.envs.multi_actor_kernel import (
     KernelState,
     SlotProgram,
     StaticSchedule,
     TurnSlot,
     apply_action,
+    parse_channels,
 )
 from verifiers.types import (
     Messages,
@@ -176,29 +176,36 @@ class DebateEnv(vf.Environment):
     def _format_history(
         self, kernel_state: KernelState, actor: str
     ) -> list[dict[str, str]]:
-        """Format transcript entries, stripping think blocks for opponents."""
+        """Format transcript entries using structured channels.
+
+        Viewer policy:
+          - Own utterance: render ``raw_content`` verbatim (preserves the
+            author's own think block for KV-cache coherence).
+          - Other's utterance: if speaker's think visibility permits the
+            viewer ("open", or "visible_to_judge" for a judge viewer),
+            render ``raw_content`` (think block intact); otherwise render
+            ``public_channel`` (think block already stripped at commit).
+        """
         role = self._role(actor)
         msgs: list[dict[str, str]] = []
         for utt in kernel_state.transcript:
             if utt.member_id == actor:
-                msgs.append({"role": "assistant", "content": utt.content})
-            else:
-                content = utt.content
-                speaker_role = self._role(utt.member_id)
-                vis = self.prompts.think_visibility.get(speaker_role, "disabled")
-                if vis != "open" and not (vis == "visible_to_judge" and role == "judge"):
-                    # Privacy-first redaction: strip closed tags AND any unclosed
-                    # <think...> opener through EOF, so a malformed emitter cannot
-                    # leak private reasoning to opponent/judge views.
-                    content = redact_think(content, tag=self.prompts.think_tag)[0]
-                content = self.prompts.wrap_opponent(
-                    utt.phase,
-                    content,
-                    member_id=utt.member_id,
-                    role_id=speaker_role,
-                    viewer_role=role,
-                )
-                msgs.append({"role": "user", "content": content})
+                msgs.append({"role": "assistant", "content": utt.raw_content})
+                continue
+            speaker_role = self._role(utt.member_id)
+            vis = self.prompts.think_visibility.get(speaker_role, "disabled")
+            think_visible = vis == "open" or (
+                vis == "visible_to_judge" and role == "judge"
+            )
+            content = utt.raw_content if think_visible else utt.public_channel
+            content = self.prompts.wrap_opponent(
+                utt.phase,
+                content,
+                member_id=utt.member_id,
+                role_id=speaker_role,
+                viewer_role=role,
+            )
+            msgs.append({"role": "user", "content": content})
         return msgs
 
     # -- trajectory step creation --------------------------------------------
@@ -259,7 +266,7 @@ class DebateEnv(vf.Environment):
         specs = self.prompts.get_field_specs(role, phase)
         if not specs:
             return None
-        cleaned = strip_think(content, tag=self.prompts.think_tag)[0]
+        cleaned, _ = parse_channels(content, self.prompts.think_tag)
         try:
             return extract_fields(cleaned, specs)
         except ValueError as exc:
@@ -342,7 +349,8 @@ class DebateEnv(vf.Environment):
         fields = self._extract_fields(content, actor, slot.phase)
 
         result = apply_action(
-            state["_kernel"], self.schedule, actor, content, token_count
+            state["_kernel"], self.schedule, actor, content, token_count,
+            think_tag=self.prompts.think_tag,
         )
         state["_kernel"] = result.new_state
         await self._add_debate_step(
@@ -371,7 +379,8 @@ class DebateEnv(vf.Environment):
             fields = self._extract_fields(content, actor, slot.phase)
 
             result = apply_action(
-                state["_kernel"], self.schedule, actor, content, token_count
+                state["_kernel"], self.schedule, actor, content, token_count,
+                think_tag=self.prompts.think_tag,
             )
             state["_kernel"] = result.new_state
             await self._add_debate_step(
