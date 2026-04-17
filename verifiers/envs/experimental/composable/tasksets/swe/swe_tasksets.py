@@ -23,6 +23,7 @@ def make_swe_taskset(
         "swebench": make_swebench_taskset,
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
+        "swelego-real": make_swelego_real_taskset,
     }
     if backend not in factories:
         raise ValueError(
@@ -65,3 +66,17 @@ def make_openswe_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return OpenSWETaskSet(**kwargs)
+
+
+def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
+    """SWE-Lego Real-Data TaskSet (~4.4k resolved real GitHub issues, public images).
+
+    Defaults to PrimeIntellect/SWE-Lego-Real-Data, a filtered fork of the
+    upstream SWE-Lego/SWE-Lego-Real-Data that drops rows with truncated pytest
+    parametrize test IDs in FAIL_TO_PASS / PASS_TO_PASS (11.5% of upstream).
+    """
+    from verifiers.envs.experimental.composable.tasksets.swe.swe_lego import (
+        SWELegoTaskSet,
+    )
+
+    return SWELegoTaskSet(**kwargs)

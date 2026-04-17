@@ -78,6 +78,7 @@ class Harness:
     """
 
     install_script: str | None = None
+    install_timeout: int = 300
     run_command: str = ""
     system_prompt: str | None = None
     system_prompt_path: str = "/task/system_prompt.txt"

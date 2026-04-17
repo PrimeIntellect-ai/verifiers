@@ -227,7 +227,7 @@ class ComposableEnv(CliAgentEnv):
 
     def _get_install_execute_kwargs(self) -> dict[str, Any]:
         """Keyword arguments passed to sandbox install command execution."""
-        kwargs: dict[str, Any] = {"timeout": 300}
+        kwargs: dict[str, Any] = {"timeout": self.harness.install_timeout}
         if self.install_env:
             kwargs["env"] = self.install_env
         return kwargs
