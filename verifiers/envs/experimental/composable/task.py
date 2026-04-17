@@ -271,69 +271,185 @@ class TaskSet:
         self,
         n: int | None = None,
         concurrency: int = 10,
+        *,
+        out_path: str | Path | None = None,
+        max_retries: int = 0,
+        flaky_retries: int = 0,
+        resume: bool = False,
     ) -> list[dict]:
-        """Validate instances. For sandbox tasks, creates sandboxes and runs validate_instance."""
+        """Validate instances with streaming progress and crash-safe output.
+
+        Results stream via ``asyncio.as_completed`` and — if ``out_path`` is
+        given — each row is appended to a JSONL file as soon as it finishes,
+        so a crash or Ctrl-C keeps partial work. Progress is shown via tqdm
+        with a live pass-rate.
+
+        Parameters
+        ----------
+        n:
+            Optional cap on how many instances to validate (first ``n`` rows).
+        concurrency:
+            Max number of in-flight instances (and, for sandbox tasksets,
+            max live sandboxes) at a time.
+        out_path:
+            Optional path to a JSONL file. Each completed row is appended
+            immediately (off the event loop via ``asyncio.to_thread``).
+        max_retries:
+            Number of times to retry an instance on ``vf.InfraError``
+            (sandbox create/exec failures, tunnel drops). Each retry uses a
+            fresh sandbox. Bumps the ``attempts`` field on the result.
+        flaky_retries:
+            If > 0, re-run any instance whose first attempt failed with
+            ``reason="test_failed"`` up to this many additional times. If
+            any rerun passes, the row is marked ``reason="flaky_pass"``
+            (otherwise ``reason="flaky_fail"``). Useful for distinguishing
+            flaky tests from truly bad ones. Off by default (expensive).
+        resume:
+            If True and ``out_path`` exists, indices already recorded in
+            the JSONL are skipped and new results are appended. Their
+            rows are returned in the result list unchanged (so downstream
+            analysis sees the union of old + new). If False (default),
+            ``out_path`` is truncated at start.
+
+        Result schema per row
+        ---------------------
+        ``index``, ``instance_id``, ``repo``, ``valid``, ``reason``,
+        ``attempts``, ``elapsed``, ``error``, ``error_type``, ``test_output_tail``.
+
+        ``reason`` values: ``pass``, ``test_failed``, ``gold_apply_failed``,
+        ``setup_failed``, ``sandbox_error``, ``billing_error``, ``timeout``,
+        ``flaky_pass``, ``flaky_fail``.
+        """
         import asyncio
+        import json
         import logging
         import time
+
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:  # pragma: no cover
+            tqdm = None  # type: ignore[assignment]
+
+        import verifiers as vf
 
         logger = logging.getLogger(__name__)
         ds = self.get_dataset()
         total = min(n, len(ds)) if n is not None else len(ds)
         is_sandbox = isinstance(self, SandboxTaskSet)
 
-        if not is_sandbox:
-            # No sandbox needed — run validate_instance concurrently
-            sem = asyncio.Semaphore(concurrency)
+        out_path_p = Path(out_path) if out_path is not None else None
+        prior_rows: list[dict] = []
+        completed_indices: set[int] = set()
+        if out_path_p is not None:
+            out_path_p.parent.mkdir(parents=True, exist_ok=True)
+            if resume and out_path_p.exists():
+                with out_path_p.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(row.get("index"), int):
+                            prior_rows.append(row)
+                            completed_indices.add(row["index"])
+                if prior_rows:
+                    logger.info(
+                        "Resuming: %d rows already in %s, will skip",
+                        len(prior_rows),
+                        out_path_p,
+                    )
+            else:
+                # truncate so repeated runs don't mix with old output
+                out_path_p.write_text("")
+        write_lock = asyncio.Lock()
 
-            async def _validate_simple(i: int) -> dict:
-                row = ds[i]
-                state: State = {  # type: ignore[assignment]
-                    "info": row.get("info") or {},
-                    "answer": row.get("answer", ""),
-                }
-                async with sem:
-                    t0 = time.time()
-                    try:
-                        valid = await self.validate_instance(state)
-                        return {
-                            "index": i,
-                            "valid": valid,
-                            "elapsed": time.time() - t0,
-                            "error": None,
-                        }
-                    except Exception as e:
-                        return {
-                            "index": i,
-                            "valid": False,
-                            "elapsed": time.time() - t0,
-                            "error": str(e),
-                        }
+        async def _append_jsonl(row: dict) -> None:
+            if out_path_p is None:
+                return
+            line = json.dumps(row, default=str) + "\n"
+            async with write_lock:
+                await asyncio.to_thread(lambda: out_path_p.open("a").write(line))
 
-            return await asyncio.gather(*[_validate_simple(i) for i in range(total)])
+        def _classify(
+            valid: bool, exc: BaseException | None, state: dict
+        ) -> tuple[str, str | None]:
+            """Return (reason, test_output_tail)."""
+            test_output = state.get("test_output") if isinstance(state, dict) else None
+            tail = None
+            if isinstance(test_output, str) and test_output:
+                tail = test_output[-500:]
+            if valid:
+                return "pass", tail
+            if exc is not None:
+                msg = str(exc).lower()
+                exc_name = type(exc).__name__
+                if exc_name == "PaymentRequiredError" or "payment required" in msg:
+                    return "billing_error", tail
+                if isinstance(exc, vf.InfraError):
+                    return "sandbox_error", tail
+                if "timeout" in msg or "timed out" in msg:
+                    return "timeout", tail
+                if (
+                    "apply failed" in msg
+                    or "patch failed" in msg
+                    or "no gold patch" in msg
+                ):
+                    return "gold_apply_failed", tail
+                if "setup failed" in msg:
+                    return "setup_failed", tail
+                return "setup_failed", tail
+            # no exception, but validate_instance returned False
+            if isinstance(test_output, str) and test_output.startswith("ERROR:"):
+                if "timeout" in test_output.lower():
+                    return "timeout", tail
+                return "test_failed", tail
+            return "test_failed", tail
 
-        # Sandbox path — lazy imports only needed here
-        from prime_sandboxes import CreateSandboxRequest
-        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
-
-        client = ThreadedAsyncSandboxClient(
-            max_workers=min(max(1, concurrency // 8), 50)
-        )
-        sem = asyncio.Semaphore(concurrency)
-        assert isinstance(self, SandboxTaskSet)
-
-        async def validate_one(i: int) -> dict:
+        def _row_info(i: int) -> tuple[dict, str | None, str | None]:
             row = ds[i]
             info = row.get("info") or {}
-            state: State = {  # type: ignore[assignment]
-                "info": info,
-                "answer": row.get("answer", ""),
-            }
+            return info, info.get("instance_id"), info.get("repo")
 
-            async with sem:
+        sem = asyncio.Semaphore(concurrency)
+
+        if not is_sandbox:
+
+            async def _validate_once(i: int) -> tuple[bool, BaseException | None, dict]:
+                info, _, _ = _row_info(i)
+                row = ds[i]
+                state: State = {  # type: ignore[assignment]
+                    "info": info,
+                    "answer": row.get("answer", ""),
+                }
+                try:
+                    valid = await self.validate_instance(state)
+                    return valid, None, state
+                except Exception as e:  # noqa: BLE001
+                    return False, e, state
+
+        else:
+            from prime_sandboxes import CreateSandboxRequest
+            from verifiers.utils.threaded_sandbox_client import (
+                ThreadedAsyncSandboxClient,
+            )
+
+            client = ThreadedAsyncSandboxClient(
+                max_workers=min(max(1, concurrency // 8), 50)
+            )
+            assert isinstance(self, SandboxTaskSet)
+
+            async def _validate_once(i: int) -> tuple[bool, BaseException | None, dict]:
+                info, _, _ = _row_info(i)
+                row = ds[i]
+                state: State = {  # type: ignore[assignment]
+                    "info": info,
+                    "answer": row.get("answer", ""),
+                }
                 spec = self.get_sandbox_spec(info)
                 sb = None
-                t0 = time.time()
                 try:
                     sb = await client.create(
                         CreateSandboxRequest(
@@ -354,39 +470,142 @@ class TaskSet:
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
-                    elapsed = time.time() - t0
-                    logger.info(f"[{i}] valid={valid} ({elapsed:.0f}s)")
-                    return {
-                        "index": i,
-                        "valid": valid,
-                        "elapsed": elapsed,
-                        "error": None,
-                    }
-                except Exception as e:
-                    elapsed = time.time() - t0
-                    logger.warning(f"[{i}] ERROR: {e} ({elapsed:.0f}s)")
-                    return {
-                        "index": i,
-                        "valid": False,
-                        "elapsed": elapsed,
-                        "error": str(e),
-                    }
+                    return valid, None, state
+                except Exception as e:  # noqa: BLE001
+                    return False, e, state
                 finally:
                     if sb is not None:
-                        await client.delete(sb.id)
+                        try:
+                            await client.delete(sb.id)
+                        except Exception:
+                            pass
 
+        async def validate_one(i: int) -> dict:
+            async with sem:
+                info, instance_id, repo = _row_info(i)
+                t0 = time.time()
+                attempts = 0
+                last_valid = False
+                last_exc: BaseException | None = None
+                reason = "test_failed"
+                tail: str | None = None
+
+                # primary attempts with InfraError retry
+                for _attempt in range(1 + max_retries):
+                    attempts += 1
+                    valid, exc, state = await _validate_once(i)
+                    last_valid, last_exc = valid, exc
+                    reason, tail = _classify(valid, exc, state)
+                    if valid or reason != "sandbox_error":
+                        break  # only InfraError triggers primary retry
+
+                # flakiness reruns (only for test_failed after primary attempts)
+                if flaky_retries > 0 and not last_valid and reason == "test_failed":
+                    flaky_outcomes = [False]
+                    for _ in range(flaky_retries):
+                        attempts += 1
+                        valid, exc, state = await _validate_once(i)
+                        flaky_outcomes.append(valid)
+                        if valid:
+                            last_valid, last_exc = valid, exc
+                            reason, tail = _classify(valid, exc, state)
+                            break
+                    if any(flaky_outcomes) and not all(flaky_outcomes):
+                        reason = "flaky_pass" if last_valid else "flaky_fail"
+                    elif not last_valid and any(flaky_outcomes):
+                        reason = "flaky_pass"
+
+                elapsed = time.time() - t0
+                result = {
+                    "index": i,
+                    "instance_id": instance_id,
+                    "repo": repo,
+                    "valid": bool(last_valid),
+                    "reason": reason,
+                    "attempts": attempts,
+                    "elapsed": elapsed,
+                    "error": str(last_exc) if last_exc is not None else None,
+                    "error_type": type(last_exc).__name__
+                    if last_exc is not None
+                    else None,
+                    "test_output_tail": tail,
+                }
+                return result
+
+        todo_indices = [i for i in range(total) if i not in completed_indices]
+        skipped = len(completed_indices)
         logger.info(
-            f"Validating {total} instances from {self.name} (concurrency={concurrency})"
+            f"Validating {len(todo_indices)} instances from {self.name} "
+            f"(concurrency={concurrency}, max_retries={max_retries}, "
+            f"flaky_retries={flaky_retries}, skipped={skipped} from prior run)"
         )
         t0 = time.time()
+        results: list[dict] = list(prior_rows)
+        tasks = [asyncio.create_task(validate_one(i)) for i in todo_indices]
+        passed = sum(1 for r in prior_rows if r.get("valid"))
         try:
-            results = await asyncio.gather(*[validate_one(i) for i in range(total)])
+            bar = (
+                tqdm(
+                    total=len(todo_indices),
+                    desc="validate",
+                    dynamic_ncols=True,
+                )
+                if tqdm is not None
+                else None
+            )
+            try:
+                for fut in asyncio.as_completed(tasks):
+                    r = await fut
+                    results.append(r)
+                    await _append_jsonl(r)
+                    if r["valid"]:
+                        passed += 1
+                    rate = passed / len(results)
+                    logger.info(
+                        "[%d] %s reason=%s attempts=%d elapsed=%.0fs "
+                        "instance=%s (running pass-rate %d/%d = %.1f%%)",
+                        r["index"],
+                        "PASS" if r["valid"] else "FAIL",
+                        r["reason"],
+                        r["attempts"],
+                        r["elapsed"],
+                        r["instance_id"],
+                        passed,
+                        len(results),
+                        100 * rate,
+                    )
+                    if bar is not None:
+                        bar.update(1)
+                        bar.set_postfix_str(
+                            f"pass={passed}/{len(results)} ({100 * rate:.1f}%)"
+                        )
+            finally:
+                if bar is not None:
+                    bar.close()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logger.warning("Validation interrupted; cancelling pending tasks")
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         finally:
-            client.teardown()
+            if is_sandbox:
+                client.teardown()  # type: ignore[name-defined]
+
         elapsed = time.time() - t0
-        passed = sum(1 for r in results if r["valid"])
-        rate = passed / total if total else 0
-        logger.info(f"Validation: {passed}/{total} valid ({rate:.1%}, {elapsed:.0f}s)")
+        denom = len(results) or 1
+        rate = passed / denom
+        logger.info(
+            f"Validation: {passed}/{len(results)} valid ({rate:.1%}) "
+            f"[new={len(results) - len(prior_rows)} skipped={skipped}] "
+            f"in {elapsed:.0f}s"
+        )
+        # reason breakdown
+        by_reason: dict[str, int] = {}
+        for r in results:
+            by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+        logger.info("Reason breakdown: %s", dict(sorted(by_reason.items())))
         return results
 
     def __repr__(self) -> str:
