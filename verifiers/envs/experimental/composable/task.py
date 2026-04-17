@@ -274,7 +274,6 @@ class TaskSet:
         *,
         out_path: str | Path | None = None,
         max_retries: int = 0,
-        flaky_retries: int = 0,
         resume: bool = False,
     ) -> list[dict]:
         """Validate instances with streaming progress and crash-safe output.
@@ -298,12 +297,6 @@ class TaskSet:
             Number of times to retry an instance on ``vf.InfraError``
             (sandbox create/exec failures, tunnel drops). Each retry uses a
             fresh sandbox. Bumps the ``attempts`` field on the result.
-        flaky_retries:
-            If > 0, re-run any instance whose first attempt failed with
-            ``reason="test_failed"`` up to this many additional times. If
-            any rerun passes, the row is marked ``reason="flaky_pass"``
-            (otherwise ``reason="flaky_fail"``). Useful for distinguishing
-            flaky tests from truly bad ones. Off by default (expensive).
         resume:
             If True and ``out_path`` exists, indices already recorded in
             the JSONL are skipped and new results are appended. Their
@@ -317,8 +310,7 @@ class TaskSet:
         ``attempts``, ``elapsed``, ``error``, ``error_type``, ``test_output_tail``.
 
         ``reason`` values: ``pass``, ``test_failed``, ``gold_apply_failed``,
-        ``setup_failed``, ``sandbox_error``, ``billing_error``, ``timeout``,
-        ``flaky_pass``, ``flaky_fail``.
+        ``setup_failed``, ``sandbox_error``, ``billing_error``, ``timeout``.
         """
         import asyncio
         import json
@@ -366,12 +358,16 @@ class TaskSet:
                 out_path_p.write_text("")
         write_lock = asyncio.Lock()
 
+        def _write_line(path: Path, line: str) -> None:
+            with path.open("a") as f:
+                f.write(line)
+
         async def _append_jsonl(row: dict) -> None:
             if out_path_p is None:
                 return
             line = json.dumps(row, default=str) + "\n"
             async with write_lock:
-                await asyncio.to_thread(lambda: out_path_p.open("a").write(line))
+                await asyncio.to_thread(_write_line, out_path_p, line)
 
         def _classify(
             valid: bool, exc: BaseException | None, state: dict
@@ -497,23 +493,7 @@ class TaskSet:
                     last_valid, last_exc = valid, exc
                     reason, tail = _classify(valid, exc, state)
                     if valid or reason != "sandbox_error":
-                        break  # only InfraError triggers primary retry
-
-                # flakiness reruns (only for test_failed after primary attempts)
-                if flaky_retries > 0 and not last_valid and reason == "test_failed":
-                    flaky_outcomes = [False]
-                    for _ in range(flaky_retries):
-                        attempts += 1
-                        valid, exc, state = await _validate_once(i)
-                        flaky_outcomes.append(valid)
-                        if valid:
-                            last_valid, last_exc = valid, exc
-                            reason, tail = _classify(valid, exc, state)
-                            break
-                    if any(flaky_outcomes) and not all(flaky_outcomes):
-                        reason = "flaky_pass" if last_valid else "flaky_fail"
-                    elif not last_valid and any(flaky_outcomes):
-                        reason = "flaky_pass"
+                        break  # only InfraError triggers retry
 
                 elapsed = time.time() - t0
                 result = {
@@ -537,7 +517,7 @@ class TaskSet:
         logger.info(
             f"Validating {len(todo_indices)} instances from {self.name} "
             f"(concurrency={concurrency}, max_retries={max_retries}, "
-            f"flaky_retries={flaky_retries}, skipped={skipped} from prior run)"
+            f"skipped={skipped} from prior run)"
         )
         t0 = time.time()
         results: list[dict] = list(prior_rows)
