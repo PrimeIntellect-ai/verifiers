@@ -181,6 +181,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         filter_repos: list[str] | None = None,
         ds_num_proc: int | None = 8,
         ds_keep_in_memory: bool = True,
+        timeout_minutes: int = 60,
     ):
         self.dataset_name = dataset_name
         self.split = split
@@ -188,6 +189,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
+        self.timeout_minutes = timeout_minutes
         super().__init__(dataset=self._build_dataset(), name="swe/multiswe")
 
     def _build_dataset(self) -> Any:
@@ -230,7 +232,8 @@ class MultiSWETaskSet(SandboxTaskSet):
     def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
         return SandboxSpec(
             image=info.get("_task_docker_image")
-            or _build_docker_image(restore_row(info))
+            or _build_docker_image(restore_row(info)),
+            timeout_minutes=self.timeout_minutes,
         )
 
     def get_workdir(self, info: dict) -> str:
