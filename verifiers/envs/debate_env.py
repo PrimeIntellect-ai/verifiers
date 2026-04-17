@@ -73,6 +73,40 @@ class DebateEnv(vf.Environment):
             raise ValueError("DebateEnv requires a non-empty members list")
         if len(members) != len(set(members)):
             raise ValueError(f"DebateEnv.members contains duplicates: {members}")
+
+        # Cross-check 1: members must match the rubric's members exactly.
+        # Silent drift here would desync round_index (env) from per-member
+        # reward attribution (rubric) and produce plausible-but-wrong
+        # training signal. Only enforced when the rubric exposes a
+        # members attribute (DebateRubric and MultiAgentRubric do).
+        rubric_members = getattr(self.rubric, "members", None)
+        if rubric_members is not None and list(rubric_members) != list(members):
+            raise ValueError(
+                f"DebateEnv.members != rubric.members\n"
+                f"  env    : {list(members)}\n"
+                f"  rubric : {list(rubric_members)}\n"
+                f"Both must be identical (same ids, same order) — "
+                f"round_index and reward attribution key off them."
+            )
+
+        # Cross-check 2: for StaticSchedule, the set of unique slot actors
+        # must equal the set of declared members. Dynamic SlotProgram
+        # implementations are exempt (actor set may be data-dependent;
+        # they must enforce their own invariants).
+        if isinstance(schedule, StaticSchedule):
+            slot_actors: set[str] = set()
+            for slot in schedule._slots:
+                slot_actors.update(slot.actors)
+            member_set = set(members)
+            if slot_actors != member_set:
+                raise ValueError(
+                    f"DebateEnv.members != unique actors in StaticSchedule\n"
+                    f"  members          : {sorted(member_set)}\n"
+                    f"  schedule actors  : {sorted(slot_actors)}\n"
+                    f"  in members only  : {sorted(member_set - slot_actors)}\n"
+                    f"  in schedule only : {sorted(slot_actors - member_set)}"
+                )
+
         self.schedule = schedule
         self.prompts = prompts
         self.members: list[str] = list(members)
