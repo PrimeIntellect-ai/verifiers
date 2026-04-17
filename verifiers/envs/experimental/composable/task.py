@@ -579,9 +579,27 @@ class TaskSet:
                         bar.set_postfix_str(
                             f"pass={passed}/{len(results)} ({100 * rate:.1f}%)"
                         )
+                    if r["reason"] == "billing_error":
+                        pending = sum(1 for t in tasks if not t.done())
+                        logger.error(
+                            "Aborting validate(): billing error at index %d "
+                            "(instance=%s). Cancelling %d pending tasks.",
+                            r["index"],
+                            r["instance_id"],
+                            pending,
+                        )
+                        break
             finally:
                 if bar is not None:
                     bar.close()
+                # cancel any still-pending tasks (billing fail-fast, or if
+                # the for-loop exits for any other reason) — mirrors the
+                # KeyboardInterrupt handler below.
+                pending_tasks = [t for t in tasks if not t.done()]
+                if pending_tasks:
+                    for t in pending_tasks:
+                        t.cancel()
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
         except (KeyboardInterrupt, asyncio.CancelledError):
             logger.warning("Validation interrupted; cancelling pending tasks")
             for t in tasks:
