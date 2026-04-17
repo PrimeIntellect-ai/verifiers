@@ -334,37 +334,41 @@ class DebateRubric(MultiAgentRubric):
 
     # -- Main scoring -------------------------------------------------------
 
+    def _write_errored_state(
+        self, state: State, *, error_type: str, error_phase: str
+    ) -> None:
+        """Record a rollout-level failure with default-zeroed structured keys.
+
+        Used by both the pre-scoring short-circuit (rollout-layer failures
+        already captured on state) and the scoring-layer vf.Error boundary
+        (retryable judge outages captured here for maybe_retry). metrics
+        stays dict[str, float] so RubricGroup aggregation + TUI display
+        don't choke on string values; error taxonomy goes on error_info.
+        """
+        state["reward"] = 0.0
+        state["metrics"] = {"errored_rollout": 1.0}
+        state["error_info"] = {"error_type": error_type, "error_phase": error_phase}
+        state["commits"] = {}
+        state["member_rewards"] = {m: 0.0 for m in self.members}
+        state["member_metrics"] = {m: {} for m in self.members}
+        state["episode_metrics"] = {"errored_rollout": 1.0}
+
     async def score_rollout(self, state: State) -> None:
-        # Short-circuit on already-errored rollouts. The rollout loop in
-        # DebateEnv.rollout sets state['error'] on vf.Error and
-        # state['prompt_too_long'] on vf.OverlongPromptError. Running the
-        # W/G/M pipeline on an incomplete trajectory would either trip the
-        # G7.3 "missing judge" invariant and raise (killing score_group's
-        # asyncio.gather and propagating to the whole batch) or invent a
-        # score from a trajectory the rollout already flagged as broken.
-        # Instead: emit errored_rollout=1.0 + error_type, reward=0.0, and
-        # return. This is a record-the-failure path, not a swallow-error
-        # path — downstream consumers can filter on errored_rollout.
-        errored = state.get("error") is not None
-        overlong = state.get("prompt_too_long", False)
-        if errored or overlong:
-            if overlong:
-                error_type = "prompt_too_long"
-            else:
-                error_type = type(state["error"]).__name__
-            state["reward"] = 0.0
-            # metrics is dict[str, float] by framework contract; error
-            # taxonomy goes on state["error_info"] so RubricGroup
-            # aggregation + TUI display don't have to coerce strings.
-            state["metrics"] = {"errored_rollout": 1.0}
-            state["error_info"] = {
-                "error_type": error_type,
-                "error_phase": "rollout",
-            }
-            state["commits"] = {}
-            state["member_rewards"] = {m: 0.0 for m in self.members}
-            state["member_metrics"] = {m: {} for m in self.members}
-            state["episode_metrics"] = {"errored_rollout": 1.0}
+        # Short-circuit on rollouts the rollout loop already marked broken
+        # (error or prompt_too_long). Running W/G/M on an incomplete
+        # trajectory would either trip the "missing judge" invariant or
+        # invent signal from a flagged-broken rollout.
+        if state.get("prompt_too_long", False):
+            self._write_errored_state(
+                state, error_type="prompt_too_long", error_phase="rollout"
+            )
+            return
+        if state.get("error") is not None:
+            self._write_errored_state(
+                state,
+                error_type=type(state["error"]).__name__,
+                error_phase="rollout",
+            )
             return
 
         try:
@@ -377,24 +381,12 @@ class DebateRubric(MultiAgentRubric):
         try:
             await self._score_rollout_body(state, target)
         except vf.Error as exc:
-            # Capture on state so maybe_retry.reraise_error_from_state in
-            # verifiers/utils/async_utils.py can discover it and trigger
-            # tenacity retry on retryable subclasses (vf.InfraError,
-            # vf.InvalidModelResponseError). error_info carries the
-            # downstream-filter taxonomy; metrics stays dict[str, float]
-            # so RubricGroup aggregation + TUI display don't choke on
-            # string values.
+            # Capture on state so maybe_retry.reraise_error_from_state can
+            # discover it and trigger tenacity retry on retryable subclasses.
             state["error"] = exc
-            state["reward"] = 0.0
-            state["metrics"] = {"errored_rollout": 1.0}
-            state["error_info"] = {
-                "error_type": type(exc).__name__,
-                "error_phase": "scoring",
-            }
-            state["commits"] = {}
-            state["member_rewards"] = {m: 0.0 for m in self.members}
-            state["member_metrics"] = {m: {} for m in self.members}
-            state["episode_metrics"] = {"errored_rollout": 1.0}
+            self._write_errored_state(
+                state, error_type=type(exc).__name__, error_phase="scoring"
+            )
             return
 
     async def _score_rollout_body(self, state: State, target: Any) -> None:
