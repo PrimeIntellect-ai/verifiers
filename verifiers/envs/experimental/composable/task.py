@@ -369,10 +369,25 @@ class TaskSet:
             async with write_lock:
                 await asyncio.to_thread(_write_line, out_path_p, line)
 
+        # Exception classes that indicate a real timeout. We dispatch by
+        # type (via isinstance / class-name fallback) so that pytest output
+        # that happens to contain the substring "timeout" is never mistaken
+        # for a wall-clock timeout.
+        _TIMEOUT_EXC_NAMES = frozenset(
+            {"CommandTimeoutError", "BackgroundJobTimeoutError"}
+        )
+
         def _classify(
             valid: bool, exc: BaseException | None, state: dict
         ) -> tuple[str, str | None]:
-            """Return (reason, test_output_tail)."""
+            """Return (reason, test_output_tail).
+
+            Classification is exception-class driven. A failed
+            ``validate_instance`` with no exception is always
+            ``test_failed`` — the run completed, pytest reported a
+            non-pass result, and whatever is in ``state["test_output"]``
+            is a test log, not a typed signal.
+            """
             test_output = state.get("test_output") if isinstance(state, dict) else None
             tail = None
             if isinstance(test_output, str) and test_output:
@@ -380,28 +395,31 @@ class TaskSet:
             if valid:
                 return "pass", tail
             if exc is not None:
-                msg = str(exc).lower()
                 exc_name = type(exc).__name__
-                if exc_name == "PaymentRequiredError" or "payment required" in msg:
+                if exc_name == "PaymentRequiredError":
                     return "billing_error", tail
+                if (
+                    isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    or exc_name in _TIMEOUT_EXC_NAMES
+                ):
+                    return "timeout", tail
                 if isinstance(exc, vf.InfraError):
                     return "sandbox_error", tail
-                if "timeout" in msg or "timed out" in msg:
-                    return "timeout", tail
+                # Gold-patch apply raises RuntimeError from within our own
+                # code (_apply_patch_file / _apply_gold_patch), so a narrow
+                # message check is the cleanest signal short of adding a
+                # dedicated exception class.
+                msg = str(exc).lower()
                 if (
                     "apply failed" in msg
                     or "patch failed" in msg
                     or "no gold patch" in msg
                 ):
                     return "gold_apply_failed", tail
-                if "setup failed" in msg:
-                    return "setup_failed", tail
                 return "setup_failed", tail
-            # no exception, but validate_instance returned False
-            if isinstance(test_output, str) and test_output.startswith("ERROR:"):
-                if "timeout" in test_output.lower():
-                    return "timeout", tail
-                return "test_failed", tail
+            # exc is None and validate_instance returned False — the run
+            # completed, the test result was non-pass. Don't try to guess
+            # a finer-grained reason from the test log.
             return "test_failed", tail
 
         def _row_info(i: int) -> tuple[dict, str | None, str | None]:
