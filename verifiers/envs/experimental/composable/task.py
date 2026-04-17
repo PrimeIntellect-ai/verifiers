@@ -275,6 +275,7 @@ class TaskSet:
         out_path: str | Path | None = None,
         max_retries: int = 0,
         resume: bool = False,
+        test_output_tail_chars: int = 2000,
     ) -> list[dict]:
         """Validate instances with streaming progress and crash-safe output.
 
@@ -303,6 +304,13 @@ class TaskSet:
             rows are returned in the result list unchanged (so downstream
             analysis sees the union of old + new). If False (default),
             ``out_path`` is truncated at start.
+        test_output_tail_chars:
+            Number of trailing characters of ``state["test_output"]`` to
+            store in each result's ``test_output_tail``. Default 2000,
+            which is large enough to capture both halves of a two-run
+            eval script (FAIL_TO_PASS + PASS_TO_PASS summaries) for SWE
+            tasksets. Bump higher for verbose test suites, lower to save
+            disk.
 
         Result schema per row
         ---------------------
@@ -417,7 +425,7 @@ class TaskSet:
             test_output = state.get("test_output") if isinstance(state, dict) else None
             tail = None
             if isinstance(test_output, str) and test_output:
-                tail = test_output[-500:]
+                tail = test_output[-test_output_tail_chars:]
             if valid:
                 return "pass", tail
             if exc is not None:
