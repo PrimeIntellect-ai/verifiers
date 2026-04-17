@@ -12,6 +12,14 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
+# swebench's __init__.py calls logging.basicConfig() at import time (via
+# build_dataset), which hijacks the root logger with an INFO-level
+# StreamHandler.  Eagerly import it and clear the damage so downstream
+# loggers aren't flooded.
+import swebench  # noqa: F401
+
+logging.root.handlers.clear()
+
 logger = logging.getLogger(__name__)
 
 REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
