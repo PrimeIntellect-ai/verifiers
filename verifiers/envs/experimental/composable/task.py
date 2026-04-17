@@ -369,22 +369,39 @@ class TaskSet:
             async with write_lock:
                 await asyncio.to_thread(_write_line, out_path_p, line)
 
-        # Exception classes that indicate a real timeout. We dispatch by
-        # type (via isinstance / class-name fallback) so that pytest output
-        # that happens to contain the substring "timeout" is never mistaken
-        # for a wall-clock timeout.
-        _TIMEOUT_EXC_NAMES = frozenset(
-            {"CommandTimeoutError", "BackgroundJobTimeoutError"}
-        )
-        # Exception class names that indicate transient sandbox-infra
-        # failures we want to retry via max_retries. ``prime_sandboxes``
-        # raises ``APIError`` (its own class, not ``vf.InfraError``) for
-        # things like an exit-file read timeout after a background job
-        # finishes — retryable. We match by name to keep prime_sandboxes
-        # out of this module's import graph.
-        _INFRA_EXC_NAMES = frozenset(
-            {"APIError", "SandboxNotRunningError"}
-        )
+        # Sandbox-specific exception types — imported lazily so pure-LLM
+        # tasksets don't pull in prime_sandboxes. Dispatch is via isinstance
+        # so pytest output containing the substring "timeout" never looks
+        # like a wall-clock timeout.
+        _sb_timeout_types: tuple[type, ...] = (asyncio.TimeoutError, TimeoutError)
+        _sb_infra_types: tuple[type, ...] = ()
+        _sb_billing_types: tuple[type, ...] = ()
+        if is_sandbox:
+            from prime_sandboxes import (
+                APIError,
+                APITimeoutError,
+                CommandTimeoutError,
+                DownloadTimeoutError,
+                PaymentRequiredError,
+                SandboxImagePullError,
+                SandboxNotRunningError,
+                SandboxTimeoutError,
+                UploadTimeoutError,
+            )
+
+            _sb_timeout_types = _sb_timeout_types + (
+                APITimeoutError,
+                CommandTimeoutError,
+                DownloadTimeoutError,
+                SandboxTimeoutError,
+                UploadTimeoutError,
+            )
+            _sb_infra_types = (
+                APIError,
+                SandboxImagePullError,
+                SandboxNotRunningError,
+            )
+            _sb_billing_types = (PaymentRequiredError,)
 
         def _classify(
             valid: bool, exc: BaseException | None, state: dict
@@ -404,15 +421,11 @@ class TaskSet:
             if valid:
                 return "pass", tail
             if exc is not None:
-                exc_name = type(exc).__name__
-                if exc_name == "PaymentRequiredError":
+                if isinstance(exc, _sb_billing_types):
                     return "billing_error", tail
-                if (
-                    isinstance(exc, (asyncio.TimeoutError, TimeoutError))
-                    or exc_name in _TIMEOUT_EXC_NAMES
-                ):
+                if isinstance(exc, _sb_timeout_types):
                     return "timeout", tail
-                if isinstance(exc, vf.InfraError) or exc_name in _INFRA_EXC_NAMES:
+                if isinstance(exc, vf.InfraError) or isinstance(exc, _sb_infra_types):
                     return "sandbox_error", tail
                 # Gold-patch apply raises RuntimeError from within our own
                 # code (_apply_patch_file / _apply_gold_patch), so a narrow
