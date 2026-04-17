@@ -243,15 +243,26 @@ class MultiAgentEnv(vf.Environment):
     async def _run_simultaneous_slot(
         self, state: State, slot: TurnSlot
     ) -> None:
-        """Stage-then-commit.
+        """Fully-staged atomic commit.
 
-        All prompts are built from the pre-slot kernel snapshot, all
-        model calls run concurrently. ONLY after every call succeeds do
-        we commit to the kernel + trajectory. If any call raises, the
-        exception propagates to the rollout loop (which turns it into
-        state['error'] or state['prompt_too_long']) and NO partial
-        commits land. This is the atomic-barrier property the debate
-        protocol (and every simultaneous-action game) relies on.
+        Four-phase protocol — every phase runs to completion before the
+        next begins, and nothing in state is mutated until the final
+        publish step:
+
+          1. Fan out model calls under TaskGroup. On first raise,
+             TaskGroup cancels every sibling coroutine → no wasted
+             tokens, no late completions leaking into the shared usage
+             tracker after the slot is doomed.
+          2. Stage: fold responses into a local kernel (the real
+             state["_kernel"] is NOT touched), build per-actor
+             (utt, fields, TrajectoryStep) triples, run extract_fields.
+             Any raise here discards the local buffers entirely.
+          3. on_step_committed for each actor. A raise still discards
+             everything — the public state is unchanged.
+          4. Publish: append every TrajectoryStep then assign
+             state["_kernel"]. Dict append + assignment are the only
+             writes and they're both non-await: if we reach phase 4, the
+             slot succeeds atomically.
         """
         prompts = [
             maybe_normalize_messages(
@@ -263,68 +274,95 @@ class MultiAgentEnv(vf.Environment):
         overrides = [self.resolve_actor(a) for a in slot.actors]
 
         # Per-actor state views isolate ``_lineage_key`` across concurrent
-        # gather branches. State is a dict subclass; the shallow copy
-        # shares all mutable values (trajectory, kernel, usage tracker)
-        # but each branch gets its own lineage key. Any mutations through
-        # ``get_model_response`` (usage tracking) go to the shared
-        # underlying dicts because the shallow copy aliases them, so no
-        # work is lost — only the lineage read is isolated.
-        per_actor_states = []
-        for a in slot.actors:
-            s = type(state)(state)
+        # branches. State is a dict subclass; the shallow copy shares all
+        # mutable values (trajectory, kernel, usage tracker) by reference
+        # but each branch gets its own lineage-key read. Only applies to
+        # the read path inside get_prompt_ids — no branch MUTATES a per-
+        # actor key, so no cross-branch interference.
+        per_actor_states = [type(state)(state) for _ in slot.actors]
+        for s, a in zip(per_actor_states, slot.actors):
             s["_lineage_key"] = a
-            per_actor_states.append(s)
 
-        responses: list[Response] = await asyncio.gather(*[
-            self.get_model_response(s, p, client=o[0], model=o[1])
-            for s, p, o in zip(per_actor_states, prompts, overrides)
-        ])
+        # Phase 1: fan out under TaskGroup. First raise cancels siblings,
+        # so no doomed-slot tokens leak into the shared usage tracker.
+        # TaskGroup wraps failures in ExceptionGroup; unwrap to the first
+        # OverlongPromptError / vf.Error so the rollout loop's normal
+        # except clauses continue to work.
+        responses: list[Response] = [None] * len(slot.actors)  # type: ignore[list-item]
 
-        # Atomic commit: apply_action runs against a local ``kernel``
-        # variable; state["_kernel"] is only reassigned after every actor
-        # has been folded in successfully. If any apply_action raises,
-        # the local kernel is discarded and state["_kernel"] stays at
-        # its pre-slot snapshot — all-or-none, matching the kernel's
-        # simultaneous-barrier contract.
-        kernel = state["_kernel"]
+        async def _run_one(idx: int) -> None:
+            s = per_actor_states[idx]
+            p = prompts[idx]
+            o = overrides[idx]
+            responses[idx] = await self.get_model_response(
+                s, p, client=o[0], model=o[1]
+            )
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                for i in range(len(slot.actors)):
+                    tg.create_task(_run_one(i))
+        except* vf.OverlongPromptError as eg:
+            raise eg.exceptions[0]
+        except* vf.Error as eg:
+            raise eg.exceptions[0]
+
+        # Phase 2: stage the fold into a LOCAL kernel + build trajectory
+        # steps + extract fields. state["_kernel"] untouched.
+        staged_kernel = state["_kernel"]
+        staged_triples: list[tuple[Utterance, dict[str, Any] | None, TrajectoryStep]] = []
         committed_utts: list[Utterance] = []
         for actor, response in zip(slot.actors, responses):
             content = response.message.content or ""
             token_count = _completion_token_count(response)
             result = apply_action(
-                kernel, self.schedule, actor, content, token_count,
+                staged_kernel, self.schedule, actor, content, token_count,
                 think_tag=self.think_tag,
             )
-            kernel = result.new_state
+            staged_kernel = result.new_state
             if result.committed:
                 committed_utts.extend(result.committed)
-        state["_kernel"] = kernel
 
-        # After the final actor commits the barrier, ``committed_utts``
-        # holds one Utterance per actor in slot.actors order. Append
-        # trajectory steps in the same order for determinism.
         if len(committed_utts) != len(slot.actors):
             raise vf.Error(
                 f"simultaneous slot {slot.slot_id}: expected "
                 f"{len(slot.actors)} commits, got {len(committed_utts)}"
             )
+
         for actor, prompt, response, utt in zip(
             slot.actors, prompts, responses, committed_utts
         ):
             fields = await self.extract_fields(utt.public_channel, actor, slot)
-            await self._append_step(state, prompt, response, utt, fields)
+            step = await self._build_step(state, prompt, response, utt, fields)
+            staged_triples.append((utt, fields, step))
+
+        # Phase 3: run commit hooks. Raising here still leaves state
+        # untouched — nothing has been published yet.
+        for utt, fields, _step in staged_triples:
             await self.on_step_committed(state, utt, fields)
 
-    # -- trajectory step append ---------------------------------------------
+        # Phase 4: PUBLISH. Synchronous tail: trajectory appends + kernel
+        # assignment. No awaits, no raises after this point.
+        for _utt, _fields, step in staged_triples:
+            state["trajectory"].append(step)
+        state["_kernel"] = staged_kernel
 
-    async def _append_step(
+    # -- trajectory step build / append -------------------------------------
+
+    async def _build_step(
         self,
         state: State,
         prompt: Messages,
         response: Response,
         utt: Utterance,
         fields: dict[str, Any] | None,
-    ) -> None:
+    ) -> TrajectoryStep:
+        """Build a TrajectoryStep without mutating state.
+
+        Separated from ``_append_step`` so the simultaneous-slot atomic
+        staging phase can construct every step (async: token parsing) and
+        bail cleanly if any one raises, leaving state untouched.
+        """
         completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)
         response_is_truncated = response.message.is_truncated or False
@@ -338,7 +376,7 @@ class MultiAgentEnv(vf.Environment):
         }
         if fields is not None:
             extras["fields"] = fields
-        step = TrajectoryStep(
+        return TrajectoryStep(
             prompt=prompt,
             completion=completion_messages,
             response=response,
@@ -349,6 +387,16 @@ class MultiAgentEnv(vf.Environment):
             trajectory_id=state["trajectory_id"],
             extras=extras,
         )
+
+    async def _append_step(
+        self,
+        state: State,
+        prompt: Messages,
+        response: Response,
+        utt: Utterance,
+        fields: dict[str, Any] | None,
+    ) -> None:
+        step = await self._build_step(state, prompt, response, utt, fields)
         state["trajectory"].append(step)
 
 
