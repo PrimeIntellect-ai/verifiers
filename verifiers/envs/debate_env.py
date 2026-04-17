@@ -62,19 +62,24 @@ class DebateEnv(vf.Environment):
         self,
         schedule: SlotProgram,
         prompts: DebatePrompts,
+        members: list[str],
         *,
         role_for_actor: dict[str, str] | None = None,
         actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if not members:
+            raise ValueError("DebateEnv requires a non-empty members list")
+        if len(members) != len(set(members)):
+            raise ValueError(f"DebateEnv.members contains duplicates: {members}")
         self.schedule = schedule
         self.prompts = prompts
+        self.members: list[str] = list(members)
         self._role_for_actor: dict[str, str] = role_for_actor or {}
         self._actor_overrides: dict[str, tuple[Client | None, str | None]] = (
             actor_overrides or {}
         )
-        self._num_actors = _count_actors(schedule)
 
     def _role(self, member_id: str) -> str:
         return self._role_for_actor.get(member_id, member_id)
@@ -96,8 +101,9 @@ class DebateEnv(vf.Environment):
         question = _extract_question(state)
 
         num_slots = len(self.schedule) if hasattr(self.schedule, "__len__") else 0
-        num_rounds = num_slots // self._num_actors if self._num_actors else 0
-        round_index = kernel_state.slot_index // self._num_actors if self._num_actors else 0
+        num_actors = len(self.members)
+        num_rounds = num_slots // num_actors
+        round_index = kernel_state.slot_index // num_actors
 
         ctx = build_context(
             task_prompt=question,
@@ -349,16 +355,6 @@ def _completion_token_count(response: Response) -> int:
     if response.message.tokens and response.message.tokens.completion_ids:
         return len(response.message.tokens.completion_ids)
     return 0
-
-
-def _count_actors(schedule: SlotProgram) -> int:
-    """Count unique actors in a schedule."""
-    if isinstance(schedule, StaticSchedule):
-        actors: set[str] = set()
-        for slot in schedule._slots:
-            actors.update(slot.actors)
-        return len(actors) or 1
-    return 1
 
 
 def _extract_question(state: State) -> str:
@@ -624,6 +620,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     return DebateEnv(
         schedule=schedule,
         prompts=prompts,
+        members=members,
         role_for_actor=role_for_actor,
         actor_overrides=actor_overrides,
         rubric=rubric,
