@@ -324,6 +324,15 @@ _PER_TURN_VAR_RE = re.compile(
 
 
 def _reject_per_turn_vars(template: str, *, where: str) -> None:
+    """Scan a template for direct per-turn variable references.
+
+    Catches ``{{ round_index }}``-style expression tags. Does NOT catch
+    indirect references (``{{ data[round_index] }}``), statement tags
+    (``{% if phase == 'open' %}``), or macro-scoped evasions. This is a
+    helpful-error-message layer for common author mistakes; the hard
+    correctness boundary is the runtime monotonic-prefix test, not this
+    regex.
+    """
     match = _PER_TURN_VAR_RE.search(template)
     if match is not None:
         raise ValueError(
