@@ -16,7 +16,11 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    SandboxMonitorRubric,
+    is_retryable_sandbox_read_error,
+)
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -79,6 +83,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
         poll_interval: float = 1.0,
+        max_consecutive_poll_failures: int = 3,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,
@@ -118,6 +123,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
         self.poll_interval = poll_interval
+        self.max_consecutive_poll_failures = max_consecutive_poll_failures
         self.timeout_seconds = timeout_seconds
         self.docker_image = docker_image
         self.start_command = start_command
@@ -358,10 +364,31 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
+        consecutive_failures = 0
         while True:
-            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job
-            )
+            try:
+                status: BackgroundJobStatus = (
+                    await self.sandbox_client.get_background_job(
+                        sandbox_id, background_job
+                    )
+                )
+            except Exception as e:
+                if not is_retryable_sandbox_read_error(e):
+                    raise
+                consecutive_failures += 1
+                if consecutive_failures >= self.max_consecutive_poll_failures:
+                    self.logger.error(
+                        f"Giving up after {consecutive_failures} consecutive "
+                        f"transient poll failures: {e}"
+                    )
+                    raise
+                self.logger.warning(
+                    f"Transient poll failure "
+                    f"({consecutive_failures}/{self.max_consecutive_poll_failures}): {e}"
+                )
+                await asyncio.sleep(self.poll_interval)
+                continue
+            consecutive_failures = 0
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
@@ -383,7 +410,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         state["error"] = error
                         self.logger.error(str(error))
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.poll_interval)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""
