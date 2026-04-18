@@ -211,11 +211,11 @@ class ComposableEnv(CliAgentEnv):
     async def _after_harness_inputs_uploaded(self, state: State) -> None:
         """Upload task-declared directories to harness-declared sandbox paths.
 
-        Joins ``TaskSet.get_upload_dirs()`` (logical name → local source)
-        with ``Harness.upload_dir_mapping`` (logical name → sandbox path).
+        Joins task-declared and harness-declared upload directories with
+        ``Harness.upload_dir_mapping`` (logical name → sandbox path).
         Only directories whose logical name appears in both are uploaded.
         """
-        upload_dirs = self.taskset.get_upload_dirs()
+        upload_dirs = self._get_upload_dirs()
         mapping = self.harness.get_effective_upload_dir_mapping()
         if not upload_dirs or not mapping:
             return
@@ -224,6 +224,23 @@ class ComposableEnv(CliAgentEnv):
             remote_dest = mapping.get(name)
             if remote_dest is not None:
                 await self._upload_dir(sandbox_id, local_source, remote_dest)
+
+    def _get_upload_dirs(self) -> dict[str, Traversable | Path]:
+        """Merge task-owned and harness-owned upload directories."""
+        task_upload_dirs = dict(self.taskset.get_upload_dirs() or {})
+        harness_upload_dirs_value = (
+            self.harness.get_upload_dirs() if self.harness.get_upload_dirs else None
+        )
+        harness_upload_dirs = dict(harness_upload_dirs_value or {})
+        duplicate_names = sorted(set(task_upload_dirs) & set(harness_upload_dirs))
+        if duplicate_names:
+            names = ", ".join(repr(name) for name in duplicate_names)
+            raise ValueError(
+                "Upload directory names must be unique across task and harness; "
+                f"duplicates: {names}."
+            )
+        task_upload_dirs.update(harness_upload_dirs)
+        return task_upload_dirs
 
     def _get_install_execute_kwargs(self) -> dict[str, Any]:
         """Keyword arguments passed to sandbox install command execution."""

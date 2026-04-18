@@ -17,7 +17,9 @@ connects them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from importlib.abc import Traversable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec
@@ -58,6 +60,12 @@ class Harness:
         ``skills_path`` is merged into this mapping automatically.
         Use for non-skills directories; for skills prefer
         ``skills_path``.
+    get_upload_dirs:
+        Optional callable returning harness-owned local directories to
+        upload into the sandbox before install. These are merged with
+        task-declared upload dirs by ``ComposableEnv`` and resolved via
+        the same ``upload_dir_mapping`` logical-name contract.
+        Example: ``lambda: {"agent_src": Path("/path/to/checkout")}``.
     metrics_path:
         Glob pattern for a JSON metrics file inside the sandbox,
         collected after the rollout.  May contain ``{workdir}`` which is
@@ -87,6 +95,7 @@ class Harness:
     sandbox_spec: SandboxSpec | None = None
     skills_path: str | None = None
     upload_dir_mapping: dict[str, str] | None = None
+    get_upload_dirs: Callable[[], dict[str, Traversable | Path] | None] | None = None
     metrics_path: str | None = None
     metrics_prefix: str = ""
     metrics_key: str | None = None

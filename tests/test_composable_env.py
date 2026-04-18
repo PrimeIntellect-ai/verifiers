@@ -429,6 +429,83 @@ async def test_composable_env_no_upload_when_no_dirs(tmp_path, monkeypatch):
     assert env.upload_file.await_count == 0
 
 
+@pytest.mark.asyncio
+async def test_composable_env_uploads_harness_dirs(tmp_path):
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    harness_dir = tmp_path / "agent-src"
+    harness_dir.mkdir()
+    (harness_dir / "marker.txt").write_text("agent\n")
+
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            get_upload_dirs=lambda: {"agent_src": harness_dir},
+            upload_dir_mapping={"agent_src": "/tmp/agent-src"},
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    env.upload_file.assert_awaited_once()
+    upload_call = env.upload_file.await_args
+    assert upload_call.args[0] == "sbx"
+    assert upload_call.args[1] == "/tmp/_upload_tmp_agent-src.tar.gz"
+
+    extract_call = env.sandbox_client.execute_command.await_args_list[1]
+    assert extract_call == call(
+        "sbx",
+        "mkdir -p /tmp && tar -xzf /tmp/_upload_tmp_agent-src.tar.gz -C / && rm -f /tmp/_upload_tmp_agent-src.tar.gz",
+        timeout=60,
+    )
+
+
+@pytest.mark.asyncio
+async def test_composable_env_rejects_duplicate_task_and_harness_upload_names(
+    tmp_path, monkeypatch
+):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    harness_dir = tmp_path / "skills"
+    harness_dir.mkdir()
+
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            get_upload_dirs=lambda: {"skills": harness_dir},
+            skills_path="/task/skills",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    with pytest.raises(
+        ValueError,
+        match="Upload directory names must be unique across task and harness",
+    ):
+        await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+
 # ── discover_sibling_dir ─────────────────────────────────────────────────
 
 
