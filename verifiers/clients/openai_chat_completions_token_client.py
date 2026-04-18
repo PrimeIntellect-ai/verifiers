@@ -99,6 +99,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return {k: v for k, v in sampling_args.items() if v is not None}
 
         sampling_args = normalize_sampling_args(sampling_args)
+        lineage_key = kwargs.pop("lineage_key", None)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
@@ -115,10 +116,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        # Multi-agent envs set state["_lineage_key"] = member_id so prefix
-        # matching only consults steps authored by the same speaker. For
-        # single-actor envs the key is absent and behavior is unchanged.
-        lineage_key = state.get("_lineage_key") if isinstance(state, dict) else None
+        # Multi-agent envs pass lineage_key explicitly via
+        # Environment.get_model_response so prefix matching only consults
+        # steps authored by the same speaker. Keep the state-based lookup
+        # as a migration fallback for older callers.
+        if lineage_key is None and isinstance(state, dict):
+            lineage_key = state.get("_lineage_key")
         prompt_ids = await self.get_prompt_ids(
             state, prompt, tools, lineage_key=lineage_key
         )

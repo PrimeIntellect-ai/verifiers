@@ -289,6 +289,23 @@ class RolloutOutput(dict):
     mar_score: "MARScore"  # populated by MultiAgentRubric subclasses
 
 
+class MemberRollout(TypedDict):
+    """RolloutOutput-compatible dict with per-member multi-actor metadata."""
+
+    # Training-path fields (read by pretokenize -> interleave -> TrainingSample).
+    example_id: int | str
+    task: str
+    trajectory: list[TrajectoryStep]
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+
+    # Multi-actor metadata
+    episode_id: str
+    member_id: str
+    role_id: str
+
+
 class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs

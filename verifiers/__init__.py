@@ -12,6 +12,7 @@ from .decorators import (  # noqa # isort: skip
     stop,
     teardown,
 )
+from .multi_actor_bridge import rollout_to_member_rollouts  # noqa # isort: skip
 from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
@@ -76,6 +77,7 @@ __all__ = [
     "quiet_verifiers",
     "load_environment",
     "print_prompt_completions_sample",
+    "rollout_to_member_rollouts",
     "cleanup",
     "stop",
     "teardown",

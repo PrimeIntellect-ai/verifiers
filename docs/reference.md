@@ -369,32 +369,53 @@ class Environment(ABC):
     ): ...
 ```
 
-#### MultiActorEnv
+#### MultiAgentEnv
 
 ```python
-@runtime_checkable
-class MultiActorEnv(Protocol):
-    def get_eval_examples(self, n: int = -1) -> list[dict[str, Any]]: ...
-    def start_episode(
+class MultiAgentEnv(Environment):
+    def __init__(
         self,
-        example: dict[str, Any],
-        sample_index: int,
-    ) -> EpisodeStart: ...
-    async def submit_ready_turns(
-        self,
-        responses: list[TurnResp],
-    ) -> list[TurnReq]: ...
-    async def finalize_episode(
-        self,
-        episode_id: str,
-    ) -> EpisodeResult: ...
+        *,
+        schedule: SlotProgram,
+        members: list[str],
+        actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        think_tag: str = "thinking",
+        **kwargs,
+    ): ...
+
+    async def build_prompt(
+        self, state: State, member_id: str, slot: TurnSlot
+    ) -> Messages: ...
+
+    async def render_completion(self, state: State) -> None: ...
 ```
 
-Protocol for environments that expose explicit multi-actor episode sessions.
-This is a new surface and keeps the current sample-group meaning intact without
-changing `Environment.run_group()`.
+Base class for N-actor rollout environments that share a transcript and a
+slot-based schedule.
 
-Abstract base class for all environments.
+`MultiAgentEnv` is the real multi-agent runtime surface. It is not a protocol
+for external session orchestration; it is an `Environment` subclass that owns:
+
+- slot-scheduled rollout (`TurnSlot`, `SlotProgram`, `StaticSchedule`)
+- sequential vs simultaneous turn execution
+- atomic simultaneous-slot publish
+- stop conditions (`has_error`, `schedule_exhausted`, `prompt_too_long`)
+- trajectory-step construction tagged with `extras["member_id"]`
+- lineage-aware prompt caching support for token-stitch clients
+
+Subclasses supply the domain-specific pieces:
+
+- `build_prompt(state, member_id, slot)`
+- `render_completion(state)`
+- optional `extract_fields(...)`
+- optional `visibility_policy(...)`
+- optional `role_for_member(...)`
+
+Multi-agent scoring writes one structured `state["mar_score"]` payload. At the
+serialization boundary, `state_to_output(...)` projects that to legacy
+episode-level keys. If you need one trainable rollout per actor, use
+`verifiers.rollout_to_member_rollouts(output, env_name)`, which returns
+`MemberRollout` records.
 
 **Generation methods:**
 

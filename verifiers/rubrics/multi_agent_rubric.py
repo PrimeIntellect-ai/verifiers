@@ -1,10 +1,12 @@
 """Contract for multi-actor rubrics.
 
-Subclasses MUST populate ``state["mar_score"]: MARScore`` covering every
-member. The bridge reads ``mar_score`` directly; ``state_to_output``
-projects it to legacy keys (``output["reward"]``, flat top-level metrics)
-at the serialization boundary so downstream consumers (wandb, GRPO
-advantage) see the same shape as single-actor rubrics.
+Subclasses build and return a ``MARScore`` covering every member. The
+base class writes it onto ``state["mar_score"]`` and owns the rollout /
+group error boundary. The bridge reads ``mar_score`` directly;
+``state_to_output`` projects it to legacy keys (``output["reward"]``,
+flat top-level metrics) at the serialization boundary so downstream
+consumers (wandb, GRPO advantage) see the same shape as single-actor
+rubrics.
 """
 
 from __future__ import annotations
@@ -20,40 +22,62 @@ from verifiers.types import MARScore, MemberScore, State
 class MultiAgentRubric(Rubric):
     """Base class for multi-actor scoring.
 
-    Subclasses MUST implement ``score_rollout(state)`` and write
-    ``state["mar_score"]: MARScore`` covering every member.
+    Subclasses implement ``build_marscore(state) -> MARScore``. The base
+    class owns the rollout/group boundary:
 
-    The base class provides a defensive ``score_group`` boundary: per-
-    rollout ``try/except`` catching ``vf.Error`` (including
-    ``KernelProtocolError``), recording the error onto ``state["error"]``
-    with a zero-reward MARScore so the bridge doesn't KeyError. A
-    failure in one rollout must not prevent scoring any other rollout in
-    the group.
+    - rollout-layer broken states (``prompt_too_long`` or existing
+      ``state["error"]``) short-circuit to a zero-reward MARScore
+    - scoring-time ``vf.Error`` is recorded onto ``state["error"]`` and
+      converted into a zero-reward MARScore
+    - non-``vf.Error`` exceptions propagate loud
     """
 
     members: list[str]
 
     @abstractmethod
-    async def score_rollout(self, state: State) -> None: ...
+    async def build_marscore(self, state: State) -> MARScore: ...
+
+    def build_errored_marscore(
+        self, state: State, *, error_type: str, error_phase: str
+    ) -> MARScore:
+        return MARScore(
+            members=[
+                MemberScore(member_id=mid, role_id=mid, reward=0.0)
+                for mid in self.members
+            ],
+            episode_scalar=0.0,
+            episode_metrics={
+                "errored_rollout": 1.0,
+                "error_type": error_type,
+                "error_phase": error_phase,
+            },
+        )
+
+    async def score_rollout(self, state: State) -> None:
+        if state.get("prompt_too_long", False):
+            state["mar_score"] = self.build_errored_marscore(
+                state, error_type="prompt_too_long", error_phase="rollout"
+            )
+            return
+
+        existing_error = state.get("error")
+        if existing_error is not None:
+            state["mar_score"] = self.build_errored_marscore(
+                state,
+                error_type=type(existing_error).__name__,
+                error_phase="rollout",
+            )
+            return
+
+        try:
+            state["mar_score"] = await self.build_marscore(state)
+        except vf.Error as error:
+            state["error"] = error
+            state["mar_score"] = self.build_errored_marscore(
+                state,
+                error_type=type(error).__name__,
+                error_phase="scoring",
+            )
 
     async def score_group(self, states: list[State]) -> None:
-        async def _safe_score(s: State) -> None:
-            try:
-                await self.score_rollout(s)
-            except vf.Error as e:
-                s["error"] = e
-                if "mar_score" not in s:
-                    s["mar_score"] = MARScore(
-                        members=[
-                            MemberScore(member_id=mid, role_id=mid, reward=0.0)
-                            for mid in self.members
-                        ],
-                        episode_scalar=0.0,
-                        episode_metrics={
-                            "errored_rollout": 1.0,
-                            "error_type": type(e).__name__,
-                            "error_phase": "scoring",
-                        },
-                    )
-
-        await asyncio.gather(*(_safe_score(s) for s in states))
+        await asyncio.gather(*(self.score_rollout(state) for state in states))

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Callable
 
-import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.debate.fields import EnumScoring, FieldSpec, classify_enum
 from verifiers.envs.debate.prompts import (
@@ -102,7 +100,7 @@ class DebateRubric(MultiAgentRubric):
     ) -> None:
         super().__init__(**kwargs)
         # DebateRubric's two judge-client preconditions, both validated here
-        # because this is the component whose score_rollout would crash if
+        # because this is the component whose scoring path would crash if
         # either is violated. The factory (load_environment) is a pure
         # dispatcher and does not duplicate these checks.
         #
@@ -374,20 +372,12 @@ class DebateRubric(MultiAgentRubric):
 
     # -- Main scoring -------------------------------------------------------
 
-    def _write_errored_state(
+    def build_errored_marscore(
         self, state: State, *, error_type: str, error_phase: str
-    ) -> None:
-        """Record a rollout-level failure as a zero-reward MARScore.
-
-        Used by both the pre-scoring short-circuit (rollout-layer failures
-        already captured on state["error"] / state["prompt_too_long"]) and
-        the scoring-layer vf.Error boundary (retryable judge outages
-        captured here for maybe_retry). The error taxonomy lives in
-        episode_metrics so wandb has the breakdown; state["error"] remains
-        the propagation channel for the actual exception.
-        """
+    ) -> MARScore:
+        """Build the zero-reward MARScore used on rollout/scoring failures."""
         parse_errors = _count_parse_errors(state, self.members)
-        state["mar_score"] = MARScore(
+        return MARScore(
             members=[
                 MemberScore(
                     member_id=mid,
@@ -405,24 +395,13 @@ class DebateRubric(MultiAgentRubric):
             },
         )
 
-    async def score_rollout(self, state: State) -> None:
-        # Short-circuit on rollouts the rollout loop already marked broken
-        # (error or prompt_too_long). Running W/G/M on an incomplete
-        # trajectory would either trip the "missing judge" invariant or
-        # invent signal from a flagged-broken rollout.
-        if state.get("prompt_too_long", False):
-            self._write_errored_state(
-                state, error_type="prompt_too_long", error_phase="rollout"
-            )
-            return
-        if state.get("error") is not None:
-            self._write_errored_state(
-                state,
-                error_type=type(state["error"]).__name__,
-                error_phase="rollout",
-            )
-            return
+    async def build_marscore(self, state: State) -> MARScore:
+        """Main W/G/M scoring body.
 
+        The base ``MultiAgentRubric`` catches only ``vf.Error`` around this
+        method. Dataset schema violations (for example missing
+        ``state["answer"]``) and programming bugs still propagate loud.
+        """
         try:
             target = state["answer"]
         except KeyError as exc:
@@ -430,28 +409,7 @@ class DebateRubric(MultiAgentRubric):
                 "state is missing 'answer' (ground truth) — dataset schema "
                 "violation. Rubric will not silently coerce to empty."
             ) from exc
-        try:
-            await self._score_rollout_body(state, target)
-        except vf.Error as exc:
-            # Capture on state so maybe_retry.reraise_error_from_state can
-            # discover it and trigger tenacity retry on retryable subclasses.
-            state["error"] = exc
-            self._write_errored_state(
-                state, error_type=type(exc).__name__, error_phase="scoring"
-            )
-            return
 
-    async def _score_rollout_body(self, state: State, target: Any) -> None:
-        """Main W/G/M scoring body. Kept as a separate method so
-        ``score_rollout`` can wrap it in a single vf.Error boundary without
-        interfering with the F2 pre-scoring short-circuit or the ground-
-        truth KeyError propagation.
-
-        Builds a single ``MARScore`` and writes it to ``state["mar_score"]``.
-        ``state_to_output`` projects it to legacy keys (output["reward"],
-        flat top-level metrics) at the serialization boundary — there is
-        exactly one source of truth.
-        """
         roles, answers, answer_specs, failed_members = self._extract_debate_state(state)
         question = _extract_question(state)
         parse_errors = _count_parse_errors(state, self.members)
@@ -601,7 +559,7 @@ class DebateRubric(MultiAgentRubric):
             winner_val = -1.0
         episode_metrics["winner"] = winner_val
 
-        state["mar_score"] = MARScore(
+        return MARScore(
             members=[
                 MemberScore(
                     member_id=mid,
@@ -615,13 +573,3 @@ class DebateRubric(MultiAgentRubric):
             episode_scalar=episode_scalar,
             episode_metrics=episode_metrics,
         )
-
-    async def score_group(self, states: list[State]) -> None:
-        # score_rollout captures vf.Error onto state["error"] itself (never
-        # escapes), so batch-isolation for retryable judge outages is
-        # satisfied at a lower layer and maybe_retry can pick the error up
-        # via reraise_error_from_state. Anything that DOES escape here is
-        # either a dataset schema violation (KeyError from missing
-        # state["answer"]) or a programming bug (AttributeError, etc.) —
-        # both MUST propagate loud. Bare gather, no return_exceptions.
-        await asyncio.gather(*(self.score_rollout(s) for s in states))

@@ -16,6 +16,7 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
 from verifiers.types import (
     AssistantMessage,
@@ -494,6 +495,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
+        request_context: ModelRequestContext | None = None,
         message_type: MessageType | None = None,
     ) -> Response:
         """Get model response and unblock the waiting HTTP handler."""

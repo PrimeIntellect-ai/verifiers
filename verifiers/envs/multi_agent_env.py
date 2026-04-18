@@ -34,6 +34,7 @@ from verifiers.envs.multi_actor_kernel import (
     Utterance,
     apply_action,
 )
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.types import (
     Messages,
     Response,
@@ -53,6 +54,11 @@ from verifiers.utils.response_utils import (
 from verifiers.utils.usage_utils import StateUsageTracker
 
 _log = logging.getLogger(__name__)
+
+try:  # Python 3.11+
+    _BASE_EXCEPTION_GROUP_TYPES = (BaseExceptionGroup,)
+except NameError:  # pragma: no cover - compatibility shim for older interpreters
+    _BASE_EXCEPTION_GROUP_TYPES = ()
 
 VisibilityMode = Literal["full", "public_only", "hidden"]
 
@@ -153,15 +159,6 @@ class MultiAgentEnv(vf.Environment):
             return "full"
         return "public_only"
 
-    async def on_step_committed(
-        self,
-        state: State,
-        utt: Utterance,
-        fields: dict[str, Any] | None,
-    ) -> None:
-        """Hook fired after a commit + trajectory step append. Default: no-op."""
-        return None
-
     def role_for_member(self, member_id: str) -> str:
         """Map member_id → role_id. Default: identity."""
         return member_id
@@ -241,9 +238,16 @@ class MultiAgentEnv(vf.Environment):
         actor = slot.actors[0]
         prompt = await self._prepare_prompt(state, actor, slot)
         actor_client, actor_model = self.resolve_actor(actor)
-        state["_lineage_key"] = actor
+        parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
         response = await self.get_model_response(
-            state, prompt, client=actor_client, model=actor_model
+            state,
+            prompt,
+            client=actor_client,
+            model=actor_model,
+            request_context=ModelRequestContext(
+                lineage_key=actor,
+                usage_tracker=parent_tracker,
+            ),
         )
         content = response.message.content or ""
         token_count = _completion_token_count(response)
@@ -257,7 +261,6 @@ class MultiAgentEnv(vf.Environment):
         fields = await self.extract_fields(utt.public_channel, actor, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
         state["trajectory"].append(step)
-        await self.on_step_committed(state, utt, fields)
 
     @final
     async def _run_simultaneous_slot(
@@ -265,7 +268,7 @@ class MultiAgentEnv(vf.Environment):
     ) -> None:
         """Fully-staged atomic commit.
 
-        Four-phase protocol — every phase runs to completion before the
+        Three-phase protocol — every phase runs to completion before the
         next begins, and nothing in state is mutated until the final
         publish step:
 
@@ -275,36 +278,26 @@ class MultiAgentEnv(vf.Environment):
              tracker after the slot is doomed.
           2. Stage: fold responses into a local kernel (the real
              state["_kernel"] is NOT touched), build per-actor
-             (utt, fields, TrajectoryStep) triples, run extract_fields.
-             Any raise here discards the local buffers entirely.
-          3. on_step_committed for each actor. A raise still discards
-             everything — the public state is unchanged.
-          4. Publish: append every TrajectoryStep then assign
-             state["_kernel"]. Dict append + assignment are the only
-             writes and they're both non-await: if we reach phase 4, the
-             slot succeeds atomically.
+             TrajectorySteps, run extract_fields. Any raise here discards
+             the local buffers entirely.
+          3. Publish: append every TrajectoryStep, assign
+             state["_kernel"] and merge per-actor usage trackers. These
+             writes are all non-await, so if we reach phase 3 the slot
+             succeeds atomically.
         """
         prompts = [await self._prepare_prompt(state, a, slot) for a in slot.actors]
         overrides = [self.resolve_actor(a) for a in slot.actors]
 
-        # Per-actor state views isolate ``_lineage_key`` AND ``usage_tracker``
-        # across concurrent branches. State is a dict subclass; the shallow
-        # copy shares mutable values (trajectory, kernel) by reference, but
-        # we explicitly fork the usage tracker per-actor so a doomed slot's
-        # token charges never land on the parent tracker. On success, phase 4
-        # merges the branch-local trackers back into the parent. On failure,
-        # the forks are dropped and the parent stays at its pre-slot snapshot.
-        parent_tracker = state.get("usage_tracker")
-        per_actor_states = [type(state)(state) for _ in slot.actors]
-        per_actor_trackers: list[StateUsageTracker | None] = []
-        for s, a in zip(per_actor_states, slot.actors):
-            s["_lineage_key"] = a
-            if isinstance(parent_tracker, StateUsageTracker):
-                child = parent_tracker.fork()
-                s["usage_tracker"] = child
-                per_actor_trackers.append(child)
-            else:
-                per_actor_trackers.append(None)
+        # Per-actor request contexts isolate the prefix-cache partition key
+        # (``lineage_key``) and usage accounting across concurrent branches
+        # without cloning the shared rollout state. Every branch charges a
+        # child tracker; only the publish phase merges them back into the
+        # parent, so a doomed slot never leaks token usage.
+        parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
+        per_actor_trackers: list[StateUsageTracker | None] = [
+            parent_tracker.fork() if parent_tracker is not None else None
+            for _ in slot.actors
+        ]
 
         # Phase 1: fan out under TaskGroup. First raise cancels siblings,
         # so no doomed-slot tokens leak into the shared usage tracker.
@@ -314,11 +307,17 @@ class MultiAgentEnv(vf.Environment):
         responses: list[Response] = [None] * len(slot.actors)  # type: ignore[list-item]
 
         async def _run_one(idx: int) -> None:
-            s = per_actor_states[idx]
             p = prompts[idx]
             o = overrides[idx]
             responses[idx] = await self.get_model_response(
-                s, p, client=o[0], model=o[1]
+                state,
+                p,
+                client=o[0],
+                model=o[1],
+                request_context=ModelRequestContext(
+                    lineage_key=slot.actors[idx],
+                    usage_tracker=per_actor_trackers[idx],
+                ),
             )
 
         # Catch the whole ExceptionGroup (BaseExceptionGroup so we don't
@@ -336,7 +335,9 @@ class MultiAgentEnv(vf.Environment):
             async with asyncio.TaskGroup() as tg:
                 for i in range(len(slot.actors)):
                     tg.create_task(_run_one(i))
-        except BaseExceptionGroup as eg:
+        except BaseException as eg:
+            if not isinstance(eg, _BASE_EXCEPTION_GROUP_TYPES):
+                raise
             flat = _flatten_exception_group(eg)
             # Priority: OverlongPromptError first (most-specific recovery in
             # rollout loop), then any other vf.Error, then bubble.
@@ -355,7 +356,7 @@ class MultiAgentEnv(vf.Environment):
         # Phase 2: stage the fold into a LOCAL kernel + build trajectory
         # steps + extract fields. state["_kernel"] untouched.
         staged_kernel = state["_kernel"]
-        staged_triples: list[tuple[Utterance, dict[str, Any] | None, TrajectoryStep]] = []
+        staged_steps: list[TrajectoryStep] = []
         committed_utts: list[Utterance] = []
         for actor, response in zip(slot.actors, responses):
             content = response.message.content or ""
@@ -379,18 +380,13 @@ class MultiAgentEnv(vf.Environment):
         ):
             fields = await self.extract_fields(utt.public_channel, actor, slot)
             step = await self._build_step(state, prompt, response, utt, fields)
-            staged_triples.append((utt, fields, step))
+            staged_steps.append(step)
 
-        # Phase 3: run commit hooks. Raising here still leaves state
-        # untouched — nothing has been published yet.
-        for utt, fields, _step in staged_triples:
-            await self.on_step_committed(state, utt, fields)
-
-        # Phase 4: PUBLISH. Synchronous tail: trajectory appends + kernel
+        # Phase 3: PUBLISH. Synchronous tail: trajectory appends + kernel
         # assignment + usage-tracker merge. No awaits, no raises after this
         # point. Merging is the accounting-side counterpart of the kernel
         # assignment — both happen iff the slot succeeds.
-        for _utt, _fields, step in staged_triples:
+        for step in staged_steps:
             state["trajectory"].append(step)
         state["_kernel"] = staged_kernel
         if isinstance(parent_tracker, StateUsageTracker):
@@ -460,15 +456,16 @@ def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -
         )
 
 
-def _flatten_exception_group(eg: BaseExceptionGroup) -> tuple[BaseException, ...]:
+def _flatten_exception_group(eg: BaseException) -> tuple[BaseException, ...]:
     """Recursively flatten a (possibly nested) ExceptionGroup into a tuple
     of leaf exceptions, preserving order. TaskGroup may nest groups when
     cancellation propagates through child tasks; the rollout loop wants
     a flat view to pick the highest-priority exception to re-raise.
     """
     flat: list[BaseException] = []
+    assert isinstance(eg, _BASE_EXCEPTION_GROUP_TYPES)
     for sub in eg.exceptions:
-        if isinstance(sub, BaseExceptionGroup):
+        if isinstance(sub, _BASE_EXCEPTION_GROUP_TYPES):
             flat.extend(_flatten_exception_group(sub))
         else:
             flat.append(sub)

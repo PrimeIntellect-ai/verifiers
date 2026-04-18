@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from datasets import Dataset
 
 import verifiers as vf
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.serve import EnvClient
@@ -507,6 +508,7 @@ class Environment(ABC):
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
+        request_context: ModelRequestContext | None = None,
     ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
@@ -547,16 +549,21 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args
         )
 
-        self._get_usage_tracker(state, create_if_missing=True)
-
         response = await client.get_response(
             prompt=prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
             state=state,
+            lineage_key=request_context.lineage_key if request_context else None,
         )
-        self.increment_state_usage_from_response(state, response)
+        tracker = (
+            request_context.usage_tracker
+            if request_context and request_context.usage_tracker is not None
+            else self._get_usage_tracker(state, create_if_missing=True)
+        )
+        assert tracker is not None
+        tracker.increment_from_response(response)
 
         return response
 
