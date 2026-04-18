@@ -239,13 +239,28 @@ def state_to_output(
             mar = MARScore.model_validate(mar)
         output["mar_score"] = mar.model_dump(exclude_none=True)
         output["reward"] = mar.episode_scalar
-        for k, v in mar.to_wandb_flat().items():
+        flat = mar.to_wandb_flat()
+        for k, v in flat.items():
             output[k] = v
+        # Populate output["metrics"] as the dict form of the same flat
+        # projection. init_state seeds state["metrics"] = None; without
+        # this line, displays that expect a dict (eval_utils.print_rewards)
+        # crash on None. Writing a dict is consistent with the legacy SA
+        # path and semantically identical — the flat keys are already at
+        # top level too, so nothing reads output["metrics"] that isn't
+        # already satisfied by the top-level projection.
+        output["metrics"] = {
+            k: v for k, v in flat.items() if isinstance(v, (int, float, bool))
+        }
     else:
         # Single-agent legacy path: rubric writes state["metrics"] directly.
         state_metrics = state.get("metrics") or {}
         for k, v in state_metrics.items():
             output[k] = v
+        # Normalize: if the legacy rubric left state["metrics"] as None
+        # (init_state's seed), downstream consumers expect {} not None.
+        if output.get("metrics") is None:
+            output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
         value = state.get(col)
