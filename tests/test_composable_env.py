@@ -441,7 +441,7 @@ async def test_composable_env_uploads_harness_dirs(tmp_path):
         harness=Harness(
             run_command="true",
             install_script="install-agent",
-            upload_dirs={"agent_src": harness_dir},
+            get_upload_dirs=lambda: {"agent_src": harness_dir},
             upload_dir_mapping={"agent_src": "/tmp/agent-src"},
         ),
     )
@@ -485,7 +485,7 @@ async def test_composable_env_rejects_duplicate_task_and_harness_upload_names(
         harness=Harness(
             run_command="true",
             install_script="install-agent",
-            upload_dirs={"skills": harness_dir},
+            get_upload_dirs=lambda: {"skills": harness_dir},
             skills_path="/task/skills",
         ),
     )

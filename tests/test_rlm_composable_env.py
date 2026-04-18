@@ -151,7 +151,8 @@ def test_rlm_harness_uploads_explicit_local_checkout(tmp_path):
 
     harness = rlm_harness(local_checkout=checkout)
 
-    assert harness.upload_dirs == {"rlm_checkout": checkout.resolve()}
+    assert harness.get_upload_dirs is not None
+    assert harness.get_upload_dirs() == {"rlm_checkout": checkout.resolve()}
     assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
 
 
@@ -186,7 +187,8 @@ def test_rlm_harness_uses_default_host_cache_when_local_checkout_unspecified(
         rlm_branch="main",
     )
 
-    upload_checkout = harness.upload_dirs["rlm_checkout"]
+    assert harness.get_upload_dirs is not None
+    upload_checkout = harness.get_upload_dirs()["rlm_checkout"]
     assert isinstance(upload_checkout, Path)
     assert upload_checkout.is_dir()
     assert upload_checkout.name.startswith("rlm-source-main-")
@@ -201,7 +203,7 @@ def test_rlm_harness_always_uploads_checkout(tmp_path):
         rlm_branch="main",
     )
 
-    assert harness.upload_dirs is not None
+    assert harness.get_upload_dirs is not None
     assert harness.upload_dir_mapping is not None
 
 

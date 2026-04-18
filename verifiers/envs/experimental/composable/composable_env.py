@@ -228,7 +228,9 @@ class ComposableEnv(CliAgentEnv):
     def _get_upload_dirs(self) -> dict[str, Traversable | Path]:
         """Merge task-owned and harness-owned upload directories."""
         task_upload_dirs = dict(self.taskset.get_upload_dirs() or {})
-        harness_upload_dirs = dict(self.harness.upload_dirs or {})
+        harness_upload_dirs = dict(
+            self.harness.get_upload_dirs() if self.harness.get_upload_dirs else {}
+        )
         duplicate_names = sorted(set(task_upload_dirs) & set(harness_upload_dirs))
         if duplicate_names:
             names = ", ".join(repr(name) for name in duplicate_names)
