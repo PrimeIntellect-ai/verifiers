@@ -4,6 +4,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
 
 ## Table of Contents
 - [Basic Usage](#basic-usage)
+- [Hosted Evaluations](#hosted-evaluations)
 - [Command Reference](#command-reference)
   - [Environment Selection](#environment-selection)
   - [Model Configuration](#model-configuration)
@@ -26,10 +27,28 @@ Environments must be installed as Python packages before evaluation. From a loca
 
 ```bash
 prime env install my-env           # installs ./environments/my_env as a package
-prime eval run my-env -m gpt-4.1-mini -n 10
+prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
 `prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+
+## Hosted Evaluations
+
+You can also run evaluations on Prime-managed infrastructure with `prime eval run --hosted`. Hosted evaluations require an environment that has already been published to the Environments Hub, and they are useful when you want Prime to manage execution, monitor logs remotely, or run against a shared Hub environment slug instead of a local package.
+
+```bash
+prime env push my-env
+prime eval run my-env --hosted
+prime eval run my-env --hosted --follow
+```
+
+Hosted runs also support TOML configs:
+
+```bash
+prime eval run configs/eval/benchmark-hosted.toml --hosted
+```
+
+For the full hosted workflow and hosted-only flags such as `--follow`, `--timeout-minutes`, `--allow-sandbox-access`, and `--custom-secrets`, see the official [Hosted Evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations) guide.
 
 ## Command Reference
 

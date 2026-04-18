@@ -101,6 +101,7 @@ class EnvRouter:
         log_level: str | None = None,
         log_dir: str | None = None,
         console_logging: bool = True,
+        json_logging: bool = False,
         *,
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
@@ -116,6 +117,7 @@ class EnvRouter:
         self.log_level = log_level
         self.log_dir = log_dir
         self.console_logging = console_logging
+        self.json_logging = json_logging
 
         self.num_workers = num_workers
         self.worker_heartbeat_timeout = worker_heartbeat_timeout
@@ -185,6 +187,7 @@ class EnvRouter:
                 self.log_level,
                 self.log_dir,
                 self.console_logging,
+                self.json_logging,
             ),
             kwargs=dict(
                 worker_id=worker_id,

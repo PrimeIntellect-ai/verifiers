@@ -60,6 +60,7 @@ class EnvWorker:
         log_level: str | None = None,
         log_dir: str | None = None,
         console_logging: bool = True,
+        json_logging: bool = False,
         *,
         worker_id: int,
         worker_name: str,
@@ -78,6 +79,7 @@ class EnvWorker:
         logger_kwargs: dict[str, Any] = {
             "console_logging": console_logging,
             "file_logging": log_dir is not None,
+            "json_logging": json_logging,
         }
         if log_level is not None:
             logger_kwargs["level"] = log_level

@@ -1183,21 +1183,6 @@ class RLMPromptBuilder:
         ),
     }
 
-    MESSAGE_HISTORY_NOTE_PYTHON: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
-```python
-import json
-history = [json.loads(line) for line in open(".messages")]
-```
-"""
-
-    MESSAGE_HISTORY_NOTE_BASH: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
-```bash
-cat .messages  # one JSON object per line
-```
-"""
-
     PYTHON_BASE_PROMPT: str = """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
@@ -1231,7 +1216,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         sub_prompt_verbosity: Literal["light", "medium", "heavy"],
         custom_system_prompt: str | None,
         pip_install_packages: str,
-        expose_message_history: bool,
         root_max_completion_tokens: int | None,
         sub_max_completion_tokens: int | None,
         sub_llm_max_turns: int,
@@ -1247,7 +1231,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.custom_system_prompt = custom_system_prompt
         self.pip_install_packages = pip_install_packages
-        self.expose_message_history = expose_message_history
         self.root_max_completion_tokens = root_max_completion_tokens
         self.sub_max_completion_tokens = sub_max_completion_tokens
         self.sub_llm_max_turns = sub_llm_max_turns
@@ -1356,14 +1339,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
         return "\n".join(lines)
 
-    def build_message_history_note(self) -> str:
-        """Return the message-history documentation note, or empty string."""
-        if not self.expose_message_history:
-            return ""
-        if self.repl_language == "bash":
-            return self.MESSAGE_HISTORY_NOTE_BASH
-        return self.MESSAGE_HISTORY_NOTE_PYTHON
-
     def build_turn_limit_note(self) -> str:
         """Return context-dropping documentation note, or empty string."""
         if self.max_turns_in_context is None:
@@ -1401,6 +1376,21 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
     def build_system_prompt(self) -> str:
         """Assemble the full RLM system prompt, wrapped in scaffolding tags."""
+        if self.repl_language == "bash":
+            message_history_note = """
+The file `.messages` in your working directory contains the full observable conversation transcript (JSONL, one message object per line). It is overwritten before each code execution. You can read it, e.g.:
+```bash
+cat .messages  # one JSON object per line
+```
+"""
+        else:
+            message_history_note = """
+The file `.messages` in your working directory contains the full observable conversation transcript (JSONL, one message object per line). It is overwritten before each code execution. You can read it, e.g.:
+```python
+import json
+history = [json.loads(line) for line in open(".messages")]
+```
+"""
         body = (
             self.build_base_system_prompt()
             + self.build_packages_documentation()
@@ -1409,7 +1399,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
             + self.build_sub_tools_documentation()
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
-            + self.build_message_history_note()
+            + message_history_note
             + self.build_turn_limit_note()
         )
         return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
@@ -2284,10 +2274,6 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
-        expose_message_history: If True, the model's conversation history is
-                   written to `.messages` (JSONL) in the sandbox working directory
-                   and updated incrementally before each code execution. This lets
-                   the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
         sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
         sandbox_cpu_cores: Sandbox CPU cores (default: 1)
@@ -2377,7 +2363,6 @@ class RLMEnv(vf.StatefulToolEnv):
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
-        expose_message_history: bool = True,
         retain_filesystem_after_rollout: bool = False,
         sandbox_docker_image: str = "python:3.11-slim",
         sandbox_cpu_cores: int = 1,
@@ -2429,7 +2414,6 @@ class RLMEnv(vf.StatefulToolEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
-        self.expose_message_history = expose_message_history
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
         self.max_turns_in_context = max_turns_in_context
@@ -2440,16 +2424,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 "max_turns_in_context ineffective.",
                 max_turns_in_context,
                 max_turns,
-            )
-        if self.enable_summarization and not self.expose_message_history:
-            import warnings
-
-            warnings.warn(
-                "enable_summarization=True but expose_message_history=False. "
-                "The model won't be able to read dropped context from .messages. "
-                "Consider setting expose_message_history=True.",
-                UserWarning,
-                stacklevel=2,
             )
         if not self.enable_sub_llms:
             if sub_max_completion_tokens is not None:
@@ -2548,7 +2522,6 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_prompt_verbosity=self.sub_prompt_verbosity,
             custom_system_prompt=self.custom_system_prompt,
             pip_install_packages=self.pip_install_packages,
-            expose_message_history=self.expose_message_history,
             root_max_completion_tokens=self.root_max_completion_tokens,
             sub_max_completion_tokens=self.sub_max_completion_tokens,
             sub_llm_max_turns=self.sub_llm_max_turns,
@@ -3549,12 +3522,10 @@ class RLMEnv(vf.StatefulToolEnv):
             # Initialize FIFO sequence counter for detecting stale responses
             state["_exec_seq"] = 0
 
-            # Initialize message history upload counter
-            state["_messages_uploaded_count"] = 0
-
             # Initialize context dropping state
             state["_keep_from_assistant_index"] = 0
             state["_summary_text"] = ""
+            state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
 
@@ -3738,20 +3709,9 @@ class RLMEnv(vf.StatefulToolEnv):
     # Message History Upload
     # =========================================================================
 
-    _SUMMARY_BLOCK_RE = re.compile(r"<SUMMARY>\n.*?\n</SUMMARY>\n\n", re.DOTALL)
-
     def _build_message_history(self, state: State) -> list[dict[str, Any]]:
-        """Build the serialized message history from the trajectory.
-
-        Reads from the last main trajectory step (which has the full
-        cumulative conversation in its prompt) and strips any injected
-        ``<SUMMARY>`` blocks so that ``.messages`` reflects the raw
-        conversation without summarization artifacts.
-        """
-        last_main = self._last_main_trajectory_step(state)
-        if last_main is None:
-            return []
-        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+        """Build the serialized observable message history for `.messages`."""
+        messages = cast(Messages, state.get("_observable_messages", []))
         serialized: list[dict[str, Any]] = []
         for msg in messages:
             if hasattr(msg, "model_dump"):
@@ -3760,32 +3720,31 @@ class RLMEnv(vf.StatefulToolEnv):
                 entry = dict(msg)
             else:
                 continue
-            content = entry.get("content")
-            if isinstance(content, str) and "<SUMMARY>" in content:
-                entry["content"] = self._SUMMARY_BLOCK_RE.sub("", content)
             serialized.append(entry)
         return serialized
 
     async def _upload_message_history(self, state: State) -> None:
-        """Incrementally upload new messages to .messages (JSONL) in the sandbox."""
+        """Overwrite `.messages` in the sandbox with the observable transcript."""
         messages = self._build_message_history(state)
-        uploaded_count: int = state.get("_messages_uploaded_count", 0)
-        new_messages = messages[uploaded_count:]
-        if not new_messages and uploaded_count > 0:
-            return
 
-        session = self._executor._get_session(state)
+        try:
+            session = self._executor._get_session(state)
+        except RLMSessionError:
+            return
         assert session.sandbox_id is not None, "sandbox must be initialized"
         fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
         remote_path = f"{fs_root}/.messages"
 
-        if new_messages:
-            lines = [json.dumps(msg, ensure_ascii=False) for msg in new_messages]
+        if messages:
+            lines = [json.dumps(msg, ensure_ascii=False) for msg in messages]
             delta = "\n".join(lines) + "\n"
             delta_b64 = base64.b64encode(delta.encode("utf-8")).decode("ascii")
-            cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+            cmd = (
+                f"mkdir -p {shlex.quote(fs_root)} && "
+                f"echo '{delta_b64}' | base64 -d > {shlex.quote(remote_path)}"
+            )
         else:
-            cmd = f"touch {remote_path}"
+            cmd = f"mkdir -p {shlex.quote(fs_root)} && : > {shlex.quote(remote_path)}"
 
         try:
             await self._executor._execute_sandbox_command(
@@ -3793,7 +3752,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"bash -lc {shlex.quote(cmd)}",
                 timeout=30,
             )
-            state["_messages_uploaded_count"] = len(messages)
         except Exception as e:
             logger.warning("Failed to upload message history: %s", e)
 
@@ -3824,8 +3782,7 @@ class RLMEnv(vf.StatefulToolEnv):
             len(code),
         )
 
-        if self.expose_message_history:
-            await self._upload_message_history(state)
+        await self._upload_message_history(state)
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
@@ -3946,6 +3903,7 @@ class RLMEnv(vf.StatefulToolEnv):
         state["_summary_text"] = (
             f"{prev_summary}\n{section}" if prev_summary else section
         )
+        self._refresh_observable_summary_insertion(state)
 
         logger.debug(
             "[%s] main turn %d: summarize_turns: %d turn(s) dropped "
@@ -4062,6 +4020,11 @@ class RLMEnv(vf.StatefulToolEnv):
                 state["raw_prompt"] = state["prompt"]
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
+        if not state.get("_observable_messages"):
+            self._append_observable_messages(state, cast(Messages, state["prompt"]))
+        self._append_observable_messages(
+            state, cast(Messages, state["trajectory"][-1]["completion"])
+        )
 
     def _main_turn_count(self, state: State) -> int:
         """Count the number of main-model trajectory steps."""
@@ -4163,52 +4126,85 @@ class RLMEnv(vf.StatefulToolEnv):
         # Inject or replace summary in the first remaining assistant message
         if summary_text and remaining:
             first_asst = remaining[0]
-            summary_block = f"<SUMMARY>\n{summary_text}\n</SUMMARY>\n\n"
-            content = getattr(first_asst, "content", None)
-            if isinstance(content, str):
-                # Strip any existing summary block before prepending the new one
-                content = re.sub(
-                    r"<SUMMARY>\n.*?\n</SUMMARY>\n\n",
-                    "",
-                    content,
-                    count=1,
-                    flags=re.DOTALL,
-                )
-                remaining[0] = AssistantMessage(
-                    content=summary_block + content,
-                    tool_calls=getattr(first_asst, "tool_calls", None),
-                    reasoning_content=getattr(first_asst, "reasoning_content", None),
-                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
-                )
-            elif isinstance(content, list):
-                # Remove any existing summary text block, then prepend new one
-                filtered = [
-                    part
-                    for part in content
-                    if not (
-                        isinstance(part, dict)
-                        and part.get("type") == "text"
-                        and "<SUMMARY>" in str(part.get("text", ""))
-                    )
-                ]
-                new_content = [
-                    {"type": "text", "text": summary_block},
-                    *filtered,
-                ]
-                remaining[0] = AssistantMessage(
-                    content=new_content,
-                    tool_calls=getattr(first_asst, "tool_calls", None),
-                    reasoning_content=getattr(first_asst, "reasoning_content", None),
-                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
-                )
+            remaining[0] = self._with_summary_on_assistant_message(
+                first_asst, summary_text
+            )
 
         return preamble + remaining
+
+    def _with_summary_on_assistant_message(
+        self, message: Message, summary_text: str
+    ) -> AssistantMessage:
+        """Return an assistant message with the provided summary block applied."""
+        summary_block = f"<SUMMARY>\n{summary_text}\n</SUMMARY>\n\n"
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            content = re.sub(
+                r"^<SUMMARY>\n.*?\n</SUMMARY>\n\n",
+                "",
+                content,
+                count=1,
+                flags=re.DOTALL,
+            )
+            content = summary_block + content if summary_text else content
+        elif isinstance(content, list):
+            filtered = [
+                part
+                for part in content
+                if not (
+                    isinstance(part, dict)
+                    and part.get("type") == "text"
+                    and "<SUMMARY>" in str(part.get("text", ""))
+                )
+            ]
+            content = (
+                [{"type": "text", "text": summary_block}, *filtered]
+                if summary_text
+                else filtered
+            )
+        else:
+            content = summary_block if summary_text else content
+
+        return AssistantMessage(
+            content=content,
+            tool_calls=getattr(message, "tool_calls", None),
+            reasoning_content=getattr(message, "reasoning_content", None),
+            thinking_blocks=getattr(message, "thinking_blocks", None),
+        )
+
+    def _refresh_observable_summary_insertion(self, state: State) -> None:
+        """Move the cumulative summary block onto the current visible assistant turn."""
+        observable = cast(Messages, state.get("_observable_messages", []))
+        if not observable:
+            return
+
+        target_assistant_index = state.get("_keep_from_assistant_index", 0)
+        summary_text = state.get("_summary_text", "")
+        assistant_index = 0
+
+        for i, message in enumerate(observable):
+            if getattr(message, "role", None) != "assistant":
+                continue
+            if summary_text and assistant_index == target_assistant_index:
+                observable[i] = self._with_summary_on_assistant_message(
+                    message, summary_text
+                )
+            else:
+                observable[i] = self._with_summary_on_assistant_message(message, "")
+            assistant_index += 1
+
+    def _append_observable_messages(self, state: State, messages: Messages) -> None:
+        """Append messages to the observable transcript."""
+        observable = cast(list[Message], state.setdefault("_observable_messages", []))
+        observable.extend(_clone_messages(messages))
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
         """Override to set final_env_response when answer is ready, root budget or context turn limit is exhausted."""
         tool_messages = await super().env_response(messages, state, **kwargs)
+        if tool_messages:
+            self._append_observable_messages(state, tool_messages)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
         elif self._is_root_budget_exhausted(state):
@@ -4296,7 +4292,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 await self._teardown_tunnel()
 
     async def render_completion(self, state: State):
-        """Render completion from main model steps only, ignoring sub-LLM steps."""
+        """Render the tracked observable main-model rollout."""
         rid = state.get("rollout_id", "?")
         _ensure_rlm_metric_state(state)
         logger.debug(
@@ -4312,26 +4308,9 @@ class RLMEnv(vf.StatefulToolEnv):
             state["completion"] = []
             return
 
-        # Find the last trajectory step from the main model (matching trajectory_id)
-        main_trajectory_id = state["trajectory_id"]
-        last_main_step = None
-        for step in reversed(state["trajectory"]):
-            if step.get("trajectory_id") == main_trajectory_id:
-                last_main_step = step
-                break
-
-        if last_main_step is None:
-            state["completion"] = []
-            return
-
-        last_prompt = last_main_step["prompt"]
-        last_completion = last_main_step["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
-        if state.get("final_env_response"):
-            full_conversation = concat_messages(
-                [full_conversation, state["final_env_response"]]
-            )
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+        observable = cast(Messages, state.get("_observable_messages", []))
+        prompt = cast(Messages, state.get("prompt", []))
+        state["completion"] = _clone_messages(observable[len(prompt) :])
 
     async def post_rollout(self, state: State):
         """Read final answer from worker if not already set."""
