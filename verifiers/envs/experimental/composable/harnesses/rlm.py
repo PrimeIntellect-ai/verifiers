@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Iterator
-from collections.abc import Iterable
 from contextlib import contextmanager
 import fcntl
 from importlib.abc import Traversable
@@ -46,18 +45,6 @@ def _validate_local_checkout(path: Path) -> Path:
             f"RLM local checkout must be a git checkout or worktree: {path}"
         )
     return path
-
-
-def _discover_local_checkout(search_dirs: Iterable[str | Path]) -> Path | None:
-    for search_dir in search_dirs:
-        candidate = Path(search_dir).expanduser().resolve() / "rlm"
-        if not candidate.is_dir():
-            continue
-        try:
-            return _validate_local_checkout(candidate)
-        except ValueError:
-            continue
-    return None
 
 
 def _slugify_cache_component(text: str) -> str:
@@ -175,21 +162,21 @@ def ensure_local_checkout(
     *,
     rlm_repo_url: str,
     rlm_branch: str,
-    local_checkout_cache_dir: str | Path | None = None,
+    local_checkout: str | Path | None = None,
     gh_token: str | None = None,
 ) -> Path:
-    cache_dir = (
-        Path(local_checkout_cache_dir).expanduser()
-        if local_checkout_cache_dir is not None
+    checkout_dir = (
+        Path(local_checkout).expanduser()
+        if local_checkout is not None
         else _default_local_checkout_cache_dir(rlm_repo_url, rlm_branch)
     ).resolve()
-    lock_path = cache_dir.parent / f".{cache_dir.name}.lock"
+    lock_path = checkout_dir.parent / f".{checkout_dir.name}.lock"
     with _checkout_lock(lock_path):
         try:
-            return _validate_local_checkout(cache_dir)
+            return _validate_local_checkout(checkout_dir)
         except ValueError:
             return _clone_checkout(
-                cache_dir,
+                checkout_dir,
                 rlm_repo_url=rlm_repo_url,
                 rlm_branch=rlm_branch,
                 gh_token=gh_token,
@@ -201,19 +188,12 @@ def resolve_local_checkout(
     *,
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_branch: str = DEFAULT_RLM_BRANCH,
-    local_checkout_search_dirs: Iterable[str | Path] | None = None,
-    local_checkout_cache_dir: str | Path | None = None,
     gh_token: str | None = None,
 ) -> Path:
-    if local_checkout is not None:
-        return _validate_local_checkout(Path(local_checkout))
-    discovered_checkout = _discover_local_checkout(local_checkout_search_dirs or ())
-    if discovered_checkout is not None:
-        return discovered_checkout
     return ensure_local_checkout(
         rlm_repo_url=rlm_repo_url,
         rlm_branch=rlm_branch,
-        local_checkout_cache_dir=local_checkout_cache_dir,
+        local_checkout=local_checkout,
         gh_token=gh_token,
     )
 
@@ -266,16 +246,12 @@ def rlm_harness(
     rlm_branch: str = DEFAULT_RLM_BRANCH,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
-    local_checkout_search_dirs: Iterable[str | Path] | None = None,
-    local_checkout_cache_dir: str | Path | None = None,
     gh_token: str | None = None,
 ) -> Harness:
     resolved_local_checkout = resolve_local_checkout(
         local_checkout,
         rlm_repo_url=rlm_repo_url,
         rlm_branch=rlm_branch,
-        local_checkout_search_dirs=local_checkout_search_dirs,
-        local_checkout_cache_dir=local_checkout_cache_dir,
         gh_token=gh_token,
     )
     upload_dirs: dict[str, Traversable | Path] = {

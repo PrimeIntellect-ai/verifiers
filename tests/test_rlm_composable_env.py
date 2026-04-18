@@ -20,6 +20,7 @@ from verifiers.envs.experimental.composable import (
     SandboxSpec,
     SandboxTaskSet,
 )
+from verifiers.envs.experimental.composable.harnesses import rlm as rlm_module
 from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
     rlm_harness,
@@ -145,18 +146,6 @@ def test_resolve_local_checkout_validates_explicit_path(tmp_path):
     assert resolved == checkout.resolve()
 
 
-def test_resolve_local_checkout_discovers_search_dir(tmp_path):
-    search_root = tmp_path / "rlm_swe"
-    search_root.mkdir()
-    checkout = _make_git_checkout(search_root / "rlm")
-
-    resolved = resolve_local_checkout(
-        local_checkout_search_dirs=[search_root],
-    )
-
-    assert resolved == checkout.resolve()
-
-
 def test_rlm_harness_uploads_explicit_local_checkout(tmp_path):
     checkout = _make_git_checkout(tmp_path / "rlm")
 
@@ -168,42 +157,48 @@ def test_rlm_harness_uploads_explicit_local_checkout(tmp_path):
 
 def test_resolve_local_checkout_materializes_host_cache(tmp_path):
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
-    cache_dir = tmp_path / "cache" / "rlm"
+    checkout_dir = tmp_path / "checkout-root" / "rlm"
 
     resolved = resolve_local_checkout(
+        local_checkout=checkout_dir,
         rlm_repo_url=str(source_checkout),
         rlm_branch="main",
-        local_checkout_cache_dir=cache_dir,
     )
 
-    assert resolved == cache_dir.resolve()
-    assert (cache_dir / ".git").is_dir()
-    assert (cache_dir / "install.sh").is_file()
-    assert (cache_dir / "pyproject.toml").is_file()
+    assert resolved == checkout_dir.resolve()
+    assert (checkout_dir / ".git").is_dir()
+    assert (checkout_dir / "install.sh").is_file()
+    assert (checkout_dir / "pyproject.toml").is_file()
 
 
-def test_rlm_harness_uses_host_cache_when_no_local_checkout(tmp_path):
+def test_rlm_harness_uses_default_host_cache_when_local_checkout_unspecified(
+    tmp_path, monkeypatch
+):
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
-    cache_dir = tmp_path / "cache" / "rlm"
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
 
     harness = rlm_harness(
         rlm_repo_url=str(source_checkout),
         rlm_branch="main",
-        local_checkout_cache_dir=cache_dir,
     )
 
-    assert harness.upload_dirs == {"rlm_checkout": cache_dir.resolve()}
+    upload_checkout = harness.upload_dirs["rlm_checkout"]
+    assert isinstance(upload_checkout, Path)
+    assert upload_checkout.is_dir()
+    assert upload_checkout.name.startswith("rlm-source-main-")
     assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
 
 
 def test_rlm_harness_always_uploads_checkout(tmp_path):
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
-    cache_dir = tmp_path / "cache" / "rlm"
 
     harness = rlm_harness(
         rlm_repo_url=str(source_checkout),
         rlm_branch="main",
-        local_checkout_cache_dir=cache_dir,
     )
 
     assert harness.upload_dirs is not None
