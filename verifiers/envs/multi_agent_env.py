@@ -1,20 +1,20 @@
-"""MultiAgentEnv: generic N-actor rollout loop on the Environment contract.
+"""MultiAgentEnv: generic N-agent rollout loop on the Environment contract.
 
-Abstracts out the actor-agnostic machinery shared by multi-actor
+Abstracts out the agent-agnostic machinery shared by multi-agent
 environments (debate, RPS, PD, proposer-solver, ...):
 
 - Slot-scheduled rollout loop (sequential and simultaneous barriers).
 - Stop conditions with priority ordering (error > schedule_exhausted >
   prompt_too_long).
-- Per-member actor resolution for self-play / adapters / fixed-opponent.
+- Per-member agent resolution for self-play / adapters / fixed-opponent.
 - Atomic simultaneous-slot commit (all commits land or none do).
 
 Subclasses implement only the domain-specific bits: ``build_prompt``,
 ``render_completion``, optional ``extract_fields`` / ``visibility_policy``.
 
 Design note — NOT a MultiTurnEnv subclass: ``MultiTurnEnv.rollout`` is
-``@final`` and shaped for a single (env → actor → env) conversation.
-Multi-actor rollouts are N speakers sharing a transcript — a different
+``@final`` and shaped for a single (env → agent → env) conversation.
+Multi-agent rollouts are N speakers sharing a transcript — a different
 shape that warrants a sibling of MultiTurnEnv, not a subclass.
 """
 
@@ -27,7 +27,7 @@ from typing import Any, Literal, final
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.multi_actor_kernel import (
+from verifiers.envs.multi_agent_kernel import (
     KernelState,
     SlotProgram,
     TurnSlot,
@@ -64,7 +64,7 @@ VisibilityMode = Literal["full", "public_only", "hidden"]
 
 
 class MultiAgentEnv(vf.Environment):
-    """Generic N-actor rollout environment.
+    """Generic N-agent rollout environment.
 
     Rollout contract::
 
@@ -72,7 +72,7 @@ class MultiAgentEnv(vf.Environment):
         while not is_completed:
             slot = schedule.current_slot(kernel)
             if slot is None: break
-            if len(slot.actors) > 1: run_simultaneous_slot
+            if len(slot.agents) > 1: run_simultaneous_slot
             else:                   run_sequential_slot
         render_completion
 
@@ -90,7 +90,7 @@ class MultiAgentEnv(vf.Environment):
         *,
         schedule: SlotProgram,
         members: list[str],
-        actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         think_tag: str = "thinking",
         **kwargs: Any,
     ) -> None:
@@ -101,17 +101,17 @@ class MultiAgentEnv(vf.Environment):
             raise ValueError(
                 f"MultiAgentEnv.members contains duplicates: {members}"
             )
-        overrides = actor_overrides or {}
+        overrides = agent_overrides or {}
         stray = set(overrides) - set(members)
         if stray:
             raise ValueError(
-                f"actor_overrides keys not in members: {sorted(stray)} "
+                f"agent_overrides keys not in members: {sorted(stray)} "
                 f"(members={members})"
             )
 
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
-        self.actor_overrides: dict[str, tuple[Client | None, str | None]] = dict(
+        self.agent_overrides: dict[str, tuple[Client | None, str | None]] = dict(
             overrides
         )
         self.think_tag = think_tag
@@ -142,11 +142,11 @@ class MultiAgentEnv(vf.Environment):
         """
         return None
 
-    def resolve_actor(
+    def resolve_agent(
         self, member_id: str
     ) -> tuple[Client | None, str | None]:
         """Return (client, model) override for ``member_id`` or (None, None)."""
-        return self.actor_overrides.get(member_id, (None, None))
+        return self.agent_overrides.get(member_id, (None, None))
 
     def visibility_policy(
         self, utt: Utterance, viewer_id: str
@@ -166,7 +166,7 @@ class MultiAgentEnv(vf.Environment):
     # -- prompt preparation --------------------------------------------------
 
     async def _prepare_prompt(
-        self, state: State, actor: str, slot: TurnSlot
+        self, state: State, agent: str, slot: TurnSlot
     ) -> Messages:
         """Subclass build_prompt → fold consecutive users → normalize.
 
@@ -175,7 +175,7 @@ class MultiAgentEnv(vf.Environment):
         AND so the token-stitch tail reduces to a _is_valid_env_tail-
         accepted shape (single trailing user, no (user,user) pairs).
         """
-        prompt = await self.build_prompt(state, actor, slot)
+        prompt = await self.build_prompt(state, agent, slot)
         prompt = fold_consecutive_user_messages(prompt)
         return maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
 
@@ -215,7 +215,7 @@ class MultiAgentEnv(vf.Environment):
                 if slot is None:
                     break
                 try:
-                    if len(slot.actors) > 1:
+                    if len(slot.agents) > 1:
                         await self._run_simultaneous_slot(state, slot)
                     else:
                         await self._run_sequential_slot(state, slot)
@@ -235,17 +235,17 @@ class MultiAgentEnv(vf.Environment):
     async def _run_sequential_slot(
         self, state: State, slot: TurnSlot
     ) -> None:
-        actor = slot.actors[0]
-        prompt = await self._prepare_prompt(state, actor, slot)
-        actor_client, actor_model = self.resolve_actor(actor)
+        agent = slot.agents[0]
+        prompt = await self._prepare_prompt(state, agent, slot)
+        agent_client, agent_model = self.resolve_agent(agent)
         parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
         response = await self.get_model_response(
             state,
             prompt,
-            client=actor_client,
-            model=actor_model,
+            client=agent_client,
+            model=agent_model,
             request_context=ModelRequestContext(
-                lineage_key=actor,
+                lineage_key=agent,
                 usage_tracker=parent_tracker,
             ),
         )
@@ -253,12 +253,12 @@ class MultiAgentEnv(vf.Environment):
         token_count = _completion_token_count(response)
 
         result = apply_action(
-            state["_kernel"], self.schedule, actor, content, token_count,
+            state["_kernel"], self.schedule, agent, content, token_count,
             think_tag=self.think_tag,
         )
         state["_kernel"] = result.new_state
         utt = result.committed[0]
-        fields = await self.extract_fields(utt.public_channel, actor, slot)
+        fields = await self.extract_fields(utt.public_channel, agent, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
         state["trajectory"].append(step)
 
@@ -277,26 +277,26 @@ class MultiAgentEnv(vf.Environment):
              tokens, no late completions leaking into the shared usage
              tracker after the slot is doomed.
           2. Stage: fold responses into a local kernel (the real
-             state["_kernel"] is NOT touched), build per-actor
+             state["_kernel"] is NOT touched), build per-agent
              TrajectorySteps, run extract_fields. Any raise here discards
              the local buffers entirely.
           3. Publish: append every TrajectoryStep, assign
-             state["_kernel"] and merge per-actor usage trackers. These
+             state["_kernel"] and merge per-agent usage trackers. These
              writes are all non-await, so if we reach phase 3 the slot
              succeeds atomically.
         """
-        prompts = [await self._prepare_prompt(state, a, slot) for a in slot.actors]
-        overrides = [self.resolve_actor(a) for a in slot.actors]
+        prompts = [await self._prepare_prompt(state, a, slot) for a in slot.agents]
+        overrides = [self.resolve_agent(a) for a in slot.agents]
 
-        # Per-actor request contexts isolate the prefix-cache partition key
+        # Per-agent request contexts isolate the prefix-cache partition key
         # (``lineage_key``) and usage accounting across concurrent branches
         # without cloning the shared rollout state. Every branch charges a
         # child tracker; only the publish phase merges them back into the
         # parent, so a doomed slot never leaks token usage.
         parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
-        per_actor_trackers: list[StateUsageTracker | None] = [
+        per_agent_trackers: list[StateUsageTracker | None] = [
             parent_tracker.fork() if parent_tracker is not None else None
-            for _ in slot.actors
+            for _ in slot.agents
         ]
 
         # Phase 1: fan out under TaskGroup. First raise cancels siblings,
@@ -304,7 +304,7 @@ class MultiAgentEnv(vf.Environment):
         # TaskGroup wraps failures in ExceptionGroup; unwrap to the first
         # OverlongPromptError / vf.Error so the rollout loop's normal
         # except clauses continue to work.
-        responses: list[Response] = [None] * len(slot.actors)  # type: ignore[list-item]
+        responses: list[Response] = [None] * len(slot.agents)  # type: ignore[list-item]
 
         async def _run_one(idx: int) -> None:
             p = prompts[idx]
@@ -315,15 +315,15 @@ class MultiAgentEnv(vf.Environment):
                 client=o[0],
                 model=o[1],
                 request_context=ModelRequestContext(
-                    lineage_key=slot.actors[idx],
-                    usage_tracker=per_actor_trackers[idx],
+                    lineage_key=slot.agents[idx],
+                    usage_tracker=per_agent_trackers[idx],
                 ),
             )
 
         # Catch the whole ExceptionGroup (BaseExceptionGroup so we don't
         # depend on a specific subclass). Then manually flatten + select a
         # single concrete exception to re-raise. We CANNOT use chained
-        # ``except* X`` / ``except* Y`` clauses here: when actors raise
+        # ``except* X`` / ``except* Y`` clauses here: when agents raise
         # different vf.Error subclasses (e.g. one OverlongPromptError + one
         # generic vf.Error), BOTH except* branches fire and BOTH re-raises
         # are wrapped into a NEW ExceptionGroup at the call site, which the
@@ -333,7 +333,7 @@ class MultiAgentEnv(vf.Environment):
         # on state.
         try:
             async with asyncio.TaskGroup() as tg:
-                for i in range(len(slot.actors)):
+                for i in range(len(slot.agents)):
                     tg.create_task(_run_one(i))
         except BaseException as eg:
             if not isinstance(eg, _BASE_EXCEPTION_GROUP_TYPES):
@@ -358,27 +358,27 @@ class MultiAgentEnv(vf.Environment):
         staged_kernel = state["_kernel"]
         staged_steps: list[TrajectoryStep] = []
         committed_utts: list[Utterance] = []
-        for actor, response in zip(slot.actors, responses):
+        for agent, response in zip(slot.agents, responses):
             content = response.message.content or ""
             token_count = _completion_token_count(response)
             result = apply_action(
-                staged_kernel, self.schedule, actor, content, token_count,
+                staged_kernel, self.schedule, agent, content, token_count,
                 think_tag=self.think_tag,
             )
             staged_kernel = result.new_state
             if result.committed:
                 committed_utts.extend(result.committed)
 
-        if len(committed_utts) != len(slot.actors):
+        if len(committed_utts) != len(slot.agents):
             raise vf.Error(
                 f"simultaneous slot {slot.slot_id}: expected "
-                f"{len(slot.actors)} commits, got {len(committed_utts)}"
+                f"{len(slot.agents)} commits, got {len(committed_utts)}"
             )
 
-        for actor, prompt, response, utt in zip(
-            slot.actors, prompts, responses, committed_utts
+        for agent, prompt, response, utt in zip(
+            slot.agents, prompts, responses, committed_utts
         ):
-            fields = await self.extract_fields(utt.public_channel, actor, slot)
+            fields = await self.extract_fields(utt.public_channel, agent, slot)
             step = await self._build_step(state, prompt, response, utt, fields)
             staged_steps.append(step)
 
@@ -390,7 +390,7 @@ class MultiAgentEnv(vf.Environment):
             state["trajectory"].append(step)
         state["_kernel"] = staged_kernel
         if isinstance(parent_tracker, StateUsageTracker):
-            for child in per_actor_trackers:
+            for child in per_agent_trackers:
                 if child is not None:
                     parent_tracker.merge(child)
 

@@ -1,11 +1,11 @@
-"""Contract for multi-actor rubrics.
+"""Contract for multi-agent rubrics.
 
 Subclasses build and return a ``MARScore`` covering every member. The
 base class writes it onto ``state["mar_score"]`` and owns the rollout /
 group error boundary. The bridge reads ``mar_score`` directly;
 ``state_to_output`` projects it to legacy keys (``output["reward"]``,
 flat top-level metrics) at the serialization boundary so downstream
-consumers (wandb, GRPO advantage) see the same shape as single-actor
+consumers (wandb, GRPO advantage) see the same shape as single-agent
 rubrics.
 """
 
@@ -20,7 +20,7 @@ from verifiers.types import MARScore, MemberScore, State
 
 
 class MultiAgentRubric(Rubric):
-    """Base class for multi-actor scoring.
+    """Base class for multi-agent scoring.
 
     Subclasses implement ``build_marscore(state) -> MARScore``. The base
     class owns the rollout/group boundary:

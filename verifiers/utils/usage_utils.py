@@ -58,7 +58,7 @@ class StateUsageTracker:
 
     ``fork()`` returns a zero-initialised child tracker; ``merge(other)``
     absorbs the child's accumulated deltas. Used by ``MultiAgentEnv``'s
-    simultaneous slot to isolate per-actor accounting: if the slot fails,
+    simultaneous slot to isolate per-agent accounting: if the slot fails,
     the forked trackers are dropped and the parent stays at its pre-slot
     snapshot (no orphan tokens billed to a rolled-back slot).
     """
@@ -115,7 +115,7 @@ class StateUsageTracker:
         """Absorb another tracker's accumulated deltas into this one.
 
         Called in the success phase of a simultaneous-slot commit to fold
-        per-actor usage into the shared tracker. If the slot fails, the
+        per-agent usage into the shared tracker. If the slot fails, the
         child trackers are dropped and no merge happens — the shared
         tracker stays at its pre-slot snapshot.
         """

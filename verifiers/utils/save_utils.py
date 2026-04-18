@@ -229,10 +229,10 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    # MARScore: single source of truth for multi-actor episode scoring.
+    # MARScore: single source of truth for multi-agent episode scoring.
     # Project to legacy keys (output["reward"], top-level metrics) one-way
     # at the boundary so downstream (wandb, GRPO advantage) sees the same
-    # shape as single-actor envs while the bridge reads the typed payload.
+    # shape as single-agent envs while the bridge reads the typed payload.
     mar = state.get("mar_score")
     if mar is not None:
         if not isinstance(mar, MARScore):
@@ -242,7 +242,7 @@ def state_to_output(
         for k, v in mar.to_wandb_flat().items():
             output[k] = v
     else:
-        # Single-actor legacy path: rubric writes state["metrics"] directly.
+        # Single-agent legacy path: rubric writes state["metrics"] directly.
         state_metrics = state.get("metrics") or {}
         for k, v in state_metrics.items():
             output[k] = v

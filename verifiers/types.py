@@ -290,7 +290,7 @@ class RolloutOutput(dict):
 
 
 class MemberRollout(TypedDict):
-    """RolloutOutput-compatible dict with per-member multi-actor metadata."""
+    """RolloutOutput-compatible dict with per-member multi-agent metadata."""
 
     # Training-path fields (read by pretokenize -> interleave -> TrainingSample).
     example_id: int | str
@@ -300,7 +300,7 @@ class MemberRollout(TypedDict):
     error: ErrorInfo | None
     reward: float
 
-    # Multi-actor metadata
+    # Multi-agent metadata
     episode_id: str
     member_id: str
     role_id: str
@@ -398,7 +398,7 @@ class GenerateOutputs(TypedDict):
 
 
 class MemberScore(CustomBaseModel):
-    """Per-member outcome of one episode in a multi-actor rollout.
+    """Per-member outcome of one episode in a multi-agent rollout.
 
     The bridge consumes ``reward`` (training signal) and ``role_id``
     (advantage-baseline partition key). ``metrics`` projects to wandb

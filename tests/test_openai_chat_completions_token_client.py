@@ -168,7 +168,7 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
     """No prefix match → fall back to the parent client's non-token path,
     AND verify ``get_native_response`` threads explicit ``lineage_key``
     into ``get_prompt_ids`` as a kwarg. The lineage key is the per-member
-    prefix-cache partition key added for multi-actor envs; a regression
+    prefix-cache partition key added for multi-agent envs; a regression
     that drops it would revert the cache to first-match behavior and
     cross-contaminate across speakers."""
     client = OpenAIChatCompletionsTokenClient(_NoopClient())
@@ -244,7 +244,7 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
 async def test_get_native_response_lineage_key_absent_when_state_lacks_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Single-actor envs don't pass lineage_key; it must default to None
+    """Single-agent envs don't pass lineage_key; it must default to None
     so ``get_prompt_ids`` falls back to the unfiltered legacy behavior."""
     client = OpenAIChatCompletionsTokenClient(_NoopClient())
     prompt_ids_calls: list[dict[str, Any]] = []

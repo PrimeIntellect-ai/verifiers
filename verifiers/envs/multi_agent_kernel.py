@@ -1,4 +1,4 @@
-"""Pure-functional multi-actor episode kernel."""
+"""Pure-functional multi-agent episode kernel."""
 
 from __future__ import annotations
 
@@ -14,24 +14,24 @@ from verifiers.errors import ContentParseError, KernelProtocolError
 class TurnSlot:
     """One step in the schedule.
 
-    len(actors) == 1 → sequential (commit immediately).
-    len(actors) > 1  → simultaneous (barrier until all submit).
+    len(agents) == 1 → sequential (commit immediately).
+    len(agents) > 1  → simultaneous (barrier until all submit).
     """
 
     slot_id: int
-    actors: tuple[str, ...]
+    agents: tuple[str, ...]
     phase: str = ""
 
     def __post_init__(self) -> None:
-        if not self.actors:
-            raise ValueError("TurnSlot.actors must be non-empty")
-        if len(self.actors) != len(set(self.actors)):
-            raise ValueError(f"TurnSlot.actors contains duplicates: {self.actors}")
+        if not self.agents:
+            raise ValueError("TurnSlot.agents must be non-empty")
+        if len(self.agents) != len(set(self.agents)):
+            raise ValueError(f"TurnSlot.agents contains duplicates: {self.agents}")
 
 
 @dataclass(frozen=True)
 class Utterance:
-    """Structured actor output committed to the transcript.
+    """Structured agent output committed to the transcript.
 
     Three channels, populated once at commit time by ``parse_channels``:
 
@@ -238,10 +238,10 @@ def apply_action(
     if slot is None:
         raise KernelProtocolError("No active slot — episode is finished")
 
-    if member_id not in slot.actors:
+    if member_id not in slot.agents:
         raise KernelProtocolError(
             f"Member {member_id!r} is not scheduled for slot {slot.slot_id} "
-            f"(expected one of {slot.actors})"
+            f"(expected one of {slot.agents})"
         )
 
     if member_id in state.pending:
@@ -249,9 +249,9 @@ def apply_action(
             f"Member {member_id!r} already submitted for slot {slot.slot_id}"
         )
 
-    # Quarantine parse failures on model output: one actor's formatting
+    # Quarantine parse failures on model output: one agent's formatting
     # slip must not DoS the whole episode. Kernel-state violations (wrong
-    # actor, duplicate, finished) are raised above and still abort.
+    # agent, duplicate, finished) are raised above and still abort.
     try:
         public, private = parse_channels(raw_content, think_tag)
         parse_error: str | None = None
@@ -272,7 +272,7 @@ def apply_action(
     )
 
     # Sequential: commit immediately
-    if len(slot.actors) == 1:
+    if len(slot.agents) == 1:
         return ActionResult(
             new_state=replace(
                 state,
@@ -282,11 +282,11 @@ def apply_action(
             committed=(utterance,),
         )
 
-    # Simultaneous: buffer until all actors submit
+    # Simultaneous: buffer until all agents submit
     new_pending = {**state.pending, member_id: utterance}
 
-    if len(new_pending) == len(slot.actors):
-        committed = tuple(new_pending[actor] for actor in slot.actors)
+    if len(new_pending) == len(slot.agents):
+        committed = tuple(new_pending[agent] for agent in slot.agents)
         return ActionResult(
             new_state=replace(
                 state,

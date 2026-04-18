@@ -1,4 +1,4 @@
-"""Split a multi-actor RolloutOutput into per-member training rollouts."""
+"""Split a multi-agent RolloutOutput into per-member training rollouts."""
 
 from __future__ import annotations
 

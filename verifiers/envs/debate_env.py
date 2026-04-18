@@ -24,7 +24,7 @@ from verifiers.envs.debate.prompts import (
     build_context,
     resolve_prompts,
 )
-from verifiers.envs.multi_actor_kernel import (
+from verifiers.envs.multi_agent_kernel import (
     KernelState,
     SlotProgram,
     StaticSchedule,
@@ -45,7 +45,7 @@ class DebateEnv(MultiAgentEnv):
       1. :meth:`build_prompt`  -- render via DebatePrompts
       2. :meth:`extract_fields` -- XML field parsing from public channel
       3. :meth:`visibility_policy` -- derived from ``think_visibility``
-      4. :meth:`role_for_member` -- via ``role_for_actor`` map
+      4. :meth:`role_for_member` -- via ``role_for_agent`` map
       5. :meth:`render_completion` -- flatten trajectory into messages
     """
 
@@ -55,14 +55,14 @@ class DebateEnv(MultiAgentEnv):
         prompts: DebatePrompts,
         members: list[str],
         *,
-        role_for_actor: dict[str, str] | None = None,
-        actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        role_for_agent: dict[str, str] | None = None,
+        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
             schedule=schedule,
             members=members,
-            actor_overrides=actor_overrides,
+            agent_overrides=agent_overrides,
             think_tag=prompts.think_tag,
             **kwargs,
         )
@@ -81,48 +81,48 @@ class DebateEnv(MultiAgentEnv):
                 f"round_index and reward attribution key off them."
             )
 
-        # Cross-check 2: for StaticSchedule, unique slot actors must equal
+        # Cross-check 2: for StaticSchedule, unique slot agents must equal
         # the declared members set. Dynamic SlotProgram implementations
-        # are exempt (actor set may be data-dependent).
+        # are exempt (agent set may be data-dependent).
         if isinstance(schedule, StaticSchedule):
-            slot_actors: set[str] = set()
+            slot_agents: set[str] = set()
             for slot in schedule._slots:
-                slot_actors.update(slot.actors)
+                slot_agents.update(slot.agents)
             member_set = set(members)
-            if slot_actors != member_set:
+            if slot_agents != member_set:
                 raise ValueError(
-                    f"DebateEnv.members != unique actors in StaticSchedule\n"
+                    f"DebateEnv.members != unique agents in StaticSchedule\n"
                     f"  members          : {sorted(member_set)}\n"
-                    f"  schedule actors  : {sorted(slot_actors)}\n"
-                    f"  in members only  : {sorted(member_set - slot_actors)}\n"
-                    f"  in schedule only : {sorted(slot_actors - member_set)}"
+                    f"  schedule agents  : {sorted(slot_agents)}\n"
+                    f"  in members only  : {sorted(member_set - slot_agents)}\n"
+                    f"  in schedule only : {sorted(slot_agents - member_set)}"
                 )
 
         self.prompts = prompts
-        self._role_for_actor: dict[str, str] = dict(role_for_actor or {})
+        self._role_for_agent: dict[str, str] = dict(role_for_agent or {})
 
     # -- role resolution -----------------------------------------------------
 
     def role_for_member(self, member_id: str) -> str:
-        return self._role_for_actor.get(member_id, member_id)
+        return self._role_for_agent.get(member_id, member_id)
 
     def _member_round_count(self, member_id: str) -> int:
-        """Count schedule slots where ``member_id`` participates as actor.
+        """Count schedule slots where ``member_id`` participates as agent.
 
         Correct under:
-          - sequential schedules (one actor per slot) — gives slots/N.
-          - simultaneous schedules (N actors per slot) — gives per-member
+          - sequential schedules (one agent per slot) — gives slots/N.
+          - simultaneous schedules (N agents per slot) — gives per-member
             slot count, not the full slot count.
           - judge-inclusive schedules where a member (e.g. judge) appears
             in fewer slots than debaters.
         Falls back to 1 for dynamic (non-iterable) schedules; construction-
         time cross-check rejects mismatch between members and schedule
-        actor set for the static case.
+        agent set for the static case.
         """
         slots = getattr(self.schedule, "_slots", None)
         if slots is None:
             return 1
-        count = sum(1 for slot in slots if member_id in slot.actors)
+        count = sum(1 for slot in slots if member_id in slot.agents)
         return max(count, 1)
 
     # -- visibility policy ---------------------------------------------------
@@ -181,71 +181,101 @@ class DebateEnv(MultiAgentEnv):
         kernel_state: KernelState = state["_kernel"]
         role = self.role_for_member(member_id)
         question = _extract_question(state)
-
-        # Per-member num_rounds: count slots where this member participates
-        # as an actor. Independent of global slot count so simultaneous
-        # schedules (N actors in 1 slot) and judge-inclusive schedules (one
-        # member participates in fewer slots) both give correct
-        # is_first_round / is_last_round flags. For schedules that don't
-        # expose slot iteration (dynamic), fall back to 1 — the static
-        # check above already rejects that case at construction for non-
-        # dynamic schedules.
         num_rounds = self._member_round_count(member_id)
-
-        def _ctx_for(round_idx: int, phase: str) -> dict[str, Any]:
-            return build_context(
-                task_prompt=question,
-                viewer_role=role,
-                phase=phase,
-                round_index=round_idx,
-                num_rounds=num_rounds,
-                answer=state.get("answer", ""),
-            )
-
-        # Positional round_index: count own commits already in the
-        # transcript. Independent of slot_id values (which may be
-        # sparse/semantic for custom schedules) — the N-th own turn is
-        # always round N.
-        own_commits_so_far = sum(
+        current_round = sum(
             1 for u in kernel_state.transcript if u.member_id == member_id
         )
-        current_round = own_commits_so_far
-        ctx_current = _ctx_for(current_round, slot.phase)
+        ctx_current = self._build_prompt_context(
+            state, role, slot.phase, current_round, num_rounds, question
+        )
 
         msgs: list[dict[str, str]] = [
             {"role": "system", "content": self.prompts.render_system(role, ctx_current)},
         ]
-
         q_text = self.prompts.render_question(role, ctx_current)
         if q_text:
             msgs.append({"role": "user", "content": q_text})
 
-        viewer_role = role
-        # Positional round counter for own turns. Independent of slot_id
-        # arithmetic so sparse / semantic slot_id schemes don't produce
-        # nonsensical round labels in re-rendered past instructions.
         own_round_so_far = 0
         for utt in kernel_state.transcript:
             if utt.member_id == member_id:
-                past_ctx = _ctx_for(own_round_so_far, utt.phase)
-                past_instr = self.prompts.render_instruction(
-                    role, utt.phase, past_ctx
+                msgs.extend(
+                    self._render_own_turn(
+                        utt, role, own_round_so_far, num_rounds, question, state
+                    )
                 )
-                if past_instr:
-                    msgs.append({"role": "user", "content": past_instr})
-                msgs.append({"role": "assistant", "content": utt.raw_content})
                 own_round_so_far += 1
             else:
-                msgs.append(self._render_opponent_message(utt, member_id, viewer_role))
+                msgs.append(self._render_opponent_message(utt, member_id, role))
 
+        msgs.extend(self._render_current_suffix(role, slot, ctx_current))
+        return msgs
+
+    # -- build_prompt helpers ------------------------------------------------
+
+    def _build_prompt_context(
+        self,
+        state: State,
+        role: str,
+        phase: str,
+        round_index: int,
+        num_rounds: int,
+        question: str,
+    ) -> dict[str, Any]:
+        """Assemble the Jinja context dict for one (role, phase, round).
+
+        ``num_rounds`` is per-member (see ``_member_round_count``) so
+        is_first_round / is_last_round flags stay correct under
+        simultaneous and judge-inclusive schedules.
+        """
+        return build_context(
+            task_prompt=question,
+            viewer_role=role,
+            phase=phase,
+            round_index=round_index,
+            num_rounds=num_rounds,
+            answer=state.get("answer", ""),
+        )
+
+    def _render_own_turn(
+        self,
+        utt: Utterance,
+        role: str,
+        round_index: int,
+        num_rounds: int,
+        question: str,
+        state: State,
+    ) -> list[dict[str, str]]:
+        """Render one own-turn utterance as ``[instruction, assistant=raw]``.
+
+        Re-renders the instruction that preceded ``utt`` using the past
+        turn's own (phase, round_index), then emits the verbatim
+        ``raw_content`` as the assistant message. ``round_index`` is the
+        positional own-turn counter (N-th own commit = round N),
+        independent of slot_id so sparse / semantic slot_ids don't
+        produce nonsensical round labels.
+        """
+        past_ctx = self._build_prompt_context(
+            state, role, utt.phase, round_index, num_rounds, question
+        )
+        msgs: list[dict[str, str]] = []
+        past_instr = self.prompts.render_instruction(role, utt.phase, past_ctx)
+        if past_instr:
+            msgs.append({"role": "user", "content": past_instr})
+        msgs.append({"role": "assistant", "content": utt.raw_content})
+        return msgs
+
+    def _render_current_suffix(
+        self, role: str, slot: TurnSlot, ctx_current: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        """Render the tail of the prompt: current instruction + optional prefill."""
+        msgs: list[dict[str, str]] = []
         instruction = self.prompts.render_instruction(role, slot.phase, ctx_current)
         if instruction:
             msgs.append({"role": "user", "content": instruction})
-
         prefill = self.prompts.render_prefill(role, slot.phase, ctx_current)
         if prefill:
             msgs.append({"role": "assistant", "content": prefill})
-
         return msgs
 
     def _format_history(
@@ -322,27 +352,27 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         collisions, non-empty judge templates)
       * ``DebateRubric.__init__``        — judge-client gate, client type
       * ``DebateEnv.__init__``           — cross-component coherence
-        (env.members == rubric.members, schedule actors ⊆ members)
+        (env.members == rubric.members, schedule agents ⊆ members)
 
     Usage::
 
         env = load_environment(
             schedule_slots=[
-                {"slot_id": 0, "actors": ["A"], "phase": "propose"},
-                {"slot_id": 1, "actors": ["B"], "phase": "propose"},
-                {"slot_id": 2, "actors": ["J"], "phase": "final"},
+                {"slot_id": 0, "agents": ["A"], "phase": "propose"},
+                {"slot_id": 1, "agents": ["B"], "phase": "propose"},
+                {"slot_id": 2, "agents": ["J"], "phase": "final"},
             ],
             members=["A", "B", "J"],
             truth_role="debater_a",
             prompts_ref="selfplay",
-            role_for_actor={"A": "debater_a", "B": "debater_b", "J": "judge"},
+            role_for_agent={"A": "debater_a", "B": "debater_b", "J": "judge"},
             eval_dataset=my_dataset,
         )
 
     Required: schedule_slots, members, truth_role.
     Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
     or ``prompts`` (already-built DebatePrompts).
-    Optional: role_for_actor, actor_overrides, judge_client OR
+    Optional: role_for_agent, agent_overrides, judge_client OR
     (judge_api_key + judge_base_url + judge_max_retries), judge_model,
     dataset/eval_dataset.
     """
@@ -352,7 +382,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         tuple(
             TurnSlot(
                 slot_id=s["slot_id"],
-                actors=tuple(s["actors"]),
+                agents=tuple(s["agents"]),
                 phase=s.get("phase", ""),
             )
             for s in kwargs.pop("schedule_slots")
@@ -379,8 +409,8 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         schedule=schedule,
         prompts=prompts,
         members=kwargs.pop("members"),
-        role_for_actor=kwargs.pop("role_for_actor", None),
-        actor_overrides=kwargs.pop("actor_overrides", None),
+        role_for_agent=kwargs.pop("role_for_agent", None),
+        agent_overrides=kwargs.pop("agent_overrides", None),
         rubric=rubric,
         **kwargs,
     )
