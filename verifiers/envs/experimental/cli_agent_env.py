@@ -383,7 +383,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         state["error"] = error
                         self.logger.error(str(error))
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.poll_interval)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""
