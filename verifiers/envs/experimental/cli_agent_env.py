@@ -344,6 +344,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         except asyncio.TimeoutError:
             self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
             state["agent_timed_out"] = True
+            state["error"] = AgentError(
+                f"Agent timed out after {self.timeout_seconds}s"
+            )
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise
