@@ -42,7 +42,9 @@ def _validate_local_checkout(path: Path) -> Path:
             f"RLM local checkout is missing required files ({missing_list}): {path}"
         )
     if not (path / ".git").exists():
-        raise ValueError(f"RLM local checkout must be a git checkout or worktree: {path}")
+        raise ValueError(
+            f"RLM local checkout must be a git checkout or worktree: {path}"
+        )
     return path
 
 
@@ -69,7 +71,9 @@ def _default_local_checkout_cache_dir(
     rlm_branch: str,
 ) -> Path:
     repo_name = rlm_repo_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-    fingerprint = hashlib.sha256(f"{rlm_repo_url}\n{rlm_branch}".encode()).hexdigest()[:12]
+    fingerprint = hashlib.sha256(f"{rlm_repo_url}\n{rlm_branch}".encode()).hexdigest()[
+        :12
+    ]
     cache_name = (
         f"{_slugify_cache_component(repo_name)}-"
         f"{_slugify_cache_component(rlm_branch)}-{fingerprint}"
@@ -85,7 +89,9 @@ def _build_clone_url(
         token_prefix = f"{quote(gh_token, safe='')}@" if gh_token else ""
         return f"https://{token_prefix}{rlm_repo_url}"
 
-    if gh_token and rlm_repo_url.startswith(("https://github.com/", "http://github.com/")):
+    if gh_token and rlm_repo_url.startswith(
+        ("https://github.com/", "http://github.com/")
+    ):
         parsed = urlsplit(rlm_repo_url)
         if "@" not in parsed.netloc:
             return urlunsplit(
@@ -145,7 +151,9 @@ def _clone_checkout(
         )
     except FileNotFoundError as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError("git is required to populate the local RLM checkout cache") from exc
+        raise RuntimeError(
+            "git is required to populate the local RLM checkout cache"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
         detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
@@ -193,51 +201,28 @@ def resolve_local_checkout(
     *,
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_branch: str = DEFAULT_RLM_BRANCH,
-    prefer_local_checkout: bool = True,
     local_checkout_search_dirs: Iterable[str | Path] | None = None,
     local_checkout_cache_dir: str | Path | None = None,
     gh_token: str | None = None,
-) -> Path | None:
+) -> Path:
     if local_checkout is not None:
         return _validate_local_checkout(Path(local_checkout))
-    if prefer_local_checkout:
-        discovered_checkout = _discover_local_checkout(local_checkout_search_dirs or ())
-        if discovered_checkout is not None:
-            return discovered_checkout
-        return ensure_local_checkout(
-            rlm_repo_url=rlm_repo_url,
-            rlm_branch=rlm_branch,
-            local_checkout_cache_dir=local_checkout_cache_dir,
-            gh_token=gh_token,
-        )
-    return None
+    discovered_checkout = _discover_local_checkout(local_checkout_search_dirs or ())
+    if discovered_checkout is not None:
+        return discovered_checkout
+    return ensure_local_checkout(
+        rlm_repo_url=rlm_repo_url,
+        rlm_branch=rlm_branch,
+        local_checkout_cache_dir=local_checkout_cache_dir,
+        gh_token=gh_token,
+    )
 
 
-def build_install_script(
-    rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
-    rlm_branch: str = DEFAULT_RLM_BRANCH,
-) -> str:
+def build_install_script() -> str:
     script = f"""\
 set -eo pipefail
-command -v git >/dev/null 2>&1 || {{ apt-get update -qq && apt-get install -y -qq git; }}
-export RLM_REPO_URL={shlex.quote(rlm_repo_url)}
-export RLM_REPO_BRANCH={shlex.quote(rlm_branch)}
 export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
-if [ ! -f "$RLM_CHECKOUT_PATH/install.sh" ]; then
-    rm -rf "$RLM_CHECKOUT_PATH"
-    case "$RLM_REPO_URL" in
-        https://*|http://*)
-            CLONE_URL="$RLM_REPO_URL"
-            ;;
-        github.com/*)
-            CLONE_URL="https://${{GH_TOKEN:+${{GH_TOKEN}}@}}$RLM_REPO_URL"
-            ;;
-        *)
-            CLONE_URL="$RLM_REPO_URL"
-            ;;
-    esac
-    git clone --depth 1 --branch "$RLM_REPO_BRANCH" "$CLONE_URL" "$RLM_CHECKOUT_PATH"
-fi
+test -f "$RLM_CHECKOUT_PATH/install.sh"
 bash "$RLM_CHECKOUT_PATH/install.sh"
 """
     return f"bash -lc {shlex.quote(script)}"
@@ -281,7 +266,6 @@ def rlm_harness(
     rlm_branch: str = DEFAULT_RLM_BRANCH,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
-    prefer_local_checkout: bool = True,
     local_checkout_search_dirs: Iterable[str | Path] | None = None,
     local_checkout_cache_dir: str | Path | None = None,
     gh_token: str | None = None,
@@ -290,22 +274,18 @@ def rlm_harness(
         local_checkout,
         rlm_repo_url=rlm_repo_url,
         rlm_branch=rlm_branch,
-        prefer_local_checkout=prefer_local_checkout,
         local_checkout_search_dirs=local_checkout_search_dirs,
         local_checkout_cache_dir=local_checkout_cache_dir,
         gh_token=gh_token,
     )
-    upload_dirs: dict[str, Traversable | Path] | None = None
-    upload_dir_mapping: dict[str, str] | None = None
-    if resolved_local_checkout is not None:
-        upload_dirs = {
-            DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: resolved_local_checkout,
-        }
-        upload_dir_mapping = {
-            DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
-        }
+    upload_dirs: dict[str, Traversable | Path] = {
+        DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: resolved_local_checkout,
+    }
+    upload_dir_mapping: dict[str, str] = {
+        DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
+    }
     return Harness(
-        install_script=build_install_script(rlm_repo_url, rlm_branch),
+        install_script=build_install_script(),
         run_command=build_run_command(instruction_path, workdir),
         system_prompt=append_to_system_prompt,
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
