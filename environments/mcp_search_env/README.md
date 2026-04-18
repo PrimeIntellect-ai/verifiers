@@ -34,7 +34,7 @@ prime eval run mcp-search-env
 Configure model and sampling:
 
 ```bash
-prime eval run mcp-search-env   -m gpt-4.1-mini   -n 1 -r 1
+prime eval run mcp-search-env   -m openai/gpt-4.1-mini   -n 1 -r 1
 ```
 
 Notes:

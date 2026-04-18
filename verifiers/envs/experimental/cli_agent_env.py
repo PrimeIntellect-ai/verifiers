@@ -137,6 +137,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.add_rubric(SandboxMonitorRubric())
         self.add_rubric(CliAgentMonitorRubric())
 
+    TUNNEL_CHECK_INTERVAL = 60.0  # seconds between server-side liveness checks
+
     def init_interception(
         self,
         interception_port: int = 8765,
@@ -147,6 +149,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.interception_url = interception_url
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
+        self._tunnel_last_checked: float = 0.0
         self._interception_server = InterceptionServer(port=interception_port)
 
     def _require_interception_server(self) -> InterceptionServer:
@@ -165,6 +168,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self._tunnel.sync_stop()
                 self._tunnel = None
 
+            # Periodic server-side liveness check
+            if self._tunnel is not None:
+                now = time.time()
+                if now - self._tunnel_last_checked > self.TUNNEL_CHECK_INTERVAL:
+                    self._tunnel_last_checked = now
+                    try:
+                        registered = await self._tunnel.check_registered()
+                        if not registered:
+                            self.logger.warning(
+                                "Tunnel registration expired server-side, recreating."
+                            )
+                            self._tunnel.sync_stop()
+                            self._tunnel = None
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Tunnel health check failed (will retry): {e}"
+                        )
+
             if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
@@ -176,6 +197,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 else:
                     self._tunnel = Tunnel(local_port=port)
                 url = await self._tunnel.start()
+                self._tunnel_last_checked = time.time()
                 self.logger.debug(f"Prime Tunnel started: {url}")
                 return url
             else:
@@ -352,6 +374,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     self.logger.warning(
                         f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
                     )
+                    if len(state.get("trajectory", [])) == 0:
+                        stderr_snippet = (status.stderr or "")[:500]
+                        error = AgentError(
+                            f"Agent crashed before any LLM call "
+                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                        )
+                        state["error"] = error
+                        self.logger.error(str(error))
                 return
             await asyncio.sleep(1)
 

@@ -30,11 +30,11 @@ headers = { "X-Custom-Header" = "value" }
 ## Core Workflow
 1. Verify baseline first with `prime eval run`. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
-prime eval run my-env -m gpt-4.1-mini -n 50 -r 3 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 3 -s
 ```
 2. Run GEPA:
 ```bash
-prime gepa run my-env -m gpt-4.1-mini -M gpt-4.1-mini -B 500 -n 100 -N 50
+prime gepa run my-env -m openai/gpt-4.1-mini -M openai/gpt-4.1-mini -B 500 -n 100 -N 50
 ```
 3. Or run from config:
 ```bash

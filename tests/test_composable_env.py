@@ -1,7 +1,9 @@
 """Tests for the composable architecture: Task, TaskSet, SandboxTaskSet, SandboxSpec."""
 
+import importlib
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -13,6 +15,7 @@ from verifiers.envs.experimental.composable import (
     SandboxTaskSet,
     Task,
     TaskSet,
+    discover_sibling_dir,
 )
 
 
@@ -258,3 +261,332 @@ async def test_composable_env_quotes_log_path_when_collecting_logs():
         working_dir=None,
     )
     assert state["agent_logs"] == "agent log"
+
+
+# ── install_env ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_composable_env_install_env_passes_to_execute():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            instruction_path="/tmp/prompt.txt",
+        ),
+        install_env={"GH_TOKEN": "secret"},
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    install_call = env.sandbox_client.execute_command.await_args_list[-1]
+    assert install_call == call(
+        "sbx", "install-agent", timeout=300, env={"GH_TOKEN": "secret"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_composable_env_install_env_none_by_default():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            instruction_path="/tmp/prompt.txt",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    install_call = env.sandbox_client.execute_command.await_args_list[-1]
+    assert install_call == call("sbx", "install-agent", timeout=300)
+
+
+# ── get_upload_dirs ──────────────────────────────────────────────────────
+
+
+def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
+    package_name = f"fixture_{tmp_path.name.replace('-', '_')}"
+    pkg_dir = tmp_path / package_name
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "taskset_mod.py").write_text("MARKER = 1\n")
+
+    if with_skills:
+        skill_dir = pkg_dir / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: demo\n---\n")
+        (skill_dir / "pyproject.toml").write_text(
+            "[project]\nname = 'skill-demo'\nversion = '0.0.0'\n"
+        )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    mod = importlib.import_module(f"{package_name}.taskset_mod")
+    return mod, package_name
+
+
+class MockSandboxTaskSetWithSkills(SandboxTaskSet):
+    """SandboxTaskSet — skills auto-discovered via get_skills_dir()."""
+
+    def get_instruction(self, info):
+        return f"Fix bug #{info.get('id', 0)}"
+
+    def get_sandbox_spec(self, info):
+        return SandboxSpec(image="python:3.11-slim", cpu_cores=2, memory_gb=2)
+
+    def get_rubric(self):
+        return MockSandboxRubric()
+
+    def get_workdir(self, info):
+        return "/testbed"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_uploads_task_dirs(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            skills_path="/task/skills",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    env.upload_file.assert_awaited_once()
+    upload_call = env.upload_file.await_args
+    assert upload_call.args[0] == "sbx"
+    assert upload_call.args[1] == "/tmp/_upload_task_skills.tar.gz"
+
+    install_call = env.sandbox_client.execute_command.await_args_list[-1]
+    assert install_call == call("sbx", "install-agent", timeout=300)
+    extract_call = env.sandbox_client.execute_command.await_args_list[1]
+    assert extract_call == call(
+        "sbx",
+        "mkdir -p /task && tar -xzf /tmp/_upload_task_skills.tar.gz -C / && rm -f /tmp/_upload_task_skills.tar.gz",
+        timeout=60,
+    )
+
+
+@pytest.mark.asyncio
+async def test_composable_env_no_upload_when_no_dirs(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            skills_path="/task/skills",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    assert env.upload_file.await_count == 0
+
+
+# ── discover_sibling_dir ─────────────────────────────────────────────────
+
+
+def test_discover_sibling_dir_finds_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    result = discover_sibling_dir(MockSandboxTaskSetWithSkills, "skills")
+    assert result is not None
+
+
+def test_discover_sibling_dir_returns_none_without_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    result = discover_sibling_dir(MockSandboxTaskSetWithSkills, "skills")
+    assert result is None
+
+
+# ── get_skills_dir / auto-discovery ──────────────────────────────────────
+
+
+def test_get_skills_dir_auto_discovers(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_skills_dir() is not None
+
+
+def test_get_skills_dir_returns_none_without_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_skills_dir() is None
+
+
+def test_get_upload_dirs_includes_skills_automatically(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    upload_dirs = taskset.get_upload_dirs()
+    assert "skills" in upload_dirs
+
+
+def test_get_upload_dirs_empty_without_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=False)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_upload_dirs() == {}
+
+
+# ── Harness metrics collection ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_composable_env_collects_harness_metrics():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    metrics_data = {
+        "turns": 3,
+        "stop_reason": "done",
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+    }
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            log_path="/tmp/log dir/agent.log",
+            metrics_path="{workdir}/.rlm/sessions/*/meta.json",
+            metrics_key="metrics",
+            metrics_prefix="rlm_",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            side_effect=[
+                SimpleNamespace(stdout="agent log\n", stderr="", exit_code=0),
+                SimpleNamespace(
+                    stdout=json.dumps({"metrics": metrics_data}),
+                    stderr="",
+                    exit_code=0,
+                ),
+            ]
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+    }
+
+    await env.post_rollout(state)
+
+    assert state["agent_logs"] == "agent log"
+    assert state["rlm_turns"] == 3
+    assert state["rlm_stop_reason"] == "done"
+    assert state["rlm_prompt_tokens"] == 100
+    assert state["rlm_completion_tokens"] == 25
+
+
+@pytest.mark.asyncio
+async def test_composable_env_metrics_with_key_whitelist():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            metrics_path="{workdir}/metrics.json",
+            metrics_prefix="agent_",
+            metrics_keys=["turns", "tokens"],
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(
+                stdout=json.dumps({"turns": 5, "tokens": 200, "secret": "hidden"}),
+                stderr="",
+                exit_code=0,
+            )
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+    }
+
+    await env.post_rollout(state)
+
+    assert state["agent_turns"] == 5
+    assert state["agent_tokens"] == 200
+    assert "agent_secret" not in state
+
+
+@pytest.mark.asyncio
+async def test_composable_env_no_metrics_when_path_not_set():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+    }
+
+    await env.post_rollout(state)
+
+    # No execute_command calls since no log_path and no metrics_path
+    env.sandbox_client.execute_command.assert_not_awaited()
