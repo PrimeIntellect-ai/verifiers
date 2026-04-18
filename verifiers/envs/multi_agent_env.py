@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from abc import abstractmethod
 from typing import Any, Literal, final
 
@@ -98,9 +99,7 @@ class MultiAgentEnv(vf.Environment):
         if not members:
             raise ValueError("MultiAgentEnv requires a non-empty members list")
         if len(members) != len(set(members)):
-            raise ValueError(
-                f"MultiAgentEnv.members contains duplicates: {members}"
-            )
+            raise ValueError(f"MultiAgentEnv.members contains duplicates: {members}")
         overrides = agent_overrides or {}
         stray = set(overrides) - set(members)
         if stray:
@@ -142,15 +141,11 @@ class MultiAgentEnv(vf.Environment):
         """
         return None
 
-    def resolve_agent(
-        self, member_id: str
-    ) -> tuple[Client | None, str | None]:
+    def resolve_agent(self, member_id: str) -> tuple[Client | None, str | None]:
         """Return (client, model) override for ``member_id`` or (None, None)."""
         return self.agent_overrides.get(member_id, (None, None))
 
-    def visibility_policy(
-        self, utt: Utterance, viewer_id: str
-    ) -> VisibilityMode:
+    def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         """Control what ``viewer_id`` sees of ``utt``.
 
         Default: opponents see public only; authors see full.
@@ -168,16 +163,19 @@ class MultiAgentEnv(vf.Environment):
     async def _prepare_prompt(
         self, state: State, agent: str, slot: TurnSlot
     ) -> Messages:
-        """Subclass build_prompt → fold consecutive users → normalize.
+        """Subclass ``build_prompt`` → normalize at boundary → fold.
 
-        Fold before normalization: collapses consecutive user runs into
-        single messages so chat-template rendering stays in-distribution
-        AND so the token-stitch tail reduces to a _is_valid_env_tail-
-        accepted shape (single trailing user, no (user,user) pairs).
+        Pipeline order matters. ``maybe_normalize_messages`` guards the
+        subclass boundary: if a subclass returns raw dicts it warns once
+        and promotes to typed. ``fold_consecutive_user_messages`` then
+        runs typed-in → typed-out, preserving types through to the
+        model-request and the stitcher. Folding collapses adjacent user
+        runs so chat-template rendering stays in-distribution and the
+        token-stitch tail passes ``_is_valid_env_tail``.
         """
         prompt = await self.build_prompt(state, agent, slot)
-        prompt = fold_consecutive_user_messages(prompt)
-        return maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
+        prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
+        return fold_consecutive_user_messages(prompt)
 
     # -- stop conditions (priority-ordered) ----------------------------------
 
@@ -232,9 +230,7 @@ class MultiAgentEnv(vf.Environment):
             raise
 
     @final
-    async def _run_sequential_slot(
-        self, state: State, slot: TurnSlot
-    ) -> None:
+    async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:
         agent = slot.agents[0]
         prompt = await self._prepare_prompt(state, agent, slot)
         agent_client, agent_model = self.resolve_agent(agent)
@@ -250,10 +246,15 @@ class MultiAgentEnv(vf.Environment):
             ),
         )
         content = response.message.content or ""
+        content = _enrich_with_provider_reasoning(content, response, self.think_tag)
         token_count = _completion_token_count(response)
 
         result = apply_action(
-            state["_kernel"], self.schedule, agent, content, token_count,
+            state["_kernel"],
+            self.schedule,
+            agent,
+            content,
+            token_count,
             think_tag=self.think_tag,
         )
         state["_kernel"] = result.new_state
@@ -263,9 +264,7 @@ class MultiAgentEnv(vf.Environment):
         state["trajectory"].append(step)
 
     @final
-    async def _run_simultaneous_slot(
-        self, state: State, slot: TurnSlot
-    ) -> None:
+    async def _run_simultaneous_slot(self, state: State, slot: TurnSlot) -> None:
         """Fully-staged atomic commit.
 
         Three-phase protocol — every phase runs to completion before the
@@ -341,13 +340,17 @@ class MultiAgentEnv(vf.Environment):
             flat = _flatten_exception_group(eg)
             # Priority: OverlongPromptError first (most-specific recovery in
             # rollout loop), then any other vf.Error, then bubble.
-            chosen = next(
-                (e for e in flat if isinstance(e, vf.OverlongPromptError)),
-                None,
-            ) or next(
-                (e for e in flat if isinstance(e, vf.Error)),
-                None,
-            ) or flat[0]
+            chosen = (
+                next(
+                    (e for e in flat if isinstance(e, vf.OverlongPromptError)),
+                    None,
+                )
+                or next(
+                    (e for e in flat if isinstance(e, vf.Error)),
+                    None,
+                )
+                or flat[0]
+            )
             others = tuple(e for e in flat if e is not chosen)
             if others:
                 _log_suppressed_peers(slot.slot_id, others)
@@ -360,9 +363,14 @@ class MultiAgentEnv(vf.Environment):
         committed_utts: list[Utterance] = []
         for agent, response in zip(slot.agents, responses):
             content = response.message.content or ""
+            content = _enrich_with_provider_reasoning(content, response, self.think_tag)
             token_count = _completion_token_count(response)
             result = apply_action(
-                staged_kernel, self.schedule, agent, content, token_count,
+                staged_kernel,
+                self.schedule,
+                agent,
+                content,
+                token_count,
                 think_tag=self.think_tag,
             )
             staged_kernel = result.new_state
@@ -442,17 +450,76 @@ class MultiAgentEnv(vf.Environment):
             extras=extras,
         )
 
+
 def _completion_token_count(response: Response) -> int:
     if response.message.tokens and response.message.tokens.completion_ids:
         return len(response.message.tokens.completion_ids)
     return 0
 
 
+def _extract_provider_reasoning(response: Response) -> str | None:
+    """Flatten provider-emitted reasoning to a single string, or None.
+
+    OpenAI o-series surfaces ``reasoning_content`` (str). Anthropic
+    surfaces ``thinking_blocks`` (list of typed blocks; ``redacted``
+    blocks have no readable content). Concatenated with paragraph
+    breaks. Returns None when nothing reasoning-shaped is present.
+    """
+    msg = response.message
+    parts: list[str] = []
+
+    rc = getattr(msg, "reasoning_content", None)
+    if isinstance(rc, str) and rc.strip():
+        parts.append(rc.strip())
+
+    blocks = getattr(msg, "thinking_blocks", None) or []
+    for blk in blocks:
+        text = getattr(blk, "thinking", None) or (
+            blk.get("thinking") if isinstance(blk, dict) else None
+        )
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+
+    return "\n\n".join(parts) if parts else None
+
+
+_NATIVE_THINK_PROBE = re.compile(r"<\s*(?:think|thinking)\s*>", re.IGNORECASE)
+
+
+def _enrich_with_provider_reasoning(
+    content: str, response: Response, think_tag: str
+) -> str:
+    """Wrap provider reasoning in ``<{think_tag}>...</{think_tag}>`` and
+    prepend to ``content`` so ``parse_channels`` can split it normally.
+
+    Single source of truth: kernel sees one ``raw_content`` string;
+    ``public_channel`` is what survives stripping; ``private_channel``
+    is what got stripped; "full" opponent view is the verbatim string.
+    No special channels-merge inside the kernel.
+
+    Skip enrichment when the model already emitted any think block
+    inline — adding a second would trip ``parse_channels``'s
+    one-block-per-whitelist contract and quarantine the utterance. If
+    a model surfaces reasoning BOTH inline AND via the structured
+    field we trust the inline channel as author-shaped intent.
+    """
+    pr = _extract_provider_reasoning(response)
+    if not pr:
+        return content
+    if (
+        _NATIVE_THINK_PROBE.search(content)
+        or f"<{think_tag}".lower() in content.lower()
+    ):
+        return content
+    return f"<{think_tag}>\n{pr}\n</{think_tag}>\n\n{content}"
+
+
 def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -> None:
     if exceptions:
         _log.warning(
             "simultaneous-slot %d suppressed peer exceptions: %r",
-            slot_id, exceptions,
+            slot_id,
+            exceptions,
         )
 
 

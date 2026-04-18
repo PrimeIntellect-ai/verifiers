@@ -120,9 +120,7 @@ def _compile_tag(alt: str) -> tuple[re.Pattern, re.Pattern]:
     )
 
 
-def _extract_one_block(
-    raw: str, alt: str, label: str
-) -> tuple[str, str | None]:
+def _extract_one_block(raw: str, alt: str, label: str) -> tuple[str, str | None]:
     """Locate at most one ``<alt>…</alt>`` block.
 
     Returns ``(residual, inner)``: ``residual`` has the block excised
@@ -162,9 +160,7 @@ def _extract_one_block(
     closer = closers[0]
 
     if closer.start() < opener.end():
-        raise ContentParseError(
-            f"parse_channels: {label} closer appears before opener"
-        )
+        raise ContentParseError(f"parse_channels: {label} closer appears before opener")
 
     inner = raw[opener.end() : closer.start()]
     residual = raw[: opener.start()] + raw[closer.end() :]
@@ -199,9 +195,7 @@ def parse_channels(raw: str, tag: str) -> tuple[str, str | None]:
         _NATIVE_THINK_ALT if tag in ("think", "thinking") else re.escape(tag)
     )
 
-    residual, configured_inner = _extract_one_block(
-        raw, configured_alt, f"<{tag}>"
-    )
+    residual, configured_inner = _extract_one_block(raw, configured_alt, f"<{tag}>")
 
     # Second pass only when the configured tag is not already the native
     # alias — otherwise pass 1 has already consumed any native block.
@@ -232,8 +226,18 @@ def apply_action(
     ``raw_content`` is split into public/private channels via
     ``parse_channels`` exactly once here; the resulting ``Utterance``
     carries all three channels and downstream consumers never re-parse.
+    Callers wishing to merge provider-side reasoning (OpenAI
+    ``reasoning_content`` / Anthropic ``thinking_blocks``) into the
+    private channel must enrich ``raw_content`` themselves by wrapping
+    that reasoning in ``<{think_tag}>...</{think_tag}>`` before calling
+    here — keeping ``raw_content`` as the single source of truth for
+    both ``public_channel`` and the "full" opponent view.
     """
-    slot = state._active_slot if state._active_slot is not None else program.current_slot(state)
+    slot = (
+        state._active_slot
+        if state._active_slot is not None
+        else program.current_slot(state)
+    )
 
     if slot is None:
         raise KernelProtocolError("No active slot — episode is finished")
@@ -259,6 +263,19 @@ def apply_action(
         public = ""
         private = None
         parse_error = str(exc)
+
+    # Quarantine empty-public commits. A reasoning-mode model that spends
+    # its full token budget on reasoning_content emits content="" and
+    # parses cleanly into ("", maybe-private). Committing it lets the
+    # schedule advance with no anchor for "what did this agent say",
+    # which downstream prompts then re-render as a lone <thinking> block
+    # — confusing the next own-turn into thinking it's still in the
+    # previous phase. Treat the absence of a public utterance as a
+    # protocol violation, same as a malformed parse: trainer masks the
+    # tokens, opponent renderer skips attribution. private_channel is
+    # preserved for telemetry but never reaches an opponent's view.
+    if parse_error is None and not public.strip():
+        parse_error = "empty public channel (model emitted no visible answer)"
 
     utterance = Utterance(
         member_id=member_id,

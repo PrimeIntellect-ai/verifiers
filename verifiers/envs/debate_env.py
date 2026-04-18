@@ -33,7 +33,14 @@ from verifiers.envs.multi_agent_kernel import (
 )
 from verifiers.envs.debate_rubric import _extract_question
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
-from verifiers.types import Messages, State
+from verifiers.types import (
+    AssistantMessage,
+    Messages,
+    Message,
+    State,
+    SystemMessage,
+    UserMessage,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -129,15 +136,31 @@ class DebateEnv(MultiAgentEnv):
 
     def _render_opponent_message(
         self, utt: Utterance, viewer_id: str, viewer_role: str
-    ) -> dict[str, str]:
+    ) -> UserMessage:
         """Render one opponent utterance as a user message for ``viewer_id``.
 
         Selects raw vs. public channel per visibility_policy and wraps with
         speaker attribution. Shared by ``build_prompt`` and ``_format_history``.
+
+        Quarantined utterances (``parse_error`` set, including empty-public
+        commits from reasoning-mode budget exhaustion) render as a single
+        line that names the missed phase explicitly. A bare ``(no response)``
+        marker proved ambiguous in practice: reasoning-mode opponents spent
+        thousands of tokens of their own reasoning budget asking "what does
+        this mean in context?" before falling back to evaluating the
+        previous turn. Naming the missed phase lets the model skip the
+        meta-reasoning and proceed.
         """
+        speaker_role = self.role_for_member(utt.member_id)
+        if utt.parse_error is not None:
+            return UserMessage(
+                content=(
+                    f"[{speaker_role}] (no {utt.phase} produced — "
+                    f"opponent did not emit a visible response this turn)"
+                )
+            )
         vis = self.visibility_policy(utt, viewer_id)
         content = utt.raw_content if vis == "full" else utt.public_channel
-        speaker_role = self.role_for_member(utt.member_id)
         content = self.prompts.wrap_opponent(
             utt.phase,
             content,
@@ -145,7 +168,7 @@ class DebateEnv(MultiAgentEnv):
             role_id=speaker_role,
             viewer_role=viewer_role,
         )
-        return {"role": "user", "content": content}
+        return UserMessage(content=content)
 
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         if utt.member_id == viewer_id:
@@ -189,12 +212,12 @@ class DebateEnv(MultiAgentEnv):
             state, role, slot.phase, current_round, num_rounds, question
         )
 
-        msgs: list[dict[str, str]] = [
-            {"role": "system", "content": self.prompts.render_system(role, ctx_current)},
+        msgs: list[Message] = [
+            SystemMessage(content=self.prompts.render_system(role, ctx_current)),
         ]
         q_text = self.prompts.render_question(role, ctx_current)
         if q_text:
-            msgs.append({"role": "user", "content": q_text})
+            msgs.append(UserMessage(content=q_text))
 
         own_round_so_far = 0
         for utt in kernel_state.transcript:
@@ -245,7 +268,7 @@ class DebateEnv(MultiAgentEnv):
         num_rounds: int,
         question: str,
         state: State,
-    ) -> list[dict[str, str]]:
+    ) -> list[Message]:
         """Render one own-turn utterance as ``[instruction, assistant=raw]``.
 
         Re-renders the instruction that preceded ``utt`` using the past
@@ -254,33 +277,43 @@ class DebateEnv(MultiAgentEnv):
         positional own-turn counter (N-th own commit = round N),
         independent of slot_id so sparse / semantic slot_ids don't
         produce nonsensical round labels.
+
+        Quarantined own-turns are skipped entirely. There's no useful
+        assistant content to anchor on (parse failure or empty-public
+        commit), and replaying a lone ``<thinking>`` block as the
+        previous assistant message confuses reasoning models into
+        thinking they're still in that earlier phase. KV-cache
+        monotonic-extension is unaffected — a quarantined commit
+        added no usable prefix tokens to invalidate.
         """
+        if utt.parse_error is not None:
+            return []
         past_ctx = self._build_prompt_context(
             state, role, utt.phase, round_index, num_rounds, question
         )
-        msgs: list[dict[str, str]] = []
+        msgs: list[Message] = []
         past_instr = self.prompts.render_instruction(role, utt.phase, past_ctx)
         if past_instr:
-            msgs.append({"role": "user", "content": past_instr})
-        msgs.append({"role": "assistant", "content": utt.raw_content})
+            msgs.append(UserMessage(content=past_instr))
+        msgs.append(AssistantMessage(content=utt.raw_content))
         return msgs
 
     def _render_current_suffix(
         self, role: str, slot: TurnSlot, ctx_current: dict[str, Any]
-    ) -> list[dict[str, str]]:
+    ) -> list[Message]:
         """Render the tail of the prompt: current instruction + optional prefill."""
-        msgs: list[dict[str, str]] = []
+        msgs: list[Message] = []
         instruction = self.prompts.render_instruction(role, slot.phase, ctx_current)
         if instruction:
-            msgs.append({"role": "user", "content": instruction})
+            msgs.append(UserMessage(content=instruction))
         prefill = self.prompts.render_prefill(role, slot.phase, ctx_current)
         if prefill:
-            msgs.append({"role": "assistant", "content": prefill})
+            msgs.append(AssistantMessage(content=prefill))
         return msgs
 
     def _format_history(
         self, kernel_state: KernelState, viewer_id: str
-    ) -> list[dict[str, str]]:
+    ) -> list[Message]:
         """Format transcript entries for ``viewer_id``.
 
         Own utterances → assistant role, ``raw_content`` verbatim (KV cache
@@ -288,10 +321,10 @@ class DebateEnv(MultiAgentEnv):
         :meth:`visibility_policy` and wrapped with speaker attribution.
         """
         viewer_role = self.role_for_member(viewer_id)
-        msgs: list[dict[str, str]] = []
+        msgs: list[Message] = []
         for utt in kernel_state.transcript:
             if utt.member_id == viewer_id:
-                msgs.append({"role": "assistant", "content": utt.raw_content})
+                msgs.append(AssistantMessage(content=utt.raw_content))
             else:
                 msgs.append(self._render_opponent_message(utt, viewer_id, viewer_role))
         return msgs
@@ -318,7 +351,9 @@ class DebateEnv(MultiAgentEnv):
         except ValueError as exc:
             _log.warning(
                 "field extraction failed for member=%s phase=%s: %s",
-                member_id, slot.phase, exc,
+                member_id,
+                slot.phase,
+                exc,
             )
             return None
 
@@ -400,7 +435,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     )
     rubric = DebateRubric(
         truth_role=kwargs.pop("truth_role"),
-        members=kwargs["members"],            # don't pop — env needs it too
+        members=kwargs["members"],  # don't pop — env needs it too
         prompts=prompts,
         judge_client=judge_client,
         judge_model=kwargs.pop("judge_model", "gpt-4.1-nano"),
@@ -429,9 +464,7 @@ def _resolve_prompts_arg(
         raise ValueError("Provide exactly one of 'prompts_ref' or 'prompts'")
     if prompts is not None:
         if not isinstance(prompts, DebatePrompts):
-            raise TypeError(
-                f"Expected DebatePrompts, got {type(prompts).__name__}"
-            )
+            raise TypeError(f"Expected DebatePrompts, got {type(prompts).__name__}")
         return prompts
     if prompts_ref is not None:
         return resolve_prompts(prompts_ref)

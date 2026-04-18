@@ -174,9 +174,9 @@ def concat_messages(messages_list: list[Messages]) -> Messages:
 
 
 def fold_consecutive_user_messages(
-    messages: Messages | list[dict[str, Any]],
+    messages: Messages,
     separator: str = "\n\n",
-) -> list[dict[str, Any]]:
+) -> Messages:
     """Collapse runs of consecutive role=user messages into one.
 
     Multi-agent envs emit prompts with neighbouring user messages
@@ -186,36 +186,30 @@ def fold_consecutive_user_messages(
     Folding collapses each user run into a single message whose content
     is the run's pieces joined by ``separator``.
 
-    Role-local: only user runs fold. Assistant / system / tool messages
-    pass through untouched; tool messages carry per-call metadata
-    (``tool_call_id``) that must not be merged.
+    Contract: typed ``Messages`` in, typed ``Messages`` out. Callers with
+    raw dicts must ``normalize_messages`` first. Role-local — only user
+    runs fold; assistant / system / tool messages pass through untouched.
+    Multimodal (list-of-ContentPart) content also passes through — silent
+    concatenation of mixed parts is worse than the alt-role OOD. Preserves
+    extras (e.g. OpenAI ``name`` field under ``extra="allow"``) on the
+    merged message via ``model_copy``.
 
-    Idempotent, and a no-op on message lists that never contain adjacent
-    user messages (e.g. canonical SA tool trajectories).
+    Idempotent; a no-op on lists without adjacent user messages.
     """
-    out: list[dict[str, Any]] = []
+    out: list[Message] = []
     for msg in messages:
-        if isinstance(msg, dict):
-            msg_dict = msg
-        elif hasattr(msg, "model_dump"):
-            msg_dict = msg.model_dump()
-        else:
-            # Unknown type; pass through without folding.
-            out.append(msg)  # type: ignore[arg-type]
+        if not out or msg.role != "user" or out[-1].role != "user":
+            out.append(msg)
             continue
-
-        role = msg_dict.get("role")
-        if out and role == "user" == out[-1].get("role"):
-            prev = out[-1]
-            prev_content = prev.get("content", "") or ""
-            new_content = msg_dict.get("content", "") or ""
-            # Only fold plain-text contents. If either side is a list of
-            # content parts (multimodal), keep them separate — concatenating
-            # mixed content parts silently is worse than the alt-role OOD.
-            if isinstance(prev_content, str) and isinstance(new_content, str):
-                out[-1] = {**prev, "content": prev_content + separator + new_content}
-                continue
-        out.append(dict(msg_dict))
+        prev = out[-1]
+        prev_content = prev.content
+        new_content = msg.content
+        if not isinstance(prev_content, str) or not isinstance(new_content, str):
+            out.append(msg)
+            continue
+        out[-1] = prev.model_copy(
+            update={"content": prev_content + separator + new_content}
+        )
     return out
 
 
