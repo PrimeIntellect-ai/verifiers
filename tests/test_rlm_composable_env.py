@@ -212,7 +212,9 @@ def test_rlm_harness_always_uploads_checkout(tmp_path, monkeypatch):
     assert harness.upload_dir_mapping is not None
 
 
-def test_resolve_local_checkout_redacts_gh_token_on_clone_failure(tmp_path, monkeypatch):
+def test_resolve_local_checkout_redacts_gh_token_on_clone_failure(
+    tmp_path, monkeypatch
+):
     failing_checkout = tmp_path / "checkout-root" / "rlm"
     token = "super/secret token"
     quoted_token = "super%2Fsecret%20token"
