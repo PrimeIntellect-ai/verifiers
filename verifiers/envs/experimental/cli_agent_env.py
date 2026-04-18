@@ -374,17 +374,20 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    self.logger.warning(
-                        f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
-                    )
-                    if len(state.get("trajectory", [])) == 0:
-                        stderr_snippet = (status.stderr or "")[:500]
+                    stderr_snippet = (status.stderr or "")[:500]
+                    num_turns = len(state.get("trajectory", []))
+                    if num_turns == 0:
                         error = AgentError(
                             f"Agent crashed before any LLM call "
                             f"(exit_code={status.exit_code}): {stderr_snippet}"
                         )
-                        state["error"] = error
-                        self.logger.error(str(error))
+                    else:
+                        error = AgentError(
+                            f"Agent crashed after {num_turns} turn(s) "
+                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                        )
+                    state["error"] = error
+                    self.logger.error(str(error))
                 return
             await asyncio.sleep(self.poll_interval)
 
