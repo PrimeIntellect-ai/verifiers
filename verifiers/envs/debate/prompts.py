@@ -18,6 +18,7 @@ import jinja2.sandbox
 import yaml
 
 from .fields import (
+    EnumScoring,
     FieldSpec,
     _resolve_fields,
     _TYPE_MAP,
@@ -58,19 +59,18 @@ _jinja_env = jinja2.sandbox.SandboxedEnvironment(undefined=jinja2.StrictUndefine
 
 @dataclass(frozen=True)
 class JudgeTemplate:
-    """Compiled template for an eval-time LLM judge call.
+    """Raw user-prompt template for an eval-time LLM judge call.
 
-    Both ``user`` (compiled Jinja) and ``user_format_string`` (raw Python
-    format string) are carried during the 1B→1C transition. Production
-    packs populate both; test fixtures can fall back to the ``""`` default
-    until Phase 1C rewrites the YAML templates to use ``.format()`` keys.
+    ``user`` is a Python ``.format()`` template with ``{question}``,
+    ``{answer}``, and ``{response}`` placeholders consumed by
+    ``JudgeRubric.judge``. ``positive`` / ``negative`` are the canonical
+    verdict tokens (uppercased, punct-stripped first word) the rubric
+    compares against the model's response.
     """
 
-    system: str
-    user: jinja2.Template
+    user: str
     positive: str
     negative: str
-    user_format_string: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,20 @@ class JudgeTemplate:
 
 @dataclass(frozen=True)
 class DebatePrompts:
-    """Frozen, LRU-cached prompt pack loaded from YAML."""
+    """Frozen, LRU-cached prompt pack loaded from YAML.
+
+    Pack invariants are enforced at construction (``__post_init__``):
+
+    1. Every ``JudgeTemplate.user`` is a non-empty Python ``str.format`` string.
+       An empty template would render a 0-byte prompt at score time.
+    2. Verdict tokens (``positive``/``negative``) on each judge MUST NOT
+       collide with any answer-field ``EnumScoring`` value. Collision would
+       let transcript greps misattribute judge output to a debater commit.
+
+    These checks live here (not in the factory) because they are intrinsic
+    to the pack itself — every constructor of ``DebatePrompts`` (factory,
+    test, custom loader) gets the guarantees for free.
+    """
 
     system: dict[str, jinja2.Template]
     user: dict[str, dict[str, jinja2.Template]]
@@ -92,6 +105,38 @@ class DebatePrompts:
     opponent_wrap: dict[str, jinja2.Template] | None
     judges: dict[str, JudgeTemplate]
     source_ref: str
+
+    def __post_init__(self) -> None:
+        for kind, template in self.judges.items():
+            if not template.user.strip():
+                raise ValueError(
+                    f"Judge template {kind!r} in pack {self.source_ref!r} "
+                    "has an empty 'user' template. JudgeRubric.judge would "
+                    "render a 0-byte prompt at score time. Production YAML "
+                    "packs populate this from the _grader/_matcher 'user' "
+                    "block at pack-load time."
+                )
+            pos = template.positive
+            neg = template.negative
+            for role_fields in self.fields.values():
+                for phase_fields in role_fields.values():
+                    answer_spec = phase_fields.get("answer")
+                    if answer_spec is None:
+                        continue
+                    if not isinstance(answer_spec.scoring, EnumScoring):
+                        continue
+                    for enum_val in answer_spec.scoring.values:
+                        upper = enum_val.upper()
+                        if upper == pos or upper == neg:
+                            raise ValueError(
+                                f"Judge template {kind!r} in pack "
+                                f"{self.source_ref!r}: verdict token "
+                                f"{pos!r}/{neg!r} collides with answer enum "
+                                f"value {enum_val!r}. Pick distinct verdict "
+                                "tokens so transcript greps can't "
+                                "misattribute judge output to a debater "
+                                "commit."
+                            )
 
     # -- Rendering ----------------------------------------------------------
 
@@ -540,9 +585,7 @@ def _compile_judge_blocks(d: dict) -> dict[str, JudgeTemplate]:
                 f"(positive={block['positive']!r}, negative={block['negative']!r})"
             )
         result[short_name] = JudgeTemplate(
-            system=block["system"],
-            user=_jinja_env.from_string(block["user"]),
-            user_format_string=block["user"],
+            user=block["user"],
             positive=positive,
             negative=negative,
         )

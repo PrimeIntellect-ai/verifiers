@@ -50,6 +50,7 @@ from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 
 _log = logging.getLogger(__name__)
 
@@ -286,15 +287,24 @@ class MultiAgentEnv(vf.Environment):
         prompts = [await self._prepare_prompt(state, a, slot) for a in slot.actors]
         overrides = [self.resolve_actor(a) for a in slot.actors]
 
-        # Per-actor state views isolate ``_lineage_key`` across concurrent
-        # branches. State is a dict subclass; the shallow copy shares all
-        # mutable values (trajectory, kernel, usage tracker) by reference
-        # but each branch gets its own lineage-key read. Only applies to
-        # the read path inside get_prompt_ids — no branch MUTATES a per-
-        # actor key, so no cross-branch interference.
+        # Per-actor state views isolate ``_lineage_key`` AND ``usage_tracker``
+        # across concurrent branches. State is a dict subclass; the shallow
+        # copy shares mutable values (trajectory, kernel) by reference, but
+        # we explicitly fork the usage tracker per-actor so a doomed slot's
+        # token charges never land on the parent tracker. On success, phase 4
+        # merges the branch-local trackers back into the parent. On failure,
+        # the forks are dropped and the parent stays at its pre-slot snapshot.
+        parent_tracker = state.get("usage_tracker")
         per_actor_states = [type(state)(state) for _ in slot.actors]
+        per_actor_trackers: list[StateUsageTracker | None] = []
         for s, a in zip(per_actor_states, slot.actors):
             s["_lineage_key"] = a
+            if isinstance(parent_tracker, StateUsageTracker):
+                child = parent_tracker.fork()
+                s["usage_tracker"] = child
+                per_actor_trackers.append(child)
+            else:
+                per_actor_trackers.append(None)
 
         # Phase 1: fan out under TaskGroup. First raise cancels siblings,
         # so no doomed-slot tokens leak into the shared usage tracker.
@@ -311,19 +321,36 @@ class MultiAgentEnv(vf.Environment):
                 s, p, client=o[0], model=o[1]
             )
 
-        # OverlongPromptError listed first so it's handled before the
-        # broader vf.Error branch (it's a vf.Error subclass); both branches
-        # re-raise the first exception after logging any suppressed peers.
+        # Catch the whole ExceptionGroup (BaseExceptionGroup so we don't
+        # depend on a specific subclass). Then manually flatten + select a
+        # single concrete exception to re-raise. We CANNOT use chained
+        # ``except* X`` / ``except* Y`` clauses here: when actors raise
+        # different vf.Error subclasses (e.g. one OverlongPromptError + one
+        # generic vf.Error), BOTH except* branches fire and BOTH re-raises
+        # are wrapped into a NEW ExceptionGroup at the call site, which the
+        # outer rollout-loop's normal `except vf.Error` clause does NOT
+        # match. Result was a P0: doomed slot would crash the rollout
+        # instead of the rollout loop catching the error and recording it
+        # on state.
         try:
             async with asyncio.TaskGroup() as tg:
                 for i in range(len(slot.actors)):
                     tg.create_task(_run_one(i))
-        except* vf.OverlongPromptError as eg:
-            _log_suppressed_peers(slot.slot_id, eg.exceptions)
-            raise eg.exceptions[0]
-        except* vf.Error as eg:
-            _log_suppressed_peers(slot.slot_id, eg.exceptions)
-            raise eg.exceptions[0]
+        except BaseExceptionGroup as eg:
+            flat = _flatten_exception_group(eg)
+            # Priority: OverlongPromptError first (most-specific recovery in
+            # rollout loop), then any other vf.Error, then bubble.
+            chosen = next(
+                (e for e in flat if isinstance(e, vf.OverlongPromptError)),
+                None,
+            ) or next(
+                (e for e in flat if isinstance(e, vf.Error)),
+                None,
+            ) or flat[0]
+            others = tuple(e for e in flat if e is not chosen)
+            if others:
+                _log_suppressed_peers(slot.slot_id, others)
+            raise chosen
 
         # Phase 2: stage the fold into a LOCAL kernel + build trajectory
         # steps + extract fields. state["_kernel"] untouched.
@@ -360,10 +387,16 @@ class MultiAgentEnv(vf.Environment):
             await self.on_step_committed(state, utt, fields)
 
         # Phase 4: PUBLISH. Synchronous tail: trajectory appends + kernel
-        # assignment. No awaits, no raises after this point.
+        # assignment + usage-tracker merge. No awaits, no raises after this
+        # point. Merging is the accounting-side counterpart of the kernel
+        # assignment — both happen iff the slot succeeds.
         for _utt, _fields, step in staged_triples:
             state["trajectory"].append(step)
         state["_kernel"] = staged_kernel
+        if isinstance(parent_tracker, StateUsageTracker):
+            for child in per_actor_trackers:
+                if child is not None:
+                    parent_tracker.merge(child)
 
     # -- trajectory step build / append -------------------------------------
 
@@ -394,6 +427,13 @@ class MultiAgentEnv(vf.Environment):
         }
         if fields is not None:
             extras["fields"] = fields
+        # Per-step quarantine flag — kernel set this on the Utterance when
+        # parse_channels rejected the raw output. Propagating it here lets
+        # the trainer mask the malformed completion tokens (otherwise the
+        # raw garbage is trainable, which is the exact P0-2 the kernel
+        # quarantine was meant to prevent).
+        if utt.parse_error is not None:
+            extras["parse_error"] = utt.parse_error
         return TrajectoryStep(
             prompt=prompt,
             completion=completion_messages,
@@ -413,8 +453,23 @@ def _completion_token_count(response: Response) -> int:
 
 
 def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -> None:
-    if len(exceptions) > 1:
+    if exceptions:
         _log.warning(
             "simultaneous-slot %d suppressed peer exceptions: %r",
-            slot_id, exceptions[1:],
+            slot_id, exceptions,
         )
+
+
+def _flatten_exception_group(eg: BaseExceptionGroup) -> tuple[BaseException, ...]:
+    """Recursively flatten a (possibly nested) ExceptionGroup into a tuple
+    of leaf exceptions, preserving order. TaskGroup may nest groups when
+    cancellation propagates through child tasks; the rollout loop wants
+    a flat view to pick the highest-priority exception to re-raise.
+    """
+    flat: list[BaseException] = []
+    for sub in eg.exceptions:
+        if isinstance(sub, BaseExceptionGroup):
+            flat.extend(_flatten_exception_group(sub))
+        else:
+            flat.append(sub)
+    return tuple(flat)

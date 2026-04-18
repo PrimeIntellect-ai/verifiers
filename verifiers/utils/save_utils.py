@@ -15,6 +15,7 @@ from verifiers.types import (
     ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
+    MARScore,
     RolloutOutput,
     SamplingArgs,
     State,
@@ -228,10 +229,23 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    # flatten metrics to top-level keys (backwards compatibility)
-    state_metrics = state.get("metrics") or {}
-    for k, v in state_metrics.items():
-        output[k] = v
+    # MARScore: single source of truth for multi-actor episode scoring.
+    # Project to legacy keys (output["reward"], top-level metrics) one-way
+    # at the boundary so downstream (wandb, GRPO advantage) sees the same
+    # shape as single-actor envs while the bridge reads the typed payload.
+    mar = state.get("mar_score")
+    if mar is not None:
+        if not isinstance(mar, MARScore):
+            mar = MARScore.model_validate(mar)
+        output["mar_score"] = mar.model_dump(exclude_none=True)
+        output["reward"] = mar.episode_scalar
+        for k, v in mar.to_wandb_flat().items():
+            output[k] = v
+    else:
+        # Single-actor legacy path: rubric writes state["metrics"] directly.
+        state_metrics = state.get("metrics") or {}
+        for k, v in state_metrics.items():
+            output[k] = v
     # add state columns (must be serializable)
     for col in state_columns or []:
         value = state.get(col)

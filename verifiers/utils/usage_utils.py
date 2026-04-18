@@ -54,7 +54,14 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
 
 
 class StateUsageTracker:
-    """Accumulates token usage and exposes a read-only live usage mapping."""
+    """Accumulates token usage and exposes a read-only live usage mapping.
+
+    ``fork()`` returns a zero-initialised child tracker; ``merge(other)``
+    absorbs the child's accumulated deltas. Used by ``MultiAgentEnv``'s
+    simultaneous slot to isolate per-actor accounting: if the slot fails,
+    the forked trackers are dropped and the parent stays at its pre-slot
+    snapshot (no orphan tokens billed to a rolled-back slot).
+    """
 
     __slots__ = ("_usage_seen", "_usage_totals", "_usage_view")
 
@@ -99,3 +106,20 @@ class StateUsageTracker:
             "input_tokens": self._usage_totals["input_tokens"],
             "output_tokens": self._usage_totals["output_tokens"],
         }
+
+    def fork(self) -> "StateUsageTracker":
+        """Return a zero-initialised child tracker for branch-local accounting."""
+        return StateUsageTracker()
+
+    def merge(self, other: "StateUsageTracker") -> None:
+        """Absorb another tracker's accumulated deltas into this one.
+
+        Called in the success phase of a simultaneous-slot commit to fold
+        per-actor usage into the shared tracker. If the slot fails, the
+        child trackers are dropped and no merge happens — the shared
+        tracker stays at its pre-slot snapshot.
+        """
+        if other._usage_seen:
+            self._usage_seen = True
+        self._usage_totals["input_tokens"] += other._usage_totals["input_tokens"]
+        self._usage_totals["output_tokens"] += other._usage_totals["output_tokens"]

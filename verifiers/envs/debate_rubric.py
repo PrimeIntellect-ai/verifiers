@@ -16,18 +16,42 @@ from verifiers.envs.debate.prompts import (
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.judge_rubric import JudgeRubric
 from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
-from verifiers.types import State
+from verifiers.types import MARScore, MemberScore, State
 
 OutcomeFn = Callable[[State], str | None]
 """(state) -> winning role_id, or None if no winner."""
 
 
 def _extract_question(state: State) -> str:
-    """Pull the first user message from the prompt as the question text."""
-    for msg in state.get("prompt", []):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            return msg.get("content", "")
+    """Extract the question text from ``state['prompt']`` (dataset messages).
+
+    Handles both plain-dict messages and Pydantic ``CustomBaseModel`` messages
+    (``UserMessage`` etc.) — env layer may pass either depending on whether
+    ``maybe_normalize_messages`` ran.
+    """
+    for msg in state.get("prompt") or []:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        if role == "user" and content:
+            return content
     return ""
+
+
+def _count_parse_errors(state: State, members: list[str]) -> dict[str, int]:
+    """Count quarantined utterances per member by walking the trajectory once.
+
+    A step's quarantine flag is set by the kernel when ``parse_channels`` rejected
+    the raw output; downstream training masks those completion tokens (P0-2).
+    """
+    counts: dict[str, int] = {m: 0 for m in members}
+    for step in state.get("trajectory", []):
+        extras = step.get("extras", {})
+        mid = extras.get("member_id")
+        if mid is None or mid not in counts:
+            continue
+        if extras.get("parse_error"):
+            counts[mid] += 1
+    return counts
 
 
 def any_field_needs_open_ended(
@@ -77,25 +101,41 @@ class DebateRubric(MultiAgentRubric):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        # Fail loud at construction time if the pack declares LLM-judge
-        # templates *and* at least one 'answer' field routes to the LLM
-        # grader/matcher path (i.e. is not covered by an EnumScoring fast
-        # path). Packs that declare _grader/_matcher as dead-code fallback
-        # but score every answer field via classify_enum (e.g. selfplay MCQ)
-        # must still construct cleanly without a judge client.
+        # DebateRubric's two judge-client preconditions, both validated here
+        # because this is the component whose score_rollout would crash if
+        # either is violated. The factory (load_environment) is a pure
+        # dispatcher and does not duplicate these checks.
+        #
+        # 1. Judge client must be a vf.Client subclass (raw provider SDK
+        #    clients are rejected — they bypass uniform exception handling
+        #    and tool/message conversion).
+        if judge_client is not None and not isinstance(judge_client, Client):
+            raise TypeError(
+                f"DebateRubric.judge_client must be a vf.Client subclass, "
+                f"got {type(judge_client).__name__}. Wrap raw provider SDK "
+                "clients via OpenAIChatCompletionsClient(AsyncOpenAI(...)) "
+                "or the equivalent for your provider."
+            )
+        # 2. If the pack declares LLM-judge templates AND at least one
+        #    'answer' field routes to the LLM grader/matcher path (non-enum
+        #    scoring), a judge_client is required. Packs that declare
+        #    _grader/_matcher as dead-code fallback but score every answer
+        #    field via classify_enum (e.g. selfplay MCQ) must still
+        #    construct cleanly without a judge client.
         needs_open_ended = any_field_needs_open_ended(prompts.fields)
         if prompts.judges and needs_open_ended and judge_client is None:
             declared = sorted(prompts.judges.keys())
             raise ValueError(
-                f"Prompt pack {prompts.source_ref!r} declares "
+                f"DebateRubric: pack {prompts.source_ref!r} declares "
                 f"{len(declared)} judge template(s) ({declared}) and has "
-                "at least one 'answer' field with non-enum scoring that "
-                "routes to the LLM grader, but no judge_client was "
-                "provided to DebateRubric. Open-ended grading requires a "
-                "vf.Client-wrapped judge client (e.g. "
-                "OpenAIChatCompletionsClient(AsyncOpenAI(...))). Passing "
-                "None here would silently burn rollout budget before "
-                "failing at score time."
+                "at least one 'answer' field with non-enum scoring routing "
+                "to the LLM grader, but judge_client was not provided. "
+                "Open-ended grading requires a vf.Client-wrapped judge "
+                "client (e.g. OpenAIChatCompletionsClient(AsyncOpenAI("
+                "api_key=..., base_url=...))). Construction without one "
+                "would silently burn rollout budget before failing at "
+                "score time. If your env-server uses load_environment, "
+                "pass judge_api_key + judge_base_url to auto-construct."
             )
         self.truth_role = truth_role
         self.members = members
@@ -126,7 +166,7 @@ class DebateRubric(MultiAgentRubric):
                 parser=parser,
                 judge_client=judge_client,
                 judge_model=judge_model,
-                judge_prompt=grader_template.user_format_string,
+                judge_prompt=grader_template.user,
                 judge_sampling_args=judge_sampling_args,
             )
         else:
@@ -137,7 +177,7 @@ class DebateRubric(MultiAgentRubric):
                 parser=parser,
                 judge_client=judge_client,
                 judge_model=judge_model,
-                judge_prompt=matcher_template.user_format_string,
+                judge_prompt=matcher_template.user,
                 judge_sampling_args=judge_sampling_args,
             )
         else:
@@ -337,19 +377,33 @@ class DebateRubric(MultiAgentRubric):
     def _write_errored_state(
         self, state: State, *, error_type: str, error_phase: str
     ) -> None:
-        """Record a rollout-level failure with default-zeroed structured keys.
+        """Record a rollout-level failure as a zero-reward MARScore.
 
         Used by both the pre-scoring short-circuit (rollout-layer failures
-        already captured on state) and the scoring-layer vf.Error boundary
-        (retryable judge outages captured here for maybe_retry). metrics
-        stays dict[str, float] so RubricGroup aggregation + TUI display
-        don't choke on string values; error taxonomy goes on error_info.
+        already captured on state["error"] / state["prompt_too_long"]) and
+        the scoring-layer vf.Error boundary (retryable judge outages
+        captured here for maybe_retry). The error taxonomy lives in
+        episode_metrics so wandb has the breakdown; state["error"] remains
+        the propagation channel for the actual exception.
         """
-        state["reward"] = 0.0
-        state["metrics"] = {"errored_rollout": 1.0}
-        state["error_info"] = {"error_type": error_type, "error_phase": error_phase}
-        state["commits"] = {}
-        state["member_rewards"] = {m: 0.0 for m in self.members}
+        parse_errors = _count_parse_errors(state, self.members)
+        state["mar_score"] = MARScore(
+            members=[
+                MemberScore(
+                    member_id=mid,
+                    role_id=mid,  # role unknown on error path; fall back to mid
+                    reward=0.0,
+                    parse_error_count=parse_errors.get(mid, 0),
+                )
+                for mid in self.members
+            ],
+            episode_scalar=0.0,
+            episode_metrics={
+                "errored_rollout": 1.0,
+                "error_type": error_type,
+                "error_phase": error_phase,
+            },
+        )
 
     async def score_rollout(self, state: State) -> None:
         # Short-circuit on rollouts the rollout loop already marked broken
@@ -391,14 +445,23 @@ class DebateRubric(MultiAgentRubric):
         """Main W/G/M scoring body. Kept as a separate method so
         ``score_rollout`` can wrap it in a single vf.Error boundary without
         interfering with the F2 pre-scoring short-circuit or the ground-
-        truth KeyError propagation."""
+        truth KeyError propagation.
+
+        Builds a single ``MARScore`` and writes it to ``state["mar_score"]``.
+        ``state_to_output`` projects it to legacy keys (output["reward"],
+        flat top-level metrics) at the serialization boundary — there is
+        exactly one source of truth.
+        """
         roles, answers, answer_specs, failed_members = self._extract_debate_state(state)
         question = _extract_question(state)
-        # ``metrics`` is the wandb logging channel — orchestrator aggregates
-        # it via pandas. ``member_rewards`` is the bridge channel — reads
-        # per-member reward without string-matching ``reward/{mid}``.
-        metrics: dict[str, float] = {}
+        parse_errors = _count_parse_errors(state, self.members)
+
+        # Per-member working dict — projects to MemberScore.metrics later.
+        per_member: dict[str, dict[str, float | int | bool]] = {
+            m: {} for m in self.members
+        }
         member_rewards: dict[str, float] = {}
+        episode_metrics: dict[str, float | int | bool | str] = {}
 
         # W: winner
         winning_role = self.outcome_fn(state)
@@ -412,7 +475,7 @@ class DebateRubric(MultiAgentRubric):
         judge_expected = "judge" in self.prompts.fields
 
         if winning_role is not None:
-            state["reward"] = 1.0 if winning_role == self.truth_role else 0.0
+            episode_scalar = 1.0 if winning_role == self.truth_role else 0.0
         elif judge_expected:
             raise RuntimeError(
                 f"Prompt pack {self.prompts.source_ref!r} declares a judge but "
@@ -430,9 +493,9 @@ class DebateRubric(MultiAgentRubric):
                 answer_specs.get(truth_member),
                 state,
             )
-            state["reward"] = 1.0 if correct else 0.0
+            episode_scalar = 1.0 if correct else 0.0
         else:
-            state["reward"] = 0.0
+            episode_scalar = 0.0
 
         # Per-member rewards + turn counts
         for mid in self.members:
@@ -440,15 +503,14 @@ class DebateRubric(MultiAgentRubric):
             if winning_role is not None:
                 r = 1.0 if role == winning_role else 0.0
             else:
-                r = state["reward"] if mid == truth_member else 0.0
-            metrics[f"reward/{mid}"] = r
+                r = episode_scalar if mid == truth_member else 0.0
             member_rewards[mid] = r
             turns = sum(
                 1
                 for s in state.get("trajectory", [])
                 if s.get("extras", {}).get("member_id") == mid
             )
-            metrics[f"turns/{mid}"] = float(turns)
+            per_member[mid]["turns"] = float(turns)
 
         # G: accuracy (per-member; gated on YAML declaring answer fields for
         # that member's role). extraction_failed/{mid} disambiguates
@@ -471,35 +533,35 @@ class DebateRubric(MultiAgentRubric):
                         answers[mid], target, question, answer_specs.get(mid), state
                     )
                     acc = 1.0 if correct else 0.0
-                    metrics[f"accuracy/{mid}"] = acc
-                    metrics[f"extraction_failed/{mid}"] = 0.0
+                    per_member[mid]["accuracy"] = acc
+                    per_member[mid]["extraction_failed"] = 0.0
                 elif mid in failed_members:
-                    metrics[f"extraction_failed/{mid}"] = 1.0
+                    per_member[mid]["extraction_failed"] = 1.0
 
         # Flip diagnostics (eval-only; no training reward path touches these)
         # Per member, walk all commits, grade first and last against GT, count
-        # uniqueness. Store the raw ordered commit sequence on state["commits"].
+        # uniqueness. Commits are recomputable from the trajectory; we don't
+        # persist them on state.
         commits = self._extract_commit_sequences(state)
-        state["commits"] = commits
         for mid in self.members:
             if roles.get(mid) == "judge":
                 continue
             seq = commits.get(mid, [])
             num_commits = len(seq)
             num_unique = len(set(seq))
-            metrics[f"num_commits/{mid}"] = float(num_commits)
-            metrics[f"num_unique_commits/{mid}"] = float(num_unique)
+            per_member[mid]["num_commits"] = float(num_commits)
+            per_member[mid]["num_unique_commits"] = float(num_unique)
 
             if not seq or not target:
                 continue
             # Skip flip-correctness diagnostics when the authoritative latest
             # step was unparseable — grading a stale commit would be
-            # misleading, and accuracy/{mid} is absent by design.
-            final_correct = metrics.get(f"accuracy/{mid}")
+            # misleading, and accuracy is absent by design.
+            final_correct = per_member[mid].get("accuracy")
             if final_correct is None:
                 continue
             spec = answer_specs.get(mid)
-            metrics[f"final_correct/{mid}"] = final_correct
+            per_member[mid]["final_correct"] = final_correct
             # initial_correct needs a separate grade only if seq[0] differs
             # from the canonical (latest) answer.
             canonical = answers.get(mid)
@@ -510,7 +572,7 @@ class DebateRubric(MultiAgentRubric):
                     seq[0], target, question, spec, state
                 )
                 init_val = 1.0 if initial_correct else 0.0
-            metrics[f"initial_correct/{mid}"] = init_val
+            per_member[mid]["initial_correct"] = init_val
 
         # M: agreement (conditional on 2+ debater answers)
         debater_answers = [
@@ -523,9 +585,9 @@ class DebateRubric(MultiAgentRubric):
             b_mid, b_ans = debater_answers[1]
             spec = answer_specs.get(a_mid) or answer_specs.get(b_mid)
             same = await self._match(a_ans, b_ans, question, spec, state)
-            metrics["agreement"] = 1.0 if same else 0.0
+            episode_metrics["agreement"] = 1.0 if same else 0.0
 
-        # Winner index
+        # Winner index (episode-level)
         if winning_role is not None:
             winner_member = next(
                 (m for m in self.members if roles.get(m) == winning_role), None
@@ -537,10 +599,22 @@ class DebateRubric(MultiAgentRubric):
             )
         else:
             winner_val = -1.0
-        metrics["winner"] = winner_val
+        episode_metrics["winner"] = winner_val
 
-        state["metrics"] = metrics
-        state["member_rewards"] = member_rewards
+        state["mar_score"] = MARScore(
+            members=[
+                MemberScore(
+                    member_id=mid,
+                    role_id=roles.get(mid, mid),
+                    reward=member_rewards[mid],
+                    parse_error_count=parse_errors.get(mid, 0),
+                    metrics=per_member[mid],
+                )
+                for mid in self.members
+            ],
+            episode_scalar=episode_scalar,
+            episode_metrics=episode_metrics,
+        )
 
     async def score_group(self, states: list[State]) -> None:
         # score_rollout captures vf.Error onto state["error"] itself (never

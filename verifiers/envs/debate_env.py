@@ -18,7 +18,6 @@ import logging
 from typing import Any
 
 from verifiers.clients import Client
-from verifiers.envs.debate.fields import EnumScoring
 from verifiers.envs.debate.parsing import extract_fields
 from verifiers.envs.debate.prompts import (
     DebatePrompts,
@@ -32,6 +31,7 @@ from verifiers.envs.multi_actor_kernel import (
     TurnSlot,
     Utterance,
 )
+from verifiers.envs.debate_rubric import _extract_question
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
 from verifiers.types import Messages, State
 
@@ -305,67 +305,26 @@ class DebateEnv(MultiAgentEnv):
 # ---------------------------------------------------------------------------
 
 
-def _extract_question(state: State) -> str:
-    """Extract the question text from ``state['prompt']`` (dataset messages)."""
-    for msg in state.get("prompt") or []:
-        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
-        if role == "user" and content:
-            return content
-    return ""
-
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 
-def _validate_judge_templates(prompts: DebatePrompts) -> None:
-    """Fail loud on two judge-template footguns:
-
-    1. ``user_format_string`` empty -> JudgeRubric would render a 0-byte
-       prompt at score time. Reject.
-    2. Verdict token collides with an ``EnumScoring`` value of any
-       ``answer`` field -> transcript greps misattribute judge output
-       to a debater commit. Reject.
-    """
-    for kind, template in prompts.judges.items():
-        if not template.user_format_string.strip():
-            raise ValueError(
-                f"Judge template {kind!r} has empty user_format_string. "
-                "Production YAML packs populate this from the _grader/"
-                "_matcher 'user' block at pack-load time; an empty value "
-                "means the loader bypassed _compile_judge_blocks or the "
-                "block was hand-constructed without it. JudgeRubric.judge "
-                "would render a 0-byte prompt at score time."
-            )
-        pos = template.positive
-        neg = template.negative
-        for role_fields in prompts.fields.values():
-            for phase_fields in role_fields.values():
-                answer_spec = phase_fields.get("answer")
-                if answer_spec is None:
-                    continue
-                if not isinstance(answer_spec.scoring, EnumScoring):
-                    continue
-                for enum_val in answer_spec.scoring.values:
-                    upper = enum_val.upper()
-                    if upper == pos or upper == neg:
-                        raise ValueError(
-                            f"Judge template {kind!r} verdict token "
-                            f"{pos!r}/{neg!r} collides with answer enum "
-                            f"value {enum_val!r}. Pick distinct verdict "
-                            "tokens so transcript greps can't misattribute "
-                            "judge output to a debater commit."
-                        )
-
-
 def load_environment(**kwargs: Any) -> DebateEnv:
     """Construct a DebateEnv from a prompt pack and a static schedule.
 
-    Usage::
+    The factory is a pure dispatcher: it converts stringly-typed kwargs
+    into typed component objects (schedule, prompts, judge client) and
+    wires them into a rubric + env. It performs NO validation — each
+    component validates its own preconditions at construction:
 
-        from verifiers.envs.debate_env import load_environment
+      * ``DebatePrompts.__post_init__``  — pack invariants (verdict-token
+        collisions, non-empty judge templates)
+      * ``DebateRubric.__init__``        — judge-client gate, client type
+      * ``DebateEnv.__init__``           — cross-component coherence
+        (env.members == rubric.members, schedule actors ⊆ members)
+
+    Usage::
 
         env = load_environment(
             schedule_slots=[
@@ -380,100 +339,102 @@ def load_environment(**kwargs: Any) -> DebateEnv:
             eval_dataset=my_dataset,
         )
 
-    Required:
-        schedule_slots, members, truth_role.
-    Prompt source (exactly one): ``prompts_ref`` or ``prompts``.
-    Optional: role_for_actor, actor_overrides, judge_client, judge_model,
-    judge_api_key, judge_base_url, judge_max_retries, dataset/eval_dataset.
+    Required: schedule_slots, members, truth_role.
+    Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
+    or ``prompts`` (already-built DebatePrompts).
+    Optional: role_for_actor, actor_overrides, judge_client OR
+    (judge_api_key + judge_base_url + judge_max_retries), judge_model,
+    dataset/eval_dataset.
     """
-    from verifiers.envs.debate_rubric import (
-        DebateRubric,
-        any_field_needs_open_ended,
-    )
+    from verifiers.envs.debate_rubric import DebateRubric
 
-    raw_slots = kwargs.pop("schedule_slots")
-    slots = tuple(
-        TurnSlot(
-            slot_id=s["slot_id"],
-            actors=tuple(s["actors"]),
-            phase=s.get("phase", ""),
-        )
-        for s in raw_slots
-    )
-    schedule = StaticSchedule(slots)
-
-    prompts_ref = kwargs.pop("prompts_ref", None)
-    prompts = kwargs.pop("prompts", None)
-    if prompts is not None:
-        if not isinstance(prompts, DebatePrompts):
-            raise TypeError(f"Expected DebatePrompts, got {type(prompts).__name__}")
-    elif prompts_ref is not None:
-        prompts = resolve_prompts(prompts_ref)
-    else:
-        raise ValueError("Must provide either 'prompts_ref' or 'prompts'")
-
-    _validate_judge_templates(prompts)
-
-    members = kwargs.pop("members")
-    truth_role = kwargs.pop("truth_role")
-    judge_client = kwargs.pop("judge_client", None)
-    judge_model = kwargs.pop("judge_model", "gpt-4.1-nano")
-    judge_api_key = kwargs.pop("judge_api_key", None)
-    judge_base_url = kwargs.pop("judge_base_url", None)
-    judge_max_retries = kwargs.pop("judge_max_retries", 10)
-
-    if judge_client is None and (judge_api_key or judge_base_url):
-        from openai import AsyncOpenAI
-        from verifiers.clients.openai_chat_completions_client import (
-            OpenAIChatCompletionsClient,
-        )
-        judge_client = OpenAIChatCompletionsClient(
-            AsyncOpenAI(
-                api_key=judge_api_key,
-                base_url=judge_base_url,
-                max_retries=judge_max_retries,
+    schedule = StaticSchedule(
+        tuple(
+            TurnSlot(
+                slot_id=s["slot_id"],
+                actors=tuple(s["actors"]),
+                phase=s.get("phase", ""),
             )
+            for s in kwargs.pop("schedule_slots")
         )
-
-    if (
-        prompts.judges
-        and any_field_needs_open_ended(prompts.fields)
-        and judge_client is None
-    ):
-        declared = sorted(prompts.judges.keys())
-        raise ValueError(
-            f"load_environment: prompt pack {prompts.source_ref!r} declares "
-            f"{len(declared)} judge template(s) ({declared}) and has at "
-            "least one 'answer' field with non-enum scoring that routes to "
-            "the LLM grader, but judge_client was not provided. Open-ended "
-            "grading requires a vf.Client-wrapped judge client (e.g. "
-            "OpenAIChatCompletionsClient(AsyncOpenAI(...))). Raw provider "
-            "SDK clients are no longer accepted -- wrap them first."
-        )
-    if judge_client is not None and not isinstance(judge_client, Client):
-        raise TypeError(
-            f"load_environment: judge_client must be a vf.Client subclass "
-            f"(got {type(judge_client).__name__}). Wrap raw provider SDK "
-            "clients via OpenAIChatCompletionsClient(AsyncOpenAI(...)) or "
-            "the equivalent for your provider."
-        )
+    )
+    prompts = _resolve_prompts_arg(
+        kwargs.pop("prompts_ref", None),
+        kwargs.pop("prompts", None),
+    )
+    judge_client = _build_judge_client(
+        explicit=kwargs.pop("judge_client", None),
+        api_key=kwargs.pop("judge_api_key", None),
+        base_url=kwargs.pop("judge_base_url", None),
+        max_retries=kwargs.pop("judge_max_retries", 10),
+    )
     rubric = DebateRubric(
-        truth_role=truth_role,
-        members=members,
+        truth_role=kwargs.pop("truth_role"),
+        members=kwargs["members"],            # don't pop — env needs it too
         prompts=prompts,
         judge_client=judge_client,
-        judge_model=judge_model,
+        judge_model=kwargs.pop("judge_model", "gpt-4.1-nano"),
     )
-
-    role_for_actor = kwargs.pop("role_for_actor", None)
-    actor_overrides = kwargs.pop("actor_overrides", None)
-
     return DebateEnv(
         schedule=schedule,
         prompts=prompts,
-        members=members,
-        role_for_actor=role_for_actor,
-        actor_overrides=actor_overrides,
+        members=kwargs.pop("members"),
+        role_for_actor=kwargs.pop("role_for_actor", None),
+        actor_overrides=kwargs.pop("actor_overrides", None),
         rubric=rubric,
         **kwargs,
+    )
+
+
+def _resolve_prompts_arg(
+    prompts_ref: str | None, prompts: DebatePrompts | None
+) -> DebatePrompts:
+    """Return a DebatePrompts from whichever source the caller provided.
+
+    Exactly one of ``prompts_ref`` (registry lookup) or ``prompts`` (typed
+    object) must be given. Pure conversion; ``DebatePrompts.__post_init__``
+    runs the intrinsic pack validation.
+    """
+    if prompts is not None and prompts_ref is not None:
+        raise ValueError("Provide exactly one of 'prompts_ref' or 'prompts'")
+    if prompts is not None:
+        if not isinstance(prompts, DebatePrompts):
+            raise TypeError(
+                f"Expected DebatePrompts, got {type(prompts).__name__}"
+            )
+        return prompts
+    if prompts_ref is not None:
+        return resolve_prompts(prompts_ref)
+    raise ValueError("Must provide either 'prompts_ref' or 'prompts'")
+
+
+def _build_judge_client(
+    *,
+    explicit: Any | None,
+    api_key: str | None,
+    base_url: str | None,
+    max_retries: int,
+) -> Any | None:
+    """Return a judge client from an explicit object OR connection kwargs.
+
+    Pure construction — no validation. The rubric's ``__init__`` is the
+    single owner of the "client type" and "open-ended grading requires a
+    client" invariants. Returns ``None`` when neither source is provided.
+    """
+    if explicit is not None:
+        return explicit
+    if api_key is None and base_url is None:
+        return None
+    from openai import AsyncOpenAI
+
+    from verifiers.clients.openai_chat_completions_client import (
+        OpenAIChatCompletionsClient,
+    )
+
+    return OpenAIChatCompletionsClient(
+        AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+        )
     )

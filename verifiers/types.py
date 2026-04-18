@@ -264,7 +264,7 @@ class RolloutOutput(dict):
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, mar_score
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -286,6 +286,7 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    mar_score: "MARScore"  # populated by MultiAgentRubric subclasses
 
 
 class State(dict):
@@ -379,58 +380,74 @@ class GenerateOutputs(TypedDict):
     metadata: GenerateMetadata
 
 
-class EpisodeSpec(CustomBaseModel):
-    base_example_id: int | str
-    episode_id: str
-    input: dict[str, Any]
+class MemberScore(CustomBaseModel):
+    """Per-member outcome of one episode in a multi-actor rollout.
 
+    The bridge consumes ``reward`` (training signal) and ``role_id``
+    (advantage-baseline partition key). ``metrics`` projects to wandb
+    as ``f"{k}/{member_id}"`` at the serialization boundary.
+    ``parse_error_count`` propagates to ``f"parse_errors/{member_id}"``
+    when non-zero.
+    """
 
-class Member(CustomBaseModel):
     member_id: str
     role_id: str
-    seat_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float | int | bool] = Field(default_factory=dict)
 
 
-class TurnReq(CustomBaseModel):
-    episode_id: str
-    member_id: str
-    turn_id: str
-    prompt: Messages | str
-    stop_sequences: list[str] | list[int] = Field(default_factory=list)
+class MARScore(CustomBaseModel):
+    """Member-Attributed Reward — single source of truth for episode scoring.
 
+    Replaces the legacy multi-key spread:
 
-class TurnResp(CustomBaseModel):
-    episode_id: str
-    member_id: str
-    turn_id: str
-    content: Messages | str
-    token_count: int | None = None
-    raw_response: dict[str, Any] | None = None
+    - ``state["reward"]``         -> ``MARScore.episode_scalar``
+    - ``state["metrics"]``        -> ``MARScore.to_wandb_flat()`` (boundary)
+    - ``state["member_rewards"]`` -> ``{m.member_id: m.reward for m in members}``
+    - ``state["commits"]``        -> deleted (recomputable from trajectory)
+    - ``state["error_info"]``     -> deleted (state["error"] is the channel)
 
+    Schema invariants enforced at construction (duplicate member_id, empty
+    members) — drift between rubric writer and bridge reader is structurally
+    impossible after this lands.
+    """
 
-class EpisodeStart(CustomBaseModel):
-    episode: EpisodeSpec
-    members: list[Member]
-    ready_turns: list[TurnReq]
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float | int | bool | str] = Field(
+        default_factory=dict
+    )
 
+    @field_validator("members")
+    @classmethod
+    def _validate_members(cls, v: list[MemberScore]) -> list[MemberScore]:
+        if not v:
+            raise ValueError("MARScore.members cannot be empty")
+        ids = [m.member_id for m in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Duplicate member_id in MARScore: {ids}")
+        return v
 
-class MemberResult(CustomBaseModel):
-    member_id: str
-    role_id: str
-    seat_id: str
-    trajectory: list[TrajectoryStep]
-    reward: float | None = None
-    metrics: dict[str, float | int] = Field(default_factory=dict)
-    logs: dict[str, Any] = Field(default_factory=dict)
+    def by_id(self) -> dict[str, MemberScore]:
+        """O(N) lookup table; small N, no need to memoize."""
+        return {m.member_id: m for m in self.members}
 
+    def to_wandb_flat(self) -> dict[str, float | int | bool | str]:
+        """One-way projection to flat wandb keys. Boundary use only.
 
-class EpisodeResult(CustomBaseModel):
-    base_example_id: int | str
-    episode_id: str
-    members: list[MemberResult]
-    outcome: dict[str, Any] | None = None
-    metrics: dict[str, float | int] = Field(default_factory=dict)
-    logs: dict[str, Any] = Field(default_factory=dict)
+        Per-member fields project to ``f"{k}/{member_id}"``; episode-level
+        fields stay top-level. Reward and parse_error_count get canonical
+        prefixes so downstream consumers know the schema.
+        """
+        out: dict[str, float | int | bool | str] = dict(self.episode_metrics)
+        for m in self.members:
+            out[f"reward/{m.member_id}"] = m.reward
+            if m.parse_error_count:
+                out[f"parse_errors/{m.member_id}"] = m.parse_error_count
+            for k, v in m.metrics.items():
+                out[f"{k}/{m.member_id}"] = v
+        return out
 
 
 class RolloutScore(TypedDict):
