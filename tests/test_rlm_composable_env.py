@@ -195,8 +195,13 @@ def test_rlm_harness_uses_default_host_cache_when_local_checkout_unspecified(
     assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
 
 
-def test_rlm_harness_always_uploads_checkout(tmp_path):
+def test_rlm_harness_always_uploads_checkout(tmp_path, monkeypatch):
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
 
     harness = rlm_harness(
         rlm_repo_url=str(source_checkout),
@@ -205,6 +210,36 @@ def test_rlm_harness_always_uploads_checkout(tmp_path):
 
     assert harness.get_upload_dirs is not None
     assert harness.upload_dir_mapping is not None
+
+
+def test_resolve_local_checkout_redacts_gh_token_on_clone_failure(tmp_path, monkeypatch):
+    failing_checkout = tmp_path / "checkout-root" / "rlm"
+    token = "super/secret token"
+    quoted_token = "super%2Fsecret%20token"
+
+    def _raise_clone_error(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            128,
+            args[0],
+            stderr=(
+                "fatal: could not read from "
+                f"https://{quoted_token}@github.com/PrimeIntellect-ai/rlm.git"
+            ),
+        )
+
+    monkeypatch.setattr(rlm_module.subprocess, "run", _raise_clone_error)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolve_local_checkout(
+            local_checkout=failing_checkout,
+            rlm_repo_url="github.com/PrimeIntellect-ai/rlm.git",
+            rlm_branch="main",
+            gh_token=token,
+        )
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "<redacted>" in message
 
 
 # ── install_env ──────────────────────────────────────────────────────────

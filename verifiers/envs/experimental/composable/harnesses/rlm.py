@@ -94,6 +94,16 @@ def _build_clone_url(
     return rlm_repo_url
 
 
+def _redact_clone_error_detail(detail: str, gh_token: str | None = None) -> str:
+    if not gh_token:
+        return detail
+    redacted = detail.replace(gh_token, "<redacted>")
+    quoted_token = quote(gh_token, safe="")
+    if quoted_token != gh_token:
+        redacted = redacted.replace(quoted_token, "<redacted>")
+    return redacted
+
+
 @contextmanager
 def _checkout_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +154,7 @@ def _clone_checkout(
     except subprocess.CalledProcessError as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
         detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        detail = _redact_clone_error_detail(detail, gh_token)
         raise RuntimeError(
             f"Failed to clone RLM checkout into host cache at {target_dir}: {detail}"
         ) from exc
