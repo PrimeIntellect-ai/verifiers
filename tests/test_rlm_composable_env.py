@@ -21,6 +21,7 @@ from verifiers.envs.experimental.composable import (
 from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
     rlm_harness,
+    resolve_local_checkout,
 )
 
 
@@ -106,6 +107,44 @@ def test_rlm_harness_sets_metrics_fields():
 def test_rlm_harness_sets_skills_path():
     harness = rlm_harness()
     assert harness.skills_path == "/task/rlm-skills"
+
+
+def test_resolve_local_checkout_validates_explicit_path(tmp_path):
+    checkout = tmp_path / "rlm"
+    checkout.mkdir()
+    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+
+    resolved = resolve_local_checkout(checkout)
+
+    assert resolved == checkout.resolve()
+
+
+def test_resolve_local_checkout_discovers_search_dir(tmp_path):
+    search_root = tmp_path / "rlm_swe"
+    checkout = search_root / "rlm"
+    checkout.mkdir(parents=True)
+    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+
+    resolved = resolve_local_checkout(
+        prefer_local_checkout=True,
+        local_checkout_search_dirs=[search_root],
+    )
+
+    assert resolved == checkout.resolve()
+
+
+def test_rlm_harness_uploads_explicit_local_checkout(tmp_path):
+    checkout = tmp_path / "rlm"
+    checkout.mkdir()
+    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+
+    harness = rlm_harness(local_checkout=checkout, prefer_local_checkout=False)
+
+    assert harness.upload_dirs == {"rlm_checkout": checkout.resolve()}
+    assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
 
 
 # ── install_env ──────────────────────────────────────────────────────────
