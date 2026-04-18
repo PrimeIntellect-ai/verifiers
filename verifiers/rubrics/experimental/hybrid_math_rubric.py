@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 
 from openai import AsyncOpenAI
+from verifiers.clients import Client
+from verifiers.clients.openai_chat_completions_client import (
+    OpenAIChatCompletionsClient,
+)
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.math_rubric import MathRubric
@@ -105,7 +109,7 @@ class HybridMathRubric(vf.JudgeRubric):
         self,
         parser: Parser | None = DEFAULT_JUDGE_PARSER,
         use_judge_fallback: bool = DEFAULT_USE_JUDGE_FALLBACK,
-        judge_client: AsyncOpenAI | None = DEFAULT_JUDGE_CLIENT,
+        judge_client: AsyncOpenAI | Client | None = DEFAULT_JUDGE_CLIENT,
         judge_model: str = DEFAULT_JUDGE_MODEL,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
         judge_sampling_args: dict | None = None,
@@ -116,6 +120,11 @@ class HybridMathRubric(vf.JudgeRubric):
         judge_sampling_args = judge_sampling_args or self.DEFAULT_JUDGE_SAMPLING_ARGS
         if judge_client is None and not use_judge_fallback:
             judge_client = AsyncOpenAI(api_key="unused")
+        # Wrap raw AsyncOpenAI in vf.Client for the parent (JudgeRubric expects
+        # Client). Accept either form on the parameter for back-compat with
+        # callers passing raw provider clients.
+        if isinstance(judge_client, AsyncOpenAI):
+            judge_client = OpenAIChatCompletionsClient(judge_client)
         super().__init__(
             judge_client=judge_client,
             judge_sampling_args=judge_sampling_args,

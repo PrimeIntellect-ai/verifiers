@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import jinja2
+import jinja2.nodes
 import jinja2.sandbox
 import yaml
 
@@ -28,7 +29,7 @@ from .fields import (
 from .parsing import generate_format_instructions
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    pass
 
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -36,7 +37,9 @@ _ROLE_NAMES = {"judge", "debater_a", "debater_b"}
 _TAG_NAME_RE = re.compile(r"^\w+$")
 _UTILITY_BLOCK_NAMES = ("_matcher", "_grader")
 
-_THINK_VISIBILITY_LEVELS = frozenset({"disabled", "private", "visible_to_judge", "open"})
+_THINK_VISIBILITY_LEVELS = frozenset(
+    {"disabled", "private", "visible_to_judge", "open"}
+)
 
 _THINK_DESCRIPTIONS: dict[str, str] = {
     "private": "Your reasoning is private -- other participants will NOT see it.",
@@ -149,9 +152,7 @@ class DebatePrompts:
             )
         return tmpl.render(ctx)
 
-    def render_question(
-        self, role: str, ctx: dict[str, Any]
-    ) -> str | None:
+    def render_question(self, role: str, ctx: dict[str, Any]) -> str | None:
         tmpl = self.question.get(role)
         if tmpl is None:
             return None
@@ -184,9 +185,7 @@ class DebatePrompts:
 
         return "\n\n".join(parts) if parts else None
 
-    def render_prefill(
-        self, role: str, phase: str, ctx: dict[str, Any]
-    ) -> str | None:
+    def render_prefill(self, role: str, phase: str, ctx: dict[str, Any]) -> str | None:
         role_block = self.prefill.get(role, {})
         tmpl = role_block.get(phase) or role_block.get("default")
         if tmpl is None:
@@ -423,7 +422,9 @@ def _validate(d: dict) -> None:
     question_block = d.get("question", {})
     for required_role in ("debater_a", "debater_b"):
         if required_role not in question_block:
-            raise ValueError(f"question section missing required role '{required_role}'")
+            raise ValueError(
+                f"question section missing required role '{required_role}'"
+            )
     for role, val in question_block.items():
         if role not in _ROLE_NAMES:
             raise ValueError(f"Unknown role '{role}' in question")
@@ -461,13 +462,17 @@ def _validate(d: dict) -> None:
                     if type_str in _TYPE_MAP:
                         scoring = resolve_scoring(props["scoring"])
                         if scoring is not None:
-                            validate_type_scoring(tag_name, _TYPE_MAP[type_str], scoring)
+                            validate_type_scoring(
+                                tag_name, _TYPE_MAP[type_str], scoring
+                            )
 
     # Validate opponent_wrap
     ow = d.get("opponent_wrap")
     if ow is not None:
         if not isinstance(ow, dict):
-            raise ValueError(f"opponent_wrap: expected mapping, got {type(ow).__name__}")
+            raise ValueError(
+                f"opponent_wrap: expected mapping, got {type(ow).__name__}"
+            )
         valid_keys = {"debater", "judge"}
         extra = set(ow) - valid_keys
         if extra:
@@ -476,7 +481,9 @@ def _validate(d: dict) -> None:
             )
         for key, val in ow.items():
             if not isinstance(val, str):
-                raise ValueError(f"opponent_wrap.{key}: expected str, got {type(val).__name__}")
+                raise ValueError(
+                    f"opponent_wrap.{key}: expected str, got {type(val).__name__}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +555,9 @@ def _validate_judge_blocks(d: dict) -> None:
         if block is None:
             continue
         if not isinstance(block, dict):
-            raise ValueError(f"{block_name}: expected mapping, got {type(block).__name__}")
+            raise ValueError(
+                f"{block_name}: expected mapping, got {type(block).__name__}"
+            )
         required_keys = {"system", "user", "positive", "negative"}
         missing = required_keys - set(block)
         extra = set(block) - required_keys

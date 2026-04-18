@@ -1023,7 +1023,9 @@ class Environment(ABC):
                         )
                         tasks[task] = i
                 else:
-                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+                    group_inputs: dict[int | str, list[RolloutInput]] = defaultdict(
+                        list
+                    )
                     for rollout_input in filtered_inputs:
                         example_id = rollout_input["example_id"]
                         group_inputs[example_id].append(rollout_input)
