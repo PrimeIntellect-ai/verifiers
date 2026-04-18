@@ -6,6 +6,8 @@ fields and that the install script is generated correctly.
 
 import importlib
 import json
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
@@ -87,33 +89,55 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
     return mod
 
 
+def _make_git_checkout(target: Path) -> Path:
+    checkout = target
+    checkout.mkdir()
+    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+    subprocess.run(["git", "init", "-b", "main"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "install.sh", "pyproject.toml"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    return checkout
+
+
 # ── RLM harness ──────────────────────────────────────────────────────────
 
 
-def test_rlm_harness_install_script_downloads_repo_install_sh():
+def test_rlm_harness_install_script_clones_only_when_checkout_missing():
     script = build_install_script()
-    assert "git clone --depth 1 --branch main" in script
+    assert 'if [ ! -f "$RLM_CHECKOUT_PATH/install.sh" ]; then' in script
+    assert 'git clone --depth 1 --branch "$RLM_REPO_BRANCH"' in script
     assert "github.com/PrimeIntellect-ai/rlm.git" in script
-    assert "bash /tmp/rlm-checkout/install.sh" in script
+    assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
 
 
 def test_rlm_harness_sets_metrics_fields():
-    harness = rlm_harness()
+    harness = rlm_harness(prefer_local_checkout=False)
     assert harness.metrics_path == "{workdir}/.rlm/sessions/*/meta.json"
     assert harness.metrics_key == "metrics"
     assert harness.metrics_prefix == "rlm_"
 
 
 def test_rlm_harness_sets_skills_path():
-    harness = rlm_harness()
+    harness = rlm_harness(prefer_local_checkout=False)
     assert harness.skills_path == "/task/rlm-skills"
 
 
 def test_resolve_local_checkout_validates_explicit_path(tmp_path):
-    checkout = tmp_path / "rlm"
-    checkout.mkdir()
-    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
-    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+    checkout = _make_git_checkout(tmp_path / "rlm")
 
     resolved = resolve_local_checkout(checkout)
 
@@ -122,10 +146,8 @@ def test_resolve_local_checkout_validates_explicit_path(tmp_path):
 
 def test_resolve_local_checkout_discovers_search_dir(tmp_path):
     search_root = tmp_path / "rlm_swe"
-    checkout = search_root / "rlm"
-    checkout.mkdir(parents=True)
-    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
-    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+    search_root.mkdir()
+    checkout = _make_git_checkout(search_root / "rlm")
 
     resolved = resolve_local_checkout(
         prefer_local_checkout=True,
@@ -136,14 +158,42 @@ def test_resolve_local_checkout_discovers_search_dir(tmp_path):
 
 
 def test_rlm_harness_uploads_explicit_local_checkout(tmp_path):
-    checkout = tmp_path / "rlm"
-    checkout.mkdir()
-    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
-    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+    checkout = _make_git_checkout(tmp_path / "rlm")
 
     harness = rlm_harness(local_checkout=checkout, prefer_local_checkout=False)
 
     assert harness.upload_dirs == {"rlm_checkout": checkout.resolve()}
+    assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
+
+
+def test_resolve_local_checkout_materializes_host_cache(tmp_path):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    cache_dir = tmp_path / "cache" / "rlm"
+
+    resolved = resolve_local_checkout(
+        prefer_local_checkout=True,
+        rlm_repo_url=str(source_checkout),
+        rlm_branch="main",
+        local_checkout_cache_dir=cache_dir,
+    )
+
+    assert resolved == cache_dir.resolve()
+    assert (cache_dir / ".git").is_dir()
+    assert (cache_dir / "install.sh").is_file()
+    assert (cache_dir / "pyproject.toml").is_file()
+
+
+def test_rlm_harness_uses_host_cache_when_no_local_checkout(tmp_path):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    cache_dir = tmp_path / "cache" / "rlm"
+
+    harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_branch="main",
+        local_checkout_cache_dir=cache_dir,
+    )
+
+    assert harness.upload_dirs == {"rlm_checkout": cache_dir.resolve()}
     assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
 
 
@@ -248,7 +298,7 @@ async def test_rlm_collects_logs_and_metrics():
         "prompt_tokens": 100,
         "completion_tokens": 25,
     }
-    harness = rlm_harness()
+    harness = rlm_harness(prefer_local_checkout=False)
     env = ComposableEnv(
         taskset=taskset,
         harness=Harness(
