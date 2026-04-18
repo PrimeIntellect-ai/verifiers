@@ -83,6 +83,12 @@ class Harness:
     metrics_keys:
         Optional whitelist of metric keys to surface.  ``None`` means
         surface all keys found.
+    tool_names:
+        Names of the tools the agent uses internally.  When non-empty,
+        ``ComposableEnv`` auto-registers a ``ToolMonitorRubric`` that
+        counts calls to each named tool (plus a total) from the
+        assistant messages the harness emits into the trajectory.
+        Example: ``["ipython", "summarize"]`` for the RLM harness.
     """
 
     install_script: str | None = None
@@ -100,6 +106,7 @@ class Harness:
     metrics_prefix: str = ""
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
+    tool_names: list[str] | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""
