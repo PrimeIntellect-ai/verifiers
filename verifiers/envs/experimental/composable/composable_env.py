@@ -50,6 +50,7 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
+from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,9 @@ class ComposableEnv(CliAgentEnv):
         self.taskset = taskset
         self.harness = harness
         self.install_env = dict(install_env) if install_env else None
+
+        if harness.tool_names:
+            self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
 
     # -- CliAgentEnv hooks --------------------------------------------------
 

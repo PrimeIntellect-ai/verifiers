@@ -20,6 +20,7 @@ from verifiers.envs.experimental.composable import Harness
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_BRANCH = "main"
 DEFAULT_RLM_TOOLS = "bash,edit"
+DEFAULT_RLM_TOOL_NAMES = ["ipython", "summarize"]
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
@@ -283,4 +284,5 @@ def rlm_harness(
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
+        tool_names=list(DEFAULT_RLM_TOOL_NAMES),
     )
