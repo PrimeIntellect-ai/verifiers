@@ -51,7 +51,7 @@ class InterceptionServer:
 
     def __init__(self, port: int, secret: str | None = None):
         self.port = port
-        self.secret = secret
+        self.secret = secret or None  # treat empty string as no secret
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -157,15 +157,15 @@ class InterceptionServer:
             del self.active_rollouts[rollout_id]
 
     async def _handle_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
-
-        if self.secret is not None:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
 
         try:
             request_body = await request.json()
