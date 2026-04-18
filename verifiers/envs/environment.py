@@ -614,7 +614,7 @@ class Environment(ABC):
             generation_ms=0.0,
             scoring_ms=0.0,
             total_ms=0.0,
-            start_time=time.time(),
+            start_time=time.perf_counter(),
         )
         return state
 
@@ -662,7 +662,7 @@ class Environment(ABC):
 
     async def _render_timing(self, state: State):
         start_time = state["timing"]["start_time"]
-        end_time = time.time()
+        end_time = time.perf_counter()
         state["timing"]["generation_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 

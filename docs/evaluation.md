@@ -73,10 +73,10 @@ The `--env-args` flag passes arguments to your `load_environment()` function:
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
 ```
 
-The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` which may not be exposed via `load_environment()`:
+The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` or setting rollout limits like `timeout_seconds` which may not be exposed via `load_environment()`:
 
 ```bash
-prime eval run my-env -x '{"max_turns": 20}'
+prime eval run my-env -x '{"max_turns": 20, "timeout_seconds": 600}'
 ```
 
 #### Executor autoscaling

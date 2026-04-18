@@ -1,6 +1,7 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -115,6 +116,21 @@ class TestCliAgentEnv:
         image = await env.get_docker_image(state)
         assert image == "python:3.11-slim"
 
+    def test_get_sandbox_resources_omits_timeout_minutes_when_unset(
+        self, sample_dataset
+    ):
+        """Sandbox provider default should apply when rollout timeout is disabled."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=None,
+        )
+
+        resources = env.get_sandbox_resources({})
+
+        assert "timeout_minutes" not in resources
+
     @pytest.mark.asyncio
     async def test_agent_completed_stop_condition(self, sample_dataset):
         """Test the agent_completed stop condition."""
@@ -139,13 +155,15 @@ class TestCliAgentEnv:
             rubric=vf.Rubric(),
             timeout_seconds=10.0,
         )
-        import time
 
-        state = {"timing": {"start_time": time.time()}}
+        state = {"timing": {"start_time": time.perf_counter()}}
         assert await env.timeout_reached(state) is False
+        assert state.get("agent_timed_out") is None
 
-        state = {"timing": {"start_time": time.time() - 20}}
+        state = {"timing": {"start_time": time.perf_counter() - 20}}
         assert await env.timeout_reached(state) is True
+        assert state["timed_out"] is True
+        assert state["agent_timed_out"] is True
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):
