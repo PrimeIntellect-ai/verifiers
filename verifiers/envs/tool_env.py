@@ -11,25 +11,22 @@ from verifiers.utils.tool_utils import (
 
 
 class ToolMonitorRubric(vf.Rubric):
-    def __init__(self, tools: list[Callable] | None = None, **kwargs):
+    def __init__(self, tool_names: list[str] | None = None, **kwargs):
         super().__init__(**kwargs)
 
-        self.tools = tools or []
-        self.tool_names = [tool.__name__ for tool in self.tools]  # type: ignore[union-attr]
+        self.tool_names = list(tool_names) if tool_names else []
 
         # add tool metrics
         self.add_metric(self.total_tool_calls)
         for tool_name in self.tool_names:
             self.add_metric(self.get_tool_call_count_func(tool_name))
 
-    def add_tool_metric(self, tool: Callable):
-        tool_name = tool.__name__  # type: ignore[union-attr]
+    def add_tool_metric(self, tool_name: str):
         if tool_name not in self.tool_names:
             self.tool_names.append(tool_name)
             self.add_metric(self.get_tool_call_count_func(tool_name))
 
-    def remove_tool_metric(self, tool: Callable):
-        tool_name = tool.__name__  # type: ignore[union-attr]
+    def remove_tool_metric(self, tool_name: str):
         if tool_name in self.tool_names:
             self.tool_names.remove(tool_name)
             metric_name = f"{tool_name}_calls"
@@ -94,7 +91,9 @@ class ToolEnv(vf.MultiTurnEnv):
         }
         super().__init__(tool_defs=self.tool_defs, max_turns=max_turns, **kwargs)
 
-        self.tool_monitor_rubric = ToolMonitorRubric(tools=self.tools)
+        self.tool_monitor_rubric = ToolMonitorRubric(
+            tool_names=list(self.tool_map.keys())
+        )
         self.add_rubric(self.tool_monitor_rubric)
 
     def _should_stop_for_error(self, err: Exception) -> bool:
@@ -106,8 +105,9 @@ class ToolEnv(vf.MultiTurnEnv):
         if self.tool_defs is None:
             self.tool_defs = []
         self.tool_defs.append(convert_func_to_tool_def(tool))
-        self.tool_map[getattr(tool, "__name__", tool.__class__.__name__)] = tool
-        self.tool_monitor_rubric.add_tool_metric(tool)
+        tool_name = getattr(tool, "__name__", tool.__class__.__name__)
+        self.tool_map[tool_name] = tool
+        self.tool_monitor_rubric.add_tool_metric(tool_name)
 
     def remove_tool(self, tool: Callable):
         self.tools.remove(tool)
@@ -116,7 +116,7 @@ class ToolEnv(vf.MultiTurnEnv):
         self.tool_defs.remove(convert_func_to_tool_def(tool))
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map.pop(tool_name)
-        self.tool_monitor_rubric.remove_tool_metric(tool)
+        self.tool_monitor_rubric.remove_tool_metric(tool_name)
 
     @vf.stop
     async def no_tools_called(self, state: vf.State) -> bool:
