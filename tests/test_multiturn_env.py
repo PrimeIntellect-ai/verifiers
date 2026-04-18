@@ -48,13 +48,20 @@ class TestMultiTurnEnv:
             timeout_seconds=10.0,
         )
 
-        state: State = {"timing": {"start_time": time.time()}}
+        state: State = {
+            "timing": {"start_time": time.time()},
+            "_start_perf_counter": time.perf_counter(),
+        }
         assert await env.timeout_reached(state) is False
         assert state.get("timed_out") is None
 
-        state = {"timing": {"start_time": time.time() - 20}}
+        state = {
+            "timing": {"start_time": time.time() - 20},
+            "_start_perf_counter": time.perf_counter() - 20,
+        }
         assert await env.timeout_reached(state) is True
         assert state["timed_out"] is True
+        assert state["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env, make_input):
@@ -140,8 +147,11 @@ class TestMultiTurnEnv:
 
         class SlowMultiTurnEnv(MultiTurnEnv):
             async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
-                await asyncio.sleep(0.05)
                 return [{"role": "user", "content": "Continue"}]
+
+            async def add_model_response(self, state, prompt_messages, response):  # type: ignore[override]
+                await super().add_model_response(state, prompt_messages, response)
+                await asyncio.sleep(0.05)
 
         env = SlowMultiTurnEnv(
             client=mock_client,
@@ -169,6 +179,45 @@ class TestMultiTurnEnv:
         assert len(completion) == 1
         assert completion[0]["role"] == "assistant"
         assert completion[0]["content"] == "Still going"
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_limits_setup(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        """Test that the rollout timeout applies while setup is in flight."""
+
+        class SlowSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state):  # type: ignore[override]
+                await asyncio.sleep(1)
+                return state
+
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+        env = SlowSetupEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+            timeout_seconds=0.01,
+        )
+
+        state = await env.rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start conversation"}],
+                answer="target_answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert state["timed_out"] is True
+        assert state["is_completed"] is True
+        assert state["is_truncated"] is True
+        assert state["stop_condition"] == "timeout_reached"
+        assert state["trajectory"] == []
+        assert state["completion"] == []
 
     @pytest.mark.asyncio
     async def test_override_is_completed_respects_max_turns(

@@ -79,10 +79,15 @@ class MultiTurnEnv(vf.Environment):
     async def timeout_reached(self, state: State) -> bool:
         if self.timeout_seconds is None:
             return False
-        if time.time() - state["timing"]["start_time"] <= self.timeout_seconds:
+        start_time = state.get("_start_perf_counter", state["timing"]["start_time"])
+        if time.perf_counter() - start_time <= self.timeout_seconds:
             return False
-        state["timed_out"] = True
+        self.mark_timed_out(state)
         return True
+
+    def mark_timed_out(self, state: State) -> None:
+        state["timed_out"] = True
+        state["is_truncated"] = True
 
     @vf.stop
     async def max_total_completion_tokens_reached(self, state: State) -> bool:
@@ -203,16 +208,16 @@ class MultiTurnEnv(vf.Environment):
 
             rollout_task = asyncio.create_task(run_rollout_loop())
             done, _ = await asyncio.wait({rollout_task}, timeout=self.timeout_seconds)
-            if rollout_task in done:
+            if rollout_task in done or rollout_task.done():
                 return await rollout_task
 
-            rollout_task.cancel()
+            if not rollout_task.cancel():
+                return await rollout_task
             with suppress(asyncio.CancelledError):
                 await rollout_task
 
-            state["timed_out"] = True
+            self.mark_timed_out(state)
             state["is_completed"] = True
-            state["is_truncated"] = True
             state["stop_condition"] = "timeout_reached"
             await self._render_timing(state)
             await self._cleanup(state)

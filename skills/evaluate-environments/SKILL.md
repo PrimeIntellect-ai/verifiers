@@ -89,7 +89,7 @@ prime eval run my-env -a '{"difficulty":"hard"}'
 ```
 2. Override constructor kwargs:
 ```bash
-prime eval run my-env -x '{"max_turns":20}'
+prime eval run my-env -x '{"max_turns":20,"timeout_seconds":600}'
 ```
 3. Save extra state columns:
 ```bash

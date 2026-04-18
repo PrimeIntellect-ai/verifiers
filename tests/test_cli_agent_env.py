@@ -1,6 +1,8 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
+import asyncio
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -63,6 +65,7 @@ class TestCliAgentEnv:
         assert env.docker_image == "python:3.11-slim"
         assert env.interception_port == 8765
         assert env.timeout_seconds == 3600.0
+        assert env.timeout_reached.__func__ is vf.MultiTurnEnv.timeout_reached
 
     def test_init_custom_config(self, sample_dataset):
         """Test initialization with custom configuration."""
@@ -130,6 +133,9 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
+        state = {"agent_completed": True, "timed_out": True}
+        assert await env.agent_completed(state) is False
+
     @pytest.mark.asyncio
     async def test_timeout_reached_stop_condition(self, sample_dataset):
         """Test the timeout_reached stop condition."""
@@ -139,13 +145,56 @@ class TestCliAgentEnv:
             rubric=vf.Rubric(),
             timeout_seconds=10.0,
         )
-        import time
 
-        state = {"timing": {"start_time": time.time()}}
+        state = {
+            "timing": {"start_time": time.time()},
+            "_start_perf_counter": time.perf_counter(),
+        }
         assert await env.timeout_reached(state) is False
 
-        state = {"timing": {"start_time": time.time() - 20}}
+        state = {
+            "timing": {"start_time": time.time() - 20},
+            "_start_perf_counter": time.perf_counter() - 20,
+        }
         assert await env.timeout_reached(state) is True
+        assert state["timed_out"] is True
+        assert state["is_truncated"] is True
+
+    def test_disabled_timeout_omits_sandbox_timeout(self, sample_dataset):
+        """Disabling rollout timeout should not send a zero-minute sandbox timeout."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=None,
+        )
+
+        resources = env.get_sandbox_resources({})
+
+        assert "timeout_minutes" not in resources
+
+    @pytest.mark.asyncio
+    async def test_poll_next_request_exits_on_rollout_timeout(self, sample_dataset):
+        """Polling should unblock when the inherited rollout timeout is reached."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=0.01,
+            poll_interval=0.001,
+        )
+        state = {
+            "request_id_queue": asyncio.Queue(),
+            "agent_completed": False,
+            "timing": {"start_time": time.time() - 1.0},
+            "_start_perf_counter": time.perf_counter() - 1.0,
+        }
+
+        request_id = await env._poll_next_request(state)
+
+        assert request_id is None
+        assert state["timed_out"] is True
+        assert state["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):

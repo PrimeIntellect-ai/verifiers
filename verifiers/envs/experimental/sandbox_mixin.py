@@ -169,8 +169,24 @@ class SandboxMixin:
         if self.sandbox_creation_rate_limiter is not None:
             await self.sandbox_creation_rate_limiter.acquire()
 
+        create_task = asyncio.create_task(
+            self.with_retry(self.sandbox_client.create)(request)
+        )
         try:
-            sandbox = await self.with_retry(self.sandbox_client.create)(request)
+            sandbox = await asyncio.shield(create_task)
+        except asyncio.CancelledError:
+
+            def cleanup_created_sandbox(task: asyncio.Task):
+                try:
+                    sandbox = task.result()
+                except BaseException:
+                    return
+                self.register_sandbox(sandbox.id)
+                state["sandbox_id"] = sandbox.id
+                asyncio.create_task(self.delete_sandbox(sandbox.id))
+
+            create_task.add_done_callback(cleanup_created_sandbox)
+            raise
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
 
