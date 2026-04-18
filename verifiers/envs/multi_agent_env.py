@@ -245,7 +245,7 @@ class MultiAgentEnv(vf.Environment):
                 usage_tracker=parent_tracker,
             ),
         )
-        content = response.message.content or ""
+        content = _coerce_text_content(response.message.content)
         content = _enrich_with_provider_reasoning(content, response, self.think_tag)
         token_count = _completion_token_count(response)
 
@@ -362,7 +362,7 @@ class MultiAgentEnv(vf.Environment):
         staged_steps: list[TrajectoryStep] = []
         committed_utts: list[Utterance] = []
         for agent, response in zip(slot.agents, responses):
-            content = response.message.content or ""
+            content = _coerce_text_content(response.message.content)
             content = _enrich_with_provider_reasoning(content, response, self.think_tag)
             token_count = _completion_token_count(response)
             result = apply_action(
@@ -455,6 +455,35 @@ def _completion_token_count(response: Response) -> int:
     if response.message.tokens and response.message.tokens.completion_ids:
         return len(response.message.tokens.completion_ids)
     return 0
+
+
+def _coerce_text_content(content: Any) -> str:
+    """Coerce ``response.message.content`` to a string for the kernel.
+
+    Provider returns either ``str`` or ``list[ContentPart]`` (multimodal).
+    The MA pipeline (parse_channels, raw_content storage, downstream
+    rendering) is text-only — joins TextContentPart text fields and
+    drops non-text parts. Most multi-agent debate tasks are text-only;
+    this helper exists so a stray multimodal response doesn't crash the
+    kernel without surfacing.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                txt = part.get("text")
+                if isinstance(txt, str):
+                    text_parts.append(txt)
+            else:
+                txt = getattr(part, "text", None)
+                if isinstance(txt, str):
+                    text_parts.append(txt)
+        return "".join(text_parts)
+    return ""
 
 
 def _extract_provider_reasoning(response: Response) -> str | None:

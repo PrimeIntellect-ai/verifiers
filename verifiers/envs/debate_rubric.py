@@ -14,7 +14,7 @@ from verifiers.envs.debate.prompts import (
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.judge_rubric import JudgeRubric
 from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
-from verifiers.types import MARScore, MemberScore, State
+from verifiers.types import AssistantMessage, MARScore, MemberScore, State, UserMessage
 
 OutcomeFn = Callable[[State], str | None]
 """(state) -> winning role_id, or None if no winner."""
@@ -29,7 +29,9 @@ def _extract_question(state: State) -> str:
     """
     for msg in state.get("prompt") or []:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        content = (
+            msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        )
         if role == "user" and content:
             return content
     return ""
@@ -234,9 +236,7 @@ class DebateRubric(MultiAgentRubric):
                 failed_members.add(mid)
         return roles, answers, answer_specs, failed_members
 
-    def _extract_commit_sequences(
-        self, state: State
-    ) -> dict[str, list[str]]:
+    def _extract_commit_sequences(self, state: State) -> dict[str, list[str]]:
         """Walk trajectory forward, extract every answer commit per member
         in chronological order. Used for flip diagnostics (initial_correct,
         final_correct, num_unique_commits). Returns {member_id: [a0, a1, ...]}.
@@ -300,8 +300,8 @@ class DebateRubric(MultiAgentRubric):
             )
         grader_template = self.prompts.judges["grader"]
         verdict = await self.grader_rubric.judge(
-            prompt=[{"role": "user", "content": question}],
-            completion=[{"role": "assistant", "content": str(answer)}],
+            prompt=[UserMessage(content=question)],
+            completion=[AssistantMessage(content=str(answer))],
             answer=str(target),
             state=state,
         )
@@ -341,8 +341,8 @@ class DebateRubric(MultiAgentRubric):
             )
         matcher_template = self.prompts.judges["matcher"]
         verdict = await self.matcher_rubric.judge(
-            prompt=[{"role": "user", "content": question}],
-            completion=[{"role": "assistant", "content": str(b)}],
+            prompt=[UserMessage(content=question)],
+            completion=[AssistantMessage(content=str(b))],
             answer=str(a),
             state=state,
         )
@@ -551,9 +551,7 @@ class DebateRubric(MultiAgentRubric):
                 (m for m in self.members if roles.get(m) == winning_role), None
             )
             winner_val = (
-                float(self.members.index(winner_member))
-                if winner_member
-                else -1.0
+                float(self.members.index(winner_member)) if winner_member else -1.0
             )
         else:
             winner_val = -1.0
