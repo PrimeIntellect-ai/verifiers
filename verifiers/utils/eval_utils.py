@@ -32,6 +32,7 @@ from verifiers.types import (
     RolloutInput,
     RolloutOutput,
     StartCallback,
+    TokenUsage,
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -656,22 +657,34 @@ def print_timing(results: GenerateOutputs):
 
 def print_usage(results: GenerateOutputs):
     usage_count = 0
-    input_tokens_total = 0.0
-    output_tokens_total = 0.0
+    input_total = 0.0
+    output_total = 0.0
+    final_input_total = 0.0
+    final_output_total = 0.0
+    context_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
             continue
         usage_count += 1
-        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
-        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+        input_total += float(token_usage.get("input_tokens", 0.0))
+        output_total += float(token_usage.get("output_tokens", 0.0))
+        inp = token_usage.get("final_input_tokens")
+        out = token_usage.get("final_output_tokens")
+        if inp is not None and out is not None:
+            context_count += 1
+            final_input_total += float(inp)
+            final_output_total += float(out)
 
-    usage = None
+    usage: TokenUsage | None = None
     if usage_count > 0:
-        usage = {
-            "input_tokens": input_tokens_total / usage_count,
-            "output_tokens": output_tokens_total / usage_count,
-        }
+        usage = TokenUsage(
+            input_tokens=input_total / usage_count,
+            output_tokens=output_total / usage_count,
+        )
+        if context_count > 0:
+            usage["final_input_tokens"] = final_input_total / context_count
+            usage["final_output_tokens"] = final_output_total / context_count
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
@@ -679,8 +692,14 @@ def print_usage(results: GenerateOutputs):
         return
 
     print("Usage:")
-    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
-    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+    print(f"input_tokens (avg): {float(usage.get('input_tokens', 0.0)):.3f}")
+    print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
+    inp = usage.get("final_input_tokens")
+    out = usage.get("final_output_tokens")
+    if inp is not None:
+        print(f"final_input_tokens (avg): {float(inp):.3f}")
+    if out is not None:
+        print(f"final_output_tokens (avg): {float(out):.3f}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):

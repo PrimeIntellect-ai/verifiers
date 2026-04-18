@@ -207,6 +207,8 @@ class TrajectoryStepTokens(TypedDict):
 class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
+    final_input_tokens: NotRequired[float]
+    final_output_tokens: NotRequired[float]
 
 
 class VersionInfo(TypedDict):
