@@ -1,6 +1,7 @@
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -48,8 +49,9 @@ class InterceptionServer:
     to the agent once the actual model response is obtained.
     """
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, secret: str | None = None):
         self.port = port
+        self.secret = secret
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -159,6 +161,11 @@ class InterceptionServer:
         context = self.active_rollouts.get(rollout_id)
         if not context:
             return web.json_response({"error": "Rollout not found"}, status=404)
+
+        if self.secret is not None:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
 
         try:
             request_body = await request.json()
