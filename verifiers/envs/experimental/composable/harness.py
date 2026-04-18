@@ -95,9 +95,7 @@ class Harness:
     sandbox_spec: SandboxSpec | None = None
     skills_path: str | None = None
     upload_dir_mapping: dict[str, str] | None = None
-    get_upload_dirs: (
-        Callable[[], dict[str, Traversable | Path] | None] | None
-    ) = None
+    get_upload_dirs: Callable[[], dict[str, Traversable | Path] | None] | None = None
     metrics_path: str | None = None
     metrics_prefix: str = ""
     metrics_key: str | None = None
