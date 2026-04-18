@@ -1,0 +1,23 @@
+[project]
+name = "gpqa_debate"
+version = "0.1.0"
+description = "GPQA Diamond / Main under a two-debater + judge protocol"
+tags = ["gpqa", "debate", "multi-agent", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.12",
+    "datasets>=2.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["gpqa_debate.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 50
+rollouts_per_example = 4
+max_tokens = 1024
+temperature = 1.0
