@@ -218,6 +218,19 @@ class DebateRubric(MultiAgentRubric):
                 "or missing judge step). Refusing to fall back to answer "
                 "grading — that would silently generate fake training signal."
             )
+        # Validate the judge's decision is an allowed member (minus the
+        # judge itself — judges are neutral by convention) or "tie".
+        # Without this check a typo / out-of-schema verdict would drop
+        # through ``zero_sum_reward`` and both debaters would get −1 each
+        # (member_id == winner fails for all), producing fake training
+        # reward instead of an errored rollout.
+        if winner is not None:
+            valid_winners = (set(self.members) - {"judge"}) | {"tie"}
+            if winner not in valid_winners:
+                raise vf.Error(
+                    f"Judge decision {winner!r} not in allowed set "
+                    f"{sorted(valid_winners)}; pack={self.prompts.source_ref!r}"
+                )
 
         snaps = {
             mid: member_snapshot(mid, steps_by_mid.get(mid, []), self.prompts)
