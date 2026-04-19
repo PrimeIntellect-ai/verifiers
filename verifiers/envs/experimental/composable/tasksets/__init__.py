@@ -5,6 +5,7 @@ from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
     make_swe_taskset,
     make_swebench_taskset,
     make_swelego_real_taskset,
+    make_swerebench_v2_taskset,
 )
 from verifiers.envs.experimental.composable.tasksets.lean.lean_task import (
     LEAN_SYSTEM_PROMPT,
@@ -29,6 +30,7 @@ __all__ = [
     "make_multiswe_taskset",
     "make_openswe_taskset",
     "make_swelego_real_taskset",
+    "make_swerebench_v2_taskset",
     "LeanTaskSet",
     "LEAN_SYSTEM_PROMPT",
     "MathTaskSet",

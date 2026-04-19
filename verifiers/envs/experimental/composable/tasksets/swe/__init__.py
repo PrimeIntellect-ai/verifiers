@@ -5,6 +5,7 @@ from .swe_tasksets import (
     make_swe_taskset,
     make_swebench_taskset,
     make_swelego_real_taskset,
+    make_swerebench_v2_taskset,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "make_multiswe_taskset",
     "make_openswe_taskset",
     "make_swelego_real_taskset",
+    "make_swerebench_v2_taskset",
 ]
