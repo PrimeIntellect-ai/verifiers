@@ -453,7 +453,7 @@ def load_toml_config(
         "disable_env_server",
         # logging
         "verbose",
-        "debug",
+        "disable_tui",
         # saving
         "output_dir",
         "state_columns",
