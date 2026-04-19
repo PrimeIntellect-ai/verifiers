@@ -248,8 +248,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         await self.create_sandbox(state, sandbox_request)
 
-        # Register rollout for interception
-        request_id_queue = interception_server.register_rollout(rollout_id)
+        # Register rollout for interception. Pass state so the server can
+        # surface stream-interruption errors (e.g. tunnel dies mid-SSE) back
+        # onto the rollout; without this the agent sees a truncated stream
+        # and often exits with code 0 and an empty trajectory.
+        request_id_queue = interception_server.register_rollout(rollout_id, state=state)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
