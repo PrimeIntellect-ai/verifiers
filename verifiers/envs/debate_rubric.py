@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.debate.fields import EnumScoring, FieldSpec, classify_enum
 from verifiers.envs.debate.prompts import (
@@ -363,7 +364,10 @@ class DebateRubric(MultiAgentRubric):
             return True
         if token == template.negative:
             return False
-        raise RuntimeError(
+        # vf.Error (not RuntimeError) so the rollout quarantines via
+        # MultiAgentRubric.score_rollout's catch instead of killing the
+        # whole batch through asyncio.gather propagation.
+        raise vf.Error(
             f"{kind} returned unrecognized verdict token {token!r} "
             f"(raw response: {verdict!r}). "
             f"Expected {template.positive!r} or {template.negative!r}. "
@@ -388,11 +392,8 @@ class DebateRubric(MultiAgentRubric):
                 for mid in self.members
             ],
             episode_scalar=0.0,
-            episode_metrics={
-                "errored_rollout": 1.0,
-                "error_type": error_type,
-                "error_phase": error_phase,
-            },
+            episode_metrics={"errored_rollout": 1.0},
+            episode_error={"error_type": error_type, "error_phase": error_phase},
         )
 
     async def build_marscore(self, state: State) -> MARScore:
@@ -415,11 +416,13 @@ class DebateRubric(MultiAgentRubric):
         parse_errors = _count_parse_errors(state, self.members)
 
         # Per-member working dict — projects to MemberScore.metrics later.
-        per_member: dict[str, dict[str, float | int | bool]] = {
-            m: {} for m in self.members
-        }
+        # Float-only by design (no bool/int/str): the aggregator averages these
+        # without a type check; mixing in categorical sentinels is the same
+        # ZIP-code mistake the episode-level split solves.
+        per_member: dict[str, dict[str, float]] = {m: {} for m in self.members}
         member_rewards: dict[str, float] = {}
-        episode_metrics: dict[str, float | int | bool | str] = {}
+        episode_metrics: dict[str, float] = {}
+        episode_categorical: dict[str, str | None] = {}
 
         # W: winner
         winning_role = self.outcome_fn(state)
@@ -432,10 +435,20 @@ class DebateRubric(MultiAgentRubric):
         # can produce a rollout with no judge step and bypass the check.
         judge_expected = "judge" in self.prompts.fields
 
+        # episode_scalar is single-purpose: "did the truth side win the
+        # judge's vote." It is NEVER populated from the grader's correctness
+        # signal. The judge-less fallback (test packs only) records the
+        # grader's verdict in episode_metrics["truth_member_correct"] for
+        # telemetry, but does NOT feed member_rewards — that would silently
+        # mix two different upstream signals (judge verdict vs grader call)
+        # into the same trainer-facing field.
+        truth_member_correct: float | None = None
         if winning_role is not None:
             episode_scalar = 1.0 if winning_role == self.truth_role else 0.0
         elif judge_expected:
-            raise RuntimeError(
+            # vf.Error so the rollout quarantines (errored MARScore, batch
+            # survives asyncio.gather) rather than killing scoring outright.
+            raise vf.Error(
                 f"Prompt pack {self.prompts.source_ref!r} declares a judge but "
                 "no decision was produced (winning_role is None). This happens "
                 "when the judge never ran (early termination: parser raise, "
@@ -451,17 +464,24 @@ class DebateRubric(MultiAgentRubric):
                 answer_specs.get(truth_member),
                 state,
             )
-            episode_scalar = 1.0 if correct else 0.0
+            # Telemetry only — this signal does NOT enter member_rewards.
+            truth_member_correct = 1.0 if correct else 0.0
+            episode_scalar = 0.0
         else:
             episode_scalar = 0.0
+        if truth_member_correct is not None:
+            episode_metrics["truth_member_correct"] = truth_member_correct
 
         # Per-member rewards + turn counts
+        # Single source: judge verdict. Win-based, no truth_role coupling.
+        # Fallback (no verdict): all zero — the grader path produces only
+        # telemetry, never reward.
         for mid in self.members:
             role = roles.get(mid, mid)
             if winning_role is not None:
                 r = 1.0 if role == winning_role else 0.0
             else:
-                r = episode_scalar if mid == truth_member else 0.0
+                r = 0.0
             member_rewards[mid] = r
             turns = sum(
                 1
@@ -545,17 +565,10 @@ class DebateRubric(MultiAgentRubric):
             same = await self._match(a_ans, b_ans, question, spec, state)
             episode_metrics["agreement"] = 1.0 if same else 0.0
 
-        # Winner index (episode-level)
-        if winning_role is not None:
-            winner_member = next(
-                (m for m in self.members if roles.get(m) == winning_role), None
-            )
-            winner_val = (
-                float(self.members.index(winner_member)) if winner_member else -1.0
-            )
-        else:
-            winner_val = -1.0
-        episode_metrics["winner"] = winner_val
+        # Winner — categorical, not an averageable scalar.
+        # Per-role winrates are computable at aggregation time from
+        # MemberScore.reward (mean over rollouts grouped by role_id).
+        episode_categorical["winner"] = winning_role  # str | None
 
         return MARScore(
             members=[
@@ -570,4 +583,5 @@ class DebateRubric(MultiAgentRubric):
             ],
             episode_scalar=episode_scalar,
             episode_metrics=episode_metrics,
+            episode_categorical=episode_categorical,
         )
