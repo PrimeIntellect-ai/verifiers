@@ -69,6 +69,34 @@ class Orchestrator:
         zero_truncated_completions: bool,
         max_concurrent: int,
     ):
+        # Multi-agent rubrics write per-member rewards into ``state["mar_score"]``
+        # but never compute step advantages — ``MultiAgentRubric.score_group``
+        # bypasses ``Rubric.score_group``'s advantage propagation. The
+        # orchestrator's microbatch path reads ``step["advantage"]`` directly
+        # into ``Microbatch.advantages: list[list[float]]`` and would build
+        # ``[None] * lengths`` chunks that then fail Pydantic validation.
+        # Reject loudly here rather than crash several batches in.
+        from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
+        from verifiers.rubrics.rubric_group import RubricGroup
+
+        rubric = getattr(env, "rubric", None)
+        contained_rubrics = (
+            list(getattr(rubric, "rubrics", []))
+            if isinstance(rubric, RubricGroup)
+            else []
+        )
+        if isinstance(rubric, MultiAgentRubric) or any(
+            isinstance(r, MultiAgentRubric) for r in contained_rubrics
+        ):
+            raise NotImplementedError(
+                "Orchestrator does not support MultiAgentRubric envs. "
+                "MA scoring writes state['mar_score'] only and never sets "
+                "step['advantage'], so the in-tree trainer would build "
+                "invalid microbatches. Use the prime-rl orchestrator with "
+                "rollout_to_member_rollouts + compute_rae_advantages instead "
+                "(see docs/multi_agent_architecture.md)."
+            )
+
         self.env = env
         self.client_base_url = client_base_url
         self.client_api_key = client_api_key

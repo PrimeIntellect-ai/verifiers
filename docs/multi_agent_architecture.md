@@ -55,7 +55,7 @@ state_to_output(state)                        [verifiers/utils/save_utils.py]
 RolloutOutput  ──►  [wire boundary: JSON / IPC]  ──►  orchestrator
         │
         ▼
-rollout_to_member_rollouts(output, env_name)  [verifiers/multi_agent_bridge.py]
+rollout_to_member_rollouts(output)            [verifiers/multi_agent_bridge.py]
   read output["mar_score"] → group steps by extras["member_id"] → one MemberRollout per member
         │
         ▼

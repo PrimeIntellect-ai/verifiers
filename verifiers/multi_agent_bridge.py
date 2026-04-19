@@ -2,44 +2,64 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any, Mapping
 
-from .types import MARScore, MemberRollout, RolloutOutput, TrajectoryStep
+from .types import MARScore, MemberRollout, RolloutOutput
 
 
 def rollout_to_member_rollouts(
     output: RolloutOutput | Mapping[str, Any],
-    env_name: str,
 ) -> list[MemberRollout]:
-    """Project one episode-level rollout into one rollout per member."""
+    """Project one episode-level rollout into one rollout per member.
+
+    Inputs are expected to be a ``RolloutOutput`` produced by
+    ``state_to_output``, which guarantees ``task``, ``example_id``,
+    ``sampling_args``, ``trajectory_id`` and ``mar_score``. Missing any
+    of these is a contract violation upstream — we ``KeyError`` rather
+    than silently substituting defaults that would corrupt training
+    identity (RAE baselines key on ``(task, example_id, role_id)``).
+
+    Trajectory member ids must match ``MARScore.members`` exactly: any
+    extra ``extras['member_id']`` would be silently dropped by the
+    per-member projection, masking a rubric/env wiring bug.
+    """
+    # Lazy import: verifiers/__init__.py loads this module before Parser
+    # is bound, and MultiAgentRubric transitively pulls Rubric which
+    # resolves vf.Parser at class-body evaluation time.
+    from .rubrics.multi_agent_rubric import MultiAgentRubric
+
     mar_raw = output["mar_score"]
     mar = mar_raw if isinstance(mar_raw, MARScore) else MARScore.model_validate(mar_raw)
+
+    task = output["task"]
+    example_id = output["example_id"]
+    sampling_args = output["sampling_args"]
+    episode_id = output["trajectory_id"]
+    rollout_error = output.get("error")
 
     # vf-eval doesn't always populate temperature in saved metadata when
     # the user passes --sampling-args without it. Default to OpenAI's
     # canonical 1.0 rather than crashing on the first such rollout.
-    sampling_args = output["sampling_args"]
-    temperature = sampling_args.get("temperature", 1.0)
-    example_id = output["example_id"]
-    episode_id = output.get("trajectory_id", "")
-    rollout_error = output.get("error")
-    trajectory: list[TrajectoryStep] = output.get("trajectory", [])
+    member_sampling_args = dict(sampling_args)
+    member_sampling_args.setdefault("temperature", 1.0)
 
-    steps_by_member: dict[str, list[TrajectoryStep]] = defaultdict(list)
-    for step in trajectory:
-        extras = step.get("extras", {})
-        member_id = extras.get("member_id")
-        if member_id is None:
-            raise ValueError(f"TrajectoryStep missing extras['member_id']: {step!r}")
-        steps_by_member[member_id].append(step)
+    steps_by_member = MultiAgentRubric.split_by_member(output)
+    expected_members = {m.member_id for m in mar.members}
+    extra_members = set(steps_by_member) - expected_members
+    if extra_members:
+        raise ValueError(
+            f"trajectory contains member_id(s) {sorted(extra_members)} not in "
+            f"MARScore.members={sorted(expected_members)}; rubric/env "
+            "out-of-sync — silently dropping these steps would corrupt "
+            "training data"
+        )
 
     return [
         MemberRollout(
             example_id=example_id,
-            task=env_name,
+            task=task,
             trajectory=steps_by_member.get(member.member_id, []),
-            sampling_args={"temperature": temperature},
+            sampling_args=member_sampling_args,
             error=rollout_error,
             reward=member.reward,
             episode_id=episode_id,

@@ -414,7 +414,7 @@ Subclasses supply the domain-specific pieces:
 Multi-agent scoring writes one structured `state["mar_score"]` payload. At the
 serialization boundary, `state_to_output(...)` projects that to legacy
 episode-level keys. If you need one trainable rollout per actor, use
-`verifiers.rollout_to_member_rollouts(output, env_name)`, which returns
+`verifiers.rollout_to_member_rollouts(output)`, which returns
 `MemberRollout` records.
 
 **Generation methods:**

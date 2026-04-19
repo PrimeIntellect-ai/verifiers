@@ -418,6 +418,35 @@ class MemberScore(CustomBaseModel):
     metrics: dict[str, float] = Field(default_factory=dict)
 
 
+_RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
+    {
+        # RolloutOutput canonical fields — kept in sync with RolloutOutput
+        # above. Projected MARScore keys must not collide with these,
+        # otherwise state_to_output's ``output[k] = v`` flattening loop
+        # silently rewrites the canonical field with metric data.
+        "example_id",
+        "task",
+        "prompt",
+        "completion",
+        "reward",
+        "timing",
+        "is_completed",
+        "is_truncated",
+        "metrics",
+        "answer",
+        "info",
+        "error",
+        "stop_condition",
+        "trajectory",
+        "tool_defs",
+        "token_usage",
+        "mar_score",
+        "trajectory_id",
+        "sampling_args",
+    }
+)
+
+
 class MARScore(CustomBaseModel):
     """Member-Attributed Reward — single source of truth for episode scoring.
 
@@ -470,13 +499,33 @@ class MARScore(CustomBaseModel):
         canonical prefixes. Categorical / error fields are NOT included
         — those live under their own MARScore fields and are projected
         separately at the serialization boundary.
+
+        Reserved keys (canonical ``RolloutOutput`` fields) are rejected:
+        without this guard, an ``episode_metrics={'reward': -1}`` would
+        silently overwrite ``output['reward']`` at the wire boundary
+        (``state_to_output`` does ``output[k] = v`` for each flat key),
+        corrupting training signal.
         """
-        out: dict[str, float] = dict(self.episode_metrics)
+        out: dict[str, float] = {}
+        for k, v in self.episode_metrics.items():
+            if k in _RESERVED_FLAT_KEYS:
+                raise ValueError(
+                    f"MARScore.episode_metrics key {k!r} collides with a "
+                    f"reserved RolloutOutput field; rename it (e.g. "
+                    f"{k!s}_metric)"
+                )
+            out[k] = v
         for m in self.members:
             out[f"reward/{m.member_id}"] = m.reward
             if m.parse_error_count:
                 out[f"parse_errors/{m.member_id}"] = float(m.parse_error_count)
             for k, v in m.metrics.items():
+                if k in _RESERVED_FLAT_KEYS:
+                    raise ValueError(
+                        f"MemberScore.metrics key {k!r} collides with a "
+                        f"reserved RolloutOutput field; rename it (e.g. "
+                        f"{k!s}_metric)"
+                    )
                 out[f"{k}/{m.member_id}"] = v
         return out
 

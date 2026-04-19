@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 from abc import abstractmethod
+from collections import defaultdict
+from typing import Any, Mapping
 
 import verifiers as vf
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import MARScore, MemberScore, State
+from verifiers.types import MARScore, MemberScore, State, TrajectoryStep
 
 
 class MultiAgentRubric(Rubric):
@@ -36,6 +38,28 @@ class MultiAgentRubric(Rubric):
 
     @abstractmethod
     async def build_marscore(self, state: State) -> MARScore: ...
+
+    @staticmethod
+    def split_by_member(
+        state_or_output: Mapping[str, Any],
+    ) -> dict[str, list[TrajectoryStep]]:
+        """Group trajectory steps by ``extras['member_id']``.
+
+        Shared primitive used by the rubric (scoring) and the bridge
+        (per-member training split). Every trajectory step in a
+        multi-agent rollout carries ``extras['member_id']`` —
+        ``MultiAgentEnv._build_step`` guarantees this at rollout time.
+        A missing value signals a framework-invariant violation.
+        """
+        out: dict[str, list[TrajectoryStep]] = defaultdict(list)
+        for step in state_or_output.get("trajectory", []):
+            mid = step.get("extras", {}).get("member_id")
+            if mid is None:
+                raise ValueError(
+                    f"TrajectoryStep missing extras['member_id']: {step!r}"
+                )
+            out[mid].append(step)
+        return dict(out)
 
     def build_errored_marscore(
         self, state: State, *, error_type: str, error_phase: str

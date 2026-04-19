@@ -31,7 +31,7 @@ from verifiers.envs.multi_agent_kernel import (
     TurnSlot,
     Utterance,
 )
-from verifiers.envs.debate_rubric import _extract_question
+from verifiers.envs.debate_rubric import question_from_state
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
 from verifiers.types import (
     AssistantMessage,
@@ -203,7 +203,7 @@ class DebateEnv(MultiAgentEnv):
         """
         kernel_state: KernelState = state["_kernel"]
         role = self.role_for_member(member_id)
-        question = _extract_question(state)
+        question = question_from_state(state)
         num_rounds = self._member_round_count(member_id)
         current_round = sum(
             1 for u in kernel_state.transcript if u.member_id == member_id
