@@ -30,6 +30,9 @@ from verifiers.utils.logging_utils import truncate
 logger = logging.getLogger(__name__)
 
 
+KEEPALIVE_INTERVAL_SECONDS = 10.0
+
+
 class StreamInterrupted(InfraError):
     """Raised when the intercepted streaming response to the agent is cut short.
 
@@ -226,9 +229,35 @@ class InterceptionServer:
         )
         await response.prepare(http_request)
 
+        start = time.monotonic()
         try:
             while True:
-                chunk_dict = await chunk_queue.get()
+                try:
+                    chunk_dict = await asyncio.wait_for(
+                        chunk_queue.get(),
+                        timeout=KEEPALIVE_INTERVAL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    # Idle window — emit SSE keepalive comment to keep
+                    # intermediaries (tunnel, LB, kube-proxy) from closing
+                    # the connection during the long vLLM wait.
+                    try:
+                        await response.write(b": keepalive\n\n")
+                    except Exception as e:
+                        waited_s = time.monotonic() - start
+                        logger.error(
+                            f"[{rollout_id}] Streaming error during keepalive "
+                            f"after {waited_s:.1f}s: {e}"
+                        )
+                        self._set_rollout_error(
+                            rollout_id,
+                            StreamInterrupted(
+                                f"keepalive write failed after {waited_s:.1f}s: "
+                                f"{type(e).__name__}: {e}"
+                            ),
+                        )
+                        return response
+                    continue
 
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
@@ -240,11 +269,13 @@ class InterceptionServer:
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
-            logger.error(f"[{rollout_id}] Streaming error: {e}")
+            waited_s = time.monotonic() - start
+            logger.error(f"[{rollout_id}] Streaming error after {waited_s:.1f}s: {e}")
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"Interception stream to agent interrupted: {type(e).__name__}: {e}"
+                    f"stream write failed after {waited_s:.1f}s: "
+                    f"{type(e).__name__}: {e}"
                 ),
             )
             return response
