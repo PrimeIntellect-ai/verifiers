@@ -230,14 +230,21 @@ class InterceptionServer:
         await response.prepare(http_request)
 
         start = time.monotonic()
+        # Reuse a single get() task across keepalive cycles instead of
+        # recreating it each iteration. ``asyncio.wait_for`` on Python
+        # 3.10/3.11 has a race where a timeout cancels an inner task that
+        # may have already dequeued an item, silently dropping it.
+        # ``asyncio.wait`` does not cancel its tasks on timeout, so a
+        # pending ``get()`` task carries forward safely.
+        get_task: asyncio.Task | None = None
         try:
             while True:
-                try:
-                    chunk_dict = await asyncio.wait_for(
-                        chunk_queue.get(),
-                        timeout=KEEPALIVE_INTERVAL_SECONDS,
-                    )
-                except asyncio.TimeoutError:
+                if get_task is None:
+                    get_task = asyncio.ensure_future(chunk_queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
+                )
+                if get_task not in done:
                     # Idle window — emit SSE keepalive comment to keep
                     # intermediaries (tunnel, LB, kube-proxy) from closing
                     # the connection during the long vLLM wait.
@@ -259,6 +266,9 @@ class InterceptionServer:
                         return response
                     continue
 
+                chunk_dict = get_task.result()
+                get_task = None
+
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
                     break
@@ -279,6 +289,9 @@ class InterceptionServer:
                 ),
             )
             return response
+        finally:
+            if get_task is not None and not get_task.done():
+                get_task.cancel()
 
         try:
             await response_future
