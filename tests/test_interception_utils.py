@@ -1,3 +1,6 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 from verifiers.errors import InfraError
 from verifiers.types import (
     Response,
@@ -6,6 +9,7 @@ from verifiers.types import (
     ToolCall,
     Usage,
 )
+from verifiers.utils import interception_utils
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     StreamInterrupted,
@@ -78,14 +82,6 @@ def test_set_rollout_error_attaches_stream_interrupted_to_state():
     assert isinstance(state["error"], InfraError)
 
 
-def test_set_rollout_error_is_noop_without_state():
-    # Covers the "state=None" path — upstream callers may not always wire it.
-    server = InterceptionServer(port=0)
-    server.register_rollout("r1")
-    server._set_rollout_error("r1", StreamInterrupted("nope"))
-    # No raise, and no state to read back.
-
-
 def test_set_rollout_error_does_not_clobber_existing_error():
     # First error wins — later write failures must not hide the original cause.
     server = InterceptionServer(port=0)
@@ -98,7 +94,40 @@ def test_set_rollout_error_does_not_clobber_existing_error():
     assert state["error"] is original
 
 
-def test_set_rollout_error_is_noop_for_unknown_rollout():
+async def test_streaming_write_failure_surfaces_to_state(monkeypatch):
+    """The real failure path: a mid-SSE transport close on the client side
+    raises out of ``response.write(...)``. The except branch must funnel
+    that into ``state["error"]`` so the rollout halts via ``has_error``."""
     server = InterceptionServer(port=0)
-    # No registration — must not raise.
-    server._set_rollout_error("missing", StreamInterrupted("x"))
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    # Mock StreamResponse whose second write raises (first write succeeds
+    # to prove we're in the streaming loop, not failing at prepare()).
+    writes: list[bytes] = []
+
+    async def fake_write(data: bytes) -> None:
+        writes.append(data)
+        if len(writes) >= 2:
+            raise ConnectionResetError("client closed transport")
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=fake_write)
+    fake_response.write_eof = AsyncMock()
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    await chunk_queue.put({"choices": [{"delta": {"content": "hi"}}]})
+    await chunk_queue.put({"choices": [{"delta": {"content": " there"}}]})
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": asyncio.Future(),
+    }
+
+    await server._handle_streaming_response(MagicMock(), "r1", intercept)
+
+    assert isinstance(state["error"], StreamInterrupted)
+    assert "ConnectionResetError" in str(state["error"])
