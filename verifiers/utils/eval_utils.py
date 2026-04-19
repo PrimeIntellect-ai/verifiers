@@ -552,11 +552,24 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
-    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
+def to_col_order(
+    list_of_dicts: list[Mapping[str, float]],
+) -> dict[str, list[float | None]]:
+    """Convert a list of mappings to a dict of per-row column lists.
+
+    Takes the union of keys across all rows; a key absent from row ``i``
+    yields ``None`` at position ``i``. Callers filter ``None`` for
+    numeric aggregates. Keying off only the first row's schema silently
+    dropped later-only keys and KeyError'd when later rows were sparser
+    (common for multi-agent metrics like ``agreement`` / ``parse_errors/*``
+    that are only emitted on some trajectories).
+    """
     if not list_of_dicts:
         return {}
-    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
+    all_keys: set[str] = set()
+    for d in list_of_dicts:
+        all_keys.update(d.keys())
+    return {k: [d.get(k) for d in list_of_dicts] for k in sorted(all_keys)}
 
 
 def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
@@ -601,10 +614,21 @@ def print_rewards(results: GenerateOutputs):
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
         v = metrics_col[k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        present = [x for x in v if x is not None]
+        if not present:
+            continue
+        total = len(v)
+        mean = sum(present) / len(present)
+        print(
+            f"{k}: avg - {mean:.3f}, std - {np.std(present):.3f}, "
+            f"n={len(present)}/{total}"
+        )
         for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
+            trials = [
+                "—" if (x := v[i + (j * r)]) is None else f"{round(x, 3)}"
+                for j in range(n)
+            ]
+            out = f"r{i + 1}: [{', '.join(trials)}]"
             print(out)
 
 

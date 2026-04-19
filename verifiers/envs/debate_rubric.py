@@ -73,8 +73,14 @@ def winning_member(trajectory: list[TrajectoryStep]) -> str | None:
 
 
 def zero_sum_reward(member_id: str, winner: str | None) -> float:
-    """+1 winner, −1 loser, 0 judge, 0 when no decision."""
-    if winner is None or member_id == "judge":
+    """+1 winner, −1 loser, 0 judge, 0 when no decision, 0 on tie.
+
+    ``winner == "tie"`` is a first-class judge outcome in packs where
+    the judge can declare a draw (selfplay.yaml does). Both debaters
+    receive 0 — zero-sum holds (0 + 0 = 0) and the RAE baseline update
+    is neutral.
+    """
+    if winner is None or winner == "tie" or member_id == "judge":
         return 0.0
     return 1.0 if member_id == winner else -1.0
 
