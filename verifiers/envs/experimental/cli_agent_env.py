@@ -374,17 +374,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    stderr_snippet = (status.stderr or "")[:500]
+                    stderr_full = status.stderr or ""
                     num_turns = len(state.get("trajectory", []))
                     if num_turns == 0:
                         error = AgentError(
                             f"Agent crashed before any LLM call "
-                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                            f"(exit_code={status.exit_code}): {stderr_full}"
                         )
                     else:
                         error = AgentError(
                             f"Agent crashed after {num_turns} turn(s) "
-                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                            f"(exit_code={status.exit_code}): {stderr_full}"
                         )
                     state["error"] = error
                     self.logger.error(str(error))
