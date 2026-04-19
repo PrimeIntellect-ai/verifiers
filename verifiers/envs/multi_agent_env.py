@@ -313,25 +313,52 @@ class MultiAgentEnv(vf.Environment):
             )
 
         tasks = [asyncio.create_task(_run_one(i)) for i in range(len(slot.agents))]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-        # If any task raised, cancel the rest so no doomed-slot tokens
-        # leak into the shared tracker. ``asyncio.wait`` already returned
-        # ``done`` containing at least one raised task plus any earlier
-        # completions; ``pending`` are stragglers to kill.
+        # ``asyncio.wait`` itself can be cancelled by the parent (rollout
+        # timeout, Ctrl-C, encompassing wait_for) — if that happens while
+        # tasks are inflight they keep running, leak tokens into the
+        # shared usage tracker, and can late-commit into the wrong slot.
+        # TaskGroup would have drained them on ``__aexit__``; we replicate
+        # that behaviour explicitly with try/finally.
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_EXCEPTION
+            )
+        except BaseException:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        # First-exception return — cancel the stragglers AND capture any
+        # results they already produced. ``asyncio.gather(...,
+        # return_exceptions=True)`` returns each task's result or
+        # exception; pending tasks that had already raised before our
+        # cancel took effect would otherwise be silently dropped, losing
+        # their error for the priority picker below.
+        pending_results: list[Any] = []
         if pending:
             for t in pending:
                 t.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            pending_results = list(
+                await asyncio.gather(*pending, return_exceptions=True)
+            )
 
-        # Collect real exceptions (exclude the CancelledErrors we just
-        # triggered on ``pending`` — those are housekeeping, not signals).
-        real_errors = [
+        # Collect real exceptions from ``done`` AND from any pending task
+        # whose raise beat our cancel. Filter out the ``CancelledError``s
+        # we ourselves triggered — those are housekeeping, not signal.
+        real_errors: list[BaseException] = [
             exc
             for t in done
             if (exc := t.exception()) is not None
             and not isinstance(exc, asyncio.CancelledError)
         ]
+        for r in pending_results:
+            if isinstance(r, BaseException) and not isinstance(
+                r, asyncio.CancelledError
+            ):
+                real_errors.append(r)
 
         if real_errors:
             # Priority: OverlongPromptError first (most-specific recovery
