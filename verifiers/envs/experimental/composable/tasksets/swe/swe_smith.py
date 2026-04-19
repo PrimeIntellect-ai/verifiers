@@ -23,6 +23,7 @@ priority languages (py, go, java, js, ts, rs) have 100% coverage.
 from __future__ import annotations
 
 import logging
+import shlex
 import tempfile
 from pathlib import Path
 from textwrap import dedent
@@ -350,6 +351,35 @@ class SWESmithTaskSet(SandboxTaskSet):
                 f"rlm install will fall back to apt-get"
             )
 
+    async def _revert_test_files(
+        self, sandbox_client: Any, sandbox_id: str, profile, info: dict
+    ) -> None:
+        """Revert any changes to F2P/P2P test files.
+
+        Mirrors upstream ``run_patch_in_container`` (SWE-Smith
+        ``harness/utils.py``): after applying a patch the upstream harness
+        does ``git checkout -- <test_files>`` so an agent that edited the
+        test file to make it pass can't cheat the reward.
+
+        Python and Go profiles override ``get_test_files``; other languages
+        inherit the base implementation which returns ``([], [])``. The
+        no-op case is harmless.
+        """
+        try:
+            f2p_files, p2p_files = profile.get_test_files(info)
+        except Exception as e:  # noqa: BLE001 — match upstream's best-effort
+            logger.warning(f"[{sandbox_id}] get_test_files raised: {e}")
+            return
+        test_files = [str(p) for p in list(f2p_files) + list(p2p_files)]
+        if not test_files:
+            return
+        await sandbox_client.execute_command(
+            sandbox_id,
+            "git checkout -- " + " ".join(shlex.quote(f) for f in test_files),
+            working_dir=self.default_workdir,
+            timeout=30,
+        )
+
     async def _run_tests(
         self,
         sandbox_client: Any,
@@ -359,6 +389,10 @@ class SWESmithTaskSet(SandboxTaskSet):
     ) -> str:
         info = state["info"]
         profile = _get_profile(info)
+        # Revert F2P/P2P test files before scoring so an agent's edits to
+        # the tests don't leak into the reward. No-op when the profile
+        # doesn't override ``get_test_files`` (all non-py/non-go langs).
+        await self._revert_test_files(sandbox_client, sandbox_id, profile, info)
         test_cmd, _ = profile.get_test_cmd(info, f2p_only=False)
         eval_script = _build_eval_script(test_cmd)
 
