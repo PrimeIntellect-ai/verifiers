@@ -534,7 +534,7 @@ class EvalConfig(BaseModel):
     disable_env_server: bool = False
     # logging
     verbose: bool = False
-    debug: bool = False
+    disable_tui: bool = False
     # saving
     output_dir: str | None = None
     state_columns: list[str] | None = None

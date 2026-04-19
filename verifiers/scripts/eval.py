@@ -399,11 +399,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use TUI mode for live evaluation display",
     )
     parser.add_argument(
+        "--disable-tui",
+        default=False,
+        action="store_true",
+        help="Disable Rich display; use normal logging and tqdm progress instead",
+    )
+    parser.add_argument(
         "--debug",
         "-d",
         default=False,
         action="store_true",
-        help="Disable Rich display; use normal logging and tqdm progress instead",
+        help="[DEPRECATED] Alias for --disable-tui. Will be removed in a future release.",
     )
     parser.add_argument(
         "--max-retries",
@@ -449,7 +455,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
 
-    if args.debug:  # only set up console logging in debug mode
+    if args.debug:
+        import warnings
+
+        warnings.warn(
+            "The `-d`/`--debug` flag is deprecated and will be removed in a future release. "
+            "Use `--disable-tui` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        args.disable_tui = True
+
+    if args.disable_tui:  # only set up console logging when TUI is disabled
         setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
@@ -731,7 +748,7 @@ def main(argv: list[str] | None = None):
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
-            debug=raw.get("debug", False),
+            disable_tui=raw.get("disable_tui", raw.get("debug", False)),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -760,7 +777,7 @@ def main(argv: list[str] | None = None):
     eval_run_config = EvalRunConfig(
         evals=eval_configs, heartbeat_url=args.heartbeat_url
     )
-    if args.debug:
+    if args.disable_tui:
         asyncio.run(run_evaluations(eval_run_config))
     else:
         asyncio.run(

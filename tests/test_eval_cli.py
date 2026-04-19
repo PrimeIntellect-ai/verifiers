@@ -59,6 +59,7 @@ def run_cli(make_metadata, make_state, make_input):
             "extra_env_kwargs": {},
             "max_retries": 0,
             "tui": False,
+            "disable_tui": False,
             "debug": False,
             "abbreviated_summary": False,
             "heartbeat_url": None,

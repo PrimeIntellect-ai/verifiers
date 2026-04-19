@@ -818,7 +818,7 @@ async def run_evaluation(
                 num_workers=num_workers,
                 log_level=get_log_level(config.verbose),
                 log_dir=log_dir,
-                console_logging=config.debug,
+                console_logging=config.disable_tui,
             )
             if on_log_file is not None:
                 from verifiers.serve import EnvServer
