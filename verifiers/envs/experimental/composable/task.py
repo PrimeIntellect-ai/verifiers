@@ -34,6 +34,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
+from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
 from verifiers.types import Messages, State
 
 
@@ -139,9 +140,34 @@ class TaskSet:
         validate_instance(state) -> bool  (optional)
     """
 
-    def __init__(self, dataset: Any, name: str = ""):
+    def __init__(
+        self,
+        dataset: Any,
+        name: str = "",
+        filter_fn: str | None = None,
+    ):
+        """
+        Args:
+            dataset: The (already processed) dataset backing this taskset.
+            name: Human-readable taskset name.
+            filter_fn: Optional Python expression string (e.g. a lambda) that
+                evaluates to a ``Callable[[dict], bool]`` and is applied to
+                the post-``_process_example`` rows of ``dataset`` (i.e. the
+                ``{"question", "info", "answer", ...}`` shape published by
+                concrete tasksets). Rows for which it returns truthy are
+                kept. The string is ``eval()``'d with restricted builtins,
+                but it is still ``eval`` of user input — intended for local
+                ``vf-eval`` runs, not untrusted inputs.
+        """
         self._dataset = dataset
         self.name = name
+        # Cache the raw expression (not the callable) for reproducibility /
+        # debugging; the resolved predicate isn't pickle-safe and
+        # ``self._dataset`` already carries the filtered state.
+        self._filter_fn_src = filter_fn
+        if filter_fn is not None:
+            predicate = _resolve_filter_fn(filter_fn)
+            self._dataset = self._dataset.filter(predicate)
 
     # -- Override these ------------------------------------------------------
 

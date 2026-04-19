@@ -352,17 +352,30 @@ class SWEBenchTaskSet(SandboxTaskSet):
         dataset_name: str = "princeton-nlp/SWE-bench_Verified",
         skip_install: bool = True,
         filter_repos: list[str] | None = None,
+        filter_fn: str | None = None,
         ds_num_proc: int | None = 8,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['repo'] == 'django/django'"``).
+        """
         self.dataset_name = dataset_name
         self.skip_install = skip_install
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name="swe/swebench")
+        super().__init__(
+            dataset=self._build_dataset(),
+            name="swe/swebench",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from datasets import load_dataset
