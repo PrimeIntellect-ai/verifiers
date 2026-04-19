@@ -208,8 +208,8 @@ When evaluating multiple environments, the display shows an overview panel at th
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
-| `--fullscreen` | — | false | Use alternate screen buffer (fullscreen) for the Rich display |
-| `--disable-tui` | — | false | Disable Rich display; use normal logging and tqdm progress |
+| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |

@@ -393,12 +393,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--fullscreen",
+        "-f",
         default=False,
         action="store_true",
         help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
     )
     parser.add_argument(
         "--disable-tui",
+        "-d",
         default=False,
         action="store_true",
         help="Disable Rich display; use normal logging and tqdm progress instead",
