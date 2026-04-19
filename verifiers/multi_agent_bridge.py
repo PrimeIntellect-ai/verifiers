@@ -14,12 +14,13 @@ def rollout_to_member_rollouts(
 ) -> list[MemberRollout]:
     """Project one episode-level rollout into one rollout per member."""
     mar_raw = output["mar_score"]
-    mar = (
-        mar_raw if isinstance(mar_raw, MARScore) else MARScore.model_validate(mar_raw)
-    )
+    mar = mar_raw if isinstance(mar_raw, MARScore) else MARScore.model_validate(mar_raw)
 
+    # vf-eval doesn't always populate temperature in saved metadata when
+    # the user passes --sampling-args without it. Default to OpenAI's
+    # canonical 1.0 rather than crashing on the first such rollout.
     sampling_args = output["sampling_args"]
-    temperature = sampling_args["temperature"]
+    temperature = sampling_args.get("temperature", 1.0)
     example_id = output["example_id"]
     episode_id = output.get("trajectory_id", "")
     rollout_error = output.get("error")
@@ -30,9 +31,7 @@ def rollout_to_member_rollouts(
         extras = step.get("extras", {})
         member_id = extras.get("member_id")
         if member_id is None:
-            raise ValueError(
-                f"TrajectoryStep missing extras['member_id']: {step!r}"
-            )
+            raise ValueError(f"TrajectoryStep missing extras['member_id']: {step!r}")
         steps_by_member[member_id].append(step)
 
     return [
