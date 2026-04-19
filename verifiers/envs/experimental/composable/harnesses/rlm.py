@@ -259,18 +259,21 @@ def rlm_harness(
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
 ) -> Harness:
-    resolved_local_checkout = resolve_local_checkout(
-        local_checkout,
-        rlm_repo_url=rlm_repo_url,
-        rlm_branch=rlm_branch,
-        gh_token=gh_token,
-    )
-    upload_dirs: dict[str, Traversable | Path] = {
-        DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: resolved_local_checkout,
-    }
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
     }
+
+    def get_upload_dirs() -> dict[str, Traversable | Path]:
+        resolved_local_checkout = resolve_local_checkout(
+            local_checkout,
+            rlm_repo_url=rlm_repo_url,
+            rlm_branch=rlm_branch,
+            gh_token=gh_token,
+        )
+        return {
+            DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: resolved_local_checkout,
+        }
+
     return Harness(
         install_script=build_install_script(),
         run_command=build_run_command(instruction_path, workdir),
@@ -278,7 +281,7 @@ def rlm_harness(
         system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
         instruction_path=instruction_path,
         skills_path="/task/rlm-skills",
-        get_upload_dirs=lambda: upload_dirs,
+        get_upload_dirs=get_upload_dirs,
         upload_dir_mapping=upload_dir_mapping,
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
