@@ -115,12 +115,12 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ### RolloutInput
 
 ```python
-class RolloutInput(TypedDict):
-    prompt: Messages        # Required
-    example_id: int         # Required
-    task: str               # Required
-    answer: str             # Optional
-    info: Info              # Optional
+class RolloutInput(TypedDict, total=False):
+    prompt: Messages         # Required
+    example_id: int | str    # Required
+    task: str                # Required
+    answer: str              # Optional
+    info: Info | str         # Optional
 ```
 
 ### RolloutOutput
@@ -128,7 +128,7 @@ class RolloutInput(TypedDict):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int
+    example_id: int | str
     task: str
     prompt: Messages | None
     completion: Messages | None
@@ -137,16 +137,20 @@ class RolloutOutput(dict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
+    sampling_args: SamplingArgs
+    trajectory_id: str
     # Optional fields
     answer: str
     info: Info
-    error: str | None
+    error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list[TrajectoryStep]
-    tool_defs: list[Tool] | None
+    tool_defs: list[Tool]
+    token_usage: TokenUsage
+    mar_score: MARScore  # populated by MultiAgentRubric subclasses
 ```
 
-Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk. `mar_score` is populated only when a `MultiAgentRubric` subclass handled scoring; use `verifiers.rollout_to_member_rollouts(output)` to split an episode-level output into per-member `MemberRollout` records for training.
 
 ### TrajectoryStep
 
@@ -201,95 +205,77 @@ class GenerateOutputs(TypedDict):
 
 Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
 
-### EpisodeSpec
+### MemberScore
 
 ```python
-class EpisodeSpec(CustomBaseModel):
-    base_example_id: int | str
-    episode_id: str
-    input: dict[str, Any]
-```
-
-Describes one sampled multi-actor episode derived from a base example.
-
-### Member
-
-```python
-class Member(CustomBaseModel):
+class MemberScore(CustomBaseModel):
     member_id: str
-    role_id: str
-    seat_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
 ```
 
-Semantic identity for one actor-local member within an episode.
+Per-member outcome of one episode in a multi-agent rollout. The bridge consumes
+`reward` as the training signal and uses `member_id` as the advantage-baseline
+partition key in RAE. `metrics` projects to wandb as `f"{k}/{member_id}"` at
+the serialization boundary; `parse_error_count` propagates to
+`f"parse_errors/{member_id}"` when non-zero. `metrics` is intentionally
+float-only — bools and ints must be converted at the producer site so the
+aggregator can average without a type check.
 
-### TurnReq
+### MARScore
 
 ```python
-class TurnReq(CustomBaseModel):
-    episode_id: str
-    member_id: str
-    turn_id: str
-    prompt: Messages | str
-    stop_sequences: list[str] | list[int]
+class MARScore(CustomBaseModel):
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
 ```
 
-Runner-facing request object for one eligible actor-local step in a multi-actor episode.
+Member-Attributed Reward — single source of truth for episode scoring in
+multi-agent rollouts. Replaces the legacy multi-key spread across
+`state["reward"]`, `state["metrics"]`, and `state["member_rewards"]`.
 
-### TurnResp
+Episode-level telemetry is split by purpose so the wandb projection can't
+accidentally average a categorical sentinel:
 
-```python
-class TurnResp(CustomBaseModel):
-    episode_id: str
-    member_id: str
-    turn_id: str
-    content: Messages | str
-    token_count: int | None
-    raw_response: dict[str, Any] | None
-```
+- `episode_metrics` — averageable scalars only (accuracy, agreement, etc.)
+- `episode_categorical` — codes/labels (e.g. winner = "debater_a"/"tie"/None)
+- `episode_error` — error metadata when the rollout failed
 
-Runner-facing response object paired to a `TurnReq`.
+Schema invariants (duplicate `member_id`, empty members) are enforced at
+construction so drift between rubric writer and bridge reader is structurally
+impossible.
 
-### EpisodeStart
+**Methods:**
 
-```python
-class EpisodeStart(CustomBaseModel):
-    episode: EpisodeSpec
-    members: list[Member]
-    ready_turns: list[TurnReq]
-```
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `by_id()` | `dict[str, MemberScore]` | Lookup table keyed by `member_id` |
+| `to_metrics_flat()` | `dict[str, float]` | Flat wandb projection: episode scalars stay top-level; per-member metrics become `f"{k}/{member_id}"`; `reward` and `parse_error_count` get canonical prefixes. Rejects keys that collide with reserved `RolloutOutput` fields. |
 
-The initial episode payload plus the first set of ready turns.
-
-### MemberResult
+### MemberRollout
 
 ```python
-class MemberResult(CustomBaseModel):
-    member_id: str
-    role_id: str
-    seat_id: str
+class MemberRollout(TypedDict):
+    # Training-path fields (read by pretokenize -> interleave -> TrainingSample)
+    example_id: int | str
+    task: str
     trajectory: list[TrajectoryStep]
-    reward: float | None
-    metrics: dict[str, float | int]
-    logs: dict[str, Any]
-```
-
-Serialized output for one role member within a completed multi-actor episode.
-
-### EpisodeResult
-
-```python
-class EpisodeResult(CustomBaseModel):
-    base_example_id: int | str
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+    # Multi-agent metadata
     episode_id: str
-    members: list[MemberResult]
-    outcome: dict[str, Any] | None
-    metrics: dict[str, float | int]
-    logs: dict[str, Any]
+    member_id: str
 ```
 
-Completed multi-actor episode output preserving both the episode-level result and
-per-member outputs.
+`RolloutOutput`-compatible dict with per-member multi-agent metadata. Produced
+by `verifiers.rollout_to_member_rollouts(output)`, which splits one
+episode-level `RolloutOutput` into one trainable rollout per member keyed on
+`(task, example_id, member_id)`.
 
 ### GenerateMetadata
 
@@ -378,7 +364,7 @@ class MultiAgentEnv(Environment):
         *,
         schedule: SlotProgram,
         members: list[str],
-        actor_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         think_tag: str = "thinking",
         **kwargs,
     ): ...
