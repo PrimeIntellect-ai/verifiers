@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 
 
 class _HarnessMetricsRubric(vf.Rubric):
+    async def score_rollout(self, state: State) -> None:
+        return
+
+    async def score_group(self, states: list[State]) -> None:
+        return
+
     @cleanup
     async def merge_harness_metrics(self, state: State) -> None:
         harness_metrics = state.get("_harness_metrics")
