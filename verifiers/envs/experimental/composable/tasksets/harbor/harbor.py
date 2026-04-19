@@ -81,12 +81,14 @@ class HarborRubric(vf.Rubric):
 class HarborTaskSet(SandboxTaskSet):
     """Single Harbor task directory."""
 
-    def __init__(self, task_dir: str | Path):
+    def __init__(self, task_dir: str | Path, filter_fn: str | None = None):
         self.task_dir = Path(task_dir)
         if not self.task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {self.task_dir}")
         super().__init__(
-            dataset=self._build_dataset(), name=f"harbor/{self.task_dir.name}"
+            dataset=self._build_dataset(),
+            name=f"harbor/{self.task_dir.name}",
+            filter_fn=filter_fn,
         )
 
     def _build_dataset(self) -> Any:
@@ -294,13 +296,20 @@ class HarborDatasetRubric(vf.Rubric):
 class HarborDatasetTaskSet(SandboxTaskSet):
     """Iterate subdirectories of a dataset path, returning a combined multi-row Dataset."""
 
-    def __init__(self, dataset_path: str | Path, task_names: list[str] | None = None):
+    def __init__(
+        self,
+        dataset_path: str | Path,
+        task_names: list[str] | None = None,
+        filter_fn: str | None = None,
+    ):
         self.dataset_path = Path(dataset_path)
         self.task_names = task_names
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.dataset_path}")
         super().__init__(
-            dataset=self._build_dataset(), name=f"harbor/{self.dataset_path.name}"
+            dataset=self._build_dataset(),
+            name=f"harbor/{self.dataset_path.name}",
+            filter_fn=filter_fn,
         )
 
     def _build_dataset(self) -> Any:
