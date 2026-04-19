@@ -62,7 +62,7 @@ rollout_to_member_rollouts(output)            [verifiers/multi_agent_bridge.py]
 list[MemberRollout]
         │
         ├──► compute_rae_advantages(rollouts, rae_state)  [prime-rl/.../multi_agent_advantage.py]
-        │      per-(task, example_id, role_id) EMA baseline
+        │      per-(task, example_id, member_id) EMA baseline
         │
         └──► trainer (pretokenize_rollout_trajectory → interleave_rollout → TrainingSample)
               completion_mask respects step["extras"]["parse_error"] for quarantined turns
@@ -87,7 +87,7 @@ Cross-links use backticks matching the glossary headers; every row points at the
 | `MARScore` / `MemberScore` | Pydantic models, `verifiers/types.py` | Single source of truth for episode scoring. Base `MultiAgentRubric` writes `state["mar_score"]`; `state_to_output` one-way-projects it to legacy `output["reward"]` + flat top-level metrics (via `MARScore.to_wandb_flat()`) at the wire boundary. Construction-time validators reject empty members list and duplicate `member_id`. |
 | `MultiAgentRubric` | Abstract class, `verifiers/rubrics/multi_agent_rubric.py` | Base rubric that owns the rollout/group error boundary. Subclass implements `build_marscore(state) -> MARScore`; base handles short-circuits (`prompt_too_long`, pre-existing `state["error"]`) and scoring-time `vf.Error` → errored MARScore via `build_errored_marscore`. Non-`vf.Error` exceptions still propagate. |
 | `rollout_to_member_rollouts` | Function, `verifiers/multi_agent_bridge.py` | Pure projection from one `RolloutOutput` (with `mar_score`) + tagged trajectory to `list[MemberRollout]`. One rollout per member, with the member's own steps + per-member reward from `mar_score`. |
-| `MemberRollout` | TypedDict, `verifiers/types.py` | `RolloutOutput`-compatible dict with `member_id` + `role_id` + per-member `reward`. The unit the trainer's advantage + interleave path consumes. |
+| `MemberRollout` | TypedDict, `verifiers/types.py` | `RolloutOutput`-compatible dict with `member_id` + per-member `reward`. The unit the trainer's advantage + interleave path consumes. RAE baselines key on `(task, example_id, member_id)`. |
 
 Two adjacent things that frequently get conflated with the above and are worth naming explicitly:
 
@@ -126,11 +126,11 @@ The reason this is not a one-liner: each agent's model call is async, can fail i
 
 ## 7. Where to look next
 
-- **Add a new multi-agent env.** Subclass `MultiAgentEnv`, implement `build_prompt(state, member_id, slot)` (respect the monotonic invariant) and `render_completion(state)`. Optional overrides: `extract_fields`, `visibility_policy`, `resolve_agent`, `role_for_member`. Reference: `verifiers/envs/debate_env.py`.
+- **Add a new multi-agent env.** Subclass `MultiAgentEnv`, implement `build_prompt(state, member_id, slot)` (respect the monotonic invariant) and `render_completion(state)`. Optional overrides: `extract_fields`, `visibility_policy`, `resolve_agent`. Reference: `verifiers/envs/debate_env.py`.
 - **Add new multi-agent scoring.** Subclass `MultiAgentRubric`, implement `build_marscore(state) -> MARScore`. The base class already handles error boundaries. Reference: `verifiers/envs/debate_rubric.py` (W+G+M scoring).
 - **Add dynamic / adaptive scheduling.** Implement the `SlotProgram` protocol (`current_slot(kernel) -> TurnSlot | None`). `StaticSchedule` is the in-tree static-tuple implementation; a dynamic schedule can condition on `kernel.transcript`, `kernel.slot_index`, or external state. Reference: `verifiers/envs/multi_agent_kernel.py`.
 - **Add per-call telemetry / routing hints.** Extend `ModelRequestContext` with new ephemeral fields; thread them from the `get_model_response` call sites in `_run_sequential_slot` and `_run_simultaneous_slot`. Keep it ephemeral — anything that belongs on durable rollout state lives on `State`, not `ModelRequestContext`.
-- **Advantage / trainer side.** `src/prime_rl/orchestrator/multi_agent_advantage.py` holds `compute_rae_advantages` (role-conditioned EMA baselines keyed by `(task, example_id, role_id)`). `src/prime_rl/orchestrator/multi_agent_bridge.py` is a thin compatibility shim that re-exports `rollout_to_member_rollouts` from verifiers. The trainer's tokenization/interleave path respects `step["extras"]["parse_error"]` for masking.
+- **Advantage / trainer side.** `src/prime_rl/orchestrator/multi_agent_advantage.py` holds `compute_rae_advantages` (role-conditioned EMA baselines keyed by `(task, example_id, member_id)`). `src/prime_rl/orchestrator/multi_agent_bridge.py` is a thin compatibility shim that re-exports `rollout_to_member_rollouts` from verifiers. The trainer's tokenization/interleave path respects `step["extras"]["parse_error"]` for masking.
 - **Tests.** Kernel + env invariants: `prime-rl/tests/unit/orchestrator/test_multi_agent_env.py` (monotonic prompt, atomicity, stop-condition priority, parse quarantine). Rubric boundary: `prime-rl/tests/unit/orchestrator/test_multi_agent_rubric.py`. Bridge projection: `prime-rl/tests/unit/orchestrator/test_multi_agent_bridge.py`. Advantage EMA: `prime-rl/tests/unit/orchestrator/test_multi_agent_advantage.py`. Debate-specific: `test_debate_env.py`, `test_debate_prompts.py`, `test_debate_fields.py`.
 
 ## 8. Lifecycle of one turn (worked example)
@@ -151,7 +151,7 @@ A walk-through of a single sequential slot, with every state mutation named. Con
 
 7. `self.extract_fields(utt.public_channel, "debater_a", slot)` runs next — it reads the public channel (never `raw_content`, never `private_channel`) and returns a `dict[str, Any] | None` of structured fields like `{"answer": "A", "argument": "..."}`. Default implementation returns `None`. Rubric scoring consults `step["extras"]["fields"]` during grading.
 
-8. `self._build_step(state, prompt, response, utt, fields)` composes a `TrajectoryStep` via `parse_response_message` + `parse_response_tokens`, setting `extras = {"member_id": "debater_a", "role_id": self.role_for_member("debater_a"), "phase": "rebuttal"}`. If `fields is not None`, `extras["fields"] = fields`. If `utt.parse_error is not None`, `extras["parse_error"] = utt.parse_error` — and this is the quarantine flag the trainer reads to mask completion tokens.
+8. `self._build_step(state, prompt, response, utt, fields)` composes a `TrajectoryStep` via `parse_response_message` + `parse_response_tokens`, setting `extras = {"member_id": "debater_a", "phase": "rebuttal"}`. If `fields is not None`, `extras["fields"] = fields`. If `utt.parse_error is not None`, `extras["parse_error"] = utt.parse_error` — and this is the quarantine flag the trainer reads to mask completion tokens.
 
 9. `state["trajectory"].append(step)`. This is the only mutation of `trajectory` in the sequential path; kernel transcript and trajectory list stay 1:1 after commit.
 
@@ -259,9 +259,9 @@ class PDRubric(MultiAgentRubric):
         rewards = payoff_matrix(choices.get("player_a"), choices.get("player_b"))
         return MARScore(
             members=[
-                MemberScore(member_id="player_a", role_id="player_a", reward=rewards["a"]),
-                MemberScore(member_id="player_b", role_id="player_b", reward=rewards["b"]),
-                MemberScore(member_id="settler",  role_id="settler",  reward=0.0),
+                MemberScore(member_id="player_a", reward=rewards["a"]),
+                MemberScore(member_id="player_b", reward=rewards["b"]),
+                MemberScore(member_id="settler",  reward=0.0),
             ],
             episode_scalar=(rewards["a"] + rewards["b"]) / 2,
             episode_metrics={"mutual_cooperation": float(
@@ -382,7 +382,7 @@ Top-to-bottom list of files implicated by this doc, with one-line purpose statem
 - `verifiers/utils/save_utils.py` — `state_to_output` wire-boundary serializer; the `mar` branch projects `MARScore` to `output["reward"]` + flat wandb keys + `output["mar_score"]`.
 - `verifiers/utils/usage_utils.py` — `StateUsageTracker` with `fork`/`merge` used by the atomic commit path.
 - `verifiers/errors.py` — `ContentParseError` (per-utterance quarantine), `KernelProtocolError` (framework invariant violation), `OverlongPromptError`, base `Error`.
-- `src/prime_rl/orchestrator/multi_agent_advantage.py` — `compute_rae_advantages`, `RAEState` (EMA baselines keyed by `(task, example_id, role_id)`).
+- `src/prime_rl/orchestrator/multi_agent_advantage.py` — `compute_rae_advantages`, `RAEState` (EMA baselines keyed by `(task, example_id, member_id)`).
 - `src/prime_rl/orchestrator/multi_agent_bridge.py` — thin compatibility shim re-exporting from verifiers.
 - `tests/unit/orchestrator/test_multi_agent_env.py` — monotonic prompt test, atomicity tests, stop-condition priority.
 - `tests/unit/orchestrator/test_multi_agent_rubric.py` — rubric error boundary tests.
@@ -421,7 +421,7 @@ Not all of these appear above; all are worth knowing if you're going to read acr
 
 - **Member** — roster entry, static per episode. `env.members = ["debater_a", "debater_b", "judge"]`.
 - **Agent** — per-turn participant, subset of members scheduled for one `TurnSlot`. `slot.agents = ("debater_a", "debater_b")`.
-- **Role** — what a member IS for scoring purposes. Mapped via `role_for_member`. In debate: `debater_a` and `debater_b` are both role `debater`; `judge` is role `judge`. The RAE advantage baseline partitions on role_id.
+- **Member** — a single participant in an N-agent episode, identified by `member_id` (e.g. `debater_a`, `debater_b`, `judge`). The kernel schedules members; the rubric emits one `MemberScore` per member; the bridge emits one `MemberRollout` per member. The RAE advantage baseline partitions on `(task, example_id, member_id)`.
 - **Slot** — one step in the schedule. Sequential (1 agent, commit immediately) or simultaneous (N agents, barrier commit).
 - **Phase** — a human-readable label on the slot (`"opening"`, `"rebuttal"`, `"verdict"`). Used by DebatePrompts to pick the right prompt template. Not load-bearing for the kernel — it's metadata.
 - **Transcript** — `kernel.transcript: tuple[Utterance, ...]`. Ordered, immutable, grows on commit.

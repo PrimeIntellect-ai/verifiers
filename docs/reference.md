@@ -409,7 +409,6 @@ Subclasses supply the domain-specific pieces:
 - `render_completion(state)`
 - optional `extract_fields(...)`
 - optional `visibility_policy(...)`
-- optional `role_for_member(...)`
 
 Multi-agent scoring writes one structured `state["mar_score"]` payload. At the
 serialization boundary, `state_to_output(...)` projects that to legacy

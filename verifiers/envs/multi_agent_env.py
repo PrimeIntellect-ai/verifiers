@@ -154,10 +154,6 @@ class MultiAgentEnv(vf.Environment):
             return "full"
         return "public_only"
 
-    def role_for_member(self, member_id: str) -> str:
-        """Map member_id → role_id. Default: identity."""
-        return member_id
-
     # -- prompt preparation --------------------------------------------------
 
     async def _prepare_prompt(
@@ -426,7 +422,6 @@ class MultiAgentEnv(vf.Environment):
         )
         extras: dict[str, Any] = {
             "member_id": utt.member_id,
-            "role_id": self.role_for_member(utt.member_id),
             "phase": utt.phase,
         }
         if fields is not None:

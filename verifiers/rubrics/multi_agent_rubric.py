@@ -65,10 +65,7 @@ class MultiAgentRubric(Rubric):
         self, state: State, *, error_type: str, error_phase: str
     ) -> MARScore:
         return MARScore(
-            members=[
-                MemberScore(member_id=mid, role_id=mid, reward=0.0)
-                for mid in self.members
-            ],
+            members=[MemberScore(member_id=mid, reward=0.0) for mid in self.members],
             episode_scalar=0.0,
             episode_metrics={"errored_rollout": 1.0},
             episode_error={"error_type": error_type, "error_phase": error_phase},

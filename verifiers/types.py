@@ -303,7 +303,6 @@ class MemberRollout(TypedDict):
     # Multi-agent metadata
     episode_id: str
     member_id: str
-    role_id: str
 
 
 class State(dict):
@@ -400,9 +399,9 @@ class GenerateOutputs(TypedDict):
 class MemberScore(CustomBaseModel):
     """Per-member outcome of one episode in a multi-agent rollout.
 
-    The bridge consumes ``reward`` (training signal) and ``role_id``
-    (advantage-baseline partition key). ``metrics`` projects to wandb
-    as ``f"{k}/{member_id}"`` at the serialization boundary.
+    The bridge consumes ``reward`` (training signal) and ``member_id``
+    (advantage-baseline partition key in RAE). ``metrics`` projects to
+    wandb as ``f"{k}/{member_id}"`` at the serialization boundary.
     ``parse_error_count`` propagates to ``f"parse_errors/{member_id}"``
     when non-zero.
 
@@ -412,7 +411,6 @@ class MemberScore(CustomBaseModel):
     """
 
     member_id: str
-    role_id: str
     reward: float
     parse_error_count: int = 0
     metrics: dict[str, float] = Field(default_factory=dict)

@@ -17,7 +17,7 @@ def rollout_to_member_rollouts(
     ``sampling_args``, ``trajectory_id`` and ``mar_score``. Missing any
     of these is a contract violation upstream — we ``KeyError`` rather
     than silently substituting defaults that would corrupt training
-    identity (RAE baselines key on ``(task, example_id, role_id)``).
+    identity (RAE baselines key on ``(task, example_id, member_id)``).
 
     Trajectory member ids must match ``MARScore.members`` exactly: any
     extra ``extras['member_id']`` would be silently dropped by the
@@ -64,7 +64,6 @@ def rollout_to_member_rollouts(
             reward=member.reward,
             episode_id=episode_id,
             member_id=member.member_id,
-            role_id=member.role_id,
         )
         for member in mar.members
     ]

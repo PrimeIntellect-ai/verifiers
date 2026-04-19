@@ -1,13 +1,13 @@
 """Debate rubric: ±1 zero-sum reward from judge outcome + diagnostic metrics.
 
 Reward (single source of training signal):
-    winner role → +1, loser role → −1, judge → 0, no decision → 0.
+    winner member → +1, loser member → −1, judge → 0, no decision → 0.
 
 Diagnostics (weight-0 telemetry; never feed reward):
     per-member: turns, parse_error_count, num_commits, num_unique_commits,
                 accuracy, extraction_failed, initial_correct, final_correct
     episode:    agreement, truth_member_correct (judge-less packs only),
-                episode_scalar (1 iff judge picked truth_role), winner
+                episode_scalar (1 iff judge picked truth_member), winner
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def question_from_state(state: State) -> str:
     return ""
 
 
-def winning_role(trajectory: list[TrajectoryStep]) -> str | None:
+def winning_member(trajectory: list[TrajectoryStep]) -> str | None:
     """Last judge step's decision, or None if absent / malformed.
 
     Reverse-walk and break on the first judge step — whether or not it
@@ -66,17 +66,17 @@ def winning_role(trajectory: list[TrajectoryStep]) -> str | None:
     """
     for step in reversed(trajectory):
         extras = step.get("extras", {})
-        if extras.get("role_id") != "judge":
+        if extras.get("member_id") != "judge":
             continue
         return (extras.get("fields") or {}).get("decision")
     return None
 
 
-def zero_sum_reward(role: str, winner: str | None) -> float:
+def zero_sum_reward(member_id: str, winner: str | None) -> float:
     """+1 winner, −1 loser, 0 judge, 0 when no decision."""
-    if winner is None or role == "judge":
+    if winner is None or member_id == "judge":
         return 0.0
-    return 1.0 if role == winner else -1.0
+    return 1.0 if member_id == winner else -1.0
 
 
 def member_snapshot(
@@ -85,12 +85,10 @@ def member_snapshot(
     prompts: DebatePrompts,
 ) -> dict[str, Any]:
     """One forward pass. Returns plain dict (no new type — the keys are
-    the schema): role_id, commits, latest_spec, latest_had_answer, turns,
+    the schema): commits, latest_spec, latest_had_answer, turns,
     parse_errors.
 
     Semantics:
-      - role_id:           last-seen role_id (constant across a member's
-                           steps by framework invariant).
       - commits:           chronological answer commits.
       - latest_spec:       spec at the phase of the most recent commit.
       - latest_had_answer: whether the member's LAST step had
@@ -99,26 +97,23 @@ def member_snapshot(
       - turns:             total step count for this member.
       - parse_errors:      count of steps with ``extras['parse_error']``.
     """
-    role_id = member_id
     commits: list[str] = []
     latest_spec: FieldSpec | None = None
     latest_had_answer = False
     parse_errors = 0
     for step in steps:
         extras = step.get("extras", {})
-        role_id = extras.get("role_id", role_id)
         if extras.get("parse_error"):
             parse_errors += 1
         fields = extras.get("fields") or {}
         if "answer" in fields:
             commits.append(str(fields["answer"]))
-            specs = prompts.get_field_specs(role_id, extras.get("phase", "")) or {}
+            specs = prompts.get_field_specs(member_id, extras.get("phase", "")) or {}
             latest_spec = specs.get("answer")
             latest_had_answer = True
         else:
             latest_had_answer = False
     return {
-        "role_id": role_id,
         "commits": commits,
         "latest_spec": latest_spec,
         "latest_had_answer": latest_had_answer,
@@ -174,7 +169,7 @@ class DebateRubric(MultiAgentRubric):
 
     def __init__(
         self,
-        truth_role: str,
+        truth_member: str,
         members: list[str],
         prompts: DebatePrompts,
         judge_client: Client | None = None,
@@ -187,18 +182,18 @@ class DebateRubric(MultiAgentRubric):
                 f"judge_client must be a vf.Client subclass, "
                 f"got {type(judge_client).__name__}"
             )
-        self.truth_role = truth_role
+        self.truth_member = truth_member
         self.members = members
         self.prompts = prompts
         self.grader = maybe_judge(prompts, "grader", judge_client, judge_model)
         self.matcher = maybe_judge(prompts, "matcher", judge_client, judge_model)
         # Precomputed: does the pack declare an 'answer' field anywhere for
-        # this role? Controls whether we attempt accuracy/extraction_failed.
-        self.role_declares_answer: dict[str, bool] = {
-            role: any(
+        # this member? Controls whether we attempt accuracy/extraction_failed.
+        self.member_declares_answer: dict[str, bool] = {
+            mid: any(
                 "answer" in (phase_fields or {}) for phase_fields in phases.values()
             )
-            for role, phases in prompts.fields.items()
+            for mid, phases in prompts.fields.items()
         }
 
     async def build_marscore(self, state: State) -> MARScore:
@@ -209,7 +204,7 @@ class DebateRubric(MultiAgentRubric):
         target = str(state["answer"])
         question = question_from_state(state)
         steps_by_mid = self.split_by_member(state)
-        winner = winning_role(state.get("trajectory", []))
+        winner = winning_member(state.get("trajectory", []))
         if winner is None and "judge" in self.prompts.fields:
             raise vf.Error(
                 f"Pack {self.prompts.source_ref!r} declares a judge but no "
@@ -228,12 +223,11 @@ class DebateRubric(MultiAgentRubric):
         for mid in self.members:
             m = snaps[mid]
             metrics: dict[str, float] = {"turns": float(m["turns"])}
-            await self.emit_member_diagnostics(m, target, question, state, metrics)
+            await self.emit_member_diagnostics(mid, m, target, question, state, metrics)
             members.append(
                 MemberScore(
                     member_id=mid,
-                    role_id=m["role_id"],
-                    reward=zero_sum_reward(m["role_id"], winner),
+                    reward=zero_sum_reward(mid, winner),
                     parse_error_count=m["parse_errors"],
                     metrics=metrics,
                 )
@@ -245,7 +239,7 @@ class DebateRubric(MultiAgentRubric):
 
         return MARScore(
             members=members,
-            episode_scalar=1.0 if winner == self.truth_role else 0.0,
+            episode_scalar=1.0 if winner == self.truth_member else 0.0,
             episode_metrics=episode_metrics,
             episode_categorical={"winner": winner},
         )
@@ -266,7 +260,6 @@ class DebateRubric(MultiAgentRubric):
             members=[
                 MemberScore(
                     member_id=mid,
-                    role_id=snaps[mid]["role_id"],
                     reward=0.0,
                     parse_error_count=snaps[mid]["parse_errors"],
                 )
@@ -281,6 +274,7 @@ class DebateRubric(MultiAgentRubric):
 
     async def emit_member_diagnostics(
         self,
+        member_id: str,
         m: dict[str, Any],
         target: str,
         question: str,
@@ -288,13 +282,13 @@ class DebateRubric(MultiAgentRubric):
         dst: dict[str, float],
     ) -> None:
         """num_commits, num_unique_commits, accuracy, extraction_failed,
-        initial_correct, final_correct. Gated on role≠judge; accuracy
-        further gated on target + pack declaring 'answer' for this role."""
-        if m["role_id"] == "judge":
+        initial_correct, final_correct. Gated on member≠judge; accuracy
+        further gated on target + pack declaring 'answer' for this member."""
+        if member_id == "judge":
             return
         dst["num_commits"] = float(len(m["commits"]))
         dst["num_unique_commits"] = float(len(set(m["commits"])))
-        if not target or not self.role_declares_answer.get(m["role_id"], False):
+        if not target or not self.member_declares_answer.get(member_id, False):
             return
         if not m["latest_had_answer"]:
             if m["turns"]:
@@ -324,13 +318,13 @@ class DebateRubric(MultiAgentRubric):
     ) -> None:
         """agreement: do two debaters commit to the same final answer?"""
         debaters = [
-            m
-            for m in snaps.values()
-            if m["role_id"] != "judge" and m["latest_had_answer"]
+            (mid, m)
+            for mid, m in snaps.items()
+            if mid != "judge" and m["latest_had_answer"]
         ]
         if len(debaters) < 2:
             return
-        a, b = debaters[0], debaters[1]
+        (_, a), (_, b) = debaters[0], debaters[1]
         spec = a["latest_spec"] or b["latest_spec"]
         dst["agreement"] = float(
             await self.verdict(
@@ -354,17 +348,17 @@ class DebateRubric(MultiAgentRubric):
         """
         if winner is not None or "judge" in self.prompts.fields or not target:
             return
-        truths = [
-            m
-            for m in snaps.values()
-            if m["role_id"] == self.truth_role and m["latest_had_answer"]
-        ]
-        if not truths:
+        truth = snaps.get(self.truth_member)
+        if truth is None or not truth["latest_had_answer"]:
             return
-        m = truths[0]
         dst["truth_member_correct"] = float(
             await self.verdict(
-                m["commits"][-1], target, question, m["latest_spec"], "grader", state
+                truth["commits"][-1],
+                target,
+                question,
+                truth["latest_spec"],
+                "grader",
+                state,
             )
         )
 

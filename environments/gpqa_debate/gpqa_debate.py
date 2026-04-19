@@ -41,7 +41,7 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
     num_eval_examples  int      dataset slice (-1 = all)              -1
     seed               int      choice-shuffling seed                 0
     schedule           list     override SCHEDULE; list of dicts      DEFAULT_SCHEDULE
-    truth_role         str      role credited as winning seat          "debater_a"
+    truth_member       str      member credited as winning seat        "debater_a"
 
     # Per-agent OpenRouter overrides (each optional)
     debater_model      str      slug for both debaters                 None (use default)
@@ -69,11 +69,11 @@ from verifiers.envs.debate_env import DebateEnv, load_environment as _debate_loa
 LETTERS = ("A", "B", "C", "D")
 
 DEFAULT_SCHEDULE = [
-    {"slot_id": 0, "agents": ["A"], "phase": "propose"},
-    {"slot_id": 1, "agents": ["B"], "phase": "propose"},
-    {"slot_id": 2, "agents": ["A"], "phase": "critique"},
-    {"slot_id": 3, "agents": ["B"], "phase": "critique"},
-    {"slot_id": 4, "agents": ["J"], "phase": "final"},
+    {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+    {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
+    {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
+    {"slot_id": 3, "agents": ["debater_b"], "phase": "critique"},
+    {"slot_id": 4, "agents": ["judge"], "phase": "final"},
 ]
 
 
@@ -181,7 +181,7 @@ def load_environment(
     num_eval_examples: int = -1,
     seed: int = 0,
     schedule: list[dict] | None = None,
-    truth_role: str = "debater_a",
+    truth_member: str = "debater_a",
     debater_model: str | None = None,
     judge_model: str | None = None,
     debater_providers: list[str] | None = None,
@@ -201,7 +201,7 @@ def load_environment(
             if debater_providers is not None
             else None
         )
-        for mid in ("A", "B"):
+        for mid in ("debater_a", "debater_b"):
             agent_overrides[mid] = (debater_client, debater_model)
 
     if judge_model is not None or judge_providers is not None:
@@ -210,14 +210,13 @@ def load_environment(
             if judge_providers is not None
             else None
         )
-        agent_overrides["J"] = (judge_client, judge_model)
+        agent_overrides["judge"] = (judge_client, judge_model)
 
     return _debate_load_env(
         schedule_slots=schedule or DEFAULT_SCHEDULE,
-        members=["A", "B", "J"],
-        truth_role=truth_role,
+        members=["debater_a", "debater_b", "judge"],
+        truth_member=truth_member,
         prompts_ref=prompts_ref,
-        role_for_agent={"A": "debater_a", "B": "debater_b", "J": "judge"},
         agent_overrides=agent_overrides or None,
         eval_dataset=_build_dataset(subset, num_eval_examples, seed),
         **extra,

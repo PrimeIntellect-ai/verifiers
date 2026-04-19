@@ -1,10 +1,10 @@
 """DebateEnv: thin MultiAgentEnv subclass for debate protocols.
 
 Keeps only debate-specific concerns:
-  * DebatePrompts prompt pack
+  * DebatePrompts prompt pack (keyed by ``member_id``)
   * XML field extraction from the public channel
   * Opponent visibility derived from ``think_visibility``
-  * Role-ID mapping (member_id → role) and opponent attribution wrapping
+  * Opponent attribution wrapping
   * Final debate transcript rendered into ``state['completion']``
 
 Generic machinery (rollout loop, atomic simultaneous commit, stop
@@ -52,8 +52,11 @@ class DebateEnv(MultiAgentEnv):
       1. :meth:`build_prompt`  -- render via DebatePrompts
       2. :meth:`extract_fields` -- XML field parsing from public channel
       3. :meth:`visibility_policy` -- derived from ``think_visibility``
-      4. :meth:`role_for_member` -- via ``role_for_agent`` map
-      5. :meth:`render_completion` -- flatten trajectory into messages
+      4. :meth:`render_completion` -- flatten trajectory into messages
+
+    ``member_id`` is the single participant label. Prompt packs key
+    ``system``/``user``/``fields``/``think_visibility`` by ``member_id``
+    directly (e.g. ``debater_a``, ``debater_b``, ``judge``).
     """
 
     def __init__(
@@ -62,7 +65,6 @@ class DebateEnv(MultiAgentEnv):
         prompts: DebatePrompts,
         members: list[str],
         *,
-        role_for_agent: dict[str, str] | None = None,
         agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -106,12 +108,6 @@ class DebateEnv(MultiAgentEnv):
                 )
 
         self.prompts = prompts
-        self._role_for_agent: dict[str, str] = dict(role_for_agent or {})
-
-    # -- role resolution -----------------------------------------------------
-
-    def role_for_member(self, member_id: str) -> str:
-        return self._role_for_agent.get(member_id, member_id)
 
     def _member_round_count(self, member_id: str) -> int:
         """Count schedule slots where ``member_id`` participates as agent.
@@ -134,9 +130,7 @@ class DebateEnv(MultiAgentEnv):
 
     # -- visibility policy ---------------------------------------------------
 
-    def _render_opponent_message(
-        self, utt: Utterance, viewer_id: str, viewer_role: str
-    ) -> UserMessage:
+    def _render_opponent_message(self, utt: Utterance, viewer_id: str) -> UserMessage:
         """Render one opponent utterance as a user message for ``viewer_id``.
 
         Selects raw vs. public channel per visibility_policy and wraps with
@@ -151,11 +145,10 @@ class DebateEnv(MultiAgentEnv):
         previous turn. Naming the missed phase lets the model skip the
         meta-reasoning and proceed.
         """
-        speaker_role = self.role_for_member(utt.member_id)
         if utt.parse_error is not None:
             return UserMessage(
                 content=(
-                    f"[{speaker_role}] (no {utt.phase} produced — "
+                    f"[{utt.member_id}] (no {utt.phase} produced — "
                     f"opponent did not emit a visible response this turn)"
                 )
             )
@@ -165,20 +158,17 @@ class DebateEnv(MultiAgentEnv):
             utt.phase,
             content,
             member_id=utt.member_id,
-            role_id=speaker_role,
-            viewer_role=viewer_role,
+            viewer_id=viewer_id,
         )
         return UserMessage(content=content)
 
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         if utt.member_id == viewer_id:
             return "full"
-        speaker_role = self.role_for_member(utt.member_id)
-        viewer_role = self.role_for_member(viewer_id)
-        vis = self.prompts.think_visibility.get(speaker_role, "disabled")
+        vis = self.prompts.think_visibility.get(utt.member_id, "disabled")
         if vis == "open":
             return "full"
-        if vis == "visible_to_judge" and viewer_role == "judge":
+        if vis == "visible_to_judge" and viewer_id == "judge":
             return "full"
         return "public_only"
 
@@ -202,20 +192,19 @@ class DebateEnv(MultiAgentEnv):
         history grows).
         """
         kernel_state: KernelState = state["_kernel"]
-        role = self.role_for_member(member_id)
         question = question_from_state(state)
         num_rounds = self._member_round_count(member_id)
         current_round = sum(
             1 for u in kernel_state.transcript if u.member_id == member_id
         )
         ctx_current = self._build_prompt_context(
-            state, role, slot.phase, current_round, num_rounds, question
+            state, member_id, slot.phase, current_round, num_rounds, question
         )
 
         msgs: list[Message] = [
-            SystemMessage(content=self.prompts.render_system(role, ctx_current)),
+            SystemMessage(content=self.prompts.render_system(member_id, ctx_current)),
         ]
-        q_text = self.prompts.render_question(role, ctx_current)
+        q_text = self.prompts.render_question(member_id, ctx_current)
         if q_text:
             msgs.append(UserMessage(content=q_text))
 
@@ -224,14 +213,14 @@ class DebateEnv(MultiAgentEnv):
             if utt.member_id == member_id:
                 msgs.extend(
                     self._render_own_turn(
-                        utt, role, own_round_so_far, num_rounds, question, state
+                        utt, member_id, own_round_so_far, num_rounds, question, state
                     )
                 )
                 own_round_so_far += 1
             else:
-                msgs.append(self._render_opponent_message(utt, member_id, role))
+                msgs.append(self._render_opponent_message(utt, member_id))
 
-        msgs.extend(self._render_current_suffix(role, slot, ctx_current))
+        msgs.extend(self._render_current_suffix(member_id, slot, ctx_current))
         return msgs
 
     # -- build_prompt helpers ------------------------------------------------
@@ -239,13 +228,13 @@ class DebateEnv(MultiAgentEnv):
     def _build_prompt_context(
         self,
         state: State,
-        role: str,
+        member_id: str,
         phase: str,
         round_index: int,
         num_rounds: int,
         question: str,
     ) -> dict[str, Any]:
-        """Assemble the Jinja context dict for one (role, phase, round).
+        """Assemble the Jinja context dict for one (member, phase, round).
 
         ``num_rounds`` is per-member (see ``_member_round_count``) so
         is_first_round / is_last_round flags stay correct under
@@ -253,7 +242,7 @@ class DebateEnv(MultiAgentEnv):
         """
         return build_context(
             task_prompt=question,
-            viewer_role=role,
+            viewer_id=member_id,
             phase=phase,
             round_index=round_index,
             num_rounds=num_rounds,
@@ -263,7 +252,7 @@ class DebateEnv(MultiAgentEnv):
     def _render_own_turn(
         self,
         utt: Utterance,
-        role: str,
+        member_id: str,
         round_index: int,
         num_rounds: int,
         question: str,
@@ -289,24 +278,26 @@ class DebateEnv(MultiAgentEnv):
         if utt.parse_error is not None:
             return []
         past_ctx = self._build_prompt_context(
-            state, role, utt.phase, round_index, num_rounds, question
+            state, member_id, utt.phase, round_index, num_rounds, question
         )
         msgs: list[Message] = []
-        past_instr = self.prompts.render_instruction(role, utt.phase, past_ctx)
+        past_instr = self.prompts.render_instruction(member_id, utt.phase, past_ctx)
         if past_instr:
             msgs.append(UserMessage(content=past_instr))
         msgs.append(AssistantMessage(content=utt.raw_content))
         return msgs
 
     def _render_current_suffix(
-        self, role: str, slot: TurnSlot, ctx_current: dict[str, Any]
+        self, member_id: str, slot: TurnSlot, ctx_current: dict[str, Any]
     ) -> list[Message]:
         """Render the tail of the prompt: current instruction + optional prefill."""
         msgs: list[Message] = []
-        instruction = self.prompts.render_instruction(role, slot.phase, ctx_current)
+        instruction = self.prompts.render_instruction(
+            member_id, slot.phase, ctx_current
+        )
         if instruction:
             msgs.append(UserMessage(content=instruction))
-        prefill = self.prompts.render_prefill(role, slot.phase, ctx_current)
+        prefill = self.prompts.render_prefill(member_id, slot.phase, ctx_current)
         if prefill:
             msgs.append(AssistantMessage(content=prefill))
         return msgs
@@ -320,13 +311,12 @@ class DebateEnv(MultiAgentEnv):
         coherence). Others → user role, content selected by
         :meth:`visibility_policy` and wrapped with speaker attribution.
         """
-        viewer_role = self.role_for_member(viewer_id)
         msgs: list[Message] = []
         for utt in kernel_state.transcript:
             if utt.member_id == viewer_id:
                 msgs.append(AssistantMessage(content=utt.raw_content))
             else:
-                msgs.append(self._render_opponent_message(utt, viewer_id, viewer_role))
+                msgs.append(self._render_opponent_message(utt, viewer_id))
         return msgs
 
     # -- field extraction ----------------------------------------------------
@@ -334,7 +324,7 @@ class DebateEnv(MultiAgentEnv):
     async def extract_fields(
         self, public_channel: str, member_id: str, slot: TurnSlot
     ) -> dict[str, Any] | None:
-        """Extract XML fields from the public channel, per role+phase specs.
+        """Extract XML fields from the public channel, per member+phase specs.
 
         Parse ambiguity (duplicate schema tags, raised as ValueError) is a
         per-step signal: we log and return None so the step is still
@@ -342,8 +332,7 @@ class DebateEnv(MultiAgentEnv):
         ``extraction_failed/{mid}=1.0``. Terminating would discard other
         members' valid commits.
         """
-        role = self.role_for_member(member_id)
-        specs = self.prompts.get_field_specs(role, slot.phase)
+        specs = self.prompts.get_field_specs(member_id, slot.phase)
         if not specs:
             return None
         try:
@@ -393,21 +382,20 @@ def load_environment(**kwargs: Any) -> DebateEnv:
 
         env = load_environment(
             schedule_slots=[
-                {"slot_id": 0, "agents": ["A"], "phase": "propose"},
-                {"slot_id": 1, "agents": ["B"], "phase": "propose"},
-                {"slot_id": 2, "agents": ["J"], "phase": "final"},
+                {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+                {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
+                {"slot_id": 2, "agents": ["judge"],     "phase": "final"},
             ],
-            members=["A", "B", "J"],
-            truth_role="debater_a",
+            members=["debater_a", "debater_b", "judge"],
+            truth_member="debater_a",
             prompts_ref="selfplay",
-            role_for_agent={"A": "debater_a", "B": "debater_b", "J": "judge"},
             eval_dataset=my_dataset,
         )
 
-    Required: schedule_slots, members, truth_role.
+    Required: schedule_slots, members, truth_member.
     Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
     or ``prompts`` (already-built DebatePrompts).
-    Optional: role_for_agent, agent_overrides, judge_client OR
+    Optional: agent_overrides, judge_client OR
     (judge_api_key + judge_base_url + judge_max_retries), judge_model,
     dataset/eval_dataset.
     """
@@ -434,7 +422,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         max_retries=kwargs.pop("judge_max_retries", 10),
     )
     rubric = DebateRubric(
-        truth_role=kwargs.pop("truth_role"),
+        truth_member=kwargs.pop("truth_member"),
         members=kwargs["members"],  # don't pop — env needs it too
         prompts=prompts,
         judge_client=judge_client,
@@ -444,7 +432,6 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         schedule=schedule,
         prompts=prompts,
         members=kwargs.pop("members"),
-        role_for_agent=kwargs.pop("role_for_agent", None),
         agent_overrides=kwargs.pop("agent_overrides", None),
         rubric=rubric,
         **kwargs,

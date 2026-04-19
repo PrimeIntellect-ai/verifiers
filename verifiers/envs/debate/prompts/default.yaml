@@ -2,8 +2,8 @@ version: 2
 
 system:
   judge: "You are the judge. Evaluate the debaters' arguments."
-  debater_a: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
-  debater_b: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+  debater_a: "You are {{ viewer_id }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+  debater_b: "You are {{ viewer_id }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
 
 question:
   judge: "{{ task_prompt }}"

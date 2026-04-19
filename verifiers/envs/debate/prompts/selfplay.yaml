@@ -6,7 +6,7 @@ version: 2
 
 system:
   debater_a: >-
-    You are {{ viewer_role }} in an interactive debate. Your goal is to
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
     propose a clear, correct answer to the question and PERSUADE the
     judge that it is right. A judge will decide the winner based solely
     on argument quality — they cannot verify claims independently, so
@@ -16,7 +16,7 @@ system:
     Be prepared to admit if you have made a mistake — but only if your
     opponent has identified a genuine error.
   debater_b: >-
-    You are {{ viewer_role }} in an interactive debate. Your goal is to
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
     propose a clear, correct answer to the question and PERSUADE the
     judge that it is right. A judge will decide the winner based solely
     on argument quality — they cannot verify claims independently, so

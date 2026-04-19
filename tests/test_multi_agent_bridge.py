@@ -6,7 +6,7 @@ Covers the P0 fixes for the multi-agent serialization boundary:
   ``env_name`` overwrite) and fails loud on missing canonical fields,
   rather than silently substituting defaults that would corrupt
   identity-keyed downstream baselines (RAE keys on ``(task, example_id,
-  role_id)``).
+  member_id)``).
 * ``rollout_to_member_rollouts`` rejects trajectories containing
   ``member_id``s that are not part of ``MARScore.members`` — silently
   dropping them was masking framework-invariant violations.
@@ -56,7 +56,7 @@ def _output(**overrides: Any) -> dict[str, Any]:
         "trajectory_id": "t-1",
         "trajectory": [_step("A")],
         "mar_score": MARScore(
-            members=[MemberScore(member_id="A", role_id="debater", reward=1.0)],
+            members=[MemberScore(member_id="A", reward=1.0)],
             episode_scalar=1.0,
         ).model_dump(exclude_none=True),
     }
@@ -112,8 +112,8 @@ def test_bridge_known_member_with_no_steps_yields_empty_trajectory() -> None:
         trajectory=[_step("A")],
         mar_score=MARScore(
             members=[
-                MemberScore(member_id="A", role_id="debater", reward=1.0),
-                MemberScore(member_id="B", role_id="debater", reward=-1.0),
+                MemberScore(member_id="A", reward=1.0),
+                MemberScore(member_id="B", reward=-1.0),
             ],
             episode_scalar=1.0,
         ).model_dump(exclude_none=True),
@@ -139,7 +139,7 @@ def test_bridge_episode_id_from_trajectory_id() -> None:
 )
 def test_marscore_episode_metrics_reserved_key_rejected(reserved_key: str) -> None:
     mar = MARScore(
-        members=[MemberScore(member_id="A", role_id="x", reward=0.0)],
+        members=[MemberScore(member_id="A", reward=0.0)],
         episode_scalar=0.0,
         episode_metrics={reserved_key: 1.0},
     )
@@ -150,11 +150,7 @@ def test_marscore_episode_metrics_reserved_key_rejected(reserved_key: str) -> No
 @pytest.mark.parametrize("reserved_key", ["reward", "example_id", "task", "metrics"])
 def test_marscore_member_metrics_reserved_key_rejected(reserved_key: str) -> None:
     mar = MARScore(
-        members=[
-            MemberScore(
-                member_id="A", role_id="x", reward=1.0, metrics={reserved_key: 0.5}
-            )
-        ],
+        members=[MemberScore(member_id="A", reward=1.0, metrics={reserved_key: 0.5})],
         episode_scalar=1.0,
     )
     with pytest.raises(ValueError, match=reserved_key):
@@ -164,12 +160,8 @@ def test_marscore_member_metrics_reserved_key_rejected(reserved_key: str) -> Non
 def test_marscore_non_reserved_keys_project_normally() -> None:
     mar = MARScore(
         members=[
-            MemberScore(
-                member_id="A", role_id="x", reward=1.0, metrics={"accuracy": 0.7}
-            ),
-            MemberScore(
-                member_id="B", role_id="x", reward=-1.0, metrics={"accuracy": 0.3}
-            ),
+            MemberScore(member_id="A", reward=1.0, metrics={"accuracy": 0.7}),
+            MemberScore(member_id="B", reward=-1.0, metrics={"accuracy": 0.3}),
         ],
         episode_scalar=1.0,
         episode_metrics={"agreement": 0.5},
@@ -194,7 +186,7 @@ class _FakeMARubric(MultiAgentRubric):
 
     async def build_marscore(self, state):  # pragma: no cover - never called
         return MARScore(
-            members=[MemberScore(member_id="A", role_id="x", reward=0.0)],
+            members=[MemberScore(member_id="A", reward=0.0)],
             episode_scalar=0.0,
         )
 

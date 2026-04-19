@@ -199,33 +199,33 @@ class DebatePrompts:
         content: str,
         *,
         member_id: str,
-        role_id: str,
-        viewer_role: str,
+        viewer_id: str,
     ) -> str:
         """Wrap opponent utterance text with speaker attribution.
 
-        Template context: ``text``, ``phase``, ``member_id``, ``role_id``,
-        ``viewer_role``. A pack's ``opponent_wrap`` template SHOULD
-        reference ``role_id`` (or ``member_id``) so judges and peer
-        debaters can attribute each block to the correct speaker. Without
-        attribution, the judge has to infer speaker identity from
-        transcript order — a latent ambiguity that breaks whenever
-        argument lengths are asymmetric or the transcript gets reordered.
+        Template context: ``text``, ``phase``, ``member_id``,
+        ``viewer_id``. A pack's ``opponent_wrap`` template SHOULD
+        reference ``member_id`` so judges and peer debaters can attribute
+        each block to the correct speaker. Without attribution, the judge
+        has to infer speaker identity from transcript order — a latent
+        ambiguity that breaks whenever argument lengths are asymmetric
+        or the transcript gets reordered.
 
-        ``viewer_role`` is threaded through so packs can switch framing on
+        ``viewer_id`` is threaded through so packs can switch framing on
         who is *reading* the transcript. When the viewer is a judge and
         the pack declares a ``judge`` template, that template is used;
         otherwise the ``debater`` template (or the first declared one).
-        Packs that don't reference ``viewer_role`` in their Jinja body are
+        Packs that don't reference ``viewer_id`` in their Jinja body are
         unaffected.
 
         When no ``opponent_wrap`` template is defined, falls back to a
-        minimal ``[role_id] content`` prefix. Bare passthrough would leave
-        the attribution gap unfixed for packs that omit a wrap template.
+        minimal ``[member_id] content`` prefix. Bare passthrough would
+        leave the attribution gap unfixed for packs that omit a wrap
+        template.
         """
         if self.opponent_wrap is None:
-            return f"[{role_id}] {content}"
-        if viewer_role == "judge" and "judge" in self.opponent_wrap:
+            return f"[{member_id}] {content}"
+        if viewer_id == "judge" and "judge" in self.opponent_wrap:
             key = "judge"
         elif "debater" in self.opponent_wrap:
             key = "debater"
@@ -235,8 +235,7 @@ class DebatePrompts:
             text=content,
             phase=phase,
             member_id=member_id,
-            role_id=role_id,
-            viewer_role=viewer_role,
+            viewer_id=viewer_id,
         )
 
     def get_field_specs(self, role: str, phase: str) -> dict[str, FieldSpec] | None:
@@ -273,7 +272,7 @@ class DebatePrompts:
 def build_context(
     *,
     task_prompt: str,
-    viewer_role: str,
+    viewer_id: str,
     phase: str,
     round_index: int,
     num_rounds: int,
@@ -282,7 +281,7 @@ def build_context(
     """Build Jinja template context for rendering."""
     return {
         "task_prompt": task_prompt,
-        "viewer_role": viewer_role,
+        "viewer_id": viewer_id,
         "phase": phase,
         "round_index": round_index,
         "num_rounds": num_rounds,
