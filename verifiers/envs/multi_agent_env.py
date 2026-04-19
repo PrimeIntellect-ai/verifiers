@@ -56,11 +56,6 @@ from verifiers.utils.usage_utils import StateUsageTracker
 
 _log = logging.getLogger(__name__)
 
-try:  # Python 3.11+
-    _BASE_EXCEPTION_GROUP_TYPES = (BaseExceptionGroup,)
-except NameError:  # pragma: no cover - compatibility shim for older interpreters
-    _BASE_EXCEPTION_GROUP_TYPES = ()
-
 VisibilityMode = Literal["full", "public_only", "hidden"]
 
 
@@ -294,11 +289,13 @@ class MultiAgentEnv(vf.Environment):
             for _ in slot.agents
         ]
 
-        # Phase 1: fan out under TaskGroup. First raise cancels siblings,
-        # so no doomed-slot tokens leak into the shared usage tracker.
-        # TaskGroup wraps failures in ExceptionGroup; unwrap to the first
-        # OverlongPromptError / vf.Error so the rollout loop's normal
-        # except clauses continue to work.
+        # Phase 1: fan out concurrent model calls. On first raise, cancel
+        # still-pending siblings — no wasted tokens, no late completions
+        # leaking into the shared usage tracker after the slot is doomed.
+        # Implemented with asyncio.wait(FIRST_EXCEPTION) to preserve the
+        # cancel-on-first-raise semantics TaskGroup would give us while
+        # staying compatible with Python 3.10 (TaskGroup is 3.11+ and
+        # ``requires-python`` declares ``>=3.10``).
         responses: list[Response] = [None] * len(slot.agents)  # type: ignore[list-item]
 
         async def _run_one(idx: int) -> None:
@@ -315,39 +312,43 @@ class MultiAgentEnv(vf.Environment):
                 ),
             )
 
-        # Catch the whole ExceptionGroup (BaseExceptionGroup so we don't
-        # depend on a specific subclass). Then manually flatten + select a
-        # single concrete exception to re-raise. We CANNOT use chained
-        # ``except* X`` / ``except* Y`` clauses here: when agents raise
-        # different vf.Error subclasses (e.g. one OverlongPromptError + one
-        # generic vf.Error), BOTH except* branches fire and BOTH re-raises
-        # are wrapped into a NEW ExceptionGroup at the call site, which the
-        # outer rollout-loop's normal `except vf.Error` clause does NOT
-        # match. Result was a P0: doomed slot would crash the rollout
-        # instead of the rollout loop catching the error and recording it
-        # on state.
-        try:
-            async with asyncio.TaskGroup() as tg:
-                for i in range(len(slot.agents)):
-                    tg.create_task(_run_one(i))
-        except BaseException as eg:
-            if not isinstance(eg, _BASE_EXCEPTION_GROUP_TYPES):
-                raise
-            flat = _flatten_exception_group(eg)
-            # Priority: OverlongPromptError first (most-specific recovery in
-            # rollout loop), then any other vf.Error, then bubble.
+        tasks = [asyncio.create_task(_run_one(i)) for i in range(len(slot.agents))]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        # If any task raised, cancel the rest so no doomed-slot tokens
+        # leak into the shared tracker. ``asyncio.wait`` already returned
+        # ``done`` containing at least one raised task plus any earlier
+        # completions; ``pending`` are stragglers to kill.
+        if pending:
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Collect real exceptions (exclude the CancelledErrors we just
+        # triggered on ``pending`` — those are housekeeping, not signals).
+        real_errors = [
+            exc
+            for t in done
+            if (exc := t.exception()) is not None
+            and not isinstance(exc, asyncio.CancelledError)
+        ]
+
+        if real_errors:
+            # Priority: OverlongPromptError first (most-specific recovery
+            # in the rollout loop), then any other vf.Error, then bubble
+            # the first remaining.
             chosen = (
                 next(
-                    (e for e in flat if isinstance(e, vf.OverlongPromptError)),
+                    (e for e in real_errors if isinstance(e, vf.OverlongPromptError)),
                     None,
                 )
                 or next(
-                    (e for e in flat if isinstance(e, vf.Error)),
+                    (e for e in real_errors if isinstance(e, vf.Error)),
                     None,
                 )
-                or flat[0]
+                or real_errors[0]
             )
-            others = tuple(e for e in flat if e is not chosen)
+            others = tuple(e for e in real_errors if e is not chosen)
             if others:
                 _log_suppressed_peers(slot.slot_id, others)
             raise chosen
@@ -545,19 +546,3 @@ def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -
             slot_id,
             exceptions,
         )
-
-
-def _flatten_exception_group(eg: BaseException) -> tuple[BaseException, ...]:
-    """Recursively flatten a (possibly nested) ExceptionGroup into a tuple
-    of leaf exceptions, preserving order. TaskGroup may nest groups when
-    cancellation propagates through child tasks; the rollout loop wants
-    a flat view to pick the highest-priority exception to re-raise.
-    """
-    flat: list[BaseException] = []
-    assert isinstance(eg, _BASE_EXCEPTION_GROUP_TYPES)
-    for sub in eg.exceptions:
-        if isinstance(sub, _BASE_EXCEPTION_GROUP_TYPES):
-            flat.extend(_flatten_exception_group(sub))
-        else:
-            flat.append(sub)
-    return tuple(flat)
