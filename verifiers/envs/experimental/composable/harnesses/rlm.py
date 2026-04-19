@@ -19,7 +19,6 @@ from verifiers.envs.experimental.composable import Harness
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_BRANCH = "main"
-DEFAULT_RLM_TOOLS = "bash,edit"
 DEFAULT_RLM_TOOL_NAMES = ["ipython", "summarize"]
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
