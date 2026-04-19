@@ -329,7 +329,7 @@ class State(dict):
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
+        if key in self.INPUT_FIELDS and super().__contains__("input"):
             input_obj = super().__getitem__("input")
             if key in input_obj:
                 return input_obj[key]
@@ -337,12 +337,28 @@ class State(dict):
 
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
+        if key in self.INPUT_FIELDS and super().__contains__("input"):
             input_obj = super().__getitem__("input")
             if key in input_obj:
                 input_obj[key] = value
                 return
         super().__setitem__(key, value)
+
+    def __contains__(self, key: object) -> bool:
+        # Mirror __getitem__ forwarding so ``"answer" in state`` matches
+        # ``state["answer"]`` access. Without this override, membership
+        # checks see only top-level dict keys while reads silently reach
+        # into state["input"] — a subtle trap that bit gpqa_debate's
+        # build_marscore.
+        if (
+            isinstance(key, str)
+            and key in self.INPUT_FIELDS
+            and super().__contains__("input")
+        ):
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                return True
+        return super().__contains__(key)
 
     def get(self, key: str, default: Any = None) -> Any:
         try:
