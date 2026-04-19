@@ -19,6 +19,13 @@ def rollout_to_member_rollouts(
     than silently substituting defaults that would corrupt training
     identity (RAE baselines key on ``(task, example_id, member_id)``).
 
+    ``trajectory`` is ALSO required and must be present as a key on the
+    output. ``state_to_output`` only includes it when the caller passes
+    ``state_columns=["trajectory", ...]``; absent trajectory would cause
+    ``split_by_member`` to silently return ``{}`` and the bridge to emit
+    empty-trajectory member rollouts — silently discarding all
+    token-level training data. Fail loud instead.
+
     Trajectory member ids must match ``MARScore.members`` exactly: any
     extra ``extras['member_id']`` would be silently dropped by the
     per-member projection, masking a rubric/env wiring bug.
@@ -36,6 +43,14 @@ def rollout_to_member_rollouts(
     sampling_args = output["sampling_args"]
     episode_id = output["trajectory_id"]
     rollout_error = output.get("error")
+
+    if "trajectory" not in output:
+        raise KeyError(
+            "trajectory missing from RolloutOutput — the multi-agent "
+            "bridge requires per-step trajectory data. Add 'trajectory' "
+            "to state_columns when saving outputs for training (e.g. "
+            "``--state-columns trajectory,mar_score``)."
+        )
 
     # vf-eval doesn't always populate temperature in saved metadata when
     # the user passes --sampling-args without it. Default to OpenAI's

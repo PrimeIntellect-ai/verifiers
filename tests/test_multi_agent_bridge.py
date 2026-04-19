@@ -90,7 +90,8 @@ def test_bridge_defaults_temperature_when_missing_but_keeps_other_args() -> None
 
 
 @pytest.mark.parametrize(
-    "missing_key", ["task", "example_id", "sampling_args", "trajectory_id", "mar_score"]
+    "missing_key",
+    ["task", "example_id", "sampling_args", "trajectory_id", "mar_score", "trajectory"],
 )
 def test_bridge_keyerror_on_missing_canonical_field(missing_key: str) -> None:
     out = _output()
