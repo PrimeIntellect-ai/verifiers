@@ -131,3 +131,50 @@ async def test_streaming_write_failure_surfaces_to_state(monkeypatch):
 
     assert isinstance(state["error"], StreamInterrupted)
     assert "ConnectionResetError" in str(state["error"])
+
+
+async def test_streaming_response_future_failure_surfaces_to_state(monkeypatch):
+    """If the model call underlying the stream fails (e.g. vLLM raised and
+    ``synthesize_stream(error=X)`` was called), the ``response_future`` await
+    at the end of ``_handle_streaming_response`` raises. Previously that was
+    only logged at debug, letting the agent see a clean ``data: [DONE]`` and
+    exit 0 with an empty trajectory. Now it must funnel into ``state['error']``
+    as ``StreamInterrupted`` so the rollout halts visibly."""
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    writes: list[bytes] = []
+
+    async def fake_write(data: bytes) -> None:
+        writes.append(data)
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=fake_write)
+    fake_response.write_eof = AsyncMock()
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    await chunk_queue.put(None)
+
+    response_future: asyncio.Future = asyncio.Future()
+    response_future.set_exception(RuntimeError("vLLM raised"))
+
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    await server._handle_streaming_response(MagicMock(), "r1", intercept)
+
+    assert isinstance(state["error"], StreamInterrupted), (
+        f"expected StreamInterrupted, got {type(state.get('error'))}"
+    )
+    msg = str(state["error"])
+    assert "RuntimeError" in msg
+    assert "vLLM raised" in msg
+    assert any(w == b"data: [DONE]\n\n" for w in writes), writes
+    fake_response.write_eof.assert_awaited()

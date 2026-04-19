@@ -251,9 +251,17 @@ class InterceptionServer:
 
         try:
             await response_future
-        except BaseException as e:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                ),
             )
 
         try:
