@@ -405,13 +405,17 @@ class MemberScore(CustomBaseModel):
     as ``f"{k}/{member_id}"`` at the serialization boundary.
     ``parse_error_count`` propagates to ``f"parse_errors/{member_id}"``
     when non-zero.
+
+    ``metrics`` is intentionally float-only — bools and ints must be
+    converted at the producer site so the aggregator can average without
+    a type check. Categorical/string telemetry doesn't belong here.
     """
 
     member_id: str
     role_id: str
     reward: float
     parse_error_count: int = 0
-    metrics: dict[str, float | int | bool] = Field(default_factory=dict)
+    metrics: dict[str, float] = Field(default_factory=dict)
 
 
 class MARScore(CustomBaseModel):
@@ -425,6 +429,14 @@ class MARScore(CustomBaseModel):
     - ``state["commits"]``        -> deleted (recomputable from trajectory)
     - ``state["error_info"]``     -> deleted (state["error"] is the channel)
 
+    Episode-level telemetry is split by purpose so the wandb projection
+    can't accidentally average a categorical sentinel like a winner-index
+    encoded as a float (a ZIP-code mistake):
+
+    - ``episode_metrics``      averageable scalars only (accuracy, agreement)
+    - ``episode_categorical``  codes/labels (winner = "debater_a"/"tie"/None)
+    - ``episode_error``        error metadata when the rollout failed
+
     Schema invariants enforced at construction (duplicate member_id, empty
     members) — drift between rubric writer and bridge reader is structurally
     impossible after this lands.
@@ -432,9 +444,9 @@ class MARScore(CustomBaseModel):
 
     members: list[MemberScore]
     episode_scalar: float
-    episode_metrics: dict[str, float | int | bool | str] = Field(
-        default_factory=dict
-    )
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
 
     @field_validator("members")
     @classmethod
@@ -450,18 +462,20 @@ class MARScore(CustomBaseModel):
         """O(N) lookup table; small N, no need to memoize."""
         return {m.member_id: m for m in self.members}
 
-    def to_wandb_flat(self) -> dict[str, float | int | bool | str]:
-        """One-way projection to flat wandb keys. Boundary use only.
+    def to_metrics_flat(self) -> dict[str, float]:
+        """Projection of averageable scalars to flat wandb keys.
 
-        Per-member fields project to ``f"{k}/{member_id}"``; episode-level
-        fields stay top-level. Reward and parse_error_count get canonical
-        prefixes so downstream consumers know the schema.
+        Episode-level scalars stay top-level. Per-member metrics project
+        to ``f"{k}/{member_id}"``. Reward and parse_error_count get
+        canonical prefixes. Categorical / error fields are NOT included
+        — those live under their own MARScore fields and are projected
+        separately at the serialization boundary.
         """
-        out: dict[str, float | int | bool | str] = dict(self.episode_metrics)
+        out: dict[str, float] = dict(self.episode_metrics)
         for m in self.members:
             out[f"reward/{m.member_id}"] = m.reward
             if m.parse_error_count:
-                out[f"parse_errors/{m.member_id}"] = m.parse_error_count
+                out[f"parse_errors/{m.member_id}"] = float(m.parse_error_count)
             for k, v in m.metrics.items():
                 out[f"{k}/{m.member_id}"] = v
         return out

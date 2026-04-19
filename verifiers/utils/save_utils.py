@@ -230,28 +230,22 @@ def state_to_output(
     if "info" in output and not output["info"]:
         output.pop("info")
     # MARScore: single source of truth for multi-agent episode scoring.
-    # Project to legacy keys (output["reward"], top-level metrics) one-way
-    # at the boundary so downstream (wandb, GRPO advantage) sees the same
-    # shape as single-agent envs while the bridge reads the typed payload.
+    # Project to legacy keys at the boundary one-way: output["reward"] +
+    # output["metrics"] (averageable scalars only) so downstream consumers
+    # (wandb, GRPO advantage) see the same shape as single-agent envs.
+    # Categorical telemetry (winner) and error metadata stay nested under
+    # output["mar_score"] — projecting them to top-level would invite the
+    # ZIP-code mistake of averaging sentinel codes alongside real metrics.
     mar = state.get("mar_score")
     if mar is not None:
         if not isinstance(mar, MARScore):
             mar = MARScore.model_validate(mar)
         output["mar_score"] = mar.model_dump(exclude_none=True)
         output["reward"] = mar.episode_scalar
-        flat = mar.to_wandb_flat()
-        for k, v in flat.items():
+        flat_metrics = mar.to_metrics_flat()
+        for k, v in flat_metrics.items():
             output[k] = v
-        # Populate output["metrics"] as the dict form of the same flat
-        # projection. init_state seeds state["metrics"] = None; without
-        # this line, displays that expect a dict (eval_utils.print_rewards)
-        # crash on None. Writing a dict is consistent with the legacy SA
-        # path and semantically identical — the flat keys are already at
-        # top level too, so nothing reads output["metrics"] that isn't
-        # already satisfied by the top-level projection.
-        output["metrics"] = {
-            k: v for k, v in flat.items() if isinstance(v, (int, float, bool))
-        }
+        output["metrics"] = dict(flat_metrics)
     else:
         # Single-agent legacy path: rubric writes state["metrics"] directly.
         state_metrics = state.get("metrics") or {}

@@ -46,11 +46,8 @@ class MultiAgentRubric(Rubric):
                 for mid in self.members
             ],
             episode_scalar=0.0,
-            episode_metrics={
-                "errored_rollout": 1.0,
-                "error_type": error_type,
-                "error_phase": error_phase,
-            },
+            episode_metrics={"errored_rollout": 1.0},
+            episode_error={"error_type": error_type, "error_phase": error_phase},
         )
 
     async def score_rollout(self, state: State) -> None:

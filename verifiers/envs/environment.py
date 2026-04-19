@@ -622,7 +622,11 @@ class Environment(ABC):
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
-        state["metrics"] = None
+        # Seed as empty dict, not None, to satisfy RolloutOutput.metrics
+        # contract (dict[str, float]). Single-agent rubrics overwrite via
+        # state["metrics"] = ...; multi-agent rubrics write state["mar_score"]
+        # and the boundary projection populates output["metrics"] from there.
+        state["metrics"] = {}
         state["error"] = None
         state["final_env_response"] = None
         state["timing"] = RolloutTiming(
