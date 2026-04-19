@@ -252,7 +252,7 @@ class InterceptionServer:
                         await response.write(b": keepalive\n\n")
                     except Exception as e:
                         waited_s = time.monotonic() - start
-                        logger.error(
+                        logger.debug(
                             f"[{rollout_id}] Streaming error during keepalive "
                             f"after {waited_s:.1f}s: {e}"
                         )
@@ -280,7 +280,7 @@ class InterceptionServer:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             waited_s = time.monotonic() - start
-            logger.error(f"[{rollout_id}] Streaming error after {waited_s:.1f}s: {e}")
+            logger.debug(f"[{rollout_id}] Streaming error after {waited_s:.1f}s: {e}")
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
