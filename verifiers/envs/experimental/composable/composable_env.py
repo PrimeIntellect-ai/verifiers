@@ -334,8 +334,16 @@ class ComposableEnv(CliAgentEnv):
                 data = data.get(self.harness.metrics_key, {})
             prefix = self.harness.metrics_prefix
             allowed = self.harness.metrics_keys
+            state_metrics = state.setdefault("metrics", {})
+            if not isinstance(state_metrics, dict):
+                raise TypeError(
+                    "state['metrics'] must be a dict when collecting harness metrics"
+                )
             for key, value in data.items():
                 if allowed is None or key in allowed:
-                    state[f"{prefix}{key}"] = value
+                    prefixed_key = f"{prefix}{key}"
+                    state[prefixed_key] = value
+                    if isinstance(value, (int, float)):
+                        state_metrics[prefixed_key] = float(value)
         except Exception as e:
             self.logger.warning(f"Failed to collect harness metrics: {e}")

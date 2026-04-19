@@ -396,3 +396,8 @@ async def test_rlm_collects_logs_and_metrics(tmp_path):
     assert state["rlm_stop_reason"] == "done"
     assert state["rlm_prompt_tokens"] == 100
     assert state["rlm_completion_tokens"] == 25
+    assert state["metrics"] == {
+        "rlm_turns": 3.0,
+        "rlm_prompt_tokens": 100.0,
+        "rlm_completion_tokens": 25.0,
+    }
