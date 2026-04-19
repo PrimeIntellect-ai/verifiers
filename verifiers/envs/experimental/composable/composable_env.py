@@ -57,7 +57,7 @@ from verifiers.types import State
 logger = logging.getLogger(__name__)
 
 
-class _HarnessMetricsRubric(vf.Rubric):
+class HarnessMetricsRubric(vf.Rubric):
     async def score_rollout(self, state: State) -> None:
         return
 
@@ -112,7 +112,7 @@ class ComposableEnv(CliAgentEnv):
         if harness.tool_names:
             self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
         if harness.metrics_path:
-            self.add_rubric(_HarnessMetricsRubric())
+            self.add_rubric(HarnessMetricsRubric())
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
