@@ -58,8 +58,8 @@ def run_cli(make_metadata, make_state, make_input):
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
             "max_retries": 0,
-            "tui": False,
-            "debug": False,
+            "fullscreen": False,
+            "disable_tui": False,
             "abbreviated_summary": False,
             "heartbeat_url": None,
         }
