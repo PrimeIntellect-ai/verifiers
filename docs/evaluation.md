@@ -208,7 +208,8 @@ When evaluating multiple environments, the display shows an overview panel at th
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
-| `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
+| `--fullscreen` | — | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--tui` | `-u` | false | [Deprecated] Alias for `--fullscreen` |
 | `--disable-tui` | — | false | Disable Rich display; use normal logging and tqdm progress |
 | `--debug` | `-d` | false | [Deprecated] Alias for `--disable-tui` |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |

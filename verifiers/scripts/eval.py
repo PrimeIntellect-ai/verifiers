@@ -392,11 +392,17 @@ def build_parser() -> argparse.ArgumentParser:
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
+        "--fullscreen",
+        default=False,
+        action="store_true",
+        help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
+    )
+    parser.add_argument(
         "--tui",
         "-u",
         default=False,
         action="store_true",
-        help="Use TUI mode for live evaluation display",
+        help="[DEPRECATED] Alias for --fullscreen. Will be removed in a future release.",
     )
     parser.add_argument(
         "--disable-tui",
@@ -465,6 +471,24 @@ def main(argv: list[str] | None = None):
             stacklevel=2,
         )
         args.disable_tui = True
+
+    if args.tui:
+        import warnings
+
+        warnings.warn(
+            "The `-u`/`--tui` flag is deprecated and will be removed in a future release. "
+            "Use `--fullscreen` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        args.fullscreen = True
+
+    if args.disable_tui and args.fullscreen:
+        raise SystemExit(
+            "error: --disable-tui and --fullscreen are mutually exclusive "
+            "(--disable-tui turns off the Rich display entirely; --fullscreen only "
+            "controls whether the Rich display uses the alternate screen buffer)."
+        )
 
     if args.disable_tui:  # only set up console logging when TUI is disabled
         setup_logging(get_log_level(args.verbose))
@@ -783,7 +807,7 @@ def main(argv: list[str] | None = None):
         asyncio.run(
             run_evaluations_tui(
                 eval_run_config,
-                tui_mode=args.tui,
+                fullscreen=args.fullscreen,
                 compact=args.abbreviated_summary,
             )
         )
