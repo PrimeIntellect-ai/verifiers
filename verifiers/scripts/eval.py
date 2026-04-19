@@ -398,24 +398,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
     )
     parser.add_argument(
-        "--tui",
-        "-u",
-        default=False,
-        action="store_true",
-        help="[DEPRECATED] Alias for --fullscreen. Will be removed in a future release.",
-    )
-    parser.add_argument(
         "--disable-tui",
         default=False,
         action="store_true",
         help="Disable Rich display; use normal logging and tqdm progress instead",
-    )
-    parser.add_argument(
-        "--debug",
-        "-d",
-        default=False,
-        action="store_true",
-        help="[DEPRECATED] Alias for --disable-tui. Will be removed in a future release.",
     )
     parser.add_argument(
         "--max-retries",
@@ -460,28 +446,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
-
-    if args.debug:
-        import warnings
-
-        warnings.warn(
-            "The `-d`/`--debug` flag is deprecated and will be removed in a future release. "
-            "Use `--disable-tui` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        args.disable_tui = True
-
-    if args.tui:
-        import warnings
-
-        warnings.warn(
-            "The `-u`/`--tui` flag is deprecated and will be removed in a future release. "
-            "Use `--fullscreen` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        args.fullscreen = True
 
     if args.disable_tui and args.fullscreen:
         raise SystemExit(
@@ -772,7 +736,7 @@ def main(argv: list[str] | None = None):
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
-            disable_tui=raw.get("disable_tui", raw.get("debug", False)),
+            disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
