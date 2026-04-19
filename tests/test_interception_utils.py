@@ -11,6 +11,7 @@ from verifiers.types import (
 )
 from verifiers.utils import interception_utils
 from verifiers.utils.interception_utils import (
+    InterceptionError,
     InterceptionServer,
     StreamInterrupted,
     create_empty_completion,
@@ -178,3 +179,49 @@ async def test_streaming_response_future_failure_surfaces_to_state(monkeypatch):
     assert "vLLM raised" in msg
     assert any(w == b"data: [DONE]\n\n" for w in writes), writes
     fake_response.write_eof.assert_awaited()
+
+
+async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypatch):
+    """Non-streaming counterpart: if the model call fails and
+    ``deliver_response`` sets the future's exception, the non-streaming
+    branch of ``_handle_request`` re-raises when awaiting it. That failure
+    must funnel into ``state['error']`` as ``InterceptionError`` so the
+    rollout halts visibly (HTTP 500 still returned to the client)."""
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    request = MagicMock()
+    request.match_info = {"rollout_id": "r1"}
+    request.json = AsyncMock(
+        return_value={"stream": False, "messages": [], "model": "test"}
+    )
+    request.headers = {}
+
+    def fake_json_response(data, status=200):
+        return MagicMock(_body=data, status=status)
+
+    monkeypatch.setattr(interception_utils.web, "json_response", fake_json_response)
+
+    handler_task = asyncio.create_task(server._handle_request(request))
+
+    for _ in range(50):
+        if server.intercepts:
+            break
+        await asyncio.sleep(0.01)
+    assert server.intercepts, "handler did not register intercept"
+    intercept = next(iter(server.intercepts.values()))
+    interception_utils.deliver_response(
+        intercept, None, error=RuntimeError("vLLM raised")
+    )
+
+    response = await handler_task
+
+    assert response.status == 500
+    assert isinstance(state["error"], InterceptionError), (
+        f"expected InterceptionError, got {type(state.get('error'))}"
+    )
+    msg = str(state["error"])
+    assert "intercepted request failed" in msg
+    assert "RuntimeError" in msg
+    assert "vLLM raised" in msg
