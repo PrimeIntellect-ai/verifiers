@@ -262,7 +262,8 @@ class RolloutOutput(dict):
     JSON-serializable.
 
     Required fields: example_id, task, prompt, completion, reward, timing,
-                     is_completed, is_truncated, metrics
+                     is_completed, is_truncated, metrics, sampling_args,
+                     trajectory_id
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage, mar_score
     Additional fields: arbitrary serializable state_columns
@@ -278,6 +279,8 @@ class RolloutOutput(dict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
+    sampling_args: "SamplingArgs"  # required by multi_agent_bridge
+    trajectory_id: str  # required by multi_agent_bridge
     # Optional fields
     answer: str
     info: Info

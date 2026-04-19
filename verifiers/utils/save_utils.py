@@ -178,6 +178,13 @@ def state_to_output(
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
+        # Per-rollout sampling_args are required by the multi-agent bridge
+        # (``rollout_to_member_rollouts`` reads ``output["sampling_args"]``)
+        # and useful for offline reproducibility even in the single-agent
+        # path. Default to ``{}`` — consumers apply their own fallbacks
+        # (e.g. temperature=1.0) on missing keys.
+        sampling_args=state.get("sampling_args") or {},
+        trajectory_id=state.get("trajectory_id", ""),
     )
     usage = _extract_state_token_usage(state)
     if usage is None:
