@@ -367,35 +367,46 @@ class TaskSet:
             raise ValueError(
                 "resume=True requires out_path; nothing to resume from without a JSONL sink."
             )
+
+        def _read_prior_rows(path: Path) -> tuple[list[dict], set[int]]:
+            """Parse a prior JSONL and return ``(prior_rows, completed_indices)``.
+
+            Only rows whose ``index`` is in ``[0, total)`` are kept — resuming
+            with a smaller ``n`` than a prior run shouldn't surface
+            out-of-range rows in the returned results or summary stats.
+            Malformed / non-JSON lines and rows without an integer ``index``
+            are silently skipped. Logs a one-line resume summary when any
+            prior rows are found.
+            """
+            rows: list[dict] = []
+            indices: set[int] = set()
+            with path.open() as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row.get("index"), int) and row["index"] < total:
+                        rows.append(row)
+                        indices.add(row["index"])
+            if rows:
+                logger.info(
+                    "Resuming: %d rows already in %s, will skip",
+                    len(rows),
+                    path,
+                )
+            return rows, indices
+
         out_path_p = Path(out_path) if out_path is not None else None
         prior_rows: list[dict] = []
         completed_indices: set[int] = set()
         if out_path_p is not None:
             out_path_p.parent.mkdir(parents=True, exist_ok=True)
             if resume and out_path_p.exists():
-                with out_path_p.open() as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            row = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(row.get("index"), int):
-                            # only keep rows within the current validation
-                            # range — resuming with a smaller ``n`` than a
-                            # prior run shouldn't surface out-of-range rows
-                            # in the returned results or the summary stats.
-                            if row["index"] < total:
-                                prior_rows.append(row)
-                                completed_indices.add(row["index"])
-                if prior_rows:
-                    logger.info(
-                        "Resuming: %d rows already in %s, will skip",
-                        len(prior_rows),
-                        out_path_p,
-                    )
+                prior_rows, completed_indices = _read_prior_rows(out_path_p)
             else:
                 # truncate so repeated runs don't mix with old output
                 out_path_p.write_text("")
