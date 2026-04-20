@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
+import re
 import tempfile
 from pathlib import Path
 from textwrap import dedent
@@ -36,19 +36,52 @@ def _process_example(x: dict) -> dict:
     }
 
 
-def _build_eval_script(fail_to_pass: list[str], pass_to_pass: list[str]) -> str:
-    """Construct a bash eval script from FAIL_TO_PASS and PASS_TO_PASS test lists.
+_OUTCOME_LINE_RE = re.compile(
+    r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(\S+)"
+)
 
-    Raises ValueError if both lists are empty — scoring an instance with no
-    tests would silently produce reward=1.0 regardless of agent behavior.
+
+def _parse_outcomes(output: str) -> dict[str, str]:
+    """Parse pytest ``-rA`` short-summary lines into ``{test_id: outcome}``.
+
+    Pytest with ``-rA`` prints one ``OUTCOME test_id`` line per test in the
+    short-summary block (e.g. ``PASSED tests/foo.py::Cls::test``). We only
+    need the *last* outcome per test id — if pytest re-runs anything, later
+    lines win.
     """
-    if not fail_to_pass and not pass_to_pass:
-        raise ValueError(
-            "Both FAIL_TO_PASS and PASS_TO_PASS are empty — no tests to score."
-        )
+    outcomes: dict[str, str] = {}
+    for line in output.splitlines():
+        m = _OUTCOME_LINE_RE.match(line)
+        if m:
+            outcomes[m.group(2)] = m.group(1)
+    return outcomes
 
-    f2p_args = " ".join(shlex.quote(t) for t in fail_to_pass) if fail_to_pass else ""
-    p2p_args = " ".join(shlex.quote(t) for t in pass_to_pass) if pass_to_pass else ""
+
+def _build_eval_script(test_cmd: str) -> str:
+    """Build a bash wrapper that runs the dataset's per-row ``test_cmd``.
+
+    SWE-Lego-Real-Data ships a canonical pytest invocation per row in
+    ``info['test_cmd']`` (points at whole test FILE paths and carries all
+    the flags upstream's eval uses: ``LANG=C.UTF-8``, ``-p no:cacheprovider``,
+    ``-W ignore::DeprecationWarning``, occasionally ``--cov=pkg`` etc.).
+
+    Running the whole file — instead of cherry-picking FAIL_TO_PASS /
+    PASS_TO_PASS IDs — matters because:
+
+    * Many pytest fixtures are module-scoped; isolating a test ID skips
+      setup that the test depends on (shows up as spurious P2P failures).
+    * Repos with ``[tool.pytest.ini_options] addopts = "--cov-fail-under=N"``
+      can't meet threshold when you run a subset → pytest exits non-zero
+      even though every test passed. The ``--cov=`` flag in ``test_cmd``
+      keeps the threshold check working.
+    * Parametrize IDs with whitespace/special chars are sometimes
+      unparseable as CLI args; the whole-file run avoids the issue.
+
+    We still use FAIL_TO_PASS and PASS_TO_PASS after the run — just via
+    parsing the ``-rA`` outcomes (see ``_parse_outcomes``).
+    """
+    if not test_cmd or not test_cmd.strip():
+        raise ValueError("test_cmd is empty — cannot score this instance.")
 
     return dedent(
         f"""\
@@ -66,19 +99,14 @@ def _build_eval_script(fail_to_pass: list[str], pass_to_pass: list[str]) -> str:
         conda activate testbed 2>/dev/null || true
         set -u
 
-        FAIL=0
+        set +e
+        {test_cmd}
+        PYTEST_EXIT=$?
+        set -e
 
-        {f"python -m pytest -x --tb=short {f2p_args} || FAIL=1" if f2p_args else "# No FAIL_TO_PASS tests"}
-
-        {f"python -m pytest -x --tb=short {p2p_args} || FAIL=1" if p2p_args else "# No PASS_TO_PASS tests"}
-
-        if [ "$FAIL" -eq 0 ]; then
-            echo "SWELEGO_EXIT_CODE=0"
-        else
-            echo "SWELEGO_EXIT_CODE=1"
-        fi
-
-        exit "$FAIL"
+        echo ""
+        echo "SWELEGO_PYTEST_EXIT=$PYTEST_EXIT"
+        exit 0
         """
     )
 
@@ -128,10 +156,19 @@ class SWELegoTaskSet(SandboxTaskSet):
     parametrize test IDs. Images come from ``jierun/sweb.eval.x86_64.*``
     (public on Docker Hub).
 
-    Test execution is constructed at runtime from the dataset's
-    FAIL_TO_PASS / PASS_TO_PASS fields. ``test_patch`` (adds the failing
-    tests to the repo) is applied in ``setup()`` so both gold-patch
-    validation and live agent rollouts score against the correct tests.
+    **Evaluation strategy.** Each row ships an ``info['test_cmd']`` — the
+    canonical pytest invocation upstream uses (whole test-file paths, not
+    specific IDs, plus the flags the repo's ``pyproject.toml`` /
+    ``setup.cfg`` expect: ``LANG=C.UTF-8``, ``-p no:cacheprovider``,
+    ``-W ignore::DeprecationWarning``, sometimes ``--cov=pkg``). We run
+    that verbatim, then parse the ``-rA`` output for FAIL_TO_PASS /
+    PASS_TO_PASS outcomes. Scoring on parsed outcomes (not pytest exit
+    code) avoids false negatives where a repo-wide coverage threshold
+    makes pytest exit non-zero even though every scored test passed.
+
+    ``test_patch`` (adds the failing tests to the repo) is applied in
+    ``setup()`` so both gold-patch validation and live agent rollouts
+    score against the correct tests.
     """
 
     default_workdir = "/testbed"
@@ -275,6 +312,7 @@ class SWELegoTaskSet(SandboxTaskSet):
         info = state["info"]
         fail_to_pass: list[str] = info.get("FAIL_TO_PASS") or []
         pass_to_pass: list[str] = info.get("PASS_TO_PASS") or []
+        test_cmd: str = info.get("test_cmd") or ""
 
         if not fail_to_pass and not pass_to_pass:
             logger.warning(
@@ -282,7 +320,12 @@ class SWELegoTaskSet(SandboxTaskSet):
             )
             return "ERROR: no tests to score (FAIL_TO_PASS and PASS_TO_PASS both empty)"
 
-        eval_script = _build_eval_script(fail_to_pass, pass_to_pass)
+        if not test_cmd.strip():
+            raise RuntimeError(
+                f"[{sandbox_id}] Dataset row missing 'test_cmd' — cannot score."
+            )
+
+        eval_script = _build_eval_script(test_cmd)
 
         with tempfile.NamedTemporaryFile(suffix=".sh", mode="w", delete=False) as f:
             f.write(eval_script)
@@ -308,9 +351,24 @@ class SWELegoTaskSet(SandboxTaskSet):
         return results.stdout or ""
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
+        """Score 1.0 iff every FAIL_TO_PASS and PASS_TO_PASS test is PASSED.
+
+        Parses pytest ``-rA`` short-summary lines (``_parse_outcomes``)
+        rather than trusting pytest's overall exit code — a single repo-wide
+        threshold (``--cov-fail-under``) can make pytest exit non-zero even
+        when every scored test passed. Scoring the specific F2P/P2P IDs we
+        care about is both stricter and more accurate.
+        """
         if not test_output:
             return 0.0
-        return 1.0 if "SWELEGO_EXIT_CODE=0" in test_output else 0.0
+        fail_to_pass: list[str] = info.get("FAIL_TO_PASS") or []
+        pass_to_pass: list[str] = info.get("PASS_TO_PASS") or []
+        if not fail_to_pass and not pass_to_pass:
+            return 0.0
+
+        outcomes = _parse_outcomes(test_output)
+        required = list(fail_to_pass) + list(pass_to_pass)
+        return 1.0 if all(outcomes.get(t) == "PASSED" for t in required) else 0.0
 
     async def _apply_patch_file(
         self, sandbox_client: Any, sandbox_id: str, patch: str, label: str
