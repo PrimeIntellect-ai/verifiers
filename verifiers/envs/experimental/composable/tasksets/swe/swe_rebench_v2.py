@@ -31,7 +31,6 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from textwrap import dedent
 from typing import Any
 
 import verifiers as vf
@@ -138,24 +137,24 @@ def _build_eval_script(test_cmds: list[str], workdir: str) -> str:
     are wrapped with ``|| FAIL=1`` so the script keeps emitting output after
     the first failing command (parsers need the full summary).
     """
-    body_lines = ["FAIL=0"]
+    lines = [
+        "#!/bin/bash",
+        "set -uo pipefail",
+        "",
+        f"cd {workdir}",
+        "",
+        'echo "SWEREBENCH_V2_TEST_OUTPUT_START"',
+        "FAIL=0",
+    ]
     for cmd in test_cmds:
-        body_lines.append(f"{cmd} || FAIL=1")
-    body = "\n".join(body_lines)
-    return dedent(
-        f"""\
-        #!/bin/bash
-        set -uo pipefail
-
-        cd {workdir}
-
-        echo "SWEREBENCH_V2_TEST_OUTPUT_START"
-        {body}
-        echo "SWEREBENCH_V2_TEST_OUTPUT_END"
-
-        exit "$FAIL"
-        """
-    )
+        lines.append(f"{cmd} || FAIL=1")
+    lines += [
+        'echo "SWEREBENCH_V2_TEST_OUTPUT_END"',
+        "",
+        'exit "$FAIL"',
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _slice_test_region(output: str) -> str:
