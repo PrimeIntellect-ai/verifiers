@@ -65,8 +65,6 @@ class RubricGroup(Rubric):
         for rubric in self.rubrics:
             await rubric.score_rollout(state)
             rubric_reward = state.get("reward", 0.0)
-            if rubric_reward is None:
-                rubric_reward = 0.0
             rubric_metrics = (
                 state.get("metrics", {}).copy() if state.get("metrics") else {}
             )
@@ -106,8 +104,6 @@ class RubricGroup(Rubric):
             await rubric.score_group(states)
             for i, state in enumerate(states):
                 rubric_reward = state.get("reward", 0.0)
-                if rubric_reward is None:
-                    rubric_reward = 0.0
                 rubric_metrics = (
                     state.get("metrics", {}).copy() if state.get("metrics") else {}
                 )
