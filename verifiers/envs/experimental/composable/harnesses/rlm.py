@@ -117,11 +117,9 @@ def rlm_harness(
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
 
-    tool_names = [
-        t
-        for t in DEFAULT_RLM_TOOL_NAMES
-        if not (disable_compaction and t == "summarize")
-    ]
+    tool_names = list(DEFAULT_RLM_TOOL_NAMES)
+    if disable_compaction:
+        tool_names = [t for t in tool_names if t != "summarize"]
 
     return Harness(
         install_script=build_install_script(),
