@@ -78,13 +78,18 @@ async def _sample_tcp_state(
     rollout_id: str,
     start: float,
     interval: float,
+    state_ref: dict,
 ) -> None:
     """Periodically sample TCP_INFO on the stream socket; log state transitions.
 
-    Runs as a side-task alongside the streaming-response write loop, so when
-    a cut happens we have an explicit trace of when the socket left
-    ESTABLISHED (e.g. entered CLOSE_WAIT = peer sent FIN first). Cancelled
-    when the main loop exits.
+    Runs as a side-task alongside the streaming-response write loop. Stores
+    the latest observed state + timestamp in `state_ref` so the error path
+    can include it in the StreamInterrupted message even when the socket is
+    already closed at error time (the normal case).
+
+    Also logs every transition at WARNING (important + rare — only fires on
+    a real state change) so signal is visible regardless of log-level
+    config in the host process.
     """
     last_state: int | None = None
     while True:
@@ -95,21 +100,30 @@ async def _sample_tcp_state(
         state, retx = _read_tcp_state(transport)
         if state is None:
             continue
+        elapsed = time.monotonic() - start
+        state_ref["state"] = state
+        state_ref["retx"] = retx
+        state_ref["elapsed"] = elapsed
         if state != last_state:
-            elapsed = time.monotonic() - start
             prev = _TCP_STATE_NAMES.get(last_state, f"state{last_state}") if last_state is not None else "init"
             curr = _TCP_STATE_NAMES.get(state, f"state{state}")
-            logger.debug(
+            logger.warning(
                 f"[{rollout_id}] tcp_state {prev} -> {curr} at {elapsed:.1f}s (retx={retx})"
             )
             last_state = state
 
 
-def _tcp_diag(transport: Any, peer: tuple | None = None) -> str:
+def _tcp_diag(
+    transport: Any,
+    peer: tuple | None = None,
+    state_ref: dict | None = None,
+) -> str:
     """Return a short one-line diagnostic about the TCP socket.
 
     Pulls peer/local addr (if not cached) plus TCP_INFO.state and
-    retransmits from the underlying socket. All lookups are best-effort —
+    retransmits from the underlying socket. If the socket is already gone
+    at call time (typical on a cut), falls back to ``state_ref`` which the
+    periodic sampler keeps populated. All lookups are best-effort —
     failures return an empty string so the error logging path is never
     broken by instrumentation.
     """
@@ -121,21 +135,27 @@ def _tcp_diag(transport: Any, peer: tuple | None = None) -> str:
             parts.append(f"peer={peer[0]}:{peer[1]}")
     except Exception:
         pass
+    # Live read first (authoritative) — fall back to sampler's cache on failure
+    state: int | None = None
+    retx: int = 0
     try:
         if transport is not None:
             sock = transport.get_extra_info("socket")
             if sock is not None:
-                # tcp_info layout (first 6 bytes, all uint8):
-                # state, ca_state, retransmits, probes, backoff, options
                 buf = sock.getsockopt(socket.IPPROTO_TCP, _TCP_INFO, 7)
-                state, _ca, retransmits = struct.unpack("BBB", buf[:3])
-                parts.append(
-                    f"tcp_state={_TCP_STATE_NAMES.get(state, f'state{state}')}"
-                )
-                if retransmits:
-                    parts.append(f"retx={retransmits}")
+                state, _ca, retx = struct.unpack("BBB", buf[:3])
     except Exception:
         pass
+    if state is None and state_ref:
+        s = state_ref.get("state")
+        if isinstance(s, int):
+            state = s
+            retx = int(state_ref.get("retx", 0))
+            parts.append("tcp_src=cached")
+    if state is not None:
+        parts.append(f"tcp_state={_TCP_STATE_NAMES.get(state, f'state{state}')}")
+        if retx:
+            parts.append(f"retx={retx}")
     return " ".join(parts)
 
 
@@ -345,6 +365,9 @@ class InterceptionServer:
             pass
         # Start the periodic TCP-state sampler (logs state transitions during
         # the stream so we catch CLOSE_WAIT / FIN_WAIT before the write RST).
+        # Uses a shared dict so the error path can read the last-seen state
+        # even when getsockopt(TCP_INFO) fails at error time (socket closed).
+        tcp_state_ref: dict = {}
         tcp_sampler: asyncio.Task | None = None
         if TCP_SAMPLE_INTERVAL_SECONDS > 0:
             tcp_sampler = asyncio.create_task(
@@ -353,6 +376,7 @@ class InterceptionServer:
                     rollout_id,
                     start,
                     TCP_SAMPLE_INTERVAL_SECONDS,
+                    tcp_state_ref,
                 )
             )
         # Reuse a single get() task across keepalive cycles instead of
@@ -377,7 +401,7 @@ class InterceptionServer:
                         await response.write(b": keepalive\n\n")
                     except Exception as e:
                         waited_s = time.monotonic() - start
-                        diag = _tcp_diag(http_request.transport, peer)
+                        diag = _tcp_diag(http_request.transport, peer, tcp_state_ref)
                         logger.debug(
                             f"[{rollout_id}] Streaming error during keepalive "
                             f"after {waited_s:.1f}s {diag}: {e}"
@@ -406,8 +430,8 @@ class InterceptionServer:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             waited_s = time.monotonic() - start
-            diag = _tcp_diag(http_request.transport, peer)
-            logger.debug(
+            diag = _tcp_diag(http_request.transport, peer, tcp_state_ref)
+            logger.warning(
                 f"[{rollout_id}] Streaming error after {waited_s:.1f}s {diag}: {e}"
             )
             self._set_rollout_error(
