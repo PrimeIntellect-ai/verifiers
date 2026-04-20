@@ -234,12 +234,9 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
-            # Unset interception env vars so verifier LLM calls go directly
-            # to the provider instead of through the interception proxy.
-            unset_flags = " ".join(f"-u {var}" for var in self.PROTECTED_ENV_VARS)
             results = await self.run_background_job(
                 state,
-                f"env {unset_flags} bash test.sh",
+                self.without_interception_env("bash test.sh"),
                 timeout=300,
                 working_dir="/tests",
                 poll_interval=5,
