@@ -27,7 +27,7 @@ Environments must be installed as Python packages before evaluation. From a loca
 
 ```bash
 prime env install my-env           # installs ./environments/my_env as a package
-prime eval run my-env -m gpt-4.1-mini -n 10
+prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
 `prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
@@ -208,8 +208,8 @@ When evaluating multiple environments, the display shows an overview panel at th
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
-| `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
-| `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
+| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |

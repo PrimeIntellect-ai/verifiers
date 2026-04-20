@@ -90,6 +90,58 @@ PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
 DEFAULT_PROVIDER = "prime"
 
 
+def merge_sampling_args(
+    sampling_args: dict[str, Any] | None,
+    *,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    prefer_existing_keys: bool = True,
+    include_none_max_tokens: bool = False,
+) -> dict[str, Any]:
+    merged_sampling_args = dict(sampling_args or {})
+
+    if (not prefer_existing_keys or "max_tokens" not in merged_sampling_args) and (
+        include_none_max_tokens or max_tokens is not None
+    ):
+        merged_sampling_args["max_tokens"] = max_tokens
+
+    if temperature is not None and (
+        not prefer_existing_keys or "temperature" not in merged_sampling_args
+    ):
+        merged_sampling_args["temperature"] = temperature
+
+    return merged_sampling_args
+
+
+def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
+    eval_headers_table: dict[str, str] = {}
+    raw_headers = raw.get("headers")
+    if raw_headers is not None:
+        eval_headers_table = _validate_extra_headers_value(raw_headers)
+
+    raw_header_values = raw.get("header")
+    if raw_header_values is None:
+        raw_header_values = []
+    if not isinstance(raw_header_values, list):
+        raise ValueError("'header' must be a list of 'Name: Value' strings")
+
+    eval_headers_from_list: dict[str, str] = {}
+    for header_value in raw_header_values:
+        if not isinstance(header_value, str):
+            raise ValueError(
+                f"Each 'header' entry must be a string 'Name: Value', got: {header_value!r}"
+            )
+        if ":" not in header_value:
+            raise ValueError(f"--header must be 'Name: Value', got: {header_value!r}")
+        key, value = header_value.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if not key:
+            raise ValueError("--header name cannot be empty")
+        eval_headers_from_list[key] = value
+
+    return {**eval_headers_table, **eval_headers_from_list}
+
+
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
@@ -147,7 +199,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     return defaults
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "env_id_or_config",
@@ -340,14 +392,14 @@ def main():
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
-        "--tui",
-        "-u",
+        "--fullscreen",
+        "-f",
         default=False,
         action="store_true",
-        help="Use TUI mode for live evaluation display",
+        help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
     )
     parser.add_argument(
-        "--debug",
+        "--disable-tui",
         "-d",
         default=False,
         action="store_true",
@@ -384,9 +436,27 @@ def main():
         default=None,
         help="Heartbeat URL for uptime monitoring",
     )
-    args = parser.parse_args()
+    return parser
 
-    if args.debug:  # only set up console logging in debug mode
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    if argv is None:
+        return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
+
+    if args.disable_tui and args.fullscreen:
+        raise SystemExit(
+            "error: --disable-tui and --fullscreen are mutually exclusive "
+            "(--disable-tui turns off the Rich display entirely; --fullscreen only "
+            "controls whether the Rich display uses the alternate screen buffer)."
+        )
+
+    if args.disable_tui:  # only set up console logging when TUI is disabled
         setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
@@ -561,35 +631,14 @@ def main():
             )
 
         # Merge sampling args
-        merged_sampling_args: dict = {}
-        if raw.get("sampling_args") is not None:
-            merged_sampling_args.update(raw["sampling_args"])
-        if "max_tokens" not in merged_sampling_args:
-            merged_sampling_args["max_tokens"] = raw.get("max_tokens")
-        raw_temp = raw.get("temperature")
-        if raw_temp is not None and "temperature" not in merged_sampling_args:
-            merged_sampling_args["temperature"] = raw_temp
+        merged_sampling_args = merge_sampling_args(
+            raw.get("sampling_args"),
+            max_tokens=raw.get("max_tokens"),
+            temperature=raw.get("temperature"),
+            include_none_max_tokens=True,
+        )
         # Build headers: registry < [[eval]] headers table < header list / --header
-        eval_headers_table: dict[str, str] = {}
-        raw_headers = raw.get("headers")
-        if raw_headers is not None:
-            eval_headers_table = _validate_extra_headers_value(raw_headers)
-
-        eval_headers_from_list: dict[str, str] = {}
-        for h in raw.get("header") or []:
-            if not isinstance(h, str):
-                raise ValueError(
-                    f"Each 'header' entry must be a string 'Name: Value', got: {h!r}"
-                )
-            if ":" not in h:
-                raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
-            k, v = h.split(":", 1)
-            k, v = k.strip(), v.strip()
-            if not k:
-                raise ValueError("--header name cannot be empty")
-            eval_headers_from_list[k] = v
-
-        eval_headers_merged = {**eval_headers_table, **eval_headers_from_list}
+        eval_headers_merged = build_extra_headers(raw)
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
@@ -634,6 +683,7 @@ def main():
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
+            extra_headers_from_state={"X-Session-ID": "example_id"},
         )
 
         # Backward-compatible TOML field: resume_path
@@ -688,7 +738,7 @@ def main():
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
-            debug=raw.get("debug", False),
+            disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -717,13 +767,13 @@ def main():
     eval_run_config = EvalRunConfig(
         evals=eval_configs, heartbeat_url=args.heartbeat_url
     )
-    if args.debug:
+    if args.disable_tui:
         asyncio.run(run_evaluations(eval_run_config))
     else:
         asyncio.run(
             run_evaluations_tui(
                 eval_run_config,
-                tui_mode=args.tui,
+                fullscreen=args.fullscreen,
                 compact=args.abbreviated_summary,
             )
         )

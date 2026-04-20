@@ -34,7 +34,7 @@ uv run prime-rl configs/prime-rl/wiki-search.toml
 1. Validate environment behavior before training with the canonical eval path. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 20 -r 3 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
 ```
 2. Confirm reward diversity exists at baseline.
 3. Start with conservative run length and inspect samples early.

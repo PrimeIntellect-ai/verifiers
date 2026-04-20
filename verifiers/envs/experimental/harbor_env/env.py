@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import tarfile
@@ -10,10 +12,12 @@ from datasets import Dataset
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
 
+from .mcp import HarborMCPHealthcheck, HarborMCPMixin
+
 logger = logging.getLogger(__name__)
 
 
-class HarborEnv(vf.CliAgentEnv):
+class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
     """CliAgentEnv subclass that loads Harbor-format tasks."""
 
     def __init__(
@@ -23,11 +27,19 @@ class HarborEnv(vf.CliAgentEnv):
         tasks: list[str] | None = None,
         agent_workdir: str = "/app",
         docker_image: str = "python:3.11-slim",
+        mcp_launch_commands: dict[str, str] | None = None,
+        mcp_healthcheck: HarborMCPHealthcheck | None = None,
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
+        self.mcp_launch_commands = (
+            mcp_launch_commands if mcp_launch_commands is not None else {}
+        )
+        self.mcp_healthcheck = (
+            mcp_healthcheck if mcp_healthcheck is not None else HarborMCPHealthcheck()
+        )
 
         kwargs["docker_image"] = docker_image
 
@@ -99,10 +111,14 @@ class HarborEnv(vf.CliAgentEnv):
         env_vars.setdefault("HARBOR_INSTRUCTION_PATH", "/task/instruction.md")
         if self.agent_workdir:
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
+
+        config: dict[str, Any] = (state.get("info") or {}).get("config", {}) or {}
+        for key, value in (await self.mcp_agent_env_vars(config, state)).items():
+            env_vars.setdefault(key, value)
         return env_vars
 
     async def post_sandbox_setup(self, state: vf.State) -> None:
-        """Upload Harbor task assets after sandbox creation."""
+        """Upload Harbor task assets and start declared MCP servers."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
         task_dir_str = task_info.get("task_dir", "")
         if not task_dir_str:
@@ -113,9 +129,16 @@ class HarborEnv(vf.CliAgentEnv):
         if not task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {task_dir}")
 
-        await self.prepare_harbor_task(state["sandbox_id"], task_dir)
-        state["harbor_config"] = config
+        sandbox_id = state["sandbox_id"]
+        await self.prepare_harbor_task(sandbox_id, task_dir)
         state["harbor_task_dir"] = str(task_dir)
+
+        await self.pre_mcp_setup(state)
+        await self.start_mcp_servers(sandbox_id, config, state)
+
+    async def pre_mcp_setup(self, state: vf.State) -> None:
+        """Hook for installing dependencies or uploading code needed by MCP servers."""
+        return None
 
     async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
