@@ -16,7 +16,11 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    SandboxMonitorRubric,
+    SandboxTimeouts,
+)
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -99,6 +103,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
+        timeouts: SandboxTimeouts = SandboxTimeouts(),
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
@@ -114,6 +119,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
             sandbox_creations_per_minute=sandbox_creations_per_minute,
+            timeouts=timeouts,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
@@ -366,7 +372,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Poll until background job completes, capturing output."""
         while True:
             status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job, timeout=60.0
+                sandbox_id, background_job, timeout=self.timeouts.poll
             )
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
