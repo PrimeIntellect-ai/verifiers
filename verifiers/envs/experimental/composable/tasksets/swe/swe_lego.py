@@ -36,9 +36,7 @@ def _process_example(x: dict) -> dict:
     }
 
 
-_OUTCOME_LINE_RE = re.compile(
-    r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(\S+)"
-)
+_OUTCOME_LINE_RE = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(\S+)")
 
 
 def _parse_outcomes(output: str) -> dict[str, str]:
