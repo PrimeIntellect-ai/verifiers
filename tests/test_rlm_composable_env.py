@@ -33,6 +33,7 @@ from verifiers.envs.experimental.utils.file_locks import (
 )
 from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
+    build_run_command,
     rlm_harness,
     resolve_local_checkout,
 )
@@ -165,6 +166,48 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
     assert 'test -f "$RLM_CHECKOUT_PATH/install.sh"' in script
     assert "git clone" not in script
     assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
+
+
+def test_rlm_harness_run_command_preserves_injected_openai_api_key():
+    """Regression: hardcoding `OPENAI_API_KEY=intercepted` clobbered the
+    framework-injected INTERCEPTION_SECRET, causing the interception proxy
+    to reject every request with 401. The run command must preserve any
+    already-set value and only fall back to `intercepted` when unset.
+    """
+    cmd = build_run_command()
+    assert "export OPENAI_API_KEY=intercepted" not in cmd
+    assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-intercepted}"' in cmd
+
+
+def test_rlm_harness_run_command_openai_api_key_falls_back_when_unset(tmp_path):
+    """Execute the exported shell snippet with no OPENAI_API_KEY and confirm
+    the placeholder fallback still runs (pre-auth / no-secret path)."""
+    cmd = build_run_command()
+    # Extract just the export line so we don't need a real /task or rlm binary.
+    export_line = next(
+        line
+        for line in cmd.splitlines()
+        if "OPENAI_API_KEY" in line and "export" in line
+    )
+    probe = f'{export_line}\nprintf "%s" "$OPENAI_API_KEY"\n'
+    import os as _os
+    import subprocess as _subprocess
+
+    clean_env = {k: v for k, v in _os.environ.items() if k not in ("OPENAI_API_KEY",)}
+    result = _subprocess.run(
+        ["bash", "-c", probe], capture_output=True, text=True, env=clean_env, check=True
+    )
+    assert result.stdout == "intercepted"
+
+    injected_env = dict(clean_env, OPENAI_API_KEY="real-secret")
+    result = _subprocess.run(
+        ["bash", "-c", probe],
+        capture_output=True,
+        text=True,
+        env=injected_env,
+        check=True,
+    )
+    assert result.stdout == "real-secret"
 
 
 def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
