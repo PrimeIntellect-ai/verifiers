@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import socket
+import struct
 import time
 import uuid
 from typing import Any, cast
@@ -31,6 +33,58 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
+
+# TCP_INFO sockopt (Linux). Value is 11; Python may not expose a constant.
+_TCP_INFO = getattr(socket, "TCP_INFO", 11)
+
+# linux/include/net/tcp_states.h
+_TCP_STATE_NAMES = {
+    1: "ESTABLISHED",
+    2: "SYN_SENT",
+    3: "SYN_RECV",
+    4: "FIN_WAIT1",
+    5: "FIN_WAIT2",
+    6: "TIME_WAIT",
+    7: "CLOSE",
+    8: "CLOSE_WAIT",
+    9: "LAST_ACK",
+    10: "LISTEN",
+    11: "CLOSING",
+}
+
+
+def _tcp_diag(transport: Any, peer: tuple | None = None) -> str:
+    """Return a short one-line diagnostic about the TCP socket.
+
+    Pulls peer/local addr (if not cached) plus TCP_INFO.state and
+    retransmits from the underlying socket. All lookups are best-effort —
+    failures return an empty string so the error logging path is never
+    broken by instrumentation.
+    """
+    parts: list[str] = []
+    try:
+        if peer is None and transport is not None:
+            peer = transport.get_extra_info("peername")
+        if peer:
+            parts.append(f"peer={peer[0]}:{peer[1]}")
+    except Exception:
+        pass
+    try:
+        if transport is not None:
+            sock = transport.get_extra_info("socket")
+            if sock is not None:
+                # tcp_info layout (first 6 bytes, all uint8):
+                # state, ca_state, retransmits, probes, backoff, options
+                buf = sock.getsockopt(socket.IPPROTO_TCP, _TCP_INFO, 7)
+                state, _ca, retransmits = struct.unpack("BBB", buf[:3])
+                parts.append(
+                    f"tcp_state={_TCP_STATE_NAMES.get(state, f'state{state}')}"
+                )
+                if retransmits:
+                    parts.append(f"retx={retransmits}")
+    except Exception:
+        pass
+    return " ".join(parts)
 
 
 class StreamInterrupted(InfraError):
@@ -230,6 +284,13 @@ class InterceptionServer:
         await response.prepare(http_request)
 
         start = time.monotonic()
+        # Cache peer address now — at error time the socket may already be
+        # closed and peername becomes None.
+        peer: tuple | None = None
+        try:
+            peer = http_request.transport.get_extra_info("peername")
+        except Exception:
+            pass
         # Reuse a single get() task across keepalive cycles instead of
         # recreating it each iteration. ``asyncio.wait_for`` on Python
         # 3.10/3.11 has a race where a timeout cancels an inner task that
@@ -252,15 +313,16 @@ class InterceptionServer:
                         await response.write(b": keepalive\n\n")
                     except Exception as e:
                         waited_s = time.monotonic() - start
+                        diag = _tcp_diag(http_request.transport, peer)
                         logger.debug(
                             f"[{rollout_id}] Streaming error during keepalive "
-                            f"after {waited_s:.1f}s: {e}"
+                            f"after {waited_s:.1f}s {diag}: {e}"
                         )
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {waited_s:.1f}s: "
-                                f"{type(e).__name__}: {e}"
+                                f"keepalive write failed after {waited_s:.1f}s "
+                                f"{diag}: {type(e).__name__}: {e}"
                             ),
                         )
                         return response
@@ -280,12 +342,15 @@ class InterceptionServer:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             waited_s = time.monotonic() - start
-            logger.debug(f"[{rollout_id}] Streaming error after {waited_s:.1f}s: {e}")
+            diag = _tcp_diag(http_request.transport, peer)
+            logger.debug(
+                f"[{rollout_id}] Streaming error after {waited_s:.1f}s {diag}: {e}"
+            )
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {waited_s:.1f}s: "
-                    f"{type(e).__name__}: {e}"
+                    f"stream write failed after {waited_s:.1f}s "
+                    f"{diag}: {type(e).__name__}: {e}"
                 ),
             )
             return response
