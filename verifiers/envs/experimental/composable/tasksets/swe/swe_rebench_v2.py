@@ -227,6 +227,7 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         dataset_name: str = DATASET_NAME,
         split: str = "train",
         filter_repos: list[str] | None = None,
+        filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
@@ -242,6 +243,7 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         super().__init__(
             dataset=self._build_dataset(),
             name=f"swe/swerebench-v2{suffix}",
+            filter_fn=filter_fn,
         )
 
     def _build_dataset(self) -> Any:
