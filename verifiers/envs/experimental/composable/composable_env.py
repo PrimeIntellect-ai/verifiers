@@ -219,7 +219,7 @@ class ComposableEnv(CliAgentEnv):
             dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
         mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
         await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
         )
 
     async def _upload_harness_inputs(self, sandbox_id: str, state: State) -> None:
@@ -312,7 +312,7 @@ class ComposableEnv(CliAgentEnv):
                 f"mkdir -p {dest_parent} && "
                 f"tar -xzf {quoted_remote_tar} -C / && "
                 f"rm -f {quoted_remote_tar}",
-                timeout=60,
+                timeout=self.timeouts.extract,
             )
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")

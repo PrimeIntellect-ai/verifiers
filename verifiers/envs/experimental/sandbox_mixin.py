@@ -319,9 +319,10 @@ class SandboxMixin:
         self,
         sandbox_id: str,
         remote_path: str,
-        timeout: int = 10,
+        timeout: float | None = None,
     ) -> str | None:
         """Read a file from the sandbox, returning its contents or None on failure."""
+        timeout = self.timeouts.read_file if timeout is None else timeout
         try:
             result = await self.sandbox_client.read_file(
                 sandbox_id, remote_path, timeout=timeout
@@ -375,7 +376,7 @@ class SandboxMixin:
         result = await self.sandbox_client.execute_command(
             sandbox_id,
             extract_cmd,
-            timeout=60,
+            timeout=self.timeouts.extract,
         )
         if result.exit_code != 0:
             raise vf.SandboxError(

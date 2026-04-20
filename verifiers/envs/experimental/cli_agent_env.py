@@ -372,7 +372,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Poll until background job completes, capturing output."""
         while True:
             status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job, timeout=60.0
+                sandbox_id, background_job, timeout=self.timeouts.poll
             )
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
