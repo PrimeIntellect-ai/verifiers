@@ -141,6 +141,36 @@ def test_get_env_eval_defaults_for_package_module(tmp_path: Path, monkeypatch):
     assert defaults == {"num_examples": 20, "rollouts_per_example": 6}
 
 
+def test_get_env_eval_defaults_reads_sampling_defaults(tmp_path: Path, monkeypatch):
+    module_name = f"sampling_defaults_env_{time.time_ns()}"
+    env_id = module_name.replace("_", "-")
+    package_dir = tmp_path / module_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "pyproject.toml").write_text(
+        "[tool.verifiers.eval]\n"
+        "num_examples = 20\n"
+        "rollouts_per_example = 6\n"
+        "max_tokens = 1024\n"
+        "temperature = 0.25\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        defaults = vf_eval.get_env_eval_defaults(env_id)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert defaults == {
+        "num_examples": 20,
+        "rollouts_per_example": 6,
+        "max_tokens": 1024,
+        "temperature": 0.25,
+    }
+
+
 def test_get_env_eval_defaults_for_single_file_module(tmp_path: Path, monkeypatch):
     module_name = f"single_file_env_{time.time_ns()}"
     env_id = module_name.replace("_", "-")
@@ -212,6 +242,25 @@ def test_cli_no_sampling_args_uses_flags(monkeypatch, run_cli):
     sa = captured["sampling_args"]
     assert sa["max_tokens"] == 128
     assert sa["temperature"] == 0.5
+
+
+def test_cli_uses_env_sampling_defaults_when_flags_unset(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"max_tokens": 512, "temperature": 0.2},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "max_tokens": None,
+            "temperature": None,
+        },
+    )
+
+    sa = captured["sampling_args"]
+    assert sa["max_tokens"] == 512
+    assert sa["temperature"] == 0.2
 
 
 def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):

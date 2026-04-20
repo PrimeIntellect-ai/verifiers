@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
 IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
 EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
+WHEEL_SMOKE_TIMEOUT = 900  # 15 minutes for wheel build + git dependency install
 
 SKIPPED_ENVS = [
     # Requires EXA_API_KEY environment variable
@@ -88,6 +90,71 @@ def test_pyproject_has_metadata(env_dir: Path):
 def test_readme_exists(env_dir: Path):
     """Test that the README.md file exists for the given environment directory."""
     assert (env_dir / "README.md").exists(), "README.md does not exist"
+
+
+@pytest.mark.slow
+def test_gpqa_debate_built_wheel_imports_and_loads_from_tmp_venv():
+    """Build gpqa-debate as a wheel and smoke-load it in a fresh /tmp venv."""
+    repo_root = Path(__file__).parent.parent
+    env_dir = repo_root / "environments" / "gpqa_debate"
+
+    with tempfile.TemporaryDirectory(prefix="gpqa_debate_wheel_", dir="/tmp") as tmp:
+        tmp_dir = Path(tmp)
+        dist_dir = tmp_dir / "dist"
+        venv_dir = tmp_dir / ".venv"
+
+        build = subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(dist_dir), str(env_dir)],
+            capture_output=True,
+            text=True,
+            timeout=WHEEL_SMOKE_TIMEOUT,
+        )
+        assert build.returncode == 0, (
+            f"Failed to build gpqa-debate wheel: {build.stderr}"
+        )
+
+        wheels = list(dist_dir.glob("gpqa_debate-*.whl"))
+        assert len(wheels) == 1, f"Expected one gpqa-debate wheel, got {wheels}"
+
+        venv = subprocess.run(
+            ["uv", "venv", "--clear", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            timeout=INSTALL_TIMEOUT,
+        )
+        assert venv.returncode == 0, f"Failed to create fresh venv: {venv.stderr}"
+
+        python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        install = subprocess.run(
+            ["uv", "pip", "install", "--python", str(python), str(wheels[0])],
+            capture_output=True,
+            text=True,
+            timeout=WHEEL_SMOKE_TIMEOUT,
+        )
+        assert install.returncode == 0, (
+            f"Failed to install gpqa-debate wheel into fresh venv:\n"
+            f"STDOUT:\n{install.stdout}\nSTDERR:\n{install.stderr}"
+        )
+
+        smoke = subprocess.run(
+            [
+                str(python),
+                "-c",
+                (
+                    "import gpqa_debate; "
+                    "import verifiers as vf; "
+                    "env = vf.load_environment('gpqa_debate'); "
+                    "assert env is not None"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=LOAD_TIMEOUT,
+        )
+        assert smoke.returncode == 0, (
+            f"Failed gpqa-debate import/load smoke:\n"
+            f"STDOUT:\n{smoke.stdout}\nSTDERR:\n{smoke.stderr}"
+        )
 
 
 @pytest.mark.slow

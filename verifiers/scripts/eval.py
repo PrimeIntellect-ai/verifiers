@@ -145,7 +145,7 @@ def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
-    Returns dict with 'num_examples' and 'rollouts_per_example' keys if found,
+    Returns dict with supported [tool.verifiers.eval] defaults if found,
     otherwise returns empty dict. All errors are silently handled.
     """
     defaults: dict[str, Any] = {}
@@ -184,6 +184,10 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
             defaults["num_examples"] = eval_config["num_examples"]
         if "rollouts_per_example" in eval_config:
             defaults["rollouts_per_example"] = eval_config["rollouts_per_example"]
+        if "max_tokens" in eval_config:
+            defaults["max_tokens"] = eval_config["max_tokens"]
+        if "temperature" in eval_config:
+            defaults["temperature"] = eval_config["temperature"]
 
         if defaults:
             logger.debug(
@@ -623,11 +627,24 @@ def main(argv: list[str] | None = None):
                 else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
             )
 
+        raw_max_tokens = raw.get("max_tokens")
+        raw_temperature = raw.get("temperature")
+        max_tokens = (
+            raw_max_tokens
+            if raw_max_tokens is not None
+            else env_defaults.get("max_tokens")
+        )
+        temperature = (
+            raw_temperature
+            if raw_temperature is not None
+            else env_defaults.get("temperature")
+        )
+
         # Merge sampling args
         merged_sampling_args = merge_sampling_args(
             raw.get("sampling_args"),
-            max_tokens=raw.get("max_tokens"),
-            temperature=raw.get("temperature"),
+            max_tokens=max_tokens,
+            temperature=temperature,
             include_none_max_tokens=True,
         )
         # Build headers: registry < [[eval]] headers table < header list / --header

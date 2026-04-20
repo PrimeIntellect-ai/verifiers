@@ -38,6 +38,7 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
 
     prompts_ref        str      built-in name or /path/to/pack.yaml   "selfplay"
     subset             str      gpqa_diamond | gpqa_main              "gpqa_diamond"
+    num_train_examples int      dataset slice (-1 = all)              -1
     num_eval_examples  int      dataset slice (-1 = all)              -1
     seed               int      choice-shuffling seed                 0
     schedule           list     override SCHEDULE; list of dicts      DEFAULT_SCHEDULE
@@ -58,12 +59,13 @@ import random
 from typing import Any
 
 from datasets import Dataset, load_dataset
-from openai import AsyncOpenAI
 
+import verifiers as vf
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
 )
 from verifiers.envs.debate_env import DebateEnv, load_environment as _debate_load_env
+from verifiers.types import ClientConfig
 
 
 LETTERS = ("A", "B", "C", "D")
@@ -110,6 +112,7 @@ def _format_row(row: dict, rng: random.Random) -> dict:
 
 
 def _build_dataset(subset: str, n: int, seed: int) -> Dataset:
+    vf.ensure_keys(["HF_TOKEN"])
     raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
     rng = random.Random(seed)
     rows = raw if n == -1 else raw[:n]
@@ -130,11 +133,11 @@ class _OpenRouterProviderClient(OpenAIChatCompletionsClient):
 
     def __init__(
         self,
-        openai_client: AsyncOpenAI,
+        client_config: ClientConfig,
         providers: list[str] | None,
         allow_fallbacks: bool,
     ) -> None:
-        super().__init__(openai_client)
+        super().__init__(client_config)
         self._providers = providers
         self._allow_fallbacks = allow_fallbacks
 
@@ -164,7 +167,10 @@ def _make_openrouter_client(
             "provider pinning in gpqa_debate"
         )
     return _OpenRouterProviderClient(
-        AsyncOpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1"),
+        ClientConfig(
+            api_key_var="OPENROUTER_API_KEY",
+            api_base_url="https://openrouter.ai/api/v1",
+        ),
         providers=providers,
         allow_fallbacks=allow_fallbacks,
     )
@@ -178,6 +184,7 @@ def _make_openrouter_client(
 def load_environment(
     prompts_ref: str = "selfplay",
     subset: str = "gpqa_diamond",
+    num_train_examples: int = -1,
     num_eval_examples: int = -1,
     seed: int = 0,
     schedule: list[dict] | None = None,
@@ -190,6 +197,13 @@ def load_environment(
     **extra: Any,
 ) -> DebateEnv:
     """vf-eval entry point. See module docstring for env_args schema."""
+
+    def build_dataset() -> Dataset:
+        return _build_dataset(subset, num_train_examples, seed)
+
+    def build_eval_dataset() -> Dataset:
+        return _build_dataset(subset, num_eval_examples, seed + 1)
+
     # Build agent_overrides only for the dimensions the caller specified.
     # If no per-agent overrides are given, vf-eval's top-level (model,
     # client) flows through unchanged.
@@ -218,6 +232,7 @@ def load_environment(
         truth_member=truth_member,
         prompts_ref=prompts_ref,
         agent_overrides=agent_overrides or None,
-        eval_dataset=_build_dataset(subset, num_eval_examples, seed),
+        dataset=build_dataset,
+        eval_dataset=build_eval_dataset,
         **extra,
     )

@@ -1,11 +1,12 @@
 [project]
-name = "gpqa_debate"
+name = "gpqa-debate"
 version = "0.1.0"
 description = "GPQA Diamond / Main under a two-debater + judge protocol"
+readme = "README.md"
 tags = ["gpqa", "debate", "multi-agent", "eval"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.12",
+    "verifiers @ git+https://github.com/joanvelja/verifiers.git@44f875e1560669226a579dcdbdae749d333695a1",
     "datasets>=2.14",
 ]
 
@@ -14,7 +15,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["gpqa_debate.py", "pyproject.toml"]
+include = ["gpqa_debate.py", "pyproject.toml", "README.md"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.verifiers.eval]
 num_examples = 50
