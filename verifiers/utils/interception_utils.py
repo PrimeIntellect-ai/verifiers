@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import socket
 import struct
 import time
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
+# Sample the server-side TCP_INFO state every N seconds during a streaming
+# response so we can see the socket transition (e.g. to CLOSE_WAIT) before
+# the write that surfaces the failure. 0 disables.
+TCP_SAMPLE_INTERVAL_SECONDS = float(os.environ.get("VF_TCP_SAMPLE_INTERVAL_SECONDS", "2"))
 
 # TCP_INFO sockopt (Linux). Value is 11; Python may not expose a constant.
 _TCP_INFO = getattr(socket, "TCP_INFO", 11)
@@ -51,6 +56,53 @@ _TCP_STATE_NAMES = {
     10: "LISTEN",
     11: "CLOSING",
 }
+
+
+def _read_tcp_state(transport: Any) -> tuple[int | None, int]:
+    """Return (state_id, retransmits) from TCP_INFO, or (None, 0) if unavailable."""
+    try:
+        if transport is None:
+            return (None, 0)
+        sock = transport.get_extra_info("socket")
+        if sock is None:
+            return (None, 0)
+        buf = sock.getsockopt(socket.IPPROTO_TCP, _TCP_INFO, 7)
+        state, _ca, retx = struct.unpack("BBB", buf[:3])
+        return (int(state), int(retx))
+    except Exception:
+        return (None, 0)
+
+
+async def _sample_tcp_state(
+    transport: Any,
+    rollout_id: str,
+    start: float,
+    interval: float,
+) -> None:
+    """Periodically sample TCP_INFO on the stream socket; log state transitions.
+
+    Runs as a side-task alongside the streaming-response write loop, so when
+    a cut happens we have an explicit trace of when the socket left
+    ESTABLISHED (e.g. entered CLOSE_WAIT = peer sent FIN first). Cancelled
+    when the main loop exits.
+    """
+    last_state: int | None = None
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        state, retx = _read_tcp_state(transport)
+        if state is None:
+            continue
+        if state != last_state:
+            elapsed = time.monotonic() - start
+            prev = _TCP_STATE_NAMES.get(last_state, f"state{last_state}") if last_state is not None else "init"
+            curr = _TCP_STATE_NAMES.get(state, f"state{state}")
+            logger.debug(
+                f"[{rollout_id}] tcp_state {prev} -> {curr} at {elapsed:.1f}s (retx={retx})"
+            )
+            last_state = state
 
 
 def _tcp_diag(transport: Any, peer: tuple | None = None) -> str:
@@ -291,6 +343,18 @@ class InterceptionServer:
             peer = http_request.transport.get_extra_info("peername")
         except Exception:
             pass
+        # Start the periodic TCP-state sampler (logs state transitions during
+        # the stream so we catch CLOSE_WAIT / FIN_WAIT before the write RST).
+        tcp_sampler: asyncio.Task | None = None
+        if TCP_SAMPLE_INTERVAL_SECONDS > 0:
+            tcp_sampler = asyncio.create_task(
+                _sample_tcp_state(
+                    http_request.transport,
+                    rollout_id,
+                    start,
+                    TCP_SAMPLE_INTERVAL_SECONDS,
+                )
+            )
         # Reuse a single get() task across keepalive cycles instead of
         # recreating it each iteration. ``asyncio.wait_for`` on Python
         # 3.10/3.11 has a race where a timeout cancels an inner task that
@@ -357,6 +421,8 @@ class InterceptionServer:
         finally:
             if get_task is not None and not get_task.done():
                 get_task.cancel()
+            if tcp_sampler is not None and not tcp_sampler.done():
+                tcp_sampler.cancel()
 
         try:
             await response_future
