@@ -348,7 +348,8 @@ class SWELegoTaskSet(SandboxTaskSet):
         # where an agent weakens F2P assertions mid-rollout. Agent source
         # edits are untouched — only test-file bits get canonicalized.
         test_patch: str = info.get("test_patch") or ""
-        if test_patch.strip():
+        base_commit: str = info.get("base_commit") or ""
+        if test_patch.strip() and base_commit:
 
             async def _apply(
                 sc: Any, sid: str, wd: str, patch: str, label: str
@@ -357,7 +358,12 @@ class SWELegoTaskSet(SandboxTaskSet):
                 await self._apply_patch_file(sc, sid, patch, label)
 
             await revert_and_reapply_test_patch(
-                sandbox_client, sandbox_id, workdir, test_patch, apply_patch=_apply
+                sandbox_client,
+                sandbox_id,
+                workdir,
+                test_patch,
+                base_commit,
+                apply_patch=_apply,
             )
 
         fail_to_pass: list[str] = info.get("FAIL_TO_PASS") or []

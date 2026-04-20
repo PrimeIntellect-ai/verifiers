@@ -13,9 +13,13 @@ the FAIL_TO_PASS assertions mid-rollout and still score reward=1. The
 three-step dance in :func:`revert_and_reapply_test_patch` closes that
 loophole by:
 
-1. ``git checkout HEAD -- <path>`` for every file the ``test_patch``
-   *modifies* (i.e. the diff source is not ``/dev/null``) — wipes agent
-   edits to those files.
+1. ``git checkout <base_commit> -- <path>`` for every file the
+   ``test_patch`` *modifies* (i.e. the diff source is not ``/dev/null``)
+   — wipes agent edits to those files. Uses ``base_commit`` (threaded
+   in from the row) rather than ``HEAD``: if the agent ran
+   ``git add && git commit`` mid-rollout, ``HEAD`` points at the agent's
+   commit (potentially with weakened tests), and a ``git checkout HEAD``
+   would restore the tampered version.
 2. ``rm -f <path>`` for every file the ``test_patch`` *adds* (diff source
    ``/dev/null``) — wipes the agent's version so the re-apply doesn't
    conflict.
@@ -154,18 +158,27 @@ async def revert_and_reapply_test_patch(
     sandbox_id: str,
     workdir: str,
     test_patch: str,
+    base_commit: str,
     apply_patch: ApplyPatchFn | None = None,
 ) -> None:
     """Revert any agent edits to test files, then re-apply ``test_patch``.
 
     See module docstring for the rationale. No-op if ``test_patch`` is
-    empty or whitespace-only. The revert steps (``git checkout HEAD --``
-    and ``rm -f``) are idempotent; the re-apply is delegated to
-    ``apply_patch`` so the taskset's native ``git apply`` flags are used
-    (swe_lego uses ``--whitespace=fix``, swe_rebench_v2 uses the full
-    ``-v --3way --recount --ignore-space-change --whitespace=nowarn``
-    set). If ``apply_patch`` is None, falls back to a plain
-    ``git apply --whitespace=fix``.
+    empty or whitespace-only. The revert steps (``git checkout
+    <base_commit> --`` and ``rm -f``) are idempotent; the re-apply is
+    delegated to ``apply_patch`` so the taskset's native ``git apply``
+    flags are used (swe_lego uses ``--whitespace=fix``, swe_rebench_v2
+    uses the full ``-v --3way --recount --ignore-space-change
+    --whitespace=nowarn`` set). If ``apply_patch`` is None, falls back
+    to a plain ``git apply --whitespace=fix``.
+
+    ``base_commit`` is threaded in (not derived from ``HEAD``) because
+    an agent that runs ``git add && git commit`` mid-rollout moves
+    ``HEAD`` to their own commit — a ``git checkout HEAD -- <test>``
+    would then restore the agent's (potentially weakened) test version,
+    reopening the reward-hack loophole this function exists to close.
+    Upstream SWE-bench uses ``{base_commit}`` for the same reason (see
+    ``swebench/harness/test_spec/python.py``).
     """
     if not test_patch or not test_patch.strip():
         return
@@ -177,15 +190,16 @@ async def revert_and_reapply_test_patch(
         quoted = " ".join(_shell_quote(p) for p in modified)
         result = await sandbox_client.execute_command(
             sandbox_id,
-            f"git checkout HEAD -- {quoted}",
+            f"git checkout {_shell_quote(base_commit)} -- {quoted}",
             working_dir=workdir,
             timeout=30,
         )
         if result.exit_code != 0:
             stderr = (getattr(result, "stderr", "") or "")[:500]
             logger.warning(
-                "[%s] revert_and_reapply: git checkout HEAD failed (exit=%s) stderr=%r",
+                "[%s] revert_and_reapply: git checkout %s failed (exit=%s) stderr=%r",
                 sandbox_id,
+                base_commit,
                 result.exit_code,
                 stderr,
             )

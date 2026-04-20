@@ -362,18 +362,23 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         workdir = _repo_workdir(info["repo"])
 
         # Canonical SWE-bench grading dance: revert any agent edits to
-        # files touched by ``test_patch`` (``git checkout HEAD -- <path>``
-        # for pre-existing files, ``rm -f <path>`` for newly-added ones),
-        # then re-apply ``test_patch`` cleanly. Closes the reward-hack
-        # where an agent weakens F2P assertions mid-rollout. Agent source
-        # edits are untouched — only test-file bits get canonicalized.
+        # files touched by ``test_patch`` (``git checkout <base_commit>
+        # -- <path>`` for pre-existing files, ``rm -f <path>`` for
+        # newly-added ones), then re-apply ``test_patch`` cleanly.
+        # Closes the reward-hack where an agent weakens F2P assertions
+        # mid-rollout. Agent source edits are untouched — only test-file
+        # bits get canonicalized. Uses ``base_commit`` (not ``HEAD``) so
+        # a ``git commit`` by the agent can't shift the checkout target
+        # onto their tampered snapshot.
         test_patch: str = info.get("test_patch") or ""
-        if test_patch.strip():
+        base_commit: str = info.get("base_commit") or ""
+        if test_patch.strip() and base_commit:
             await revert_and_reapply_test_patch(
                 sandbox_client,
                 sandbox_id,
                 workdir,
                 test_patch,
+                base_commit,
                 apply_patch=self._apply_patch_file,
             )
 
