@@ -40,6 +40,9 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 from verifiers.envs.experimental.composable.tasksets.swe import (
     swe_rebench_v2_log_parsers as _lp,
 )
+from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
+    revert_and_reapply_test_patch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +360,23 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         cfg = _extract_install_config(info)
         test_cmds = _normalize_test_cmds(cfg.get("test_cmd"))
         workdir = _repo_workdir(info["repo"])
+
+        # Canonical SWE-bench grading dance: revert any agent edits to
+        # files touched by ``test_patch`` (``git checkout HEAD -- <path>``
+        # for pre-existing files, ``rm -f <path>`` for newly-added ones),
+        # then re-apply ``test_patch`` cleanly. Closes the reward-hack
+        # where an agent weakens F2P assertions mid-rollout. Agent source
+        # edits are untouched — only test-file bits get canonicalized.
+        test_patch: str = info.get("test_patch") or ""
+        if test_patch.strip():
+            await revert_and_reapply_test_patch(
+                sandbox_client,
+                sandbox_id,
+                workdir,
+                test_patch,
+                apply_patch=self._apply_patch_file,
+            )
+
         eval_script = _build_eval_script(test_cmds, workdir)
 
         with tempfile.NamedTemporaryFile(suffix=".sh", mode="w", delete=False) as f:
