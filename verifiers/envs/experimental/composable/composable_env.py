@@ -50,6 +50,7 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
+from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
 
@@ -330,7 +331,8 @@ class ComposableEnv(CliAgentEnv):
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
-                tar.add(local_source, arcname=arcname)
+                with shared_path_lock(local_source, suffix=".upload.lock"):
+                    tar.add(local_source, arcname=arcname)
             else:
                 with resources.as_file(local_source) as local_path:
                     tar.add(local_path, arcname=arcname)
