@@ -181,9 +181,20 @@ class EnvGroup(vf.Environment):
             if env_dataset is not None:
                 if isinstance(env, EnvGroup):
                     # Preserve inner task names so routing works through both levels.
-                    # Register each inner task name pointing to the inner EnvGroup.
+                    # Register each inner task name pointing to the inner EnvGroup,
+                    # and remove the stale outer name to avoid misleading lookups.
                     for inner_name in env.env_map:
+                        if (
+                            inner_name in self.env_map
+                            and self.env_map[inner_name] is not env
+                        ):
+                            raise ValueError(
+                                f"Inner task name '{inner_name}' from nested EnvGroup "
+                                f"'{name}' conflicts with an existing task name in the "
+                                f"outer EnvGroup. Use unique task names across all levels."
+                            )
                         self.env_map[inner_name] = env
+                    self.env_map.pop(name, None)
                 else:
                     # override task column to use env_name for routing
                     if "task" in env_dataset.column_names:
@@ -195,7 +206,17 @@ class EnvGroup(vf.Environment):
             if env_eval_dataset is not None:
                 if isinstance(env, EnvGroup):
                     for inner_name in env.env_map:
+                        if (
+                            inner_name in self.env_map
+                            and self.env_map[inner_name] is not env
+                        ):
+                            raise ValueError(
+                                f"Inner task name '{inner_name}' from nested EnvGroup "
+                                f"'{name}' conflicts with an existing task name in the "
+                                f"outer EnvGroup. Use unique task names across all levels."
+                            )
                         self.env_map[inner_name] = env
+                    self.env_map.pop(name, None)
                 else:
                     # override task column to use env_name for routing
                     if "task" in env_eval_dataset.column_names:
