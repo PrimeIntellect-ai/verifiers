@@ -240,7 +240,7 @@ class InterceptionServer:
         try:
             while True:
                 if get_task is None:
-                    get_task = asyncio.ensure_future(chunk_queue.get())
+                    get_task = asyncio.create_task(chunk_queue.get())
                 done, _ = await asyncio.wait(
                     {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
                 )
