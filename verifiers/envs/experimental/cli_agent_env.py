@@ -248,8 +248,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         await self.create_sandbox(state, sandbox_request)
 
-        # Register rollout for interception
-        request_id_queue = interception_server.register_rollout(rollout_id)
+        # Register rollout for interception. Pass state so the server can
+        # surface stream-interruption errors (e.g. tunnel dies mid-SSE) back
+        # onto the rollout; without this the agent sees a truncated stream
+        # and often exits with code 0 and an empty trajectory.
+        request_id_queue = interception_server.register_rollout(rollout_id, state=state)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -374,17 +377,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    stderr_snippet = (status.stderr or "")[:500]
+                    stderr_full = status.stderr or ""
                     num_turns = len(state.get("trajectory", []))
                     if num_turns == 0:
                         error = AgentError(
                             f"Agent crashed before any LLM call "
-                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                            f"(exit_code={status.exit_code}): {stderr_full}"
                         )
                     else:
                         error = AgentError(
                             f"Agent crashed after {num_turns} turn(s) "
-                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                            f"(exit_code={status.exit_code}): {stderr_full}"
                         )
                     state["error"] = error
                     self.logger.error(str(error))
