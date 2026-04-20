@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,8 @@ from verifiers.envs.experimental.utils.file_locks import (
 
 DEFAULT_GIT_CHECKOUT_CACHE_ROOT = Path.home() / ".cache" / "verifiers" / "git-checkouts"
 _FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+logger = logging.getLogger(__name__)
 
 
 def validate_git_checkout(
@@ -161,8 +164,7 @@ def _resolve_local_named_ref(mirror_dir: Path, ref: str) -> str | None:
     for candidate in (
         f"refs/heads/{ref}",
         f"refs/remotes/origin/{ref}",
-        f"refs/tags/{ref}^{{}}",
-        f"refs/tags/{ref}",
+        f"refs/tags/{ref}^{{commit}}",
     ):
         result = subprocess.run(
             ["git", "--git-dir", str(mirror_dir), "rev-parse", "--verify", candidate],
@@ -271,6 +273,10 @@ def _materialize_worktree(
 
     checkout_dir.parent.mkdir(parents=True, exist_ok=True)
     _run_git(
+        ["git", "--git-dir", str(mirror_dir), "worktree", "prune"],
+        failure=f"Failed to prune stale worktree metadata for {mirror_dir}",
+    )
+    _run_git(
         [
             "git",
             "--git-dir",
@@ -314,11 +320,17 @@ def _prune_stale_worktrees(repo_cache_dir: Path, keep_checkout: Path) -> None:
                 )
         except BlockingIOError:
             continue
+        except RuntimeError as exc:
+            logger.warning(str(exc))
+            continue
         sibling_lock_path(candidate, ".upload.lock").unlink(missing_ok=True)
-    _run_git(
-        ["git", "--git-dir", str(mirror_dir), "worktree", "prune"],
-        failure=f"Failed to prune stale worktree metadata for {mirror_dir}",
-    )
+    try:
+        _run_git(
+            ["git", "--git-dir", str(mirror_dir), "worktree", "prune"],
+            failure=f"Failed to prune stale worktree metadata for {mirror_dir}",
+        )
+    except RuntimeError as exc:
+        logger.warning(str(exc))
 
 
 def resolve_git_checkout(
