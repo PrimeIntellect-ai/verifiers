@@ -176,17 +176,30 @@ class SWELegoTaskSet(SandboxTaskSet):
         dataset_name: str = "PrimeIntellect/SWE-Lego-Real-Data",
         split: str = "resolved",
         filter_repos: list[str] | None = None,
+        filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['repo'] == 'googleapis/python-bigquery'"``).
+        """
         self.dataset_name = dataset_name
         self.split = split
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name="swe/swelego")
+        super().__init__(
+            dataset=self._build_dataset(),
+            name="swe/swelego",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         _kw = dict(
