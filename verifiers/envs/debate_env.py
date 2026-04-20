@@ -107,7 +107,82 @@ class DebateEnv(MultiAgentEnv):
                     f"  in schedule only : {sorted(slot_agents - member_set)}"
                 )
 
+        # Cross-check 3: schedule × prompts coverage. Every (member_id,
+        # phase) in the schedule needs a renderable template. Two failure
+        # modes if not — the LOUD one (system missing → KeyError on the
+        # first turn, ~minutes of wasted compute) and the SILENT one
+        # (question/user missing → empty prompt, model gets a malformed
+        # turn with no upstream signal). Catch both at init so the
+        # operator hits the error before a rollout completes.
+        # Dynamic SlotProgram implementations are exempt — their agent ×
+        # phase set isn't enumerable at init time.
+        if isinstance(schedule, StaticSchedule):
+            self._validate_prompts_cover_schedule(prompts, schedule)
+
         self.prompts = prompts
+
+    @staticmethod
+    def _validate_prompts_cover_schedule(
+        prompts: DebatePrompts, schedule: StaticSchedule
+    ) -> None:
+        """Fail loud at init if the prompts pack doesn't cover every
+        (member_id, phase) pair the schedule will hit. Lookups mirror
+        DebatePrompts.render_{system,question,instruction} so the check
+        rejects exactly what would silently break or KeyError later.
+        """
+        missing_system: set[str] = set()
+        missing_question: set[str] = set()
+        # (member_id, phase) pairs with no user template AND no default.
+        missing_user: set[tuple[str, str]] = set()
+        for slot in schedule._slots:
+            for member_id in slot.agents:
+                phase = slot.phase
+                if member_id not in prompts.system:
+                    missing_system.add(member_id)
+                if member_id not in prompts.question:
+                    missing_question.add(member_id)
+                user_block = prompts.user.get(member_id, {})
+                if phase not in user_block and "default" not in user_block:
+                    missing_user.add((member_id, phase))
+        if not (missing_system or missing_question or missing_user):
+            return
+
+        lines = [
+            f"DebateEnv prompts pack does not cover the schedule "
+            f"(pack source: {prompts.source_ref!r}).",
+        ]
+        if missing_system:
+            lines.append(
+                f"  system: missing for member(s) {sorted(missing_system)} "
+                f"— DebatePrompts.render_system would KeyError on the "
+                f"first turn for any of these"
+            )
+        if missing_question:
+            lines.append(
+                f"  question: missing for member(s) "
+                f"{sorted(missing_question)} — turn would render with "
+                f"NO question (silent failure: model gets prompt with "
+                f"system + transcript only)"
+            )
+        if missing_user:
+            by_member: dict[str, list[str]] = {}
+            for m, p in missing_user:
+                by_member.setdefault(m, []).append(p)
+            for m, phases in sorted(by_member.items()):
+                lines.append(
+                    f"  user[{m!r}]: missing phase(s) {sorted(set(phases))} "
+                    f"AND no 'default' fallback — turn would render with "
+                    f"NO instruction (silent failure: model has to infer "
+                    f"the task from system+transcript)"
+                )
+        lines.append(f"  pack has system keys: {sorted(prompts.system)}")
+        lines.append(f"  pack has user keys:   {sorted(prompts.user)}")
+        lines.append(
+            "Add the missing templates to the YAML pack, or set a "
+            "'default' phase block under the relevant user[member_id] "
+            "to opt into a silent-no-instruction render explicitly."
+        )
+        raise ValueError("\n".join(lines))
 
     def _member_round_count(self, member_id: str) -> int:
         """Count schedule slots where ``member_id`` participates as agent.
