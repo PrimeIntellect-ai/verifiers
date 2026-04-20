@@ -47,7 +47,6 @@ from pathlib import Path
 from typing import Any
 
 import verifiers as vf
-from verifiers.decorators import cleanup
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
@@ -57,15 +56,10 @@ from verifiers.types import State
 logger = logging.getLogger(__name__)
 
 
-class HarnessMetricsRubric(vf.Rubric):
-    async def score_rollout(self, state: State) -> None:
-        return
-
-    async def score_group(self, states: list[State]) -> None:
-        return
-
-    @cleanup
-    async def merge_harness_metrics(self, state: State) -> None:
+class HarnessMetricsRubricGroup(vf.RubricGroup):
+    async def cleanup(self, state: State) -> None:
+        for rubric in self.rubrics:
+            await rubric.cleanup(state)
         harness_metrics = state.get("_harness_metrics")
         if not isinstance(harness_metrics, dict):
             return
@@ -112,7 +106,12 @@ class ComposableEnv(CliAgentEnv):
         if harness.tool_names:
             self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
         if harness.metrics_path:
-            self.add_rubric(HarnessMetricsRubric())
+            rubrics = (
+                list(self.rubric.rubrics)
+                if isinstance(self.rubric, vf.RubricGroup)
+                else [self.rubric]
+            )
+            self.rubric = HarnessMetricsRubricGroup(rubrics=rubrics)
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
