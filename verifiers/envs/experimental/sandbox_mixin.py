@@ -4,6 +4,7 @@ import logging
 import os
 import tarfile
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
@@ -43,6 +44,22 @@ class SandboxNotReadyError(vf.SandboxError): ...
 
 
 class SandboxSetupError(vf.SandboxError): ...
+
+
+@dataclass(frozen=True)
+class SandboxTimeouts:
+    """Per-operation HTTP timeouts (seconds) for sandbox client calls.
+
+    Distinct from ``SandboxSpec.timeout_minutes`` (container lifetime)
+    and from ``MultiTurnEnv.timeout_seconds`` (wall-clock rollout cap).
+    These control individual httpx request-level timeouts against the
+    sandbox gateway; override when your sandbox is slow or far away.
+    """
+
+    read_file: float = 10.0
+    extract: float = 60.0
+    poll: float = 60.0
+    mkdir: float = 10.0
 
 
 class SandboxMonitorRubric(vf.Rubric):
@@ -100,6 +117,7 @@ class SandboxMixin:
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
     sandbox_creation_rate_limiter: Optional[AsyncLimiter]
+    timeouts: SandboxTimeouts
     with_retry: Callable
 
     def register_sandbox(self, sandbox_id: str) -> None:
@@ -122,8 +140,18 @@ class SandboxMixin:
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
+        timeouts: SandboxTimeouts = SandboxTimeouts(),
     ):
-        """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
+        """Initialize sandbox client and retry wrapper. Call from subclass __init__.
+
+        ``timeouts`` controls per-operation HTTP request timeouts for sandbox
+        client calls (read_file, command execution for extracts, background
+        job polling, mkdir).  Pass a custom :class:`SandboxTimeouts` when the
+        sandbox gateway is slow or geographically distant.  These are
+        request-level (httpx) timeouts, distinct from container-lifetime
+        (``SandboxSpec.timeout_minutes``) and rollout-level
+        (``MultiTurnEnv.timeout_seconds``) limits.
+        """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
@@ -135,6 +163,7 @@ class SandboxMixin:
             if sandbox_creations_per_minute is not None
             else None
         )
+        self.timeouts = timeouts
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
             max_connections=sandbox_client_max_connections,
