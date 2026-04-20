@@ -361,26 +361,29 @@ def test_mixin_teardown_handlers_are_decorated():
 
 def test_sandbox_timeouts_defaults(mixin):
     assert isinstance(mixin.timeouts, SandboxTimeouts)
-    assert mixin.timeouts.read_file == 10.0
-    assert mixin.timeouts.extract == 60.0
-    assert mixin.timeouts.poll == 60.0
-    assert mixin.timeouts.mkdir == 10.0
+    assert mixin.timeouts.read_file == 10
+    assert mixin.timeouts.extract == 60
+    assert mixin.timeouts.poll == 60
+    assert mixin.timeouts.mkdir == 10
+    # Sandbox sidecar deserializes `timeout` as u64, so fields must be int.
+    for field_name in ("read_file", "extract", "poll", "mkdir"):
+        assert isinstance(getattr(mixin.timeouts, field_name), int), field_name
 
 
 def test_sandbox_timeouts_override():
-    custom = SandboxTimeouts(read_file=5.0, extract=120.0)
+    custom = SandboxTimeouts(read_file=5, extract=120)
     obj = ConcreteMixin(max_retries=1, base_delay=0.01, timeouts=custom)
-    assert obj.timeouts.read_file == 5.0
-    assert obj.timeouts.extract == 120.0
+    assert obj.timeouts.read_file == 5
+    assert obj.timeouts.extract == 120
     # Untouched fields remain at defaults.
-    assert obj.timeouts.poll == 60.0
-    assert obj.timeouts.mkdir == 10.0
+    assert obj.timeouts.poll == 60
+    assert obj.timeouts.mkdir == 10
 
 
 def test_sandbox_timeouts_is_frozen():
     t = SandboxTimeouts()
     with pytest.raises(Exception):
-        t.read_file = 99.0  # type: ignore[misc]
+        t.read_file = 99  # type: ignore[misc]
 
 
 def test_read_file_uses_timeouts_default(mixin):
@@ -399,7 +402,7 @@ def test_read_file_uses_timeouts_default_when_configured():
     obj = ConcreteMixin(
         max_retries=1,
         base_delay=0.01,
-        timeouts=SandboxTimeouts(read_file=7.5),
+        timeouts=SandboxTimeouts(read_file=7),
     )
     obj.logger = MagicMock()
     fake_result = MagicMock(content="hi")
@@ -407,17 +410,17 @@ def test_read_file_uses_timeouts_default_when_configured():
 
     asyncio.run(obj.read_file("sb-1", "/tmp/y"))
 
-    obj.sandbox_client.read_file.assert_awaited_once_with("sb-1", "/tmp/y", timeout=7.5)
+    obj.sandbox_client.read_file.assert_awaited_once_with("sb-1", "/tmp/y", timeout=7)
 
 
 def test_read_file_explicit_override_beats_default(mixin):
     fake_result = MagicMock(content="hello")
     mixin.sandbox_client.read_file = AsyncMock(return_value=fake_result)
 
-    asyncio.run(mixin.read_file("sb-1", "/tmp/x", timeout=123.0))
+    asyncio.run(mixin.read_file("sb-1", "/tmp/x", timeout=123))
 
     mixin.sandbox_client.read_file.assert_awaited_once_with(
-        "sb-1", "/tmp/x", timeout=123.0
+        "sb-1", "/tmp/x", timeout=123
     )
 
 
@@ -441,7 +444,7 @@ def test_upload_bundle_respects_custom_extract_timeout():
     obj = ConcreteMixin(
         max_retries=1,
         base_delay=0.01,
-        timeouts=SandboxTimeouts(extract=180.0),
+        timeouts=SandboxTimeouts(extract=180),
     )
     obj.logger = MagicMock()
 
@@ -456,7 +459,7 @@ def test_upload_bundle_respects_custom_extract_timeout():
     asyncio.run(obj.upload_bundle("sb-1", {"a.txt": "x"}, "/tmp/dest"))
 
     _, kwargs = obj.sandbox_client.execute_command.call_args
-    assert kwargs["timeout"] == 180.0
+    assert kwargs["timeout"] == 180
 
 
 def test_cli_agent_env_poll_uses_timeouts_poll():
@@ -469,11 +472,11 @@ def test_cli_agent_env_poll_uses_timeouts_poll():
         env,
         max_retries=1,
         base_delay=0.01,
-        timeouts=SandboxTimeouts(poll=90.0),
+        timeouts=SandboxTimeouts(poll=90),
     )
 
-    assert env.timeouts.poll == 90.0
-    assert env.timeouts.read_file == 10.0  # untouched
+    assert env.timeouts.poll == 90
+    assert env.timeouts.read_file == 10  # untouched
 
 
 def test_cli_agent_env_defaults_match_hardcodes():
