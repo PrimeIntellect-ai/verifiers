@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 import verifiers as vf
+from verifiers.decorators import cleanup
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
@@ -54,6 +55,27 @@ from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
+
+
+class HarnessMetricsRubric(vf.Rubric):
+    async def score_rollout(self, state: State) -> None:
+        return
+
+    async def score_group(self, states: list[State]) -> None:
+        return
+
+    @cleanup
+    async def merge_harness_metrics(self, state: State) -> None:
+        harness_metrics = state.get("_harness_metrics")
+        if not isinstance(harness_metrics, dict):
+            return
+        state_metrics = state.get("metrics")
+        if not isinstance(state_metrics, dict):
+            state_metrics = {}
+            state["metrics"] = state_metrics
+        for key, value in harness_metrics.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                state_metrics[key] = float(value)
 
 
 class ComposableEnv(CliAgentEnv):
@@ -89,6 +111,8 @@ class ComposableEnv(CliAgentEnv):
 
         if harness.tool_names:
             self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
+        if harness.metrics_path:
+            self.add_rubric(HarnessMetricsRubric())
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
@@ -334,8 +358,15 @@ class ComposableEnv(CliAgentEnv):
                 data = data.get(self.harness.metrics_key, {})
             prefix = self.harness.metrics_prefix
             allowed = self.harness.metrics_keys
+            harness_metrics = state.get("_harness_metrics")
+            if not isinstance(harness_metrics, dict):
+                harness_metrics = {}
+                state["_harness_metrics"] = harness_metrics
             for key, value in data.items():
                 if allowed is None or key in allowed:
-                    state[f"{prefix}{key}"] = value
+                    prefixed_key = f"{prefix}{key}"
+                    state[prefixed_key] = value
+                    if isinstance(value, (int, float)):
+                        harness_metrics[prefixed_key] = float(value)
         except Exception as e:
             self.logger.warning(f"Failed to collect harness metrics: {e}")

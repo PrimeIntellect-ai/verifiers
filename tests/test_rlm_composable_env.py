@@ -396,3 +396,67 @@ async def test_rlm_collects_logs_and_metrics(tmp_path):
     assert state["rlm_stop_reason"] == "done"
     assert state["rlm_prompt_tokens"] == 100
     assert state["rlm_completion_tokens"] == 25
+    assert state["_harness_metrics"] == {
+        "rlm_turns": 3.0,
+        "rlm_prompt_tokens": 100.0,
+        "rlm_completion_tokens": 25.0,
+    }
+    await env.rubric.cleanup(state)
+    assert state["metrics"] == {
+        "rlm_turns": 3.0,
+        "rlm_prompt_tokens": 100.0,
+        "rlm_completion_tokens": 25.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    metrics = {
+        "turns": 3,
+        "stop_reason": "done",
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+    }
+    harness = rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm"))
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command=harness.run_command,
+            metrics_path=harness.metrics_path,
+            metrics_key=harness.metrics_key,
+            metrics_prefix=harness.metrics_prefix,
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(
+                stdout=json.dumps({"metrics": metrics}),
+                stderr="",
+                exit_code=0,
+            )
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "prompt": [{"role": "user", "content": "Fix bug #0"}],
+        "completion": [{"role": "assistant", "content": "done"}],
+        "task": "test",
+        "answer": "",
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+        "test_output": "PASS",
+    }
+
+    await env.post_rollout(state)
+    await env.rubric.score_rollout(state)
+    await env.rubric.cleanup(state)
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["solved"] == 1.0
+    assert state["metrics"]["rlm_turns"] == 3.0
+    assert state["metrics"]["rlm_prompt_tokens"] == 100.0
+    assert state["metrics"]["rlm_completion_tokens"] == 25.0
