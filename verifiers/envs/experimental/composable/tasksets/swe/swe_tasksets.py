@@ -24,6 +24,14 @@ def make_swe_taskset(
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
         "swelego-real": make_swelego_real_taskset,
+        "swesmith-py": make_swesmith_py_taskset,
+        "swesmith-go": make_swesmith_go_taskset,
+        "swesmith-java": make_swesmith_java_taskset,
+        "swesmith-js": make_swesmith_js_taskset,
+        "swesmith-ts": make_swesmith_ts_taskset,
+        "swesmith-rs": make_swesmith_rs_taskset,
+        "swesmith-cpp": make_swesmith_cpp_taskset,
+        "swesmith-php": make_swesmith_php_taskset,
     }
     if backend not in factories:
         raise ValueError(
@@ -80,3 +88,60 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return SWELegoTaskSet(**kwargs)
+
+
+def make_swesmith_taskset(language: str = "py", **kwargs: Any) -> TaskSet:
+    """SWE-Smith TaskSet for a given language.
+
+    SWE-Smith is a multilingual synthetic bug-fix dataset from the SWE-bench
+    authors. One dataset / Docker image set per language
+    (``SWE-bench/SWE-smith-{language}``). Scoring uses the upstream
+    ``swesmith`` per-repo profile: runs the profile's ``test_cmd``, parses the
+    output with the profile's language-specific ``log_parser``, and checks
+    that every F2P and P2P test is marked PASSED.
+
+    C++ currently has ~10% profile coverage (20/69 repos); rows without a
+    profile are filtered out. All other priority languages have full coverage.
+
+    Args:
+        language: one of py, go, java, js, ts, rs, cpp, php.
+        **kwargs: forwarded to ``SWESmithTaskSet``.
+    """
+    from verifiers.envs.experimental.composable.tasksets.swe.swe_smith import (
+        SWESmithTaskSet,
+    )
+
+    return SWESmithTaskSet(language=language, **kwargs)
+
+
+def make_swesmith_py_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("py", **kwargs)
+
+
+def make_swesmith_go_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("go", **kwargs)
+
+
+def make_swesmith_java_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("java", **kwargs)
+
+
+def make_swesmith_js_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("js", **kwargs)
+
+
+def make_swesmith_ts_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("ts", **kwargs)
+
+
+def make_swesmith_rs_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("rs", **kwargs)
+
+
+def make_swesmith_cpp_taskset(**kwargs: Any) -> TaskSet:
+    return make_swesmith_taskset("cpp", **kwargs)
+
+
+def make_swesmith_php_taskset(**kwargs: Any) -> TaskSet:
+    """SWE-Smith PHP TaskSet — upstream dataset is a 1-row placeholder as of 2026-04."""
+    return make_swesmith_taskset("php", **kwargs)
