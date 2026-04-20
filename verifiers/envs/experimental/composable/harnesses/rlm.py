@@ -95,6 +95,7 @@ def rlm_harness(
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
+    disable_compaction: bool = False,
 ) -> Harness:
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
@@ -116,6 +117,8 @@ def rlm_harness(
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
 
+    tool_names = [t for t in DEFAULT_RLM_TOOL_NAMES if not (disable_compaction and t == "summarize")]
+
     return Harness(
         install_script=build_install_script(),
         run_command=build_run_command(instruction_path, workdir),
@@ -128,5 +131,5 @@ def rlm_harness(
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
-        tool_names=list(DEFAULT_RLM_TOOL_NAMES),
+        tool_names=tool_names,
     )
