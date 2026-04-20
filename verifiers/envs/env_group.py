@@ -173,6 +173,29 @@ class EnvGroup(vf.Environment):
 
             return add_task
 
+        def _register_nested_env_map(inner_env: "EnvGroup", outer_name: str) -> None:
+            """Expand a nested EnvGroup's task names into the outer env_map.
+
+            Registers each inner task name pointing to inner_env, then removes the
+            outer_name entry unless that name is also an inner task name (which would
+            mean the pop would undo the registration we just did).
+            Raises ValueError if an inner task name conflicts with a pre-existing
+            sibling env entry.
+            """
+            for inner_name in inner_env.env_map:
+                if (
+                    inner_name in self.env_map
+                    and self.env_map[inner_name] is not inner_env
+                ):
+                    raise ValueError(
+                        f"Inner task name '{inner_name}' from nested EnvGroup "
+                        f"'{outer_name}' conflicts with an existing task name in the "
+                        f"outer EnvGroup. Use unique task names across all levels."
+                    )
+                self.env_map[inner_name] = inner_env
+            if outer_name not in inner_env.env_map:
+                self.env_map.pop(outer_name, None)
+
         for env, name in zip(self.envs, self.env_names):
             add_task = make_add_task_fn(name)
 
@@ -181,20 +204,7 @@ class EnvGroup(vf.Environment):
             if env_dataset is not None:
                 if isinstance(env, EnvGroup):
                     # Preserve inner task names so routing works through both levels.
-                    # Register each inner task name pointing to the inner EnvGroup,
-                    # and remove the stale outer name to avoid misleading lookups.
-                    for inner_name in env.env_map:
-                        if (
-                            inner_name in self.env_map
-                            and self.env_map[inner_name] is not env
-                        ):
-                            raise ValueError(
-                                f"Inner task name '{inner_name}' from nested EnvGroup "
-                                f"'{name}' conflicts with an existing task name in the "
-                                f"outer EnvGroup. Use unique task names across all levels."
-                            )
-                        self.env_map[inner_name] = env
-                    self.env_map.pop(name, None)
+                    _register_nested_env_map(env, name)
                 else:
                     # override task column to use env_name for routing
                     if "task" in env_dataset.column_names:
@@ -205,18 +215,7 @@ class EnvGroup(vf.Environment):
             env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
                 if isinstance(env, EnvGroup):
-                    for inner_name in env.env_map:
-                        if (
-                            inner_name in self.env_map
-                            and self.env_map[inner_name] is not env
-                        ):
-                            raise ValueError(
-                                f"Inner task name '{inner_name}' from nested EnvGroup "
-                                f"'{name}' conflicts with an existing task name in the "
-                                f"outer EnvGroup. Use unique task names across all levels."
-                            )
-                        self.env_map[inner_name] = env
-                    self.env_map.pop(name, None)
+                    _register_nested_env_map(env, name)
                 else:
                     # override task column to use env_name for routing
                     if "task" in env_eval_dataset.column_names:
