@@ -36,7 +36,14 @@ def _process_example(x: dict) -> dict:
     }
 
 
-_OUTCOME_LINE_RE = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(\S+)")
+# Parametrized pytest ids can contain spaces (e.g.
+# ``test_foo[TypeMismatch, List var assigned to String]``), so the id
+# capture group is non-greedy up to an optional ``\s+-\s+<reason>`` tail
+# that FAILED / ERROR / XFAIL emit. Plain `\S+` would truncate such ids
+# at the first inner whitespace and silently fail to match F2P/P2P entries.
+_OUTCOME_LINE_RE = re.compile(
+    r"^(PASSED|FAILED|ERROR|XFAIL|XPASS)\s+(.+?)(?:\s+-\s+.*)?$"
+)
 
 
 def _parse_outcomes(output: str) -> dict[str, str]:
@@ -46,12 +53,19 @@ def _parse_outcomes(output: str) -> dict[str, str]:
     short-summary block (e.g. ``PASSED tests/foo.py::Cls::test``). We only
     need the *last* outcome per test id — if pytest re-runs anything, later
     lines win.
+
+    ``SKIPPED`` is intentionally not parsed here: pytest prints it as
+    ``SKIPPED [N] <file>:<line>: <reason>`` without a usable test id, so
+    it can't be matched against FAIL_TO_PASS / PASS_TO_PASS regardless.
+    A skipped F2P/P2P test correctly scores 0 via "no PASSED entry".
     """
     outcomes: dict[str, str] = {}
     for line in output.splitlines():
         m = _OUTCOME_LINE_RE.match(line)
         if m:
-            outcomes[m.group(2)] = m.group(1)
+            # Non-greedy capture can leave trailing whitespace — strip before
+            # storing so dict lookups against F2P/P2P entries match exactly.
+            outcomes[m.group(2).rstrip()] = m.group(1)
     return outcomes
 
 
@@ -378,6 +392,18 @@ class SWELegoTaskSet(SandboxTaskSet):
             return 0.0
 
         outcomes = _parse_outcomes(test_output)
+        if not outcomes:
+            # No short-summary lines parsed. Most likely cause: the row's
+            # ``test_cmd`` doesn't include a ``-r<letters>`` flag covering
+            # the outcomes we need (``-rA`` is the canonical choice).
+            # Surface loudly instead of silently scoring 0.
+            logger.warning(
+                "SWELego _parse_outcomes returned no outcomes — does test_cmd "
+                "emit `-rA` short-summary lines? instance=%r test_output head=%r",
+                info.get("instance_id"),
+                test_output[:200],
+            )
+            return 0.0
         required = list(fail_to_pass) + list(pass_to_pass)
         return 1.0 if all(outcomes.get(t) == "PASSED" for t in required) else 0.0
 
