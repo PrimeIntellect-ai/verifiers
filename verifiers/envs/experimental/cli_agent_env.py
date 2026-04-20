@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import os
 import time
 import uuid
 from collections import Counter
@@ -156,7 +157,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked: float = 0.0
-        self._interception_server = InterceptionServer(port=interception_port)
+        self._interception_server = InterceptionServer(
+            port=interception_port, secret=os.environ.get("INTERCEPTION_SECRET")
+        )
 
     def _require_interception_server(self) -> InterceptionServer:
         if self._interception_server is None:
@@ -296,6 +299,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "OPENAI_REQUEST_TIMEOUT",
             "HTTPX_TIMEOUT",
             "OPENAI_MODEL",
+            "OPENAI_API_KEY",
         }
     )
 
@@ -306,6 +310,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         env_vars.setdefault("OPENAI_TIMEOUT", "3600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
         env_vars.setdefault("HTTPX_TIMEOUT", "3600")
+        secret = os.environ.get("INTERCEPTION_SECRET")
+        if secret:
+            env_vars["OPENAI_API_KEY"] = secret
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
