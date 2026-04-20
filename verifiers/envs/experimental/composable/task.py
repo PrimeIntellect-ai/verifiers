@@ -337,6 +337,10 @@ class TaskSet:
         total = min(n, len(ds)) if n is not None else len(ds)
         is_sandbox = isinstance(self, SandboxTaskSet)
 
+        if resume and out_path is None:
+            raise ValueError(
+                "resume=True requires out_path; nothing to resume from without a JSONL sink."
+            )
         out_path_p = Path(out_path) if out_path is not None else None
         prior_rows: list[dict] = []
         completed_indices: set[int] = set()
@@ -353,8 +357,13 @@ class TaskSet:
                         except json.JSONDecodeError:
                             continue
                         if isinstance(row.get("index"), int):
-                            prior_rows.append(row)
-                            completed_indices.add(row["index"])
+                            # only keep rows within the current validation
+                            # range — resuming with a smaller ``n`` than a
+                            # prior run shouldn't surface out-of-range rows
+                            # in the returned results or the summary stats.
+                            if row["index"] < total:
+                                prior_rows.append(row)
+                                completed_indices.add(row["index"])
                 if prior_rows:
                     logger.info(
                         "Resuming: %d rows already in %s, will skip",
@@ -518,10 +527,14 @@ class TaskSet:
                 except Exception as e:  # noqa: BLE001
                     return False, e, state
                 finally:
+                    # Shield cleanup from outer cancellation so a Ctrl-C /
+                    # billing-fail-fast doesn't leak live sandboxes, and
+                    # catch BaseException (not Exception) because
+                    # asyncio.CancelledError is a BaseException in 3.9+.
                     if sb is not None:
                         try:
-                            await client.delete(sb.id)
-                        except Exception:
+                            await asyncio.shield(client.delete(sb.id))
+                        except BaseException:  # noqa: BLE001
                             pass
 
         async def validate_one(i: int) -> dict:
