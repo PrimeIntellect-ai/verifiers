@@ -24,6 +24,7 @@ def make_swe_taskset(
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
         "swelego-real": make_swelego_real_taskset,
+        "swerebench-v2": make_swerebench_v2_taskset,
         "swesmith-py": make_swesmith_py_taskset,
         "swesmith-go": make_swesmith_go_taskset,
         "swesmith-java": make_swesmith_java_taskset,
@@ -88,6 +89,19 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return SWELegoTaskSet(**kwargs)
+
+
+def make_swerebench_v2_taskset(**kwargs: Any) -> TaskSet:
+    """SWE-rebench-V2 TaskSet (nebius/SWE-rebench-V2, 32k rows, 20 languages).
+
+    Pass ``language=<one of the 20 language labels>`` to filter to a single
+    language; omit for the full cross-language mix.
+    """
+    from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
+        SWERebenchV2TaskSet,
+    )
+
+    return SWERebenchV2TaskSet(**kwargs)
 
 
 def make_swesmith_taskset(language: str = "py", **kwargs: Any) -> TaskSet:

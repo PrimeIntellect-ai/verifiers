@@ -5,7 +5,7 @@ from .swe_tasksets import (
     make_swe_taskset,
     make_swebench_taskset,
     make_swelego_real_taskset,
-    make_swesmith_taskset,
+    make_swerebench_v2_taskset,
     make_swesmith_cpp_taskset,
     make_swesmith_go_taskset,
     make_swesmith_java_taskset,
@@ -13,6 +13,7 @@ from .swe_tasksets import (
     make_swesmith_php_taskset,
     make_swesmith_py_taskset,
     make_swesmith_rs_taskset,
+    make_swesmith_taskset,
     make_swesmith_ts_taskset,
 )
 
@@ -23,6 +24,7 @@ __all__ = [
     "make_multiswe_taskset",
     "make_openswe_taskset",
     "make_swelego_real_taskset",
+    "make_swerebench_v2_taskset",
     "make_swesmith_taskset",
     "make_swesmith_py_taskset",
     "make_swesmith_go_taskset",
