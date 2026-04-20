@@ -113,7 +113,7 @@ def build_opencode_config(
                 "name": provider_display_name or provider_key,
                 "options": {
                     "baseURL": "$OPENAI_BASE_URL",
-                    "apiKey": "intercepted",
+                    "apiKey": "${OPENAI_API_KEY:-intercepted}",
                     "timeout": provider_timeout_ms,
                 },
                 "models": {

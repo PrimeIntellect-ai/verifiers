@@ -64,7 +64,7 @@ def build_run_command(
 set -eo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export RLM_MODEL=$OPENAI_MODEL
-export OPENAI_API_KEY=intercepted
+export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 
