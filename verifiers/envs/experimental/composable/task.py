@@ -375,7 +375,8 @@ class TaskSet:
             with a smaller ``n`` than a prior run shouldn't surface
             out-of-range rows in the returned results or summary stats.
             Malformed / non-JSON lines and rows without an integer ``index``
-            are silently skipped.
+            are silently skipped. Logs a one-line resume summary when any
+            prior rows are found.
             """
             rows: list[dict] = []
             indices: set[int] = set()
@@ -391,6 +392,12 @@ class TaskSet:
                     if isinstance(row.get("index"), int) and row["index"] < total:
                         rows.append(row)
                         indices.add(row["index"])
+            if rows:
+                logger.info(
+                    "Resuming: %d rows already in %s, will skip",
+                    len(rows),
+                    path,
+                )
             return rows, indices
 
         out_path_p = Path(out_path) if out_path is not None else None
@@ -400,12 +407,6 @@ class TaskSet:
             out_path_p.parent.mkdir(parents=True, exist_ok=True)
             if resume and out_path_p.exists():
                 prior_rows, completed_indices = _read_prior_rows(out_path_p)
-                if prior_rows:
-                    logger.info(
-                        "Resuming: %d rows already in %s, will skip",
-                        len(prior_rows),
-                        out_path_p,
-                    )
             else:
                 # truncate so repeated runs don't mix with old output
                 out_path_p.write_text("")
