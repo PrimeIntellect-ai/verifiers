@@ -23,10 +23,21 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
+from verifiers.errors import InfraError
 from verifiers.types import Response
 from verifiers.utils.logging_utils import truncate
 
 logger = logging.getLogger(__name__)
+
+
+class StreamInterrupted(InfraError):
+    """Raised when the intercepted streaming response to the agent is cut short.
+
+    Without this, a mid-stream transport failure would be swallowed here and
+    the agent would observe a truncated (but syntactically valid) SSE stream,
+    often exiting with code 0 and an empty trajectory — bypassing the
+    non-zero-exit error capture in `CliAgentEnv.poll_job_completion`.
+    """
 
 
 class InterceptionServer:
@@ -99,10 +110,26 @@ class InterceptionServer:
                     self._site = None
                     self._app = None
 
-    def register_rollout(self, rollout_id: str) -> asyncio.Queue:
+    def _set_rollout_error(self, rollout_id: str, error: BaseException) -> None:
+        """Attach `error` to the rollout's state if one is registered and
+        unset. First error wins — later failures (e.g. the downstream
+        `response_future` raising too) should not clobber the original cause.
+        """
+        context = self.active_rollouts.get(rollout_id)
+        if context is None:
+            return
+        state = context.get("state")
+        if state is None or state.get("error"):
+            return
+        state["error"] = error
+
+    def register_rollout(
+        self, rollout_id: str, state: dict[str, Any] | None = None
+    ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
+            "state": state,
         }
         return request_queue
 
@@ -214,6 +241,12 @@ class InterceptionServer:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
             logger.error(f"[{rollout_id}] Streaming error: {e}")
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"Interception stream to agent interrupted: {type(e).__name__}: {e}"
+                ),
+            )
             return response
 
         try:
