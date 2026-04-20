@@ -137,7 +137,7 @@ class HarborMCPMixin:
     async def start_mcp_servers(
         self, sandbox_id: str, config: dict[str, Any], state: vf.State
     ) -> None:
-        """Start every framework-managed MCP server declared in ``config``."""
+        """Start every framework-managed MCP server declared in config."""
         framework_managed: list[tuple[HarborMCPServer, str]] = []
         for server in parse_mcp_servers(config):
             if not server.is_network:
@@ -151,9 +151,26 @@ class HarborMCPMixin:
                 continue
             framework_managed.append((server, command))
 
+        if not framework_managed:
+            return
+
         await self._patch_mcp_etc_hosts(sandbox_id, [s for s, _ in framework_managed])
-        for server, command in framework_managed:
-            await self._start_mcp_server(sandbox_id, server, command, state)
+
+        tasks = [
+            asyncio.create_task(
+                self._start_mcp_server(sandbox_id, server, command, state),
+                name=f"harbor-mcp-start-{server.name}",
+            )
+            for server, command in framework_managed
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     @vf.cleanup(priority=1)
     async def stop_mcp_servers(self, state: vf.State) -> None:

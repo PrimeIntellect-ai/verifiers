@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -364,6 +366,122 @@ class TestLifecycle:
         }
         await env.start_mcp_servers("sbx", cfg, {})
         env.sandbox_client.start_background_job.assert_not_awaited()
+
+
+class TestParallelStartup:
+    """Harbor benchmarks can declare dozens of MCP servers; startup must fan
+    out rather than serialize. These tests pin that behavior so a future
+    regression back to a sequential loop gets caught."""
+
+    @staticmethod
+    def _parallel_cfg(names: list[str]) -> dict[str, Any]:
+        return {
+            "environment": {
+                "mcp_servers": [
+                    {
+                        "name": n,
+                        "transport": "streamable-http",
+                        "url": f"http://{n}-host:{8000 + i}/mcp",
+                    }
+                    for i, n in enumerate(names)
+                ]
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_servers_start_concurrently_not_sequentially(self):
+        """Three servers each settling for ~`SETTLE` seconds complete in
+        ~`SETTLE` wall time under parallel startup, not ~3*SETTLE. The
+        assertion is deliberately loose (2x) to survive CI noise while
+        still catching a re-serialization regression."""
+        SETTLE = 0.25
+        env = _DummyEnv(mcp_launch_commands={"a": "cmd", "b": "cmd", "c": "cmd"})
+
+        async def _exec(sandbox_id, command, **kwargs):
+            if "/etc/hosts" in command:
+                return MagicMock(exit_code=0, stdout="")
+            await asyncio.sleep(SETTLE)
+            return MagicMock(exit_code=0, stdout="")
+
+        env.sandbox_client.execute_command = AsyncMock(side_effect=_exec)
+
+        t0 = time.monotonic()
+        await env.start_mcp_servers("sbx", self._parallel_cfg(["a", "b", "c"]), {})
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < SETTLE * 2, (
+            f"expected concurrent startup (~{SETTLE:.2f}s), got {elapsed:.2f}s "
+            f"— start_mcp_servers has regressed to sequential"
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_servers_registered_in_state_under_parallel_startup(self):
+        """Every framework-managed server lands in `state['harbor_mcp_jobs']`
+        after parallel startup — dict mutations across tasks must not race."""
+        names = [f"svc{i}" for i in range(8)]
+        env = _DummyEnv(mcp_launch_commands={n: "cmd" for n in names})
+        state: dict[str, Any] = {}
+        await env.start_mcp_servers("sbx", self._parallel_cfg(names), state)
+
+        assert set(state["harbor_mcp_jobs"].keys()) == set(names)
+        assert env.sandbox_client.start_background_job.await_count == len(names)
+
+    @pytest.mark.asyncio
+    async def test_etc_hosts_patched_once_for_all_servers(self):
+        """Even under parallel startup, `/etc/hosts` is patched a single time
+        with the union of all framework-managed hostnames — not once per server
+        (which would race on the file)."""
+        env = _DummyEnv(mcp_launch_commands={"a": "cmd", "b": "cmd", "c": "cmd"})
+        await env.start_mcp_servers("sbx", self._parallel_cfg(["a", "b", "c"]), {})
+
+        etc_hosts_calls = [
+            c.args[1]
+            for c in env.sandbox_client.execute_command.call_args_list
+            if "/etc/hosts" in c.args[1]
+        ]
+        assert len(etc_hosts_calls) == 1
+        for host in ("a-host", "b-host", "c-host"):
+            assert host in etc_hosts_calls[0]
+
+    @pytest.mark.asyncio
+    async def test_failure_cancels_in_flight_sibling_startups(self):
+        """When one MCP fails healthcheck, pending siblings must be cancelled
+        rather than burn through their retry budget on a rollout that's
+        already dead. The cleanup path (`stop_mcp_servers`) is responsible
+        for SIGKILLing any daemons that did make it up."""
+        import verifiers as vf
+
+        env = _DummyEnv(mcp_launch_commands={"bad": "cmd", "slow": "cmd"})
+        cancelled = {"count": 0}
+
+        async def _exec(sandbox_id, command, **kwargs):
+            if "/etc/hosts" in command:
+                return MagicMock(exit_code=0)
+            # "bad" listens on port 8000 → hex 1F40. Fail its probe instantly
+            # so gather surfaces its SandboxError while "slow" is still mid-sleep.
+            if ":1F40" in command:
+                return MagicMock(exit_code=1)
+            try:
+                await asyncio.sleep(2.0)
+                return MagicMock(exit_code=0)
+            except asyncio.CancelledError:
+                cancelled["count"] += 1
+                raise
+
+        env.sandbox_client.execute_command = AsyncMock(side_effect=_exec)
+
+        t0 = time.monotonic()
+        with pytest.raises(vf.SandboxError):
+            await env.start_mcp_servers("sbx", self._parallel_cfg(["bad", "slow"]), {})
+        elapsed = time.monotonic() - t0
+
+        assert cancelled["count"] == 1, (
+            "slow sibling startup must be cancelled once bad fails"
+        )
+        # Sanity check: we bailed fast, not after `slow`'s 2s sleep.
+        assert elapsed < 1.5, (
+            f"fail-fast path took {elapsed:.2f}s — siblings were not cancelled"
+        )
 
 
 class TestBackgroundJob:
