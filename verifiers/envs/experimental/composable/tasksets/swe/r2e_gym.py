@@ -174,10 +174,19 @@ class R2EGymTaskSet(SandboxTaskSet):
         repo_path: str = "/testbed",
         alt_path: str = "/root",
         filter_repos: list[str] | None = None,
+        filter_fn: str | None = None,
         ds_num_proc: int | None = 8,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['repo_name'] == 'pandas-dev/pandas'"``).
+        """
         self.dataset_name = dataset_name
         self.repo_path = repo_path
         self.alt_path = alt_path
@@ -185,7 +194,11 @@ class R2EGymTaskSet(SandboxTaskSet):
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name="swe/r2e")
+        super().__init__(
+            dataset=self._build_dataset(),
+            name="swe/r2e",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from datasets import load_dataset
