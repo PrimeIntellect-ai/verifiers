@@ -186,6 +186,7 @@ class SWESmithTaskSet(SandboxTaskSet):
         dataset_name: str | None = None,
         split: str = "train",
         filter_repos: list[str] | None = None,
+        filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
@@ -202,7 +203,11 @@ class SWESmithTaskSet(SandboxTaskSet):
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name=f"swe/swesmith-{language}")
+        super().__init__(
+            dataset=self._build_dataset(),
+            name=f"swe/swesmith-{language}",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from swesmith.profiles import registry
