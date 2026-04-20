@@ -54,12 +54,17 @@ class SandboxTimeouts:
     and from ``MultiTurnEnv.timeout_seconds`` (wall-clock rollout cap).
     These control individual httpx request-level timeouts against the
     sandbox gateway; override when your sandbox is slow or far away.
+
+    Types are ``int``: the sandbox sidecar deserializes the ``exec``
+    request body's ``timeout`` field as ``u64``, so passing a Python
+    ``float`` (e.g. ``10.0``) JSON-serializes as ``10.0`` and is
+    rejected on the wire.
     """
 
-    read_file: float = 10.0
-    extract: float = 60.0
-    poll: float = 60.0
-    mkdir: float = 10.0
+    read_file: int = 10
+    extract: int = 60
+    poll: int = 60
+    mkdir: int = 10
 
 
 class SandboxMonitorRubric(vf.Rubric):
@@ -319,7 +324,7 @@ class SandboxMixin:
         self,
         sandbox_id: str,
         remote_path: str,
-        timeout: float | None = None,
+        timeout: int | None = None,
     ) -> str | None:
         """Read a file from the sandbox, returning its contents or None on failure."""
         timeout = self.timeouts.read_file if timeout is None else timeout
