@@ -40,8 +40,13 @@ task.sandbox_spec.image                    # per-instance docker image
 small = taskset.take(100)
 filtered = taskset.filter(lambda ex: ...)
 
-# Validate gold solutions
-results = await taskset.take(10).validate(concurrency=5)
+# Validate gold solutions (streaming JSONL + tqdm + crash-safe resume)
+results = await taskset.validate(
+    concurrency=50,
+    out_path="outputs/validate.jsonl",
+    max_retries=2,       # retry on vf.InfraError
+    resume=True,         # skip indices already in out_path
+)
 
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")

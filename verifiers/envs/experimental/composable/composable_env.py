@@ -50,10 +50,27 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
+from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
+
+
+class HarnessMetricsRubricGroup(vf.RubricGroup):
+    async def cleanup(self, state: State) -> None:
+        for rubric in self.rubrics:
+            await rubric.cleanup(state)
+        harness_metrics = state.get("_harness_metrics")
+        if not isinstance(harness_metrics, dict):
+            return
+        state_metrics = state.get("metrics")
+        if not isinstance(state_metrics, dict):
+            state_metrics = {}
+            state["metrics"] = state_metrics
+        for key, value in harness_metrics.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                state_metrics[key] = float(value)
 
 
 class ComposableEnv(CliAgentEnv):
@@ -89,6 +106,13 @@ class ComposableEnv(CliAgentEnv):
 
         if harness.tool_names:
             self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
+        if harness.metrics_path:
+            rubrics = (
+                list(self.rubric.rubrics)
+                if isinstance(self.rubric, vf.RubricGroup)
+                else [self.rubric]
+            )
+            self.rubric = HarnessMetricsRubricGroup(rubrics=rubrics)
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
@@ -307,7 +331,8 @@ class ComposableEnv(CliAgentEnv):
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
-                tar.add(local_source, arcname=arcname)
+                with shared_path_lock(local_source, suffix=".upload.lock"):
+                    tar.add(local_source, arcname=arcname)
             else:
                 with resources.as_file(local_source) as local_path:
                     tar.add(local_path, arcname=arcname)
@@ -334,8 +359,15 @@ class ComposableEnv(CliAgentEnv):
                 data = data.get(self.harness.metrics_key, {})
             prefix = self.harness.metrics_prefix
             allowed = self.harness.metrics_keys
+            harness_metrics = state.get("_harness_metrics")
+            if not isinstance(harness_metrics, dict):
+                harness_metrics = {}
+                state["_harness_metrics"] = harness_metrics
             for key, value in data.items():
                 if allowed is None or key in allowed:
-                    state[f"{prefix}{key}"] = value
+                    prefixed_key = f"{prefix}{key}"
+                    state[prefixed_key] = value
+                    if isinstance(value, (int, float)):
+                        harness_metrics[prefixed_key] = float(value)
         except Exception as e:
             self.logger.warning(f"Failed to collect harness metrics: {e}")
