@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import tarfile
 import tempfile
 from pathlib import Path
@@ -28,14 +29,19 @@ def _load_task_entry(task_dir: Path, example_id: int) -> dict:
 
     instruction = instruction_md.read_text().strip()
 
+    info = {
+        "task_dir": str(task_dir),
+        "task_name": task_dir.name,
+        "docker_image": config.get("environment", {}).get("docker_image"),
+        "config": config,
+    }
+    info_json = task_dir / "info.json"
+    if info_json.exists():
+        info.update(json.loads(info_json.read_text()))
+
     return {
         "question": instruction,
-        "info": {
-            "task_dir": str(task_dir),
-            "task_name": task_dir.name,
-            "docker_image": config.get("environment", {}).get("docker_image"),
-            "config": config,
-        },
+        "info": info,
         "answer": "",
     }
 
@@ -81,13 +87,20 @@ class HarborRubric(vf.Rubric):
 class HarborTaskSet(SandboxTaskSet):
     """Single Harbor task directory."""
 
-    def __init__(self, task_dir: str | Path, filter_fn: str | None = None):
+    def __init__(
+        self,
+        task_dir: str | Path,
+        filter_fn: str | None = None,
+        agent_workdir: str = "/app",
+        name: str | None = None,
+    ):
         self.task_dir = Path(task_dir)
+        self.agent_workdir = agent_workdir
         if not self.task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {self.task_dir}")
         super().__init__(
             dataset=self._build_dataset(),
-            name=f"harbor/{self.task_dir.name}",
+            name=name or f"harbor/{self.task_dir.name}",
             filter_fn=filter_fn,
         )
 
@@ -111,7 +124,7 @@ class HarborTaskSet(SandboxTaskSet):
         return (task_dir / "instruction.md").read_text()
 
     def get_workdir(self, info: dict) -> str:
-        return "/app"
+        return self.agent_workdir
 
     def get_rubric(self):
         return HarborRubric(self)
@@ -136,9 +149,11 @@ class HarborTaskSet(SandboxTaskSet):
 
             remote_tar = "/tmp/harbor_task.tar.gz"
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            workdir = shlex.quote(self.get_workdir(state["info"]))
             await sandbox_client.execute_command(
                 sandbox_id,
-                f"mkdir -p /task /logs/verifier /oracle /tests /app && tar -xzf {remote_tar} -C / && rm {remote_tar}",
+                f"mkdir -p /task /logs/verifier /oracle /tests {workdir} && "
+                f"tar -xzf {remote_tar} -C / && rm {remote_tar}",
             )
         finally:
             tar_path.unlink(missing_ok=True)
@@ -230,7 +245,10 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path.unlink(missing_ok=True)
 
         results = await sandbox_client.execute_command(
-            sandbox_id, "bash /oracle/solve.sh", working_dir="/app", timeout=120
+            sandbox_id,
+            "bash /oracle/solve.sh",
+            working_dir=self.get_workdir(state["info"]),
+            timeout=120,
         )
         if results.exit_code != 0:
             stderr = (results.stderr or "")[:500]
@@ -306,14 +324,17 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         dataset_path: str | Path,
         task_names: list[str] | None = None,
         filter_fn: str | None = None,
+        agent_workdir: str = "/app",
+        name: str | None = None,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = task_names
+        self.agent_workdir = agent_workdir
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.dataset_path}")
         super().__init__(
             dataset=self._build_dataset(),
-            name=f"harbor/{self.dataset_path.name}",
+            name=name or f"harbor/{self.dataset_path.name}",
             filter_fn=filter_fn,
         )
 
@@ -355,13 +376,15 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         return task.get_instruction(info)
 
     def get_workdir(self, info: dict) -> str:
-        return "/app"
+        return self.agent_workdir
 
     def get_rubric(self):
         return HarborDatasetRubric(self)
 
     async def setup(self, state) -> None:
-        task = HarborTaskSet(state["info"]["task_dir"])
+        task = HarborTaskSet(
+            state["info"]["task_dir"], agent_workdir=self.agent_workdir
+        )
         await task.setup(state)
 
     async def _run_tests(
@@ -371,7 +394,9 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         state: dict,
         test_timeout: int,
     ) -> str:
-        task = HarborTaskSet(state["info"]["task_dir"])
+        task = HarborTaskSet(
+            state["info"]["task_dir"], agent_workdir=self.agent_workdir
+        )
         return await task._run_tests(sandbox_client, sandbox_id, state, test_timeout)
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
@@ -381,9 +406,13 @@ class HarborDatasetTaskSet(SandboxTaskSet):
     async def _apply_gold_patch(
         self, sandbox_client: Any, sandbox_id: str, state: dict
     ) -> None:
-        task = HarborTaskSet(state["info"]["task_dir"])
+        task = HarborTaskSet(
+            state["info"]["task_dir"], agent_workdir=self.agent_workdir
+        )
         await task._apply_gold_patch(sandbox_client, sandbox_id, state)
 
     async def validate_instance(self, state) -> bool:
-        task = HarborTaskSet(state["info"]["task_dir"])
+        task = HarborTaskSet(
+            state["info"]["task_dir"], agent_workdir=self.agent_workdir
+        )
         return await task.validate_instance(state)
