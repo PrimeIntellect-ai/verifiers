@@ -304,7 +304,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     )
 
     # Environment variables that route agent traffic through the interception proxy.
-    INTERCEPTION_ROUTING_ENV_VARS = frozenset({"OPENAI_BASE_URL"})
+    INTERCEPTION_ROUTING_ENV_VARS = frozenset[str]({"OPENAI_BASE_URL", "OPENAI_API_KEY"})
 
     def without_interception_env(self, command: str) -> str:
         """Wrap a shell command so INTERCEPTION_ROUTING_ENV_VARS are unset for
