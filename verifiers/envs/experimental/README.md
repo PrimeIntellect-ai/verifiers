@@ -11,10 +11,10 @@ full programming model.
 
 ### VM sandboxes
 
-Opt in by setting `vm=True` on the `CreateSandboxRequest` (or by constructing
-it via `self.build_sandbox_request(..., vm=True, gpu_count=N, gpu_type="H100_80GB")`).
-VM sandboxes are required for GPU attachments; the pydantic validator enforces
-that `gpu_count > 0` implies `vm=True` and a non-null `gpu_type`.
+Opt in by setting `vm=True` on the `CreateSandboxRequest` passed to
+`create_sandbox`. VM sandboxes are required for GPU attachments; the
+`CreateSandboxRequest` pydantic validator enforces that `gpu_count > 0`
+implies `vm=True` and a non-null `gpu_type`.
 
 Once created, `create_sandbox` populates the following state fields for
 downstream rubrics and helpers:

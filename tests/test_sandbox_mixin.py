@@ -500,64 +500,6 @@ def test_cli_agent_env_defaults_match_hardcodes():
     assert env.timeouts.mkdir == 10.0
 
 
-# ── build_sandbox_request ────────────────────────────────────────────
-
-
-def test_build_sandbox_request_container_defaults(mixin):
-    req = mixin.build_sandbox_request(name="rollout-1", docker_image="python:3.12")
-    assert req.name == "rollout-1"
-    assert req.docker_image == "python:3.12"
-    assert req.vm is False
-    assert req.gpu_count == 0
-    assert req.gpu_type is None
-    assert req.labels == []
-
-
-def test_build_sandbox_request_vm_with_gpu(mixin):
-    req = mixin.build_sandbox_request(
-        name="rollout-vm",
-        docker_image="my-vm-image:latest",
-        vm=True,
-        gpu_count=1,
-        gpu_type="H100_80GB",
-    )
-    assert req.vm is True
-    assert req.gpu_count == 1
-    assert req.gpu_type == "H100_80GB"
-
-
-def test_build_sandbox_request_gpu_without_vm_raises(mixin):
-    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
-        mixin.build_sandbox_request(
-            name="bad",
-            docker_image="img",
-            vm=False,
-            gpu_count=1,
-            gpu_type="H100_80GB",
-        )
-
-
-def test_build_sandbox_request_gpu_count_without_type_raises(mixin):
-    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
-        mixin.build_sandbox_request(
-            name="bad",
-            docker_image="img",
-            vm=True,
-            gpu_count=1,
-        )
-
-
-def test_build_sandbox_request_gpu_type_without_count_raises(mixin):
-    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
-        mixin.build_sandbox_request(
-            name="bad",
-            docker_image="img",
-            vm=True,
-            gpu_count=0,
-            gpu_type="H100_80GB",
-        )
-
-
 # ── VM-aware create_sandbox ──────────────────────────────────────────
 
 

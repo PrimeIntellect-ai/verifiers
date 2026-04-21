@@ -23,7 +23,6 @@ from prime_sandboxes import (
     UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
-from pydantic import ValidationError
 
 import verifiers as vf
 from verifiers.utils.path_utils import write_temp_file
@@ -208,55 +207,6 @@ class SandboxMixin:
             ),
             reraise=True,
         ).wraps
-
-    def build_sandbox_request(
-        self,
-        *,
-        name: str,
-        docker_image: str,
-        vm: bool = False,
-        gpu_count: int = 0,
-        gpu_type: str | None = None,
-        cpu_cores: float = 1.0,
-        memory_gb: float = 2.0,
-        disk_size_gb: float = 5.0,
-        timeout_minutes: int = 60,
-        network_access: bool = True,
-        start_command: str | None = "tail -f /dev/null",
-        environment_vars: dict[str, str] | None = None,
-        secrets: dict[str, str] | None = None,
-        labels: list[str] | None = None,
-        team_id: str | None = None,
-        registry_credentials_id: str | None = None,
-    ) -> CreateSandboxRequest:
-        """Build a :class:`CreateSandboxRequest` with VM/GPU validation.
-
-        Surfaces pydantic validation (``gpu_count > 0`` requires ``vm=True``
-        and ``gpu_type``; ``gpu_type`` requires ``gpu_count > 0``) as a typed
-        :class:`vf.SandboxError` so subclasses see a consistent error type
-        regardless of how the request was constructed.
-        """
-        try:
-            return CreateSandboxRequest(
-                name=name,
-                docker_image=docker_image,
-                vm=vm,
-                gpu_count=gpu_count,
-                gpu_type=gpu_type,
-                cpu_cores=cpu_cores,
-                memory_gb=memory_gb,
-                disk_size_gb=disk_size_gb,
-                timeout_minutes=timeout_minutes,
-                network_access=network_access,
-                start_command=start_command,
-                environment_vars=environment_vars,
-                secrets=secrets,
-                labels=labels if labels is not None else [],
-                team_id=team_id,
-                registry_credentials_id=registry_credentials_id,
-            )
-        except ValidationError as e:
-            raise vf.SandboxError(f"Invalid CreateSandboxRequest: {e}") from e
 
     async def create_sandbox(self, state, request: CreateSandboxRequest) -> str:
         """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook.
