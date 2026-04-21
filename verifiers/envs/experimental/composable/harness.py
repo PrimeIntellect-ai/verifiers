@@ -89,6 +89,13 @@ class Harness:
         counts calls to each named tool (plus a total) from the
         assistant messages the harness emits into the trajectory.
         Example: ``["ipython", "summarize"]`` for the RLM harness.
+    environment_vars:
+        Harness-owned environment variables for the sandbox. Merged by
+        ``ComposableEnv`` between the caller-supplied ``environment_vars=``
+        and the taskset's ``get_env_vars()``: harness wins over caller,
+        taskset wins over harness. This is the right place to put env
+        vars that track other harness config (e.g. ``RLM_TOOLS`` paired
+        with ``tool_names``) so they can't silently desync.
     """
 
     install_script: str | None = None
@@ -107,6 +114,7 @@ class Harness:
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
     tool_names: list[str] | None = None
+    environment_vars: dict[str, str] | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

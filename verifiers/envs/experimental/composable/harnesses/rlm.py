@@ -96,6 +96,16 @@ def rlm_harness(
     gh_token: str | None = None,
     rlm_tools: list[str] | None = None,
 ) -> Harness:
+    """Build an RLM harness.
+
+    ``rlm_tools`` is the single source of truth for which builtin tools are
+    active. The same list drives both ``Harness.tool_names`` (so
+    ``ToolMonitorRubric`` tracks exactly the active tools) and
+    ``Harness.environment_vars["RLM_TOOLS"]`` (so the RLM sandbox advertises
+    the same set to the model). Callers do not need to — and should not —
+    add ``RLM_TOOLS`` to ``ComposableEnv(environment_vars=...)`` themselves;
+    the harness owns it.
+    """
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
     }
@@ -130,4 +140,5 @@ def rlm_harness(
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,
+        environment_vars={"RLM_TOOLS": ",".join(tool_names)},
     )
