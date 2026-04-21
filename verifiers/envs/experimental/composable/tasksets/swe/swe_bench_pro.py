@@ -33,18 +33,6 @@ DEFAULT_RUN_SCRIPTS_URL = (
 
 logger = logging.getLogger(__name__)
 
-_INSTRUCTION_TEMPLATE = """\
-# Task
-
-{problem_statement}
-
----
-
-**Repo:** `{repo}`
-**Base commit:** `{base_commit}`
-**Instance ID:** `{instance_id}`
-"""
-
 _CAPTURE_PATCH_COMMAND = """\
 set -e
 mkdir -p /logs/verifier /workspace
@@ -69,20 +57,6 @@ git checkout {base_commit}
 if [ -s /logs/verifier/generated_patch.diff ]; then
   git apply -v /logs/verifier/generated_patch.diff
 fi
-"""
-
-_RUN_TESTS_COMMAND = """\
-set -e
-mkdir -p /logs/verifier /workspace
-cd {agent_workdir}
-
-{test_setup_command}
-
-bash /workspace/run_script.sh {selected_tests} > /workspace/stdout.log 2> /workspace/stderr.log || true
-python /workspace/parser.py /workspace/stdout.log /workspace/stderr.log /workspace/output.json
-echo SWEBENCH_PRO_OUTPUT_START
-cat /workspace/output.json
-echo SWEBENCH_PRO_OUTPUT_END
 """
 
 
@@ -226,11 +200,14 @@ class SWEBenchProTaskSet(SandboxTaskSet):
         return row
 
     def get_instruction(self, info: dict) -> str:
-        return _INSTRUCTION_TEMPLATE.format(
-            problem_statement=dedent(info["problem_statement"]).strip(),
-            repo=info["repo"],
-            base_commit=info["base_commit"],
-            instance_id=info["instance_id"],
+        problem_statement = dedent(info["problem_statement"]).strip()
+        return (
+            "# Task\n\n"
+            f"{problem_statement}\n\n"
+            "---\n\n"
+            f"**Repo:** `{info['repo']}`\n"
+            f"**Base commit:** `{info['base_commit']}`\n"
+            f"**Instance ID:** `{info['instance_id']}`\n"
         )
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec:
@@ -327,11 +304,20 @@ class SWEBenchProTaskSet(SandboxTaskSet):
             finally:
                 Path(local_path).unlink(missing_ok=True)
 
-        selected_tests = ",".join(selected_tests)
-        command = _RUN_TESTS_COMMAND.format(
-            agent_workdir=agent_workdir,
-            test_setup_command=info["before_repo_set_cmd"].strip(),
-            selected_tests=shlex.quote(selected_tests),
+        selected_tests_arg = shlex.quote(",".join(selected_tests))
+        test_setup_command = info["before_repo_set_cmd"].strip()
+        command = (
+            "set -e\n"
+            "mkdir -p /logs/verifier /workspace\n"
+            f"cd {agent_workdir}\n\n"
+            f"{test_setup_command}\n\n"
+            f"bash /workspace/run_script.sh {selected_tests_arg} "
+            "> /workspace/stdout.log 2> /workspace/stderr.log || true\n"
+            "python /workspace/parser.py /workspace/stdout.log "
+            "/workspace/stderr.log /workspace/output.json\n"
+            "echo SWEBENCH_PRO_OUTPUT_START\n"
+            "cat /workspace/output.json\n"
+            "echo SWEBENCH_PRO_OUTPUT_END\n"
         )
         result = await sandbox_client.run_background_job(
             sandbox_id,
