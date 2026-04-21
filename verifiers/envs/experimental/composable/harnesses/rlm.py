@@ -14,7 +14,6 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
-DEFAULT_RLM_TOOL_NAMES = ["ipython", "summarize"]
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
@@ -95,7 +94,18 @@ def rlm_harness(
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
+    rlm_tools: list[str] | None = None,
 ) -> Harness:
+    """Build an RLM harness.
+
+    ``rlm_tools`` is the list of builtin tool names active for this run.
+    Passed to ``Harness.tool_names`` so ``ToolMonitorRubric`` tracks exactly
+    the tools the model was given. The caller is responsible for also
+    setting ``RLM_TOOLS`` in ``ComposableEnv.environment_vars`` to the same
+    list (joined with commas) so the RLM sandbox advertises the same set;
+    keeping them paired is a research-env concern.
+    """
+    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython", "summarize"]
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
     }
@@ -128,5 +138,5 @@ def rlm_harness(
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
-        tool_names=list(DEFAULT_RLM_TOOL_NAMES),
+        tool_names=tool_names,
     )
