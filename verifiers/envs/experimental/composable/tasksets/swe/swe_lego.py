@@ -12,6 +12,10 @@ import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
+from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
+    revert_and_reapply_test_patch,
+)
+
 logger = logging.getLogger(__name__)
 
 ENV_VARS_SWE_LEGO = {
@@ -335,6 +339,33 @@ class SWELegoTaskSet(SandboxTaskSet):
         test_timeout: int,
     ) -> str:
         info = state["info"]
+        workdir = self.get_workdir(info)
+
+        # Canonical SWE-bench grading dance: revert any agent edits to
+        # files touched by ``test_patch`` (``git checkout HEAD -- <path>``
+        # for pre-existing files, ``rm -f <path>`` for newly-added ones),
+        # then re-apply ``test_patch`` cleanly. Closes the reward-hack
+        # where an agent weakens F2P assertions mid-rollout. Agent source
+        # edits are untouched — only test-file bits get canonicalized.
+        test_patch: str = info.get("test_patch") or ""
+        base_commit: str = info.get("base_commit") or ""
+        if test_patch.strip() and base_commit:
+
+            async def _apply(
+                sc: Any, sid: str, wd: str, patch: str, label: str
+            ) -> None:
+                del wd  # _apply_patch_file hard-codes /testbed internally
+                await self._apply_patch_file(sc, sid, patch, label)
+
+            await revert_and_reapply_test_patch(
+                sandbox_client,
+                sandbox_id,
+                workdir,
+                test_patch,
+                base_commit,
+                apply_patch=_apply,
+            )
+
         fail_to_pass: list[str] = info.get("FAIL_TO_PASS") or []
         pass_to_pass: list[str] = info.get("PASS_TO_PASS") or []
         test_cmd: str = info.get("test_cmd") or ""
