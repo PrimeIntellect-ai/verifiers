@@ -1,10 +1,5 @@
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
-# VF_CHUNK_TRACE_DIR: per-rollout NDJSON dump of every SSE chunk emitted to
-# the agent (with timestamp, delta, finish_reason, and a sentinel line on
-# normal close / stream interruption). Default: disabled. See
-# ``_write_chunk_trace`` for format.
-
 import asyncio
 import json
 import logging
@@ -13,7 +8,6 @@ import socket
 import struct
 import time
 import uuid
-from pathlib import Path
 from typing import Any, cast
 
 from aiohttp import web
@@ -40,15 +34,10 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
-CHUNK_TRACE_DIR_ENV = "VF_CHUNK_TRACE_DIR"
-# Hard cap on per-rollout chunk-trace files; oldest pruned on open.
-_CHUNK_TRACE_FILE_CAP = 20000
 # Sample the server-side TCP_INFO state every N seconds during a streaming
 # response so we can see the socket transition (e.g. to CLOSE_WAIT) before
 # the write that surfaces the failure. 0 disables.
-TCP_SAMPLE_INTERVAL_SECONDS = float(
-    os.environ.get("VF_TCP_SAMPLE_INTERVAL_SECONDS", "2")
-)
+TCP_SAMPLE_INTERVAL_SECONDS = float(os.environ.get("VF_TCP_SAMPLE_INTERVAL_SECONDS", "2"))
 
 # TCP_INFO sockopt (Linux). Value is 11; Python may not expose a constant.
 _TCP_INFO = getattr(socket, "TCP_INFO", 11)
@@ -116,11 +105,7 @@ async def _sample_tcp_state(
         state_ref["retx"] = retx
         state_ref["elapsed"] = elapsed
         if state != last_state:
-            prev = (
-                _TCP_STATE_NAMES.get(last_state, f"state{last_state}")
-                if last_state is not None
-                else "init"
-            )
+            prev = _TCP_STATE_NAMES.get(last_state, f"state{last_state}") if last_state is not None else "init"
             curr = _TCP_STATE_NAMES.get(state, f"state{state}")
             logger.warning(
                 f"[{rollout_id}] tcp_state {prev} -> {curr} at {elapsed:.1f}s (retx={retx})"
@@ -172,75 +157,6 @@ def _tcp_diag(
         if retx:
             parts.append(f"retx={retx}")
     return " ".join(parts)
-
-
-def _open_chunk_trace(rollout_id: str) -> Any:
-    """Open a per-rollout NDJSON trace file if VF_CHUNK_TRACE_DIR is set.
-
-    Returns an open file handle (line-buffered, write mode) or None if
-    tracing is disabled or opening the file failed. Prunes oldest files
-    when the directory exceeds the cap so disk usage stays bounded.
-    """
-    trace_dir = os.environ.get(CHUNK_TRACE_DIR_ENV)
-    if not trace_dir:
-        return None
-    try:
-        dir_path = Path(trace_dir)
-        dir_path.mkdir(parents=True, exist_ok=True)
-        try:
-            files = [
-                p for p in dir_path.iterdir() if p.is_file() and p.suffix == ".ndjson"
-            ]
-            if len(files) > _CHUNK_TRACE_FILE_CAP:
-                files.sort(key=lambda p: p.stat().st_mtime)
-                for p in files[: len(files) - _CHUNK_TRACE_FILE_CAP]:
-                    p.unlink(missing_ok=True)
-        except Exception:
-            pass
-        path = dir_path / f"{rollout_id}.ndjson"
-        return path.open("a", buffering=1, encoding="utf-8")
-    except Exception as e:
-        logger.debug(f"[{rollout_id}] chunk-trace open failed: {e}")
-        return None
-
-
-def _write_chunk_trace(fh: Any, record: dict) -> None:
-    """Best-effort write of one NDJSON record; never raises."""
-    if fh is None:
-        return
-    try:
-        fh.write(json.dumps(record, default=str) + "\n")
-    except Exception:
-        pass
-
-
-def _close_chunk_trace(fh: Any) -> None:
-    if fh is None:
-        return
-    try:
-        fh.close()
-    except Exception:
-        pass
-
-
-def _chunk_trace_record(chunk_dict: dict) -> dict:
-    """Extract the useful fields from an SSE chunk for the trace log."""
-    record: dict[str, Any] = {"ts": time.time(), "event": "chunk"}
-    try:
-        choices = chunk_dict.get("choices") or []
-        if choices:
-            choice = choices[0]
-            delta = choice.get("delta") or {}
-            record["delta_content"] = delta.get("content")
-            record["delta_tool_calls"] = delta.get("tool_calls")
-            reasoning = delta.get("reasoning_content")
-            if reasoning:
-                record["delta_reasoning_content"] = reasoning
-            record["finish_reason"] = choice.get("finish_reason")
-        record["id"] = chunk_dict.get("id")
-    except Exception:
-        pass
-    return record
 
 
 class StreamInterrupted(InfraError):
@@ -447,16 +363,6 @@ class InterceptionServer:
         except Exception:
             pass
 
-        # Per-rollout SSE chunk-trace file (NDJSON). Env-gated by
-        # VF_CHUNK_TRACE_DIR. Each chunk, a DONE sentinel, and every error
-        # branch writes one line, so the tail of the file always tells you
-        # how the stream ended even on crash.
-        chunk_trace = _open_chunk_trace(rollout_id)
-        _write_chunk_trace(
-            chunk_trace,
-            {"ts": time.time(), "event": "open", "rollout_id": rollout_id},
-        )
-
         # prepare() sends the response headers and attaches the writer to the
         # transport. If the transport is already half-open (e.g. the peer
         # closed between accept and our first write), prepare itself can
@@ -472,18 +378,10 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(f"prepare failed {diag}: {type(e).__name__}: {e}"),
+                StreamInterrupted(
+                    f"prepare failed {diag}: {type(e).__name__}: {e}"
+                ),
             )
-            _write_chunk_trace(
-                chunk_trace,
-                {
-                    "ts": time.time(),
-                    "event": "prepare_failed",
-                    "error": f"{type(e).__name__}: {e}",
-                    "diag": diag,
-                },
-            )
-            _close_chunk_trace(chunk_trace)
             return response
         # Start the periodic TCP-state sampler (logs state transitions during
         # the stream so we catch CLOSE_WAIT / FIN_WAIT before the write RST).
@@ -535,17 +433,6 @@ class InterceptionServer:
                                 f"{diag}: {type(e).__name__}: {e}"
                             ),
                         )
-                        _write_chunk_trace(
-                            chunk_trace,
-                            {
-                                "ts": time.time(),
-                                "event": "keepalive_failed",
-                                "waited_s": waited_s,
-                                "error": f"{type(e).__name__}: {e}",
-                                "diag": diag,
-                            },
-                        )
-                        _close_chunk_trace(chunk_trace)
                         return response
                     continue
 
@@ -554,19 +441,13 @@ class InterceptionServer:
 
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
-                    _write_chunk_trace(
-                        chunk_trace,
-                        {"ts": time.time(), "event": "done"},
-                    )
                     break
 
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
-                _write_chunk_trace(chunk_trace, _chunk_trace_record(chunk_dict))
 
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
-            _write_chunk_trace(chunk_trace, {"ts": time.time(), "event": "cancelled"})
         except Exception as e:
             waited_s = time.monotonic() - start
             diag = _tcp_diag(http_request.transport, peer, tcp_state_ref)
@@ -580,17 +461,6 @@ class InterceptionServer:
                     f"{diag}: {type(e).__name__}: {e}"
                 ),
             )
-            _write_chunk_trace(
-                chunk_trace,
-                {
-                    "ts": time.time(),
-                    "event": "stream_interrupted",
-                    "waited_s": waited_s,
-                    "error": f"{type(e).__name__}: {e}",
-                    "diag": diag,
-                },
-            )
-            _close_chunk_trace(chunk_trace)
             return response
         finally:
             if get_task is not None and not get_task.done():
@@ -627,17 +497,6 @@ class InterceptionServer:
                     f"{diag}: {type(e).__name__}: {e}"
                 ),
             )
-            _write_chunk_trace(
-                chunk_trace,
-                {
-                    "ts": time.time(),
-                    "event": "write_eof_failed",
-                    "waited_s": waited_s,
-                    "error": f"{type(e).__name__}: {e}",
-                    "diag": diag,
-                },
-            )
-        _close_chunk_trace(chunk_trace)
         return response
 
 

@@ -1,5 +1,4 @@
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 from verifiers.errors import InfraError
@@ -12,7 +11,6 @@ from verifiers.types import (
 )
 from verifiers.utils import interception_utils
 from verifiers.utils.interception_utils import (
-    CHUNK_TRACE_DIR_ENV,
     InterceptionServer,
     StreamInterrupted,
     create_empty_completion,
@@ -206,81 +204,3 @@ async def test_keepalive_write_failure_surfaces_to_state(monkeypatch):
     msg = str(state["error"])
     assert "keepalive write failed" in msg
     assert "ConnectionResetError" in msg
-
-
-async def test_chunk_trace_writes_when_env_var_set(monkeypatch, tmp_path):
-    """With VF_CHUNK_TRACE_DIR set, every SSE chunk + a DONE sentinel are
-    persisted as NDJSON under the trace dir; absent the env var, nothing is
-    written."""
-    server = InterceptionServer(port=0)
-    state: dict = {}
-    server.register_rollout("r_trace", state=state)
-
-    async def fake_write(data: bytes) -> None:
-        pass
-
-    fake_response = MagicMock()
-    fake_response.prepare = AsyncMock()
-    fake_response.write = AsyncMock(side_effect=fake_write)
-    fake_response.write_eof = AsyncMock()
-    monkeypatch.setattr(
-        interception_utils.web, "StreamResponse", lambda **_: fake_response
-    )
-
-    chunk_queue: asyncio.Queue = asyncio.Queue()
-    await chunk_queue.put(
-        {"id": "c1", "choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}
-    )
-    await chunk_queue.put(
-        {"id": "c1", "choices": [{"delta": {}, "finish_reason": "stop"}]}
-    )
-    await chunk_queue.put(None)
-    future: asyncio.Future = asyncio.Future()
-    future.set_result(None)
-    intercept = {"chunk_queue": chunk_queue, "response_future": future}
-
-    monkeypatch.setenv(CHUNK_TRACE_DIR_ENV, str(tmp_path))
-    await server._handle_streaming_response(MagicMock(), "r_trace", intercept)
-
-    trace_file = tmp_path / "r_trace.ndjson"
-    assert trace_file.exists(), f"expected trace file at {trace_file}"
-    lines = [json.loads(ln) for ln in trace_file.read_text().splitlines() if ln.strip()]
-    events = [rec["event"] for rec in lines]
-    assert events[0] == "open"
-    assert events[-1] == "done"
-    chunk_records = [r for r in lines if r["event"] == "chunk"]
-    assert len(chunk_records) == 2
-    assert chunk_records[0]["delta_content"] == "hi"
-    assert chunk_records[1]["finish_reason"] == "stop"
-
-
-async def test_chunk_trace_noop_when_env_var_unset(monkeypatch, tmp_path):
-    """Without VF_CHUNK_TRACE_DIR set, no NDJSON file is created."""
-    monkeypatch.delenv(CHUNK_TRACE_DIR_ENV, raising=False)
-    server = InterceptionServer(port=0)
-    state: dict = {}
-    server.register_rollout("r_none", state=state)
-
-    async def fake_write(data: bytes) -> None:
-        pass
-
-    fake_response = MagicMock()
-    fake_response.prepare = AsyncMock()
-    fake_response.write = AsyncMock(side_effect=fake_write)
-    fake_response.write_eof = AsyncMock()
-    monkeypatch.setattr(
-        interception_utils.web, "StreamResponse", lambda **_: fake_response
-    )
-
-    chunk_queue: asyncio.Queue = asyncio.Queue()
-    await chunk_queue.put({"id": "c1", "choices": [{"delta": {"content": "hi"}}]})
-    await chunk_queue.put(None)
-    future: asyncio.Future = asyncio.Future()
-    future.set_result(None)
-    intercept = {"chunk_queue": chunk_queue, "response_future": future}
-
-    await server._handle_streaming_response(MagicMock(), "r_none", intercept)
-
-    assert list(tmp_path.iterdir()) == [], (
-        "no trace file should exist when env var is unset"
-    )
