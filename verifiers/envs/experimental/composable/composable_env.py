@@ -39,6 +39,7 @@ from __future__ import annotations
 import importlib.resources as resources
 import json
 import logging
+import os
 import shlex
 import tarfile
 import tempfile
@@ -54,6 +55,46 @@ from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
 
 logger = logging.getLogger(__name__)
+
+# Per-rollout dump of whatever `cat {harness.log_path}` returned from inside the
+# sandbox. Set to a directory path to enable — files are written as
+# ``{VF_AGENT_LOG_DIR}/{rollout_id}.log``. Default: disabled.
+_AGENT_LOG_DIR_ENV = "VF_AGENT_LOG_DIR"
+# Hard cap on the number of files kept in the agent-log dir (oldest pruned
+# on write). Keeps a runaway training loop from exhausting inodes.
+_AGENT_LOG_FILE_CAP = 20000
+
+
+def _write_agent_log_file(rollout_id: str, contents: str) -> None:
+    """Best-effort write of a per-rollout opencode log under VF_AGENT_LOG_DIR.
+
+    No-ops if the env var is unset or anything fails (disk full, permission,
+    etc.) — rollouts must never break on instrumentation I/O.
+    """
+    log_dir = os.environ.get(_AGENT_LOG_DIR_ENV)
+    if not log_dir:
+        return
+    try:
+        dir_path = Path(log_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        path = dir_path / f"{rollout_id}.log"
+        path.write_text(contents, encoding="utf-8", errors="replace")
+        _prune_agent_log_dir(dir_path, _AGENT_LOG_FILE_CAP)
+    except Exception as e:
+        logger.debug(f"Failed to write agent log file for {rollout_id}: {e}")
+
+
+def _prune_agent_log_dir(dir_path: Path, cap: int) -> None:
+    """Remove oldest *.log files in *dir_path* until at most *cap* remain."""
+    try:
+        files = [p for p in dir_path.iterdir() if p.is_file() and p.suffix == ".log"]
+        if len(files) <= cap:
+            return
+        files.sort(key=lambda p: p.stat().st_mtime)
+        for p in files[: len(files) - cap]:
+            p.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 class ComposableEnv(CliAgentEnv):
@@ -171,6 +212,11 @@ class ComposableEnv(CliAgentEnv):
                 state["agent_logs"] = (result.stdout or "").strip()
             except Exception as e:
                 self.logger.warning(f"Failed to collect agent logs: {e}")
+                state.setdefault("agent_logs", f"<collection failed: {e}>")
+
+        rollout_id = state.get("rollout_id")
+        if rollout_id:
+            _write_agent_log_file(str(rollout_id), state.get("agent_logs") or "")
 
         if sandbox_id and self.harness.metrics_path:
             await self._collect_harness_metrics(sandbox_id, state)
