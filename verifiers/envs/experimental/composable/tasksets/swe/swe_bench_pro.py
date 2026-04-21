@@ -7,6 +7,7 @@ import logging
 import re
 import shlex
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from textwrap import dedent
@@ -62,7 +63,7 @@ mkdir -p /logs/verifier /workspace
 cd {agent_workdir}
 
 git reset --hard {base_commit}
-git clean -fd
+git clean -fdx
 git checkout {base_commit}
 
 if [ -s /logs/verifier/generated_patch.diff ]; then
@@ -86,8 +87,15 @@ echo SWEBENCH_PRO_OUTPUT_END
 
 
 def _download_file(url: str, path: str) -> None:
-    with urllib.request.urlopen(url, timeout=60) as response:
-        Path(path).write_bytes(response.read())
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                Path(path).write_bytes(response.read())
+            return
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(2**attempt)
 
 
 def _text(value: Any) -> str:
@@ -322,7 +330,6 @@ class SWEBenchProTaskSet(SandboxTaskSet):
         selected_tests = ",".join(selected_tests)
         command = _RUN_TESTS_COMMAND.format(
             agent_workdir=agent_workdir,
-            base_commit=base_commit,
             test_setup_command=info["before_repo_set_cmd"].strip(),
             selected_tests=shlex.quote(selected_tests),
         )
@@ -350,11 +357,16 @@ class SWEBenchProTaskSet(SandboxTaskSet):
         )
         if not match:
             return 0.0
-        parsed = json.loads(match.group(1))
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return 0.0
         passed_tests = {
             test["name"]
             for test in parsed.get("tests", [])
-            if test["status"] == "PASSED"
+            if isinstance(test, dict)
+            and test.get("status") == "PASSED"
+            and "name" in test
         }
         expected = set(ast.literal_eval(info["fail_to_pass"])) | set(
             ast.literal_eval(info["pass_to_pass"])
