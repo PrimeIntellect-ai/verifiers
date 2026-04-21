@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 import shlex
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
@@ -11,7 +12,6 @@ DEFAULT_UV_SITE_PACKAGES_DIR = f"{DEFAULT_INSTALL_DIR}/uv-site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
 MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-MINI_SWE_AGENT_CLI_WHEEL_URL = "https://files.pythonhosted.org/packages/56/31/181d4412ec6ce0cbe57cdbbc8a2584299856ce685b30305f4079da89f3cb/mini_swe_agent-2.2.8-py3-none-any.whl"
 MINI_SWE_AGENT_CLI_SHA256 = (
     "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
 )
@@ -49,6 +49,10 @@ fi
 
     quoted_prefix_dir = shlex.quote(prefix_dir)
     site_packages_dir = f"{prefix_dir}/site-packages"
+    wheel_filename = f"mini_swe_agent-{package_version}-py3-none-any.whl"
+    wheel_url = (
+        f"https://files.pythonhosted.org/packages/py3/m/mini-swe-agent/{wheel_filename}"
+    )
     quoted_site_packages_dir = shlex.quote(site_packages_dir)
     quoted_install_dir = shlex.quote(DEFAULT_INSTALL_DIR)
     quoted_uv_site_packages_dir = shlex.quote(DEFAULT_UV_SITE_PACKAGES_DIR)
@@ -70,8 +74,8 @@ if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'
 fi
 MINI_SWE_AGENT_WHEEL_DIR="$(mktemp -d)"
 trap 'rm -rf "$MINI_SWE_AGENT_WHEEL_DIR"' EXIT
-MINI_SWE_AGENT_WHEEL="$MINI_SWE_AGENT_WHEEL_DIR/mini_swe_agent-{package_version}-py3-none-any.whl"
-MINI_SWE_AGENT_WHEEL_URL={shlex.quote(MINI_SWE_AGENT_CLI_WHEEL_URL)}
+MINI_SWE_AGENT_WHEEL="$MINI_SWE_AGENT_WHEEL_DIR/{wheel_filename}"
+MINI_SWE_AGENT_WHEEL_URL={shlex.quote(wheel_url)}
 export MINI_SWE_AGENT_WHEEL MINI_SWE_AGENT_WHEEL_URL
 "$PYTHON_BIN" -c 'import os, urllib.request; urllib.request.urlretrieve(os.environ["MINI_SWE_AGENT_WHEEL_URL"], os.environ["MINI_SWE_AGENT_WHEEL"])'
 echo "{package_sha256}  $MINI_SWE_AGENT_WHEEL" | sha256sum -c -
@@ -135,8 +139,8 @@ def build_mini_swe_agent_run_command(
     for spec in extra_config_specs or []:
         config_args.extend(["-c", shlex.quote(spec)])
 
-    log_dir = log_path.rsplit("/", 1)[0]
-    trajectory_dir = trajectory_path.rsplit("/", 1)[0]
+    log_dir = str(PurePosixPath(log_path).parent)
+    trajectory_dir = str(PurePosixPath(trajectory_path).parent)
     script = f"""\
 set -eo pipefail
 export PATH={shlex.quote(DEFAULT_PREFIX_DIR)}/bin:"$PATH"
@@ -159,7 +163,6 @@ fi
 cd "$MINI_SWE_AGENT_WORKDIR"
 timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(mini_binary)} \\
   --model "$OPENAI_MODEL" \\
-  --model-class {shlex.quote(model_class)} \\
   --task "$MINI_SWE_AGENT_TASK" \\
   --output {shlex.quote(trajectory_path)} \\
   --exit-immediately \\
