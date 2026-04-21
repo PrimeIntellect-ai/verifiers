@@ -146,6 +146,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     TUNNEL_CHECK_INTERVAL = 60.0  # seconds between server-side liveness checks
 
+    def make_agent_error(self, state: State, message: str) -> AgentError:
+        """Create an AgentError with rollout-specific sandbox context when available."""
+        context_parts: list[str] = []
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            context_parts.append(f"sandbox_id={sandbox_id}")
+        state_input = state.get("input")
+        instance_id = (
+            state_input.get("instance_id") if isinstance(state_input, dict) else None
+        )
+        if instance_id:
+            context_parts.append(f"instance_id={instance_id}")
+        if context_parts:
+            message = f"{message} ({', '.join(context_parts)})"
+        return AgentError(message)
+
     def init_interception(
         self,
         interception_port: int = 8765,
@@ -360,16 +376,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         except asyncio.TimeoutError:
             self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
             state["agent_timed_out"] = True
-            state["error"] = AgentError(
-                f"Agent timed out after {self.timeout_seconds}s"
+            state["error"] = self.make_agent_error(
+                state, f"Agent timed out after {self.timeout_seconds}s"
             )
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            error = AgentError(f"Agent polling failed: {e}")
+            error = self.make_agent_error(state, f"Agent polling failed: {e}")
             state["error"] = error
-            self.logger.error(f"Agent polling failed: {e}")
+            self.logger.error(str(error))
         finally:
             state["agent_completed"] = True
 
@@ -393,14 +409,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     stderr_full = status.stderr or ""
                     num_turns = len(state.get("trajectory", []))
                     if num_turns == 0:
-                        error = AgentError(
+                        error = self.make_agent_error(
+                            state,
                             f"Agent crashed before any LLM call "
-                            f"(exit_code={status.exit_code}): {stderr_full}"
+                            f"(exit_code={status.exit_code}): {stderr_full}",
                         )
                     else:
-                        error = AgentError(
+                        error = self.make_agent_error(
+                            state,
                             f"Agent crashed after {num_turns} turn(s) "
-                            f"(exit_code={status.exit_code}): {stderr_full}"
+                            f"(exit_code={status.exit_code}): {stderr_full}",
                         )
                     state["error"] = error
                     self.logger.error(str(error))
