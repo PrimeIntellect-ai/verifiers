@@ -20,7 +20,6 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxNotReadyError,
     SandboxSetupError,
     SandboxTimeouts,
-    SandboxVMUnsupportedError,
     ThreadedAsyncSandboxClient,
     is_retryable_sandbox_api_error,
     is_retryable_sandbox_read_error,
@@ -591,12 +590,11 @@ def test_create_sandbox_container_sets_vm_false(mixin):
     assert state["sandbox_gpu_type"] is None
 
 
-def test_create_sandbox_vm_uses_vm_wait_attempts():
+def test_create_sandbox_vm_uses_shared_wait_attempts():
     obj = ConcreteMixin(
         max_retries=1,
         base_delay=0.01,
         sandbox_wait_for_creation_max_attempts=7,
-        vm_sandbox_wait_for_creation_max_attempts=42,
     )
     obj.logger = MagicMock()
     sandbox_obj = MagicMock(id="sb-vm-wait")
@@ -606,41 +604,18 @@ def test_create_sandbox_vm_uses_vm_wait_attempts():
     request = MagicMock(vm=True, gpu_count=0, gpu_type=None)
     asyncio.run(obj.create_sandbox({}, request=request))
 
+    # VM and container sandboxes share the same wait-attempt cap.
     obj.sandbox_client.wait_for_creation.assert_called_once_with(
-        "sb-vm-wait", max_attempts=42
+        "sb-vm-wait", max_attempts=7
     )
 
 
-def test_create_sandbox_container_uses_container_wait_attempts():
-    obj = ConcreteMixin(
-        max_retries=1,
-        base_delay=0.01,
-        sandbox_wait_for_creation_max_attempts=7,
-        vm_sandbox_wait_for_creation_max_attempts=42,
-    )
-    obj.logger = MagicMock()
-    sandbox_obj = MagicMock(id="sb-cont-wait")
-    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
-    obj.sandbox_client.wait_for_creation = AsyncMock()
-
-    request = MagicMock(vm=False, gpu_count=0, gpu_type=None)
-    asyncio.run(obj.create_sandbox({}, request=request))
-
-    obj.sandbox_client.wait_for_creation.assert_called_once_with(
-        "sb-cont-wait", max_attempts=7
-    )
-
-
-def test_create_sandbox_vm_uses_vm_rate_limiter():
+def test_create_sandbox_vm_uses_shared_rate_limiter():
     obj = ConcreteMixin(max_retries=1, base_delay=0.01)
     obj.logger = MagicMock()
-    # Replace both limiters with mocks that record acquire() calls.
-    cont_limiter = MagicMock()
-    cont_limiter.acquire = AsyncMock()
-    vm_limiter = MagicMock()
-    vm_limiter.acquire = AsyncMock()
-    obj.sandbox_creation_rate_limiter = cont_limiter
-    obj.vm_sandbox_creation_rate_limiter = vm_limiter
+    shared_limiter = MagicMock()
+    shared_limiter.acquire = AsyncMock()
+    obj.sandbox_creation_rate_limiter = shared_limiter
 
     sandbox_obj = MagicMock(id="sb-vm-rl")
     obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
@@ -649,121 +624,8 @@ def test_create_sandbox_vm_uses_vm_rate_limiter():
     request = MagicMock(vm=True, gpu_count=0, gpu_type=None)
     asyncio.run(obj.create_sandbox({}, request=request))
 
-    vm_limiter.acquire.assert_awaited_once()
-    cont_limiter.acquire.assert_not_awaited()
-
-
-def test_create_sandbox_container_uses_container_rate_limiter():
-    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
-    obj.logger = MagicMock()
-    cont_limiter = MagicMock()
-    cont_limiter.acquire = AsyncMock()
-    vm_limiter = MagicMock()
-    vm_limiter.acquire = AsyncMock()
-    obj.sandbox_creation_rate_limiter = cont_limiter
-    obj.vm_sandbox_creation_rate_limiter = vm_limiter
-
-    sandbox_obj = MagicMock(id="sb-cont-rl")
-    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
-    obj.sandbox_client.wait_for_creation = AsyncMock()
-
-    request = MagicMock(vm=False, gpu_count=0, gpu_type=None)
-    asyncio.run(obj.create_sandbox({}, request=request))
-
-    cont_limiter.acquire.assert_awaited_once()
-    vm_limiter.acquire.assert_not_awaited()
-
-
-def test_init_sandbox_client_disables_vm_rate_limiter_when_none():
-    obj = ConcreteMixin(
-        max_retries=1,
-        base_delay=0.01,
-        vm_sandbox_creations_per_minute=None,
-    )
-    assert obj.vm_sandbox_creation_rate_limiter is None
-    # Container limiter still enabled by default.
-    assert obj.sandbox_creation_rate_limiter is not None
-
-
-# ── VM unsupported-op guards ────────────────────────────────────────
-
-
-def test_expose_port_raises_on_vm(mixin):
-    mixin.sandbox_client.expose = AsyncMock()
-    state = {"sandbox_is_vm": True}
-
-    with pytest.raises(SandboxVMUnsupportedError, match="Port exposure"):
-        asyncio.run(mixin.expose_port(state, "sb-vm", 8080))
-
-    mixin.sandbox_client.expose.assert_not_called()
-
-
-def test_expose_port_delegates_on_container(mixin):
-    mixin.sandbox_client.expose = AsyncMock(return_value="exposure")
-    state = {"sandbox_is_vm": False}
-
-    result = asyncio.run(
-        mixin.expose_port(state, "sb-cont", 8080, name="web", protocol="HTTP")
-    )
-    assert result == "exposure"
-    mixin.sandbox_client.expose.assert_awaited_once_with(
-        "sb-cont", 8080, name="web", protocol="HTTP"
-    )
-
-
-def test_unexpose_port_raises_on_vm(mixin):
-    mixin.sandbox_client.unexpose = AsyncMock()
-    state = {"sandbox_is_vm": True}
-
-    with pytest.raises(SandboxVMUnsupportedError, match="Port unexpose"):
-        asyncio.run(mixin.unexpose_port(state, "sb-vm", "exp-1"))
-
-    mixin.sandbox_client.unexpose.assert_not_called()
-
-
-def test_unexpose_port_delegates_on_container(mixin):
-    mixin.sandbox_client.unexpose = AsyncMock()
-    state = {"sandbox_is_vm": False}
-
-    asyncio.run(mixin.unexpose_port(state, "sb-cont", "exp-1"))
-
-    mixin.sandbox_client.unexpose.assert_awaited_once_with("sb-cont", "exp-1")
-
-
-def test_list_exposed_ports_raises_on_vm(mixin):
-    mixin.sandbox_client.list_exposed_ports = AsyncMock()
-    state = {"sandbox_is_vm": True}
-
-    with pytest.raises(SandboxVMUnsupportedError, match="Port listing"):
-        asyncio.run(mixin.list_exposed_ports(state, "sb-vm"))
-
-
-def test_list_exposed_ports_delegates_on_container(mixin):
-    mixin.sandbox_client.list_exposed_ports = AsyncMock(return_value="ports")
-    state = {"sandbox_is_vm": False}
-
-    result = asyncio.run(mixin.list_exposed_ports(state, "sb-cont"))
-    assert result == "ports"
-    mixin.sandbox_client.list_exposed_ports.assert_awaited_once_with("sb-cont")
-
-
-def test_create_ssh_session_raises_on_vm(mixin):
-    mixin.sandbox_client.create_ssh_session = AsyncMock()
-    state = {"sandbox_is_vm": True}
-
-    with pytest.raises(SandboxVMUnsupportedError, match="SSH"):
-        asyncio.run(mixin.create_ssh_session(state, "sb-vm"))
-
-
-def test_create_ssh_session_delegates_on_container(mixin):
-    mixin.sandbox_client.create_ssh_session = AsyncMock(return_value="session")
-    state = {"sandbox_is_vm": False}
-
-    result = asyncio.run(mixin.create_ssh_session(state, "sb-cont", ttl_seconds=600))
-    assert result == "session"
-    mixin.sandbox_client.create_ssh_session.assert_awaited_once_with(
-        "sb-cont", ttl_seconds=600
-    )
+    # VM sandboxes flow through the same rate limiter as containers.
+    shared_limiter.acquire.assert_awaited_once()
 
 
 # ── SandboxMonitorRubric VM metrics ──────────────────────────────────

@@ -23,17 +23,17 @@ downstream rubrics and helpers:
 - `state["sandbox_gpu_count"]: int`
 - `state["sandbox_gpu_type"]: str | None`
 
-**VM-specific tuning knobs** on `init_sandbox_client`:
+VM and container sandboxes share the same `sandbox_creations_per_minute`
+rate limiter and `sandbox_wait_for_creation_max_attempts` readiness cap.
+If VM boots are slow or quota-constrained, raise both via
+`init_sandbox_client`.
 
-- `vm_sandbox_creations_per_minute` (default `32`) — separate `AsyncLimiter`
-  so slower VM creations do not starve concurrent container rollouts.
-- `vm_sandbox_wait_for_creation_max_attempts` (default `240`) — longer
-  readiness wait to account for VM boot.
-
-**Unsupported on VM sandboxes** (SDK gateway does not yet support these):
-`expose_port`, `unexpose_port`, `list_exposed_ports`, and `create_ssh_session`
-all consult `state["sandbox_is_vm"]` and raise `SandboxVMUnsupportedError`
-(a `vf.SandboxError` subclass) before the call would hit the gateway.
+Port exposure (`expose` / `unexpose` / `list_exposed_ports`) and SSH
+sessions are not supported by the sandbox gateway on VM-backed sandboxes;
+if you call them via `self.sandbox_client`, the SDK will raise
+`APIError`. Subclasses that need to fail fast on their own may raise
+`SandboxVMUnsupportedError` (exported from `sandbox_mixin`) when
+`state["sandbox_is_vm"]` is true.
 
 `SandboxMonitorRubric` reports two VM-aware metrics — `sandbox_is_vm` and
 `sandbox_gpu_count` — in addition to the existing `sandbox_oom` /

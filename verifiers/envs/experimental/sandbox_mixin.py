@@ -16,13 +16,10 @@ from prime_sandboxes import (
     CommandTimeoutError,
     CreateSandboxRequest,
     DownloadTimeoutError,
-    ExposedPort,
-    ListExposedPortsResponse,
     SandboxClient,
     SandboxFileNotFoundError,
     SandboxOOMError,
     SandboxTimeoutError,
-    SSHSession,
     UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
@@ -140,8 +137,6 @@ class SandboxMixin:
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
     sandbox_creation_rate_limiter: Optional[AsyncLimiter]
-    vm_sandbox_wait_for_creation_max_attempts: int
-    vm_sandbox_creation_rate_limiter: Optional[AsyncLimiter]
     timeouts: SandboxTimeouts
     with_retry: Callable
 
@@ -165,8 +160,6 @@ class SandboxMixin:
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
-        vm_sandbox_wait_for_creation_max_attempts: int = 240,
-        vm_sandbox_creations_per_minute: float | None = 32,
         timeouts: SandboxTimeouts = SandboxTimeouts(),
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__.
@@ -179,11 +172,10 @@ class SandboxMixin:
         (``SandboxSpec.timeout_minutes``) and rollout-level
         (``MultiTurnEnv.timeout_seconds``) limits.
 
-        ``vm_sandbox_wait_for_creation_max_attempts`` and
-        ``vm_sandbox_creations_per_minute`` are VM-specific analogues of the
-        container-oriented defaults.  VM sandboxes boot more slowly and are
-        typically quota-heavier, so a separate rate limiter is used to avoid
-        starving concurrent container rollouts when both are in flight.
+        The same ``sandbox_wait_for_creation_max_attempts`` and
+        ``sandbox_creations_per_minute`` apply to both container and
+        VM-backed sandboxes; tune them up when using VMs if boot times or
+        quotas demand it.
         """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -194,14 +186,6 @@ class SandboxMixin:
         self.sandbox_creation_rate_limiter = (
             AsyncLimiter(max_rate=sandbox_creations_per_minute, time_period=60.0)
             if sandbox_creations_per_minute is not None
-            else None
-        )
-        self.vm_sandbox_wait_for_creation_max_attempts = (
-            vm_sandbox_wait_for_creation_max_attempts
-        )
-        self.vm_sandbox_creation_rate_limiter = (
-            AsyncLimiter(max_rate=vm_sandbox_creations_per_minute, time_period=60.0)
-            if vm_sandbox_creations_per_minute is not None
             else None
         )
         self.timeouts = timeouts
@@ -279,36 +263,24 @@ class SandboxMixin:
 
         When a sandbox_creation_rate_limit is configured, this method
         throttles to avoid overwhelming the sandbox API under burst load.
-        VM-backed requests (``request.vm == True``) use the VM-specific rate
-        limiter and readiness-attempt cap from
-        :meth:`init_sandbox_client` so that slower VM boots do not starve
-        concurrent container rollouts.
+        The same rate limiter and readiness-attempt cap apply to both
+        container and VM-backed requests; see :meth:`init_sandbox_client` to
+        tune them when VM boots are slow.
 
         Raises:
             SandboxCreationError: If sandbox creation fails after retries.
             SandboxNotReadyError: If sandbox fails to become ready.
             SandboxSetupError: If post_sandbox_setup hook fails.
         """
-        is_vm = bool(getattr(request, "vm", False))
-        rate_limiter = (
-            self.vm_sandbox_creation_rate_limiter
-            if is_vm
-            else self.sandbox_creation_rate_limiter
-        )
-        wait_max_attempts = (
-            self.vm_sandbox_wait_for_creation_max_attempts
-            if is_vm
-            else self.sandbox_wait_for_creation_max_attempts
-        )
-
-        if rate_limiter is not None:
-            await rate_limiter.acquire()
+        if self.sandbox_creation_rate_limiter is not None:
+            await self.sandbox_creation_rate_limiter.acquire()
 
         try:
             sandbox = await self.with_retry(self.sandbox_client.create)(request)
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
 
+        is_vm = bool(getattr(request, "vm", False))
         self.register_sandbox(sandbox.id)
         state["sandbox_id"] = sandbox.id
         state["sandbox_is_vm"] = is_vm
@@ -321,7 +293,7 @@ class SandboxMixin:
         try:
             await self.sandbox_client.wait_for_creation(
                 sandbox.id,
-                max_attempts=wait_max_attempts,
+                max_attempts=self.sandbox_wait_for_creation_max_attempts,
             )
         except Exception as e:
             raise SandboxNotReadyError(
@@ -494,77 +466,6 @@ class SandboxMixin:
                 f"Bundle extract failed in {sandbox_id} (exit={result.exit_code}): "
                 f"{(result.stderr or '')[:200]}"
             )
-
-    def _guard_vm_unsupported(self, state: dict[str, Any], feature: str) -> None:
-        """Raise :class:`SandboxVMUnsupportedError` if the rollout runs on a VM sandbox.
-
-        Consults ``state["sandbox_is_vm"]`` (populated by :meth:`create_sandbox`)
-        to avoid an extra round-trip to the sandbox API.  The sandbox backend
-        does not currently support port exposure or SSH on VM sandboxes; this
-        helper lets subclasses fail fast with a typed error before the SDK
-        would itself raise an opaque ``APIError``.
-        """
-        if state.get("sandbox_is_vm"):
-            raise SandboxVMUnsupportedError(
-                f"{feature} is not supported on VM sandboxes"
-            )
-
-    async def expose_port(
-        self,
-        state: dict[str, Any],
-        sandbox_id: str,
-        port: int,
-        name: str | None = None,
-        protocol: str = "HTTP",
-    ) -> ExposedPort:
-        """Expose a port on a container sandbox.
-
-        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
-        """
-        self._guard_vm_unsupported(state, "Port exposure")
-        return await self.sandbox_client.expose(
-            sandbox_id, port, name=name, protocol=protocol
-        )
-
-    async def unexpose_port(
-        self,
-        state: dict[str, Any],
-        sandbox_id: str,
-        exposure_id: str,
-    ) -> None:
-        """Remove a previously-exposed port.
-
-        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
-        """
-        self._guard_vm_unsupported(state, "Port unexpose")
-        await self.sandbox_client.unexpose(sandbox_id, exposure_id)
-
-    async def list_exposed_ports(
-        self,
-        state: dict[str, Any],
-        sandbox_id: str,
-    ) -> ListExposedPortsResponse:
-        """List exposed ports for a container sandbox.
-
-        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
-        """
-        self._guard_vm_unsupported(state, "Port listing")
-        return await self.sandbox_client.list_exposed_ports(sandbox_id)
-
-    async def create_ssh_session(
-        self,
-        state: dict[str, Any],
-        sandbox_id: str,
-        ttl_seconds: int | None = None,
-    ) -> SSHSession:
-        """Open an SSH session against a container sandbox.
-
-        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
-        """
-        self._guard_vm_unsupported(state, "SSH")
-        return await self.sandbox_client.create_ssh_session(
-            sandbox_id, ttl_seconds=ttl_seconds
-        )
 
     def teardown_sandboxes(self):
         """Delete all active sandboxes using sync client.
