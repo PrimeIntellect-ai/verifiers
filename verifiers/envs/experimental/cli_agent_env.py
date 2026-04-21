@@ -153,8 +153,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"rollout_id={state['rollout_id']}",
             f"example_id={state['example_id']}",
         ]
-        state_input = state["input"]
-        instance_id = state_input.get("instance_id")
+        state_info = state["input"].get("info", {})
+        instance_id = state_info.get("instance_id")
         if instance_id:
             context_parts.append(f"instance_id={instance_id}")
         return AgentError(f"{message} ({', '.join(context_parts)})")
