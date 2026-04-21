@@ -120,15 +120,8 @@ async def completions_request(
             .tolist()
         )
 
-    # vLLM expands multimodal placeholders (e.g. <|image_pad|>) server-side,
-    # so the token sequence the trainer needs to reproduce is the one vLLM
-    # actually ran on — not the un-expanded prompt we sent. Fall back to the
-    # local prompt_ids only when the server didn't echo them (text-only
-    # deployments, older servers).
-    final_prompt_ids = data.get("prompt_token_ids") or list(prompt_ids)
-
     return {
-        "prompt_ids": list(final_prompt_ids),
+        "prompt_ids": list(prompt_ids),
         "completion_ids": list(completion_ids),
         "completion_logprobs": completion_logprobs,
         "content": parsed.content,
