@@ -353,16 +353,36 @@ class InterceptionServer:
                 "Connection": "keep-alive",
             },
         )
-        await response.prepare(http_request)
 
+        # Cache peer address + start timer before prepare() so pre-loop
+        # failures have something to log.
         start = time.monotonic()
-        # Cache peer address now — at error time the socket may already be
-        # closed and peername becomes None.
         peer: tuple | None = None
         try:
             peer = http_request.transport.get_extra_info("peername")
         except Exception:
             pass
+
+        # prepare() sends the response headers and attaches the writer to the
+        # transport. If the transport is already half-open (e.g. the peer
+        # closed between accept and our first write), prepare itself can
+        # raise, and the old code path let that exception escape silently.
+        # Surface it as StreamInterrupted so the rollout is rescheduled.
+        try:
+            await response.prepare(http_request)
+        except Exception as e:
+            diag = _tcp_diag(http_request.transport, peer)
+            logger.warning(
+                f"[{rollout_id}] Streaming response.prepare failed {diag}: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"prepare failed {diag}: {type(e).__name__}: {e}"
+                ),
+            )
+            return response
         # Start the periodic TCP-state sampler (logs state transitions during
         # the stream so we catch CLOSE_WAIT / FIN_WAIT before the write RST).
         # Uses a shared dict so the error path can read the last-seen state
@@ -455,10 +475,28 @@ class InterceptionServer:
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
 
+        # write_eof sends the final empty chunk and flushes the transport.
+        # A failure here means the client/peer went away between the last
+        # chunk and the trailing newline. Prior code caught only
+        # ConnectionResetError at DEBUG — surface any failure as
+        # StreamInterrupted so the rollout is rescheduled instead of being
+        # accepted as a clean completion with 0 turns.
         try:
             await response.write_eof()
-        except ConnectionResetError:
-            logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
+        except Exception as e:
+            waited_s = time.monotonic() - start
+            diag = _tcp_diag(http_request.transport, peer, tcp_state_ref)
+            logger.warning(
+                f"[{rollout_id}] write_eof failed after {waited_s:.1f}s {diag}: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"write_eof failed after {waited_s:.1f}s "
+                    f"{diag}: {type(e).__name__}: {e}"
+                ),
+            )
         return response
 
 
