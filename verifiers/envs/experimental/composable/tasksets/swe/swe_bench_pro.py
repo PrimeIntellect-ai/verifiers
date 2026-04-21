@@ -26,7 +26,8 @@ DEFAULT_DATASET_SPLIT = "test"
 DEFAULT_AGENT_WORKDIR = "/app"
 DEFAULT_DOCKER_IMAGE_REPOSITORY = "jefzda/sweap-images"
 DEFAULT_RUN_SCRIPTS_URL = (
-    "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/main/run_scripts"
+    "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/"
+    "0c64e26f00b9c190432de7fc520c8ceed5c25518/run_scripts"
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,14 @@ echo SWEBENCH_PRO_OUTPUT_END
 def _download_file(url: str, path: str) -> None:
     with urllib.request.urlopen(url, timeout=60) as response:
         Path(path).write_bytes(response.read())
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _list_literal(value: Any) -> str:
+    return str(value or [])
 
 
 class SWEBenchProRubric(vf.Rubric):
@@ -189,18 +198,20 @@ class SWEBenchProTaskSet(SandboxTaskSet):
             "repo": str(example["repo"]),
             "instance_id": str(example["instance_id"]),
             "base_commit": str(example["base_commit"]),
-            "patch": str(example["patch"]),
-            "test_patch": str(example["test_patch"]),
-            "problem_statement": str(example["problem_statement"]),
-            "requirements": str(example["requirements"]),
-            "interface": str(example["interface"]),
-            "repo_language": str(example["repo_language"]),
-            "fail_to_pass": str(example["fail_to_pass"]),
-            "pass_to_pass": str(example["pass_to_pass"]),
-            "issue_specificity": str(example["issue_specificity"]),
-            "issue_categories": str(example["issue_categories"]),
-            "before_repo_set_cmd": str(example["before_repo_set_cmd"]),
-            "selected_test_files_to_run": str(example["selected_test_files_to_run"]),
+            "patch": _text(example["patch"]),
+            "test_patch": _text(example["test_patch"]),
+            "problem_statement": _text(example["problem_statement"]),
+            "requirements": _text(example["requirements"]),
+            "interface": _text(example["interface"]),
+            "repo_language": _text(example["repo_language"]),
+            "fail_to_pass": _list_literal(example["fail_to_pass"]),
+            "pass_to_pass": _list_literal(example["pass_to_pass"]),
+            "issue_specificity": _text(example["issue_specificity"]),
+            "issue_categories": _text(example["issue_categories"]),
+            "before_repo_set_cmd": _text(example["before_repo_set_cmd"]),
+            "selected_test_files_to_run": _list_literal(
+                example["selected_test_files_to_run"]
+            ),
             "dockerhub_tag": str(example["dockerhub_tag"]),
         }
         row["docker_image"] = f"{self.docker_image_repository}:{row['dockerhub_tag']}"
@@ -292,6 +303,7 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                 self.agent_workdir,
                 test_patch,
                 info["base_commit"],
+                apply_patch=self._apply_patch_file,
             )
 
         instance_id = info["instance_id"]
@@ -357,25 +369,47 @@ class SWEBenchProTaskSet(SandboxTaskSet):
         patch = state["info"].get("patch", "")
         if not patch.strip():
             raise RuntimeError("No gold patch in info['patch']")
+        await self._apply_patch_file(
+            sandbox_client, sandbox_id, self.agent_workdir, patch, "gold"
+        )
 
-        with tempfile.NamedTemporaryFile(suffix=".patch", mode="w", delete=False) as f:
+    async def _apply_patch_file(
+        self,
+        sandbox_client: Any,
+        sandbox_id: str,
+        workdir: str,
+        patch: str,
+        label: str,
+    ) -> None:
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{label}.patch", mode="w", delete=False
+        ) as f:
             f.write(patch)
             f.flush()
             local_path = f.name
+        remote_path = f"/tmp/{label}.patch"
         try:
-            await sandbox_client.upload_file(sandbox_id, "/tmp/gold.patch", local_path)
+            await sandbox_client.upload_file(sandbox_id, remote_path, local_path)
         finally:
             Path(local_path).unlink(missing_ok=True)
 
-        result = await sandbox_client.execute_command(
-            sandbox_id,
-            "git apply -v /tmp/gold.patch",
-            working_dir=self.agent_workdir,
-            timeout=60,
-        )
-        if result.exit_code != 0:
-            output = ((result.stdout or "") + (result.stderr or ""))[:500]
-            raise RuntimeError(f"gold patch apply failed: {output}")
+        try:
+            result = await sandbox_client.execute_command(
+                sandbox_id,
+                "git apply -v --3way --recount --ignore-space-change "
+                f"--whitespace=nowarn {shlex.quote(remote_path)}",
+                working_dir=workdir,
+                timeout=60,
+            )
+            if result.exit_code != 0:
+                output = ((result.stdout or "") + (result.stderr or ""))[:500]
+                raise RuntimeError(f"{label} patch apply failed: {output}")
+        finally:
+            await sandbox_client.execute_command(
+                sandbox_id,
+                f"rm -f {shlex.quote(remote_path)}",
+                timeout=10,
+            )
 
     async def validate_instance(self, state) -> bool:
         sandbox_client = state["sandbox_client"]
