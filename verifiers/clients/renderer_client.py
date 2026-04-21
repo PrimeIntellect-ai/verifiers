@@ -12,9 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
+
+# Dedicated logger for extension-break diagnostics. Set to DEBUG to see the
+# two token streams at the divergence point; left at the default WARNING
+# so there's no overhead in production.
+_incremental_logger = logging.getLogger("verifiers.renderer_client.extension_break")
 
 from openai import AsyncOpenAI
 
@@ -332,6 +338,98 @@ def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     return [_coerce_renderer_message(message) for message in prompt + completion]
 
 
+def _log_extension_break(
+    renderer: Renderer,
+    *,
+    turn_n: int,
+    prev_prompt_ids: list[int],
+    prev_completion_ids: list[int],
+    full_prompt: list[RendererMessage],
+    tools: list[ToolSpec] | None,
+) -> None:
+    """Emit a DEBUG log showing the two token streams that diverge when the
+    bridge trick fails at the start of turn ``turn_n``.
+
+    Stream A = ``prev_prompt_ids + prev_completion_ids`` — the exact tokens
+    vLLM saw and sampled at turn N-1. Stream B = ``render_ids(full_prompt,
+    add_generation_prompt=True)`` — what the client will now send as a fresh
+    render. Their longest common prefix shows how much of the previous
+    turn's history the renderer still honors bitwise; tokens after that
+    point are where the assistant history got "rewritten".
+    """
+    try:
+        rerender_ids = renderer.render_ids(
+            full_prompt, tools=tools, add_generation_prompt=True
+        )
+    except Exception as exc:  # pragma: no cover — diagnostic only
+        _incremental_logger.debug(
+            f"extension break at turn {turn_n}: re-render failed ({exc!r}); "
+            f"prev_combined_len={len(prev_prompt_ids) + len(prev_completion_ids)}"
+        )
+        return
+
+    prev_combined = list(prev_prompt_ids) + list(prev_completion_ids)
+    max_check = min(len(prev_combined), len(rerender_ids))
+    div = 0
+    while div < max_check and prev_combined[div] == rerender_ids[div]:
+        div += 1
+
+    if div >= len(prev_prompt_ids):
+        reason = "renderer rewrote assistant history"
+    else:
+        reason = "prompt tokens diverged (unusual — investigate tokenizer stability)"
+
+    # Show a small window around the divergence so the log is scannable
+    # but not overwhelming. Full arrays are still logged after.
+    window = 8
+    lo = max(0, div - window)
+    hi_prev = min(len(prev_combined), div + window)
+    hi_rer = min(len(rerender_ids), div + window)
+
+    prev_window = prev_combined[lo:hi_prev]
+    rer_window = rerender_ids[lo:hi_rer]
+
+    tokenizer = getattr(renderer, "_tokenizer", None) or getattr(
+        renderer, "tokenizer", None
+    )
+
+    def _decode(ids: list[int]) -> str:
+        if tokenizer is None:
+            return "<tokenizer unavailable>"
+        try:
+            return tokenizer.decode(ids, skip_special_tokens=False)
+        except Exception as exc:  # pragma: no cover
+            return f"<decode failed: {exc!r}>"
+
+    _incremental_logger.debug(
+        "extension break at turn %d: %s\n"
+        "  diverged at token %d "
+        "(prev_prompt=%d, prev_completion=%d, rerender=%d)\n"
+        "  prev[%d:%d] text:     %r\n"
+        "  prev[%d:%d] ids:      %s\n"
+        "  rerender[%d:%d] text: %r\n"
+        "  rerender[%d:%d] ids:  %s",
+        turn_n,
+        reason,
+        div,
+        len(prev_prompt_ids),
+        len(prev_completion_ids),
+        len(rerender_ids),
+        lo,
+        hi_prev,
+        _decode(prev_window),
+        lo,
+        hi_prev,
+        prev_window,
+        lo,
+        hi_rer,
+        _decode(rer_window),
+        lo,
+        hi_rer,
+        rer_window,
+    )
+
+
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -369,7 +467,7 @@ async def _get_incremental_prompt_ids(
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
-        return await _run_with_renderer(
+        bridged = await _run_with_renderer(
             renderer,
             lambda r: build_incremental_prompt_ids(
                 r,
@@ -379,6 +477,19 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             ),
         )
+        if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):
+            await _run_with_renderer(
+                renderer,
+                lambda r: _log_extension_break(
+                    r,
+                    turn_n=len(list(trajectory)),
+                    prev_prompt_ids=list(previous_prompt_ids),
+                    prev_completion_ids=list(previous_completion_ids),
+                    full_prompt=prompt,
+                    tools=tools,
+                ),
+            )
+        return bridged
 
     return None
 
