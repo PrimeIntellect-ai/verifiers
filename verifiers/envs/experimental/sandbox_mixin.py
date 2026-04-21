@@ -46,8 +46,13 @@ class SandboxNotReadyError(vf.SandboxError): ...
 class SandboxSetupError(vf.SandboxError): ...
 
 
-class SandboxVMUnsupportedError(vf.SandboxError):
-    """Raised when a feature is invoked that the sandbox API does not support on VM-backed sandboxes."""
+class SandboxVMUnsupportedError(Exception):
+    """Raised when a feature is invoked that the sandbox API does not support on VM-backed sandboxes.
+
+    Intentionally not a :class:`vf.SandboxError` subclass: most environments
+    treat ``SandboxError`` as retryable, but unsupported VM code paths are
+    programmer errors that should fail loudly rather than trigger retries.
+    """
 
 
 @dataclass(frozen=True)
@@ -72,14 +77,12 @@ class SandboxTimeouts:
 
 
 class SandboxMonitorRubric(vf.Rubric):
-    """Monitor rubric that tracks sandbox execution failures and VM usage."""
+    """Monitor rubric that tracks sandbox execution failures."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.sandbox_oom)
         self.add_metric(self.sandbox_timeout)
-        self.add_metric(self.sandbox_is_vm)
-        self.add_metric(self.sandbox_gpu_count)
 
     async def sandbox_oom(self, state: vf.State) -> float:
         """Whether the sandbox was OOM-killed."""
@@ -88,14 +91,6 @@ class SandboxMonitorRubric(vf.Rubric):
     async def sandbox_timeout(self, state: vf.State) -> float:
         """Whether the sandbox timed out."""
         return float(bool(state.get("sandbox_timeout")))
-
-    async def sandbox_is_vm(self, state: vf.State) -> float:
-        """Whether the rollout ran on a VM-backed sandbox."""
-        return float(bool(state.get("sandbox_is_vm")))
-
-    async def sandbox_gpu_count(self, state: vf.State) -> float:
-        """Number of GPUs attached to the sandbox (0 for container or CPU-only VM)."""
-        return float(state.get("sandbox_gpu_count") or 0)
 
 
 # The SDK handles some transient transport retries internally, but upload/download

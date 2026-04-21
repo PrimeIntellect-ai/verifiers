@@ -16,7 +16,6 @@ import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import (
     SandboxCreationError,
     SandboxMixin,
-    SandboxMonitorRubric,
     SandboxNotReadyError,
     SandboxSetupError,
     SandboxTimeouts,
@@ -568,22 +567,3 @@ def test_create_sandbox_vm_uses_shared_rate_limiter():
 
     # VM sandboxes flow through the same rate limiter as containers.
     shared_limiter.acquire.assert_awaited_once()
-
-
-# ── SandboxMonitorRubric VM metrics ──────────────────────────────────
-
-
-def test_sandbox_monitor_rubric_reports_vm_metrics():
-    rubric = SandboxMonitorRubric()
-    state = {
-        "sandbox_is_vm": True,
-        "sandbox_gpu_count": 4,
-    }
-    assert asyncio.run(rubric.sandbox_is_vm(state)) == 1.0
-    assert asyncio.run(rubric.sandbox_gpu_count(state)) == 4.0
-
-
-def test_sandbox_monitor_rubric_vm_metrics_default_zero():
-    rubric = SandboxMonitorRubric()
-    assert asyncio.run(rubric.sandbox_is_vm({})) == 0.0
-    assert asyncio.run(rubric.sandbox_gpu_count({})) == 0.0

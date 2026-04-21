@@ -32,12 +32,9 @@ Port exposure (`expose` / `unexpose` / `list_exposed_ports`) and SSH
 sessions are not supported by the sandbox gateway on VM-backed sandboxes;
 if you call them via `self.sandbox_client`, the SDK will raise
 `APIError`. Subclasses that need to fail fast on their own may raise
-`SandboxVMUnsupportedError` (exported from `sandbox_mixin`) when
+`SandboxVMUnsupportedError` (exported from `sandbox_mixin`, not a
+`vf.SandboxError` subclass so it is not treated as retryable) when
 `state["sandbox_is_vm"]` is true.
-
-`SandboxMonitorRubric` reports two VM-aware metrics — `sandbox_is_vm` and
-`sandbox_gpu_count` — in addition to the existing `sandbox_oom` /
-`sandbox_timeout` metrics.
 
 ## GymEnv
 
