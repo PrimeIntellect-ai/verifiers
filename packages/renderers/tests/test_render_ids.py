@@ -307,14 +307,16 @@ _TINY_PNG = (
 
 
 def _qwen3_vl_expected(messages, **kwargs):
-    _, renderer = _qwen3_vl()
-    result = _qwen3_vl_processor().apply_chat_template(
+    # Renderer emits un-expanded <|image_pad|> placeholders (one per image);
+    # vLLM expands them server-side from multi_modal_data. Render the expected
+    # output the same way — apply the chat template as text, then tokenize.
+    tokenizer, renderer = _qwen3_vl()
+    text = _qwen3_vl_processor().apply_chat_template(
         renderer._prepare_messages_for_processor(messages),
-        tokenize=True,
-        return_dict=True,
+        tokenize=False,
         **kwargs,
     )
-    return list(result["input_ids"][0])
+    return tokenizer.encode(text, add_special_tokens=False)
 
 
 def test_qwen3_vl_auto_renderer():

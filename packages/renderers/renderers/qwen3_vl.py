@@ -335,19 +335,19 @@ class Qwen3VLRenderer:
         add_generation_prompt: bool = False,
     ) -> list[int]:
         if self._has_multimodal_content(messages):
-            result = self._get_processor().apply_chat_template(
+            # Apply the chat template at the text level only. vLLM's
+            # /v1/generate expects one <|image_pad|> placeholder per image and
+            # performs the patch-grid expansion itself given multi_modal_data;
+            # using tokenize=True here would emit already-expanded placeholders
+            # and vLLM would double-expand, scrambling image embeddings on any
+            # turn with more than one image.
+            text = self._get_processor().apply_chat_template(
                 self._prepare_messages_for_processor(messages),
-                tokenize=True,
-                return_dict=True,
+                tokenize=False,
                 add_generation_prompt=add_generation_prompt,
                 **({} if tools is None else {"tools": tools}),
             )
-            input_ids = result["input_ids"]
-            if hasattr(input_ids, "tolist"):
-                input_ids = input_ids.tolist()
-            if input_ids and isinstance(input_ids[0], list):
-                return list(input_ids[0])
-            return list(input_ids)
+            return self._tokenizer.encode(text, add_special_tokens=False)
 
         return self.render(
             messages, tools=tools, add_generation_prompt=add_generation_prompt
