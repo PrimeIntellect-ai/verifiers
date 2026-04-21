@@ -254,12 +254,10 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                 Path(local_path).unlink(missing_ok=True)
 
         selected_tests = ",".join(ast.literal_eval(info["selected_test_files_to_run"]))
-        setup_commands = info["before_repo_set_cmd"].splitlines()
-        test_setup_command = setup_commands[-1] if setup_commands else ""
         command = _RUN_TESTS_COMMAND.format(
             agent_workdir=agent_workdir,
             base_commit=base_commit,
-            test_setup_command=test_setup_command,
+            test_setup_command=info["before_repo_set_cmd"].strip(),
             selected_tests=shlex.quote(selected_tests),
         )
         result = await sandbox_client.run_background_job(
