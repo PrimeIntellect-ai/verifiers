@@ -165,6 +165,37 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
     assert 'test -f "$RLM_CHECKOUT_PATH/install.sh"' in script
     assert "git clone" not in script
     assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
+    # Shim setup is a post-install step now, NOT part of install_script.
+    assert "/usr/local/bin/" not in script
+
+
+def test_rlm_harness_blocks_git_by_default(tmp_path):
+    """By default RLM uploads a sh shim at /usr/local/bin/git that
+    refuses on any invocation and exits 1. post_install_script just
+    chmods it executable."""
+    checkout = _make_git_checkout(tmp_path / "rlm")
+    harness = rlm_harness(local_checkout=checkout)
+
+    assert harness.post_install_uploads is not None
+    assert set(harness.post_install_uploads.keys()) == {"/usr/local/bin/git"}
+
+    shim = harness.post_install_uploads["/usr/local/bin/git"]
+    assert shim.startswith("#!/bin/sh\n")
+    assert "Bash command 'git' is not allowed." in shim
+    assert "exit 1" in shim
+
+    assert harness.post_install_script == "chmod +x /usr/local/bin/git"
+
+
+def test_rlm_harness_allow_git_uploads_nothing(tmp_path):
+    """``allow_git=True`` skips the shim entirely — no uploads, no
+    post-install script. Matches opencode's ``allow_git=True`` default:
+    the caller has opted in, so don't get in their way."""
+    checkout = _make_git_checkout(tmp_path / "rlm")
+    harness = rlm_harness(local_checkout=checkout, allow_git=True)
+
+    assert harness.post_install_uploads is None
+    assert harness.post_install_script is None
 
 
 def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
@@ -466,6 +497,84 @@ async def test_rlm_uploads_skills_before_install(tmp_path, monkeypatch):
         "mkdir -p /task && tar -xzf /tmp/_upload_task_rlm-skills.tar.gz -C / && rm -f /tmp/_upload_task_rlm-skills.tar.gz",
         timeout=60,
     )
+
+
+@pytest.mark.asyncio
+async def test_post_install_uploads_and_script_run_after_install():
+    """Post-install hooks: files upload AFTER install_script finishes,
+    then post_install_script runs. Failure on either path is fatal."""
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            install_script="install-agent",
+            post_install_uploads={"/usr/local/lib/execute_bash.py": "PYTHON SOURCE"},
+            post_install_script="install-shims",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+
+    # Install script must have already run before the post-install upload.
+    install_cmd_idx = next(
+        i
+        for i, c in enumerate(env.sandbox_client.execute_command.await_args_list)
+        if c.args[1] == "install-agent"
+    )
+    post_install_cmd_idx = next(
+        i
+        for i, c in enumerate(env.sandbox_client.execute_command.await_args_list)
+        if c.args[1] == "install-shims"
+    )
+    assert install_cmd_idx < post_install_cmd_idx
+
+    # The upload happens between install and post-install script. We can
+    # check it was called with the right args; ordering is guaranteed by
+    # the sequential awaits in ``post_sandbox_setup``.
+    upload_calls = [
+        call
+        for call in env.upload_content.await_args_list
+        if call.args[2] == "/usr/local/lib/execute_bash.py"
+    ]
+    assert len(upload_calls) == 1
+    assert upload_calls[0].args[0] == "sbx"
+    assert upload_calls[0].args[1] == "PYTHON SOURCE"
+
+
+@pytest.mark.asyncio
+async def test_post_install_script_failure_raises():
+    import verifiers as vf
+
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="true",
+            post_install_script="exit 7",
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="boom", stderr="", exit_code=7)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    with pytest.raises(vf.SandboxError, match="Post-install failed"):
+        await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
 
 
 def test_build_dir_archive_holds_shared_lock_for_local_path(tmp_path):
