@@ -154,6 +154,9 @@ class SWEBenchProTaskSet(SandboxTaskSet):
         super().__init__(dataset=self._build_dataset(), name=name)
 
     def _build_dataset(self) -> Dataset:
+        if self.max_examples == 0:
+            return Dataset.from_dict({"question": [], "info": [], "answer": []})
+
         rows = []
         for raw_example in load_dataset(self.dataset_name, split=self.dataset_split):
             example = self._normalize_example(raw_example)
@@ -168,7 +171,7 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                     "answer": "",
                 }
             )
-            if self.max_examples > -1 and len(rows) >= self.max_examples:
+            if self.max_examples > 0 and len(rows) >= self.max_examples:
                 break
 
         if not rows:
