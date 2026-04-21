@@ -170,13 +170,27 @@ class RendererPool:
     """Thread-safe pool of Renderer instances for parallel pretokenization.
 
     Each Renderer wraps its own tokenizer copy, avoiding contention.
+
+    Construction parallelism matters: ``AutoTokenizer.from_pretrained`` takes
+    hundreds of ms per call (JSON parse + Rust tokenizer build + HF cache
+    lookup), so populating a 32-slot pool serially costs ~10-15s on startup
+    and shows up directly as a step-0 stall. We fan the factory out across a
+    short-lived thread pool; since HF fast tokenizers release the GIL during
+    the Rust build phase, this parallelizes well.
     """
 
     def __init__(self, factory: Callable[[], Renderer], size: int):
+        from concurrent.futures import ThreadPoolExecutor
+
         self._factory = factory
         self._pool: queue.Queue[Renderer] = queue.Queue(maxsize=size)
-        for _ in range(size):
-            self._pool.put(factory())
+        # Cap workers so we don't spawn an oversized thread pool just to init
+        # a small pool; clamp to 8 because past that the GIL-bound Python
+        # portion of from_pretrained stops scaling.
+        workers = min(size, 8)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for renderer in executor.map(lambda _: factory(), range(size)):
+                self._pool.put(renderer)
 
     @contextmanager
     def checkout(self):
@@ -246,7 +260,7 @@ def _populate_registry():
 
 
 def create_renderer_pool(
-    tokenizer_name_or_path: str, renderer: str = "auto", size: int = 32
+    tokenizer_name_or_path: str, renderer: str = "auto", size: int = 16
 ) -> RendererPool:
     """Create a RendererPool with *size* independent tokenizer copies.
 

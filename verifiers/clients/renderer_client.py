@@ -59,7 +59,10 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.message_utils import maybe_normalize_messages
 
-_DEFAULT_POOL_SIZE = 32
+# Matches asyncio's default thread-pool cap: rendering happens inside
+# asyncio.to_thread, so extra pool slots beyond that are always idle and only
+# inflate startup time (each slot loads its own AutoTokenizer).
+_DEFAULT_POOL_SIZE = 16
 
 
 class RendererClient(
