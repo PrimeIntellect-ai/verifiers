@@ -16,9 +16,11 @@ import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import (
     SandboxCreationError,
     SandboxMixin,
+    SandboxMonitorRubric,
     SandboxNotReadyError,
     SandboxSetupError,
     SandboxTimeouts,
+    SandboxVMUnsupportedError,
     ThreadedAsyncSandboxClient,
     is_retryable_sandbox_api_error,
     is_retryable_sandbox_read_error,
@@ -77,13 +79,20 @@ def test_retryable_sandbox_api_error_ignores_non_retryable_api_error():
 # ── create_sandbox ───────────────────────────────────────────────────
 
 
+def _container_request(**overrides):
+    """Build a container (non-VM) request MagicMock with sensible defaults."""
+    defaults = {"vm": False, "gpu_count": 0, "gpu_type": None}
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
 def test_create_sandbox_success(mixin):
     sandbox_obj = MagicMock(id="sb-1")
     mixin.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
     mixin.sandbox_client.wait_for_creation = AsyncMock()
 
     state = {}
-    result = asyncio.run(mixin.create_sandbox(state, request=MagicMock()))
+    result = asyncio.run(mixin.create_sandbox(state, request=_container_request()))
 
     assert result == "sb-1"
     assert state["sandbox_id"] == "sb-1"
@@ -98,7 +107,7 @@ def test_create_sandbox_creation_fails(mixin):
     mixin.sandbox_client.create = AsyncMock(side_effect=Exception("boom"))
 
     with pytest.raises(SandboxCreationError):
-        asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
+        asyncio.run(mixin.create_sandbox({}, request=_container_request()))
 
 
 def test_create_sandbox_max_retries_is_true_retry_count():
@@ -108,7 +117,7 @@ def test_create_sandbox_max_retries_is_true_retry_count():
     obj.sandbox_client.create = AsyncMock(side_effect=[Exception("boom"), sandbox_obj])
     obj.sandbox_client.wait_for_creation = AsyncMock()
 
-    result = asyncio.run(obj.create_sandbox({}, request=MagicMock()))
+    result = asyncio.run(obj.create_sandbox({}, request=_container_request()))
 
     assert result == "sb-retry"
     assert obj.sandbox_client.create.await_count == 2
@@ -122,7 +131,7 @@ def test_create_sandbox_not_ready(mixin):
     )
 
     with pytest.raises(SandboxNotReadyError):
-        asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
+        asyncio.run(mixin.create_sandbox({}, request=_container_request()))
 
     # Sandbox was added before wait_for_creation, so it should still be tracked.
     assert "sb-2" in mixin.active_sandboxes
@@ -139,7 +148,7 @@ def test_create_sandbox_wait_for_creation_respects_custom_attempts():
     obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
     obj.sandbox_client.wait_for_creation = AsyncMock()
 
-    asyncio.run(obj.create_sandbox({}, request=MagicMock()))
+    asyncio.run(obj.create_sandbox({}, request=_container_request()))
 
     obj.sandbox_client.wait_for_creation.assert_called_once_with(
         "sb-custom",
@@ -158,7 +167,7 @@ def test_create_sandbox_setup_fails(mixin):
     mixin.post_sandbox_setup = bad_setup
 
     with pytest.raises(SandboxSetupError):
-        asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
+        asyncio.run(mixin.create_sandbox({}, request=_container_request()))
 
 
 def test_create_sandbox_setup_sandbox_error_passthrough(mixin):
@@ -172,7 +181,7 @@ def test_create_sandbox_setup_sandbox_error_passthrough(mixin):
     mixin.post_sandbox_setup = sandbox_err_setup
 
     with pytest.raises(vf.SandboxError, match="custom sandbox error"):
-        asyncio.run(mixin.create_sandbox({}, request=MagicMock()))
+        asyncio.run(mixin.create_sandbox({}, request=_container_request()))
 
 
 # ── post_sandbox_setup ───────────────────────────────────────────────
@@ -490,3 +499,287 @@ def test_cli_agent_env_defaults_match_hardcodes():
     assert env.timeouts.extract == 60.0
     assert env.timeouts.poll == 60.0
     assert env.timeouts.mkdir == 10.0
+
+
+# ── build_sandbox_request ────────────────────────────────────────────
+
+
+def test_build_sandbox_request_container_defaults(mixin):
+    req = mixin.build_sandbox_request(name="rollout-1", docker_image="python:3.12")
+    assert req.name == "rollout-1"
+    assert req.docker_image == "python:3.12"
+    assert req.vm is False
+    assert req.gpu_count == 0
+    assert req.gpu_type is None
+    assert req.labels == []
+
+
+def test_build_sandbox_request_vm_with_gpu(mixin):
+    req = mixin.build_sandbox_request(
+        name="rollout-vm",
+        docker_image="my-vm-image:latest",
+        vm=True,
+        gpu_count=1,
+        gpu_type="H100_80GB",
+    )
+    assert req.vm is True
+    assert req.gpu_count == 1
+    assert req.gpu_type == "H100_80GB"
+
+
+def test_build_sandbox_request_gpu_without_vm_raises(mixin):
+    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
+        mixin.build_sandbox_request(
+            name="bad",
+            docker_image="img",
+            vm=False,
+            gpu_count=1,
+            gpu_type="H100_80GB",
+        )
+
+
+def test_build_sandbox_request_gpu_count_without_type_raises(mixin):
+    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
+        mixin.build_sandbox_request(
+            name="bad",
+            docker_image="img",
+            vm=True,
+            gpu_count=1,
+        )
+
+
+def test_build_sandbox_request_gpu_type_without_count_raises(mixin):
+    with pytest.raises(vf.SandboxError, match="Invalid CreateSandboxRequest"):
+        mixin.build_sandbox_request(
+            name="bad",
+            docker_image="img",
+            vm=True,
+            gpu_count=0,
+            gpu_type="H100_80GB",
+        )
+
+
+# ── VM-aware create_sandbox ──────────────────────────────────────────
+
+
+def test_create_sandbox_populates_vm_state_fields(mixin):
+    sandbox_obj = MagicMock(id="sb-vm")
+    mixin.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    mixin.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=True, gpu_count=2, gpu_type="H100_80GB")
+    state: dict = {}
+    asyncio.run(mixin.create_sandbox(state, request=request))
+
+    assert state["sandbox_id"] == "sb-vm"
+    assert state["sandbox_is_vm"] is True
+    assert state["sandbox_gpu_count"] == 2
+    assert state["sandbox_gpu_type"] == "H100_80GB"
+
+
+def test_create_sandbox_container_sets_vm_false(mixin):
+    sandbox_obj = MagicMock(id="sb-cont")
+    mixin.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    mixin.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=False, gpu_count=0, gpu_type=None)
+    state: dict = {}
+    asyncio.run(mixin.create_sandbox(state, request=request))
+
+    assert state["sandbox_is_vm"] is False
+    assert state["sandbox_gpu_count"] == 0
+    assert state["sandbox_gpu_type"] is None
+
+
+def test_create_sandbox_vm_uses_vm_wait_attempts():
+    obj = ConcreteMixin(
+        max_retries=1,
+        base_delay=0.01,
+        sandbox_wait_for_creation_max_attempts=7,
+        vm_sandbox_wait_for_creation_max_attempts=42,
+    )
+    obj.logger = MagicMock()
+    sandbox_obj = MagicMock(id="sb-vm-wait")
+    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=True, gpu_count=0, gpu_type=None)
+    asyncio.run(obj.create_sandbox({}, request=request))
+
+    obj.sandbox_client.wait_for_creation.assert_called_once_with(
+        "sb-vm-wait", max_attempts=42
+    )
+
+
+def test_create_sandbox_container_uses_container_wait_attempts():
+    obj = ConcreteMixin(
+        max_retries=1,
+        base_delay=0.01,
+        sandbox_wait_for_creation_max_attempts=7,
+        vm_sandbox_wait_for_creation_max_attempts=42,
+    )
+    obj.logger = MagicMock()
+    sandbox_obj = MagicMock(id="sb-cont-wait")
+    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=False, gpu_count=0, gpu_type=None)
+    asyncio.run(obj.create_sandbox({}, request=request))
+
+    obj.sandbox_client.wait_for_creation.assert_called_once_with(
+        "sb-cont-wait", max_attempts=7
+    )
+
+
+def test_create_sandbox_vm_uses_vm_rate_limiter():
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj.logger = MagicMock()
+    # Replace both limiters with mocks that record acquire() calls.
+    cont_limiter = MagicMock()
+    cont_limiter.acquire = AsyncMock()
+    vm_limiter = MagicMock()
+    vm_limiter.acquire = AsyncMock()
+    obj.sandbox_creation_rate_limiter = cont_limiter
+    obj.vm_sandbox_creation_rate_limiter = vm_limiter
+
+    sandbox_obj = MagicMock(id="sb-vm-rl")
+    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=True, gpu_count=0, gpu_type=None)
+    asyncio.run(obj.create_sandbox({}, request=request))
+
+    vm_limiter.acquire.assert_awaited_once()
+    cont_limiter.acquire.assert_not_awaited()
+
+
+def test_create_sandbox_container_uses_container_rate_limiter():
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj.logger = MagicMock()
+    cont_limiter = MagicMock()
+    cont_limiter.acquire = AsyncMock()
+    vm_limiter = MagicMock()
+    vm_limiter.acquire = AsyncMock()
+    obj.sandbox_creation_rate_limiter = cont_limiter
+    obj.vm_sandbox_creation_rate_limiter = vm_limiter
+
+    sandbox_obj = MagicMock(id="sb-cont-rl")
+    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    request = MagicMock(vm=False, gpu_count=0, gpu_type=None)
+    asyncio.run(obj.create_sandbox({}, request=request))
+
+    cont_limiter.acquire.assert_awaited_once()
+    vm_limiter.acquire.assert_not_awaited()
+
+
+def test_init_sandbox_client_disables_vm_rate_limiter_when_none():
+    obj = ConcreteMixin(
+        max_retries=1,
+        base_delay=0.01,
+        vm_sandbox_creations_per_minute=None,
+    )
+    assert obj.vm_sandbox_creation_rate_limiter is None
+    # Container limiter still enabled by default.
+    assert obj.sandbox_creation_rate_limiter is not None
+
+
+# ── VM unsupported-op guards ────────────────────────────────────────
+
+
+def test_expose_port_raises_on_vm(mixin):
+    mixin.sandbox_client.expose = AsyncMock()
+    state = {"sandbox_is_vm": True}
+
+    with pytest.raises(SandboxVMUnsupportedError, match="Port exposure"):
+        asyncio.run(mixin.expose_port(state, "sb-vm", 8080))
+
+    mixin.sandbox_client.expose.assert_not_called()
+
+
+def test_expose_port_delegates_on_container(mixin):
+    mixin.sandbox_client.expose = AsyncMock(return_value="exposure")
+    state = {"sandbox_is_vm": False}
+
+    result = asyncio.run(
+        mixin.expose_port(state, "sb-cont", 8080, name="web", protocol="HTTP")
+    )
+    assert result == "exposure"
+    mixin.sandbox_client.expose.assert_awaited_once_with(
+        "sb-cont", 8080, name="web", protocol="HTTP"
+    )
+
+
+def test_unexpose_port_raises_on_vm(mixin):
+    mixin.sandbox_client.unexpose = AsyncMock()
+    state = {"sandbox_is_vm": True}
+
+    with pytest.raises(SandboxVMUnsupportedError, match="Port unexpose"):
+        asyncio.run(mixin.unexpose_port(state, "sb-vm", "exp-1"))
+
+    mixin.sandbox_client.unexpose.assert_not_called()
+
+
+def test_unexpose_port_delegates_on_container(mixin):
+    mixin.sandbox_client.unexpose = AsyncMock()
+    state = {"sandbox_is_vm": False}
+
+    asyncio.run(mixin.unexpose_port(state, "sb-cont", "exp-1"))
+
+    mixin.sandbox_client.unexpose.assert_awaited_once_with("sb-cont", "exp-1")
+
+
+def test_list_exposed_ports_raises_on_vm(mixin):
+    mixin.sandbox_client.list_exposed_ports = AsyncMock()
+    state = {"sandbox_is_vm": True}
+
+    with pytest.raises(SandboxVMUnsupportedError, match="Port listing"):
+        asyncio.run(mixin.list_exposed_ports(state, "sb-vm"))
+
+
+def test_list_exposed_ports_delegates_on_container(mixin):
+    mixin.sandbox_client.list_exposed_ports = AsyncMock(return_value="ports")
+    state = {"sandbox_is_vm": False}
+
+    result = asyncio.run(mixin.list_exposed_ports(state, "sb-cont"))
+    assert result == "ports"
+    mixin.sandbox_client.list_exposed_ports.assert_awaited_once_with("sb-cont")
+
+
+def test_create_ssh_session_raises_on_vm(mixin):
+    mixin.sandbox_client.create_ssh_session = AsyncMock()
+    state = {"sandbox_is_vm": True}
+
+    with pytest.raises(SandboxVMUnsupportedError, match="SSH"):
+        asyncio.run(mixin.create_ssh_session(state, "sb-vm"))
+
+
+def test_create_ssh_session_delegates_on_container(mixin):
+    mixin.sandbox_client.create_ssh_session = AsyncMock(return_value="session")
+    state = {"sandbox_is_vm": False}
+
+    result = asyncio.run(mixin.create_ssh_session(state, "sb-cont", ttl_seconds=600))
+    assert result == "session"
+    mixin.sandbox_client.create_ssh_session.assert_awaited_once_with(
+        "sb-cont", ttl_seconds=600
+    )
+
+
+# ── SandboxMonitorRubric VM metrics ──────────────────────────────────
+
+
+def test_sandbox_monitor_rubric_reports_vm_metrics():
+    rubric = SandboxMonitorRubric()
+    state = {
+        "sandbox_is_vm": True,
+        "sandbox_gpu_count": 4,
+    }
+    assert asyncio.run(rubric.sandbox_is_vm(state)) == 1.0
+    assert asyncio.run(rubric.sandbox_gpu_count(state)) == 4.0
+
+
+def test_sandbox_monitor_rubric_vm_metrics_default_zero():
+    rubric = SandboxMonitorRubric()
+    assert asyncio.run(rubric.sandbox_is_vm({})) == 0.0
+    assert asyncio.run(rubric.sandbox_gpu_count({})) == 0.0

@@ -16,13 +16,17 @@ from prime_sandboxes import (
     CommandTimeoutError,
     CreateSandboxRequest,
     DownloadTimeoutError,
+    ExposedPort,
+    ListExposedPortsResponse,
     SandboxClient,
     SandboxFileNotFoundError,
     SandboxOOMError,
     SandboxTimeoutError,
+    SSHSession,
     UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
+from pydantic import ValidationError
 
 import verifiers as vf
 from verifiers.utils.path_utils import write_temp_file
@@ -44,6 +48,10 @@ class SandboxNotReadyError(vf.SandboxError): ...
 
 
 class SandboxSetupError(vf.SandboxError): ...
+
+
+class SandboxVMUnsupportedError(vf.SandboxError):
+    """Raised when a feature is invoked that the sandbox API does not support on VM-backed sandboxes."""
 
 
 @dataclass(frozen=True)
@@ -68,12 +76,14 @@ class SandboxTimeouts:
 
 
 class SandboxMonitorRubric(vf.Rubric):
-    """Monitor rubric that tracks sandbox execution failures."""
+    """Monitor rubric that tracks sandbox execution failures and VM usage."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.sandbox_oom)
         self.add_metric(self.sandbox_timeout)
+        self.add_metric(self.sandbox_is_vm)
+        self.add_metric(self.sandbox_gpu_count)
 
     async def sandbox_oom(self, state: vf.State) -> float:
         """Whether the sandbox was OOM-killed."""
@@ -82,6 +92,14 @@ class SandboxMonitorRubric(vf.Rubric):
     async def sandbox_timeout(self, state: vf.State) -> float:
         """Whether the sandbox timed out."""
         return float(bool(state.get("sandbox_timeout")))
+
+    async def sandbox_is_vm(self, state: vf.State) -> float:
+        """Whether the rollout ran on a VM-backed sandbox."""
+        return float(bool(state.get("sandbox_is_vm")))
+
+    async def sandbox_gpu_count(self, state: vf.State) -> float:
+        """Number of GPUs attached to the sandbox (0 for container or CPU-only VM)."""
+        return float(state.get("sandbox_gpu_count") or 0)
 
 
 # The SDK handles some transient transport retries internally, but upload/download
@@ -122,6 +140,8 @@ class SandboxMixin:
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
     sandbox_creation_rate_limiter: Optional[AsyncLimiter]
+    vm_sandbox_wait_for_creation_max_attempts: int
+    vm_sandbox_creation_rate_limiter: Optional[AsyncLimiter]
     timeouts: SandboxTimeouts
     with_retry: Callable
 
@@ -145,6 +165,8 @@ class SandboxMixin:
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
+        vm_sandbox_wait_for_creation_max_attempts: int = 240,
+        vm_sandbox_creations_per_minute: float | None = 32,
         timeouts: SandboxTimeouts = SandboxTimeouts(),
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__.
@@ -156,6 +178,12 @@ class SandboxMixin:
         request-level (httpx) timeouts, distinct from container-lifetime
         (``SandboxSpec.timeout_minutes``) and rollout-level
         (``MultiTurnEnv.timeout_seconds``) limits.
+
+        ``vm_sandbox_wait_for_creation_max_attempts`` and
+        ``vm_sandbox_creations_per_minute`` are VM-specific analogues of the
+        container-oriented defaults.  VM sandboxes boot more slowly and are
+        typically quota-heavier, so a separate rate limiter is used to avoid
+        starving concurrent container rollouts when both are in flight.
         """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -166,6 +194,14 @@ class SandboxMixin:
         self.sandbox_creation_rate_limiter = (
             AsyncLimiter(max_rate=sandbox_creations_per_minute, time_period=60.0)
             if sandbox_creations_per_minute is not None
+            else None
+        )
+        self.vm_sandbox_wait_for_creation_max_attempts = (
+            vm_sandbox_wait_for_creation_max_attempts
+        )
+        self.vm_sandbox_creation_rate_limiter = (
+            AsyncLimiter(max_rate=vm_sandbox_creations_per_minute, time_period=60.0)
+            if vm_sandbox_creations_per_minute is not None
             else None
         )
         self.timeouts = timeouts
@@ -189,19 +225,84 @@ class SandboxMixin:
             reraise=True,
         ).wraps
 
+    def build_sandbox_request(
+        self,
+        *,
+        name: str,
+        docker_image: str,
+        vm: bool = False,
+        gpu_count: int = 0,
+        gpu_type: str | None = None,
+        cpu_cores: float = 1.0,
+        memory_gb: float = 2.0,
+        disk_size_gb: float = 5.0,
+        timeout_minutes: int = 60,
+        network_access: bool = True,
+        start_command: str | None = "tail -f /dev/null",
+        environment_vars: dict[str, str] | None = None,
+        secrets: dict[str, str] | None = None,
+        labels: list[str] | None = None,
+        team_id: str | None = None,
+        registry_credentials_id: str | None = None,
+    ) -> CreateSandboxRequest:
+        """Build a :class:`CreateSandboxRequest` with VM/GPU validation.
+
+        Surfaces pydantic validation (``gpu_count > 0`` requires ``vm=True``
+        and ``gpu_type``; ``gpu_type`` requires ``gpu_count > 0``) as a typed
+        :class:`vf.SandboxError` so subclasses see a consistent error type
+        regardless of how the request was constructed.
+        """
+        try:
+            return CreateSandboxRequest(
+                name=name,
+                docker_image=docker_image,
+                vm=vm,
+                gpu_count=gpu_count,
+                gpu_type=gpu_type,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                disk_size_gb=disk_size_gb,
+                timeout_minutes=timeout_minutes,
+                network_access=network_access,
+                start_command=start_command,
+                environment_vars=environment_vars,
+                secrets=secrets,
+                labels=labels if labels is not None else [],
+                team_id=team_id,
+                registry_credentials_id=registry_credentials_id,
+            )
+        except ValidationError as e:
+            raise vf.SandboxError(f"Invalid CreateSandboxRequest: {e}") from e
+
     async def create_sandbox(self, state, request: CreateSandboxRequest) -> str:
         """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook.
 
         When a sandbox_creation_rate_limit is configured, this method
         throttles to avoid overwhelming the sandbox API under burst load.
+        VM-backed requests (``request.vm == True``) use the VM-specific rate
+        limiter and readiness-attempt cap from
+        :meth:`init_sandbox_client` so that slower VM boots do not starve
+        concurrent container rollouts.
 
         Raises:
             SandboxCreationError: If sandbox creation fails after retries.
             SandboxNotReadyError: If sandbox fails to become ready.
             SandboxSetupError: If post_sandbox_setup hook fails.
         """
-        if self.sandbox_creation_rate_limiter is not None:
-            await self.sandbox_creation_rate_limiter.acquire()
+        is_vm = bool(getattr(request, "vm", False))
+        rate_limiter = (
+            self.vm_sandbox_creation_rate_limiter
+            if is_vm
+            else self.sandbox_creation_rate_limiter
+        )
+        wait_max_attempts = (
+            self.vm_sandbox_wait_for_creation_max_attempts
+            if is_vm
+            else self.sandbox_wait_for_creation_max_attempts
+        )
+
+        if rate_limiter is not None:
+            await rate_limiter.acquire()
 
         try:
             sandbox = await self.with_retry(self.sandbox_client.create)(request)
@@ -210,12 +311,17 @@ class SandboxMixin:
 
         self.register_sandbox(sandbox.id)
         state["sandbox_id"] = sandbox.id
-        self.logger.debug(f"Created sandbox {sandbox.id}")
+        state["sandbox_is_vm"] = is_vm
+        state["sandbox_gpu_count"] = int(getattr(request, "gpu_count", 0) or 0)
+        state["sandbox_gpu_type"] = getattr(request, "gpu_type", None)
+        self.logger.debug(
+            f"Created sandbox {sandbox.id} (vm={is_vm}, gpu_count={state['sandbox_gpu_count']})"
+        )
 
         try:
             await self.sandbox_client.wait_for_creation(
                 sandbox.id,
-                max_attempts=self.sandbox_wait_for_creation_max_attempts,
+                max_attempts=wait_max_attempts,
             )
         except Exception as e:
             raise SandboxNotReadyError(
@@ -388,6 +494,77 @@ class SandboxMixin:
                 f"Bundle extract failed in {sandbox_id} (exit={result.exit_code}): "
                 f"{(result.stderr or '')[:200]}"
             )
+
+    def _guard_vm_unsupported(self, state: dict[str, Any], feature: str) -> None:
+        """Raise :class:`SandboxVMUnsupportedError` if the rollout runs on a VM sandbox.
+
+        Consults ``state["sandbox_is_vm"]`` (populated by :meth:`create_sandbox`)
+        to avoid an extra round-trip to the sandbox API.  The sandbox backend
+        does not currently support port exposure or SSH on VM sandboxes; this
+        helper lets subclasses fail fast with a typed error before the SDK
+        would itself raise an opaque ``APIError``.
+        """
+        if state.get("sandbox_is_vm"):
+            raise SandboxVMUnsupportedError(
+                f"{feature} is not supported on VM sandboxes"
+            )
+
+    async def expose_port(
+        self,
+        state: dict[str, Any],
+        sandbox_id: str,
+        port: int,
+        name: str | None = None,
+        protocol: str = "HTTP",
+    ) -> ExposedPort:
+        """Expose a port on a container sandbox.
+
+        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
+        """
+        self._guard_vm_unsupported(state, "Port exposure")
+        return await self.sandbox_client.expose(
+            sandbox_id, port, name=name, protocol=protocol
+        )
+
+    async def unexpose_port(
+        self,
+        state: dict[str, Any],
+        sandbox_id: str,
+        exposure_id: str,
+    ) -> None:
+        """Remove a previously-exposed port.
+
+        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
+        """
+        self._guard_vm_unsupported(state, "Port unexpose")
+        await self.sandbox_client.unexpose(sandbox_id, exposure_id)
+
+    async def list_exposed_ports(
+        self,
+        state: dict[str, Any],
+        sandbox_id: str,
+    ) -> ListExposedPortsResponse:
+        """List exposed ports for a container sandbox.
+
+        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
+        """
+        self._guard_vm_unsupported(state, "Port listing")
+        return await self.sandbox_client.list_exposed_ports(sandbox_id)
+
+    async def create_ssh_session(
+        self,
+        state: dict[str, Any],
+        sandbox_id: str,
+        ttl_seconds: int | None = None,
+    ) -> SSHSession:
+        """Open an SSH session against a container sandbox.
+
+        Raises :class:`SandboxVMUnsupportedError` when the sandbox is VM-backed.
+        """
+        self._guard_vm_unsupported(state, "SSH")
+        return await self.sandbox_client.create_ssh_session(
+            sandbox_id, ttl_seconds=ttl_seconds
+        )
 
     def teardown_sandboxes(self):
         """Delete all active sandboxes using sync client.

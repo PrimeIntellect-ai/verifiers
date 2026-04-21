@@ -2,6 +2,43 @@
 
 Newer and more experimental environment classes that may have some sharper edges + change more frequently.
 
+## SandboxMixin
+
+`SandboxMixin` (in `sandbox_mixin.py`) provides sandbox lifecycle management
+(creation with retries + rate limiting, tracking, cleanup, and typed errors)
+to `Environment` and `Rubric` subclasses. See `docs/environments.md` for the
+full programming model.
+
+### VM sandboxes
+
+Opt in by setting `vm=True` on the `CreateSandboxRequest` (or by constructing
+it via `self.build_sandbox_request(..., vm=True, gpu_count=N, gpu_type="H100_80GB")`).
+VM sandboxes are required for GPU attachments; the pydantic validator enforces
+that `gpu_count > 0` implies `vm=True` and a non-null `gpu_type`.
+
+Once created, `create_sandbox` populates the following state fields for
+downstream rubrics and helpers:
+
+- `state["sandbox_is_vm"]: bool`
+- `state["sandbox_gpu_count"]: int`
+- `state["sandbox_gpu_type"]: str | None`
+
+**VM-specific tuning knobs** on `init_sandbox_client`:
+
+- `vm_sandbox_creations_per_minute` (default `32`) — separate `AsyncLimiter`
+  so slower VM creations do not starve concurrent container rollouts.
+- `vm_sandbox_wait_for_creation_max_attempts` (default `240`) — longer
+  readiness wait to account for VM boot.
+
+**Unsupported on VM sandboxes** (SDK gateway does not yet support these):
+`expose_port`, `unexpose_port`, `list_exposed_ports`, and `create_ssh_session`
+all consult `state["sandbox_is_vm"]` and raise `SandboxVMUnsupportedError`
+(a `vf.SandboxError` subclass) before the call would hit the gateway.
+
+`SandboxMonitorRubric` reports two VM-aware metrics — `sandbox_is_vm` and
+`sandbox_gpu_count` — in addition to the existing `sandbox_oom` /
+`sandbox_timeout` metrics.
+
 ## GymEnv
 
 Universal runner for Gym-compatible environments. Wraps any environment that implements `reset(seed)` and `step(action)` methods (following the OpenAI Gym / Gymnasium API). Supports both old-style 4-tuple and new-style 5-tuple step returns.
