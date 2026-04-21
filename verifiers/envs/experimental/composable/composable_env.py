@@ -36,6 +36,7 @@ harnesses that need a per-instance workdir while still using a static
 
 from __future__ import annotations
 
+import asyncio
 import importlib.resources as resources
 import json
 import logging
@@ -300,9 +301,16 @@ class ComposableEnv(CliAgentEnv):
         local_source: Traversable | Path,
         remote_dest: str,
     ) -> None:
-        """Tar, upload, and extract a directory into the sandbox."""
+        """Tar, upload, and extract a directory into the sandbox.
+
+        Building the gzipped tar is sync, CPU-bound, and for large sources can
+        take hundreds of milliseconds; offload it to a worker thread so the
+        event loop stays responsive when many rollouts upload in parallel.
+        """
         remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
-        tmp_path = self._build_dir_archive(local_source, remote_dest)
+        tmp_path = await asyncio.to_thread(
+            self._build_dir_archive, local_source, remote_dest
+        )
         try:
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
             dest_parent = shlex.quote(str(Path(remote_dest).parent))
