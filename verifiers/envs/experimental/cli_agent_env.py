@@ -148,19 +148,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     def make_agent_error(self, state: State, message: str) -> AgentError:
         """Create an AgentError with rollout-specific sandbox context when available."""
-        context_parts: list[str] = []
-        sandbox_id = state.get("sandbox_id")
-        if sandbox_id:
-            context_parts.append(f"sandbox_id={sandbox_id}")
-        state_input = state.get("input")
-        instance_id = (
-            state_input.get("instance_id") if isinstance(state_input, dict) else None
-        )
+        context_parts = [
+            f"sandbox_id={state['sandbox_id']}",
+            f"rollout_id={state['rollout_id']}",
+            f"example_id={state['example_id']}",
+        ]
+        state_input = state["input"]
+        instance_id = state_input.get("instance_id")
         if instance_id:
             context_parts.append(f"instance_id={instance_id}")
-        if context_parts:
-            message = f"{message} ({', '.join(context_parts)})"
-        return AgentError(message)
+        return AgentError(f"{message} ({', '.join(context_parts)})")
 
     def init_interception(
         self,
