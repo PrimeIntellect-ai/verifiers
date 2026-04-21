@@ -59,10 +59,14 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.message_utils import maybe_normalize_messages
 
-# Matches asyncio's default thread-pool cap: rendering happens inside
-# asyncio.to_thread, so extra pool slots beyond that are always idle and only
-# inflate startup time (each slot loads its own AutoTokenizer).
-_DEFAULT_POOL_SIZE = 16
+# Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
+# tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
+# cheaper than dispatching each one through asyncio.to_thread and queueing on
+# a multi-slot pool. Larger pools mostly just inflate startup time: each slot
+# instantiates its own AutoTokenizer (300-600ms each, and GIL-bound, so extra
+# workers don't parallelize well). Callers with genuinely long prompts or
+# big tokenizers can bump this per-client.
+_DEFAULT_POOL_SIZE = 1
 
 
 class RendererClient(
