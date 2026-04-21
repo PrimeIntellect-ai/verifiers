@@ -21,6 +21,7 @@ def make_swe_taskset(
     factories = {
         "r2e": make_r2e_taskset,
         "swebench": make_swebench_taskset,
+        "swebench-pro": make_swebench_pro_taskset,
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
         "swelego-real": make_swelego_real_taskset,
@@ -57,6 +58,15 @@ def make_swebench_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return SWEBenchTaskSet(**kwargs)
+
+
+def make_swebench_pro_taskset(**kwargs: Any) -> TaskSet:
+    """SWE-bench Pro TaskSet."""
+    from verifiers.envs.experimental.composable.tasksets.swe.swe_bench_pro import (
+        SWEBenchProTaskSet,
+    )
+
+    return SWEBenchProTaskSet(**kwargs)
 
 
 def make_multiswe_taskset(**kwargs: Any) -> TaskSet:
