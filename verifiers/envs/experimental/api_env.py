@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections import Counter
@@ -87,7 +88,9 @@ class ApiEnv(vf.MultiTurnEnv):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked: float = 0.0
-        self._interception_server = InterceptionServer(port=interception_port)
+        self._interception_server = InterceptionServer(
+            port=interception_port, secret=os.environ.get("INTERCEPTION_SECRET")
+        )
 
     def _require_interception_server(self) -> InterceptionServer:
         if self._interception_server is None:
@@ -165,7 +168,13 @@ class ApiEnv(vf.MultiTurnEnv):
 
         state["interception_base_url"] = await self.compute_base_url(state, rollout_id)
 
-        request_id_queue = interception_server.register_rollout(rollout_id)
+        # Pass state so the server can surface stream-interruption errors
+        # (e.g. tunnel dies mid-SSE) back onto the rollout; without this the
+        # agent sees a truncated stream and often exits with code 0 and an
+        # empty trajectory.
+        request_id_queue = interception_server.register_rollout(
+            rollout_id, state=state
+        )
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 

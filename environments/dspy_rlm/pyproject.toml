@@ -6,7 +6,7 @@ version = "0.1.0"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "datasets",
-    "dspy>=2.6.27",
+    "dspy>=3.2.0",
     "verifiers>=0.1.12.dev3",
 ]
 

@@ -52,6 +52,7 @@ This folder contains installable example environments that showcase common usage
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
+  - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
 ### Composition
 - **EnvGroup**
@@ -76,8 +77,8 @@ This folder contains installable example environments that showcase common usage
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
 - **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
-- **MCP integration**: `mcp_search_env`
+- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
+- **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
 - **ApiEnv (framework + interception proxy)**: `dspy_rlm`, `openai_agents_env`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`

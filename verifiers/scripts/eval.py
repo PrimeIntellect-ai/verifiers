@@ -392,14 +392,14 @@ def build_parser() -> argparse.ArgumentParser:
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
-        "--tui",
-        "-u",
+        "--fullscreen",
+        "-f",
         default=False,
         action="store_true",
-        help="Use TUI mode for live evaluation display",
+        help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
     )
     parser.add_argument(
-        "--debug",
+        "--disable-tui",
         "-d",
         default=False,
         action="store_true",
@@ -449,7 +449,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
 
-    if args.debug:  # only set up console logging in debug mode
+    if args.disable_tui and args.fullscreen:
+        raise SystemExit(
+            "error: --disable-tui and --fullscreen are mutually exclusive "
+            "(--disable-tui turns off the Rich display entirely; --fullscreen only "
+            "controls whether the Rich display uses the alternate screen buffer)."
+        )
+
+    if args.disable_tui:  # only set up console logging when TUI is disabled
         setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
@@ -731,7 +738,7 @@ def main(argv: list[str] | None = None):
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
-            debug=raw.get("debug", False),
+            disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -760,13 +767,13 @@ def main(argv: list[str] | None = None):
     eval_run_config = EvalRunConfig(
         evals=eval_configs, heartbeat_url=args.heartbeat_url
     )
-    if args.debug:
+    if args.disable_tui:
         asyncio.run(run_evaluations(eval_run_config))
     else:
         asyncio.run(
             run_evaluations_tui(
                 eval_run_config,
-                tui_mode=args.tui,
+                fullscreen=args.fullscreen,
                 compact=args.abbreviated_summary,
             )
         )

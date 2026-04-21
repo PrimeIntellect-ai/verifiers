@@ -6,6 +6,8 @@ fields and that the install script is generated correctly.
 
 import importlib
 import json
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
@@ -13,14 +15,26 @@ import pytest
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import (
+    composable_env as composable_env_module,
+)
+from verifiers.envs.experimental.composable import (
     ComposableEnv,
     Harness,
     SandboxSpec,
     SandboxTaskSet,
 )
+from verifiers.envs.experimental.composable.harnesses import rlm as rlm_module
+from verifiers.envs.experimental.utils import (
+    git_checkout_cache as git_checkout_cache_module,
+)
+from verifiers.envs.experimental.utils.file_locks import (
+    exclusive_path_lock,
+    shared_path_lock,
+)
 from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
     rlm_harness,
+    resolve_local_checkout,
 )
 
 
@@ -86,26 +100,283 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
     return mod
 
 
+def _make_git_checkout(target: Path) -> Path:
+    checkout = target
+    checkout.mkdir()
+    (checkout / "install.sh").write_text("#!/usr/bin/env bash\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='rlm'\nversion='0.0.0'\n")
+    subprocess.run(["git", "init", "-b", "main"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "add", "install.sh", "pyproject.toml"], cwd=checkout, check=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    return checkout
+
+
+def _git_head_commit(checkout: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip().lower()
+
+
+def _commit_file(checkout: Path, name: str, content: str) -> str:
+    (checkout / name).write_text(content)
+    subprocess.run(["git", "add", name], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.com",
+            "commit",
+            "-m",
+            f"update {name}",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    return _git_head_commit(checkout)
+
+
 # ── RLM harness ──────────────────────────────────────────────────────────
 
 
-def test_rlm_harness_install_script_downloads_repo_install_sh():
+def test_rlm_harness_install_script_requires_uploaded_checkout():
     script = build_install_script()
-    assert "git clone --depth 1 --branch main" in script
-    assert "github.com/PrimeIntellect-ai/rlm.git" in script
-    assert "bash /tmp/rlm-checkout/install.sh" in script
+    assert 'test -f "$RLM_CHECKOUT_PATH/install.sh"' in script
+    assert "git clone" not in script
+    assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
 
 
-def test_rlm_harness_sets_metrics_fields():
-    harness = rlm_harness()
+def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
+    checkout = _make_git_checkout(tmp_path / "rlm")
+    harness = rlm_harness(local_checkout=checkout)
+
+    assert harness.get_upload_dirs() == {"rlm_checkout": checkout.resolve()}
+    assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
     assert harness.metrics_path == "{workdir}/.rlm/sessions/*/meta.json"
     assert harness.metrics_key == "metrics"
     assert harness.metrics_prefix == "rlm_"
-
-
-def test_rlm_harness_sets_skills_path():
-    harness = rlm_harness()
     assert harness.skills_path == "/task/rlm-skills"
+
+
+def test_resolve_local_checkout_rejects_missing_explicit_path(tmp_path):
+    missing_checkout = tmp_path / "missing-rlm"
+
+    with pytest.raises(ValueError, match="not a directory"):
+        resolve_local_checkout(missing_checkout)
+
+
+def test_resolve_local_checkout_materializes_host_cache_for_named_ref(
+    tmp_path, monkeypatch
+):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    source_commit = _git_head_commit(source_checkout)
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    resolved = resolve_local_checkout(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+
+    assert resolved.name == source_commit
+    assert resolved.is_dir()
+    assert (resolved / ".git").exists()
+    assert (resolved / "install.sh").is_file()
+    assert (resolved / "pyproject.toml").is_file()
+
+
+def test_rlm_harness_uses_default_host_cache_when_local_checkout_unspecified(
+    tmp_path, monkeypatch
+):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    source_commit = _git_head_commit(source_checkout)
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+
+    assert harness.get_upload_dirs is not None
+    upload_checkout = harness.get_upload_dirs()["rlm_checkout"]
+    assert isinstance(upload_checkout, Path)
+    assert upload_checkout.is_dir()
+    assert upload_checkout.name == source_commit
+    assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
+
+
+def test_rlm_harness_memoizes_resolved_checkout_per_instance(tmp_path, monkeypatch):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+    first_upload_checkout = harness.get_upload_dirs()["rlm_checkout"]
+
+    _commit_file(source_checkout, "extra.txt", "third\n")
+    second_upload_checkout = harness.get_upload_dirs()["rlm_checkout"]
+
+    assert isinstance(first_upload_checkout, Path)
+    assert first_upload_checkout.name == second_commit
+    assert second_upload_checkout == first_upload_checkout
+
+
+def test_rlm_harness_resolves_new_commit_for_new_instance(tmp_path, monkeypatch):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    first_commit = _git_head_commit(source_checkout)
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    first_harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+    first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
+    assert isinstance(first_checkout, Path)
+    assert first_checkout.name == first_commit
+
+    second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+
+    second_harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+    second_checkout = second_harness.get_upload_dirs()["rlm_checkout"]
+    assert isinstance(second_checkout, Path)
+    assert second_checkout.name == second_commit
+    assert second_checkout != first_checkout
+    assert not first_checkout.exists()
+
+
+def test_rlm_harness_skips_pruning_locked_stale_checkout(tmp_path, monkeypatch):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    first_commit = _git_head_commit(source_checkout)
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    first_harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+    first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
+    assert isinstance(first_checkout, Path)
+    assert first_checkout.name == first_commit
+
+    second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+
+    with shared_path_lock(first_checkout, suffix=".upload.lock"):
+        second_harness = rlm_harness(
+            rlm_repo_url=str(source_checkout),
+            rlm_ref="main",
+        )
+        second_checkout = second_harness.get_upload_dirs()["rlm_checkout"]
+        assert isinstance(second_checkout, Path)
+        assert second_checkout.name == second_commit
+        assert first_checkout.exists()
+
+    third_harness = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    )
+    third_checkout = third_harness.get_upload_dirs()["rlm_checkout"]
+    assert third_checkout == second_checkout
+    assert not first_checkout.exists()
+
+
+def test_resolve_local_checkout_redacts_gh_token_on_clone_failure(
+    tmp_path, monkeypatch
+):
+    token = "super/secret token"
+    quoted_token = "super%2Fsecret%20token"
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    def _raise_clone_error(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            128,
+            args[0],
+            stderr=(
+                "fatal: could not read from "
+                f"https://{quoted_token}@github.com/PrimeIntellect-ai/rlm.git"
+            ),
+        )
+
+    monkeypatch.setattr(git_checkout_cache_module.subprocess, "run", _raise_clone_error)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolve_local_checkout(
+            rlm_repo_url="github.com/PrimeIntellect-ai/rlm.git",
+            rlm_ref="main",
+            gh_token=token,
+        )
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "<redacted>" in message
+
+
+def test_resolve_local_checkout_materializes_host_cache_for_exact_commit(
+    tmp_path, monkeypatch
+):
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    resolved = resolve_local_checkout(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref=second_commit,
+    )
+
+    assert resolved.name == second_commit
+    assert resolved.is_dir()
 
 
 # ── install_env ──────────────────────────────────────────────────────────
@@ -197,11 +468,48 @@ async def test_rlm_uploads_skills_before_install(tmp_path, monkeypatch):
     )
 
 
+def test_build_dir_archive_holds_shared_lock_for_local_path(tmp_path):
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+    )
+    local_source = tmp_path / "srcdir"
+    local_source.mkdir()
+    (local_source / "file.txt").write_text("hello\n")
+
+    class _FakeTar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, path, arcname):
+            assert Path(path) == local_source
+            with pytest.raises(BlockingIOError):
+                with exclusive_path_lock(
+                    local_source,
+                    suffix=".upload.lock",
+                    nonblocking=True,
+                ):
+                    pass
+
+    original_open = composable_env_module.tarfile.open
+    composable_env_module.tarfile.open = lambda *args, **kwargs: _FakeTar()
+    try:
+        tar_path = env._build_dir_archive(local_source, "/task/srcdir")
+    finally:
+        composable_env_module.tarfile.open = original_open
+
+    tar_path.unlink(missing_ok=True)
+
+
 # ── RLM metrics via harness fields ──────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_rlm_collects_logs_and_metrics():
+async def test_rlm_collects_logs_and_metrics(tmp_path):
     taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
     metrics = {
         "turns": 3,
@@ -209,7 +517,7 @@ async def test_rlm_collects_logs_and_metrics():
         "prompt_tokens": 100,
         "completion_tokens": 25,
     }
-    harness = rlm_harness()
+    harness = rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm"))
     env = ComposableEnv(
         taskset=taskset,
         harness=Harness(
@@ -260,3 +568,67 @@ async def test_rlm_collects_logs_and_metrics():
     assert state["rlm_stop_reason"] == "done"
     assert state["rlm_prompt_tokens"] == 100
     assert state["rlm_completion_tokens"] == 25
+    assert state["_harness_metrics"] == {
+        "rlm_turns": 3.0,
+        "rlm_prompt_tokens": 100.0,
+        "rlm_completion_tokens": 25.0,
+    }
+    await env.rubric.cleanup(state)
+    assert state["metrics"] == {
+        "rlm_turns": 3.0,
+        "rlm_prompt_tokens": 100.0,
+        "rlm_completion_tokens": 25.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    metrics = {
+        "turns": 3,
+        "stop_reason": "done",
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+    }
+    harness = rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm"))
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command=harness.run_command,
+            metrics_path=harness.metrics_path,
+            metrics_key=harness.metrics_key,
+            metrics_prefix=harness.metrics_prefix,
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(
+                stdout=json.dumps({"metrics": metrics}),
+                stderr="",
+                exit_code=0,
+            )
+        ),
+        teardown=lambda: None,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "prompt": [{"role": "user", "content": "Fix bug #0"}],
+        "completion": [{"role": "assistant", "content": "done"}],
+        "task": "test",
+        "answer": "",
+        "timing": {"total_ms": 0},
+        "trajectory": [],
+        "test_output": "PASS",
+    }
+
+    await env.post_rollout(state)
+    await env.rubric.score_rollout(state)
+    await env.rubric.cleanup(state)
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["solved"] == 1.0
+    assert state["metrics"]["rlm_turns"] == 3.0
+    assert state["metrics"]["rlm_prompt_tokens"] == 100.0
+    assert state["metrics"]["rlm_completion_tokens"] == 25.0

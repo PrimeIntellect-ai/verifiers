@@ -142,6 +142,7 @@ class RolloutOutput(dict):
     info: Info
     error: str | None
     stop_condition: str | None
+    token_usage: TokenUsage
     trajectory: list[TrajectoryStep]
     tool_defs: list[Tool] | None
 ```
@@ -190,6 +191,27 @@ class RolloutTiming(TypedDict, total=False):
     scoring_ms: float
     total_ms: float
 ```
+
+### TokenUsage
+
+```python
+class TokenUsage(TypedDict, total=False):
+    input_tokens: float
+    output_tokens: float
+    final_input_tokens: float
+    final_output_tokens: float
+```
+
+| Field | Description |
+|-------|-------------|
+| `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
+| `output_tokens` | Sum of completion tokens across all turns. |
+| `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
+| `final_output_tokens` | Completion tokens in the final turn's context. Equals `output_tokens` for single-turn rollouts. |
+
+In a single-turn rollout, `input_tokens == final_input_tokens` and `output_tokens == final_output_tokens`. In a multi-turn rollout, `input_tokens > final_input_tokens` because earlier turns' prompts are counted again.
+
+The `final_*` metrics assume a single, continuously extended trajectory. Non-linear trajectories (multi-agent, context summarization, history rewriting) are not accounted for.
 
 ### GenerateOutputs
 

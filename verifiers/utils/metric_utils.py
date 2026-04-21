@@ -68,24 +68,40 @@ class ErrorRateMetric(MeanMetric):
         return 1.0 if output.get("error") is not None else 0.0
 
 
-class InputTokensMetric(MeanMetric):
-    """Mean input tokens per output (skips outputs without token_usage)."""
+class _TokenUsageKeyMetric(MeanMetric):
+    """Mean of a specific key in token_usage (skips outputs without it)."""
+
+    _key: str = ""
 
     def extract(self, output: RolloutOutput) -> float | None:
         usage = output.get("token_usage")
-        if isinstance(usage, dict):
-            return float(usage.get("input_tokens", 0.0))
+        if isinstance(usage, dict) and self._key in usage:
+            return float(usage[self._key])
         return None
 
 
-class OutputTokensMetric(MeanMetric):
-    """Mean output tokens per output (skips outputs without token_usage)."""
+class InputTokensMetric(_TokenUsageKeyMetric):
+    """Mean input_tokens per output."""
 
-    def extract(self, output: RolloutOutput) -> float | None:
-        usage = output.get("token_usage")
-        if isinstance(usage, dict):
-            return float(usage.get("output_tokens", 0.0))
-        return None
+    _key = "input_tokens"
+
+
+class OutputTokensMetric(_TokenUsageKeyMetric):
+    """Mean output_tokens per output."""
+
+    _key = "output_tokens"
+
+
+class FinalInputTokensMetric(_TokenUsageKeyMetric):
+    """Mean final_input_tokens (non-completion context tokens) per output."""
+
+    _key = "final_input_tokens"
+
+
+class FinalOutputTokensMetric(_TokenUsageKeyMetric):
+    """Mean final_output_tokens (completion context tokens) per output."""
+
+    _key = "final_output_tokens"
 
 
 class EnvMetrics:
