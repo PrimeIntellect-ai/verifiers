@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import json
 import logging
@@ -15,6 +16,10 @@ import verifiers as vf
 from datasets import Dataset, load_dataset
 
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
+    get_new_files,
+    revert_and_reapply_test_patch,
+)
 
 DEFAULT_DATASET_NAME = "ScaleAI/SWE-bench_Pro"
 DEFAULT_DATASET_SPLIT = "test"
@@ -50,7 +55,7 @@ git diff --stat {base_commit} > /logs/verifier/generated_patch_stat.txt || true
 git diff --binary {base_commit} > /logs/verifier/generated_patch.diff || true
 """
 
-_RUN_TESTS_COMMAND = """\
+_PREPARE_TEST_REPO_COMMAND = """\
 set -e
 mkdir -p /logs/verifier /workspace
 cd {agent_workdir}
@@ -62,6 +67,12 @@ git checkout {base_commit}
 if [ -s /logs/verifier/generated_patch.diff ]; then
   git apply -v /logs/verifier/generated_patch.diff
 fi
+"""
+
+_RUN_TESTS_COMMAND = """\
+set -e
+mkdir -p /logs/verifier /workspace
+cd {agent_workdir}
 
 {test_setup_command}
 
@@ -71,6 +82,11 @@ echo SWEBENCH_PRO_OUTPUT_START
 cat /workspace/output.json
 echo SWEBENCH_PRO_OUTPUT_END
 """
+
+
+def _download_file(url: str, path: str) -> None:
+    with urllib.request.urlopen(url, timeout=60) as response:
+        Path(path).write_bytes(response.read())
 
 
 class SWEBenchProRubric(vf.Rubric):
@@ -237,23 +253,61 @@ class SWEBenchProTaskSet(SandboxTaskSet):
             output = ((result.stdout or "") + (result.stderr or ""))[:500]
             raise RuntimeError(f"patch capture failed: {output}")
 
+        result = await sandbox_client.execute_command(
+            sandbox_id,
+            _PREPARE_TEST_REPO_COMMAND.format(
+                agent_workdir=agent_workdir,
+                base_commit=base_commit,
+            ),
+            timeout=120,
+        )
+        if result.exit_code != 0:
+            output = ((result.stdout or "") + (result.stderr or ""))[:500]
+            raise RuntimeError(f"test repo preparation failed: {output}")
+
+        selected_tests = list(ast.literal_eval(info["selected_test_files_to_run"]))
+        new_test_files = set(get_new_files(info["test_patch"]))
+        existing_selected_tests = [
+            path for path in selected_tests if path not in new_test_files
+        ]
+        if existing_selected_tests:
+            quoted_paths = " ".join(
+                shlex.quote(path) for path in existing_selected_tests
+            )
+            result = await sandbox_client.execute_command(
+                sandbox_id,
+                f"git checkout {base_commit} -- {quoted_paths}",
+                working_dir=self.agent_workdir,
+                timeout=120,
+            )
+            if result.exit_code != 0:
+                output = ((result.stdout or "") + (result.stderr or ""))[:500]
+                raise RuntimeError(f"selected test restore failed: {output}")
+
+        test_patch = info["test_patch"]
+        if test_patch.strip():
+            await revert_and_reapply_test_patch(
+                sandbox_client,
+                sandbox_id,
+                self.agent_workdir,
+                test_patch,
+                info["base_commit"],
+            )
+
         instance_id = info["instance_id"]
         for script_name in ("run_script.sh", "parser.py"):
             url = f"{self.run_scripts_url}/{instance_id}/{script_name}"
-            with urllib.request.urlopen(url, timeout=60) as response:
-                content = response.read().decode()
-            with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-                f.write(content)
-                f.flush()
+            with tempfile.NamedTemporaryFile(delete=False) as f:
                 local_path = f.name
             try:
+                await asyncio.to_thread(_download_file, url, local_path)
                 await sandbox_client.upload_file(
                     sandbox_id, f"/workspace/{script_name}", local_path
                 )
             finally:
                 Path(local_path).unlink(missing_ok=True)
 
-        selected_tests = ",".join(ast.literal_eval(info["selected_test_files_to_run"]))
+        selected_tests = ",".join(selected_tests)
         command = _RUN_TESTS_COMMAND.format(
             agent_workdir=agent_workdir,
             base_commit=base_commit,
