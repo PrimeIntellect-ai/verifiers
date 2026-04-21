@@ -445,6 +445,13 @@ class InterceptionServer:
 
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
+                # Per-chunk event-loop yield. Empirically suppresses a
+                # warmup-burst race where concurrent SSE handlers starve
+                # aiohttp's transport/heartbeat tasks and the client
+                # interprets a truncated stream as clean completion.
+                # Cheaper substitute for the NDJSON chunk trace that
+                # originally surfaced this effect (reverted in 4f900a23).
+                await asyncio.sleep(0)
 
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
