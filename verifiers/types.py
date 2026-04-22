@@ -425,6 +425,8 @@ class ClientConfig(BaseModel):
     client_type: ClientType = "openai_chat_completions"
     renderer: str = "auto"
     renderer_model_name: str | None = None
+    tool_parser: str | None = None
+    reasoning_parser: str | None = None
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)

@@ -2,7 +2,8 @@
 
 This is the escape hatch: works with any model that has a Jinja chat template,
 but doesn't provide message_indices (so build_supervised_sample uses incremental
-rendering) and parse_response is basic text extraction.
+rendering) and parse_response is basic text extraction unless tool/reasoning
+parsers are plugged in.
 """
 
 from __future__ import annotations
@@ -10,20 +11,40 @@ from __future__ import annotations
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.parsers import (
+    ReasoningParser,
+    ToolParser,
+    get_reasoning_parser,
+    get_tool_parser,
+)
 
 
 class DefaultRenderer:
     """Fallback renderer using tokenizer.apply_chat_template().
 
-    Works with any model but is slower (Jinja) and doesn't track per-token
-    message attribution. Use a model-specific renderer when available.
+    Works with any model. Pass ``tool_parser`` and/or ``reasoning_parser``
+    (by name, resolved against the registries in ``renderers.parsers``) to
+    enable structured output extraction.
     """
 
-    supports_tools = False
-
-    def __init__(self, tokenizer: PreTrainedTokenizer, **chat_template_kwargs):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        *,
+        tool_parser: str | ToolParser | None = None,
+        reasoning_parser: str | ReasoningParser | None = None,
+        **chat_template_kwargs,
+    ):
         self._tokenizer = tokenizer
         self._chat_template_kwargs = chat_template_kwargs
+        self._tool_parser = _resolve_parser(tool_parser, tokenizer, get_tool_parser)
+        self._reasoning_parser = _resolve_parser(
+            reasoning_parser, tokenizer, get_reasoning_parser
+        )
+
+    @property
+    def supports_tools(self) -> bool:
+        return self._tool_parser is not None
 
     def render(
         self,
@@ -74,21 +95,41 @@ class DefaultRenderer:
         )
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
-        text = self._tokenizer.decode(token_ids, skip_special_tokens=True)
-        # Basic thinking extraction
-        reasoning_content = None
-        if "</think>" in text:
-            before, after = text.split("</think>", 1)
-            if "<think>" in before:
-                reasoning_content = before.split("<think>")[-1].strip()
-            else:
-                reasoning_content = before.strip()
-            text = after.strip()
+        # 1. Extract tool calls while we still have token ids (most formats
+        #    use special-token delimiters, so id-level matching is reliable).
+        if self._tool_parser is not None:
+            content_ids, tool_calls = self._tool_parser.extract(list(token_ids))
+        else:
+            content_ids = list(token_ids)
+            tool_calls = None
+
+        # 2. Decode (keep special tokens so a downstream reasoning parser can
+        #    still see things like <think>/</think> when they're tokens).
+        text = self._tokenizer.decode(content_ids, skip_special_tokens=False)
+
+        # 3. Extract reasoning from the decoded text. Falls back to a built-in
+        #    <think>...</think> sniff so unconfigured users get the same behavior
+        #    as before.
+        if self._reasoning_parser is not None:
+            reasoning_content, text = self._reasoning_parser.extract(text)
+        else:
+            reasoning_content = None
+            if "</think>" in text:
+                before, after = text.split("</think>", 1)
+                if "<think>" in before:
+                    reasoning_content = before.split("<think>", 1)[-1].strip()
+                else:
+                    reasoning_content = before.strip()
+                text = after.strip()
+
+        # Strip any remaining special tokens from the final content (we kept
+        # them around for the reasoning parser above).
+        text = _strip_special_tokens(self._tokenizer, text)
 
         return ParsedResponse(
             content=text.strip(),
             reasoning_content=reasoning_content if reasoning_content else None,
-            tool_calls=None,
+            tool_calls=tool_calls,
         )
 
     def get_stop_token_ids(self) -> list[int]:
@@ -96,3 +137,20 @@ class DefaultRenderer:
         if self._tokenizer.eos_token_id is not None:
             stop_ids.append(self._tokenizer.eos_token_id)
         return stop_ids
+
+
+def _resolve_parser(value, tokenizer, factory):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return factory(value, tokenizer)
+    return value
+
+
+def _strip_special_tokens(tokenizer, text: str) -> str:
+    """Remove any special-token substrings that slipped into decoded text."""
+    specials = getattr(tokenizer, "all_special_tokens", None) or []
+    for token in specials:
+        if token and token in text:
+            text = text.replace(token, "")
+    return text

@@ -81,7 +81,9 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    _shared_pools: ClassVar[dict[tuple[str, str], RendererPool]] = {}
+    # Cache key is (renderer_model_name, renderer_name, tool_parser, reasoning_parser)
+    # so that different parser configs for the same model don't collide.
+    _shared_pools: ClassVar[dict[tuple[str, str, str | None, str | None], RendererPool]] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
@@ -112,18 +114,32 @@ class RendererClient(
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        cache_key = (renderer_model, renderer_name)
+        tool_parser = self._config.tool_parser if self._config is not None else None
+        reasoning_parser = (
+            self._config.reasoning_parser if self._config is not None else None
+        )
+        cache_key = (renderer_model, renderer_name, tool_parser, reasoning_parser)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
 
-                def factory(_name=renderer_name, _model=renderer_model) -> Renderer:
+                def factory(
+                    _name=renderer_name,
+                    _model=renderer_model,
+                    _tool_parser=tool_parser,
+                    _reasoning_parser=reasoning_parser,
+                ) -> Renderer:
                     from transformers import AutoTokenizer
 
                     tokenizer = AutoTokenizer.from_pretrained(
                         _model, trust_remote_code=True
                     )
-                    return create_renderer(tokenizer, renderer=_name)
+                    return create_renderer(
+                        tokenizer,
+                        renderer=_name,
+                        tool_parser=_tool_parser,
+                        reasoning_parser=_reasoning_parser,
+                    )
 
                 self._shared_pools[cache_key] = RendererPool(
                     factory, size=self._pool_size

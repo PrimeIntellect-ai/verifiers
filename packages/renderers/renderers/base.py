@@ -263,25 +263,49 @@ def _populate_registry():
 
 
 def create_renderer_pool(
-    tokenizer_name_or_path: str, renderer: str = "auto", size: int = 16
+    tokenizer_name_or_path: str,
+    renderer: str = "auto",
+    size: int = 16,
+    *,
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
 ) -> RendererPool:
     """Create a RendererPool with *size* independent tokenizer copies.
 
     Each slot loads its own tokenizer so threads never share mutable state.
     HuggingFace fast tokenizers release the GIL during Rust encoding, so
     threads achieve real parallelism.
+
+    ``tool_parser`` and ``reasoning_parser`` are forwarded to
+    ``create_renderer`` when the pool falls back to ``DefaultRenderer``.
     """
 
-    def factory(_name=tokenizer_name_or_path, _renderer=renderer) -> Renderer:
+    def factory(
+        _name=tokenizer_name_or_path,
+        _renderer=renderer,
+        _tool_parser=tool_parser,
+        _reasoning_parser=reasoning_parser,
+    ) -> Renderer:
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(_name, trust_remote_code=True)
-        return create_renderer(tokenizer, renderer=_renderer)
+        return create_renderer(
+            tokenizer,
+            renderer=_renderer,
+            tool_parser=_tool_parser,
+            reasoning_parser=_reasoning_parser,
+        )
 
     return RendererPool(factory, size=size)
 
 
-def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
+def create_renderer(
+    tokenizer,
+    renderer: str = "auto",
+    *,
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
+) -> Renderer:
     """Create a Renderer by name, or auto-detect from the tokenizer's model name.
 
     Args:
@@ -289,14 +313,33 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
         renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5',
                   'minimax-m2', 'deepseek_v3', 'kimi_k2', 'kimi_k25', 'nemotron3',
                   'gpt_oss', 'default') or 'auto' to detect from model name.
+        tool_parser: Name of a tool parser registered in ``renderers.parsers``.
+                  Only consumed by DefaultRenderer. Model-specific renderers
+                  have their own parsing wired in.
+        reasoning_parser: Name of a reasoning parser registered in
+                  ``renderers.parsers``. Only consumed by DefaultRenderer.
     """
     _populate_registry()
+
+    default_kwargs: dict = {}
+    if tool_parser is not None:
+        default_kwargs["tool_parser"] = tool_parser
+    if reasoning_parser is not None:
+        default_kwargs["reasoning_parser"] = reasoning_parser
 
     if renderer != "auto":
         cls = RENDERER_REGISTRY.get(renderer)
         if cls is None:
             raise ValueError(
                 f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}"
+            )
+        if renderer == "default":
+            return cls(tokenizer, **default_kwargs)
+        if default_kwargs:
+            logger.info(
+                "tool_parser/reasoning_parser are only consumed by DefaultRenderer; "
+                "ignoring for renderer=%r which has built-in parsing.",
+                renderer,
             )
         return cls(tokenizer)
 
@@ -306,19 +349,16 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
         if model_name.startswith(prefix):
             return RENDERER_REGISTRY[renderer_name](tokenizer)
 
-    # No match — fall back to default (apply_chat_template). This is correct but
-    # slower than a model-specific renderer and disables tool-call parsing. Warn
-    # so users can pick an explicit renderer for their model family.
-    available = ", ".join(sorted(n for n in RENDERER_REGISTRY if n != "default"))
-    logger.warning(
-        "No renderer auto-detected for %r; falling back to DefaultRenderer "
-        "(apply_chat_template). Tool calls will not parse and performance will "
-        "be lower than a model-specific renderer. Pass renderer=<name> explicitly "
-        "to silence this. Available: %s.",
+    # No match — fall back to default (apply_chat_template). For fine-tunes
+    # with customized chat templates this is the *correct* choice, so we don't
+    # warn. Note the pick at INFO and advertise the parser knobs.
+    logger.info(
+        "No model-specific renderer matched %r. Using DefaultRenderer "
+        "(apply_chat_template). Pass tool_parser=<name> or "
+        "reasoning_parser=<name> to enable structured output parsing.",
         model_name or "<unnamed tokenizer>",
-        available,
     )
-    return RENDERER_REGISTRY["default"](tokenizer)
+    return RENDERER_REGISTRY["default"](tokenizer, **default_kwargs)
 
 
 # ---------------------------------------------------------------------------
