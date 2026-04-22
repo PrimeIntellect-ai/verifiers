@@ -70,7 +70,10 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
         root = Path(cache_dir or Path.home() / ".cache" / "verifiers")
         safe_ref = re.sub(r"[^A-Za-z0-9_.-]+", "-", git_ref).strip("-") or "head"
         source_key = hashlib.sha256(f"{repo_url}\n{tasks_subdir}".encode()).hexdigest()
-        target = root / "terminal-bench-2" / source_key[:16] / safe_ref
+        ref_key = hashlib.sha256(git_ref.encode()).hexdigest()
+        target = (
+            root / "terminal-bench-2" / source_key[:16] / f"{safe_ref}-{ref_key[:16]}"
+        )
         if force_download and target.exists():
             shutil.rmtree(target)
         if target.exists():
