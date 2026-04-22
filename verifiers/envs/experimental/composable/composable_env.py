@@ -36,6 +36,7 @@ harnesses that need a per-instance workdir while still using a static
 
 from __future__ import annotations
 
+import asyncio
 import importlib.resources as resources
 import json
 import logging
@@ -152,6 +153,16 @@ class ComposableEnv(CliAgentEnv):
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
         info = state.get("info") or {}
+        harness_env_vars = self.harness.environment_vars
+        if harness_env_vars:
+            conflicts = (
+                self.PROTECTED_ENV_VARS | {"AGENT_WORKDIR"}
+            ) & harness_env_vars.keys()
+            if conflicts:
+                raise ValueError(
+                    f"Harness.environment_vars must not override protected keys: {conflicts}."
+                )
+            env_vars.update(harness_env_vars)
         task_env_vars = self.taskset.get_env_vars()
         if task_env_vars:
             conflicts = (
@@ -166,7 +177,14 @@ class ComposableEnv(CliAgentEnv):
         return env_vars
 
     async def post_sandbox_setup(self, state: State) -> None:
-        """Task setup → upload instruction → upload system prompt → install agent."""
+        """Task setup → upload instruction/system prompt → upload dirs →
+        install agent → post-install (uploads + script).
+
+        The post-install step runs ``Harness.post_install_uploads`` and
+        ``Harness.post_install_script`` after the agent is fully
+        installed — harnesses use it to layer small assets onto the
+        installed agent (e.g. RLM's ``/usr/local/bin/git`` refusal
+        shim)."""
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
@@ -175,6 +193,7 @@ class ComposableEnv(CliAgentEnv):
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
+        await self._run_post_install(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.
@@ -292,6 +311,34 @@ class ComposableEnv(CliAgentEnv):
                     f"Agent install failed (exit={result.exit_code}): {output[:500]}"
                 )
 
+    async def _run_post_install(self, sandbox_id: str) -> None:
+        """Upload harness ``post_install_uploads`` and run ``post_install_script``.
+
+        Runs after ``_install_agent`` so harnesses can layer small assets
+        on top of a fully-installed agent (e.g. RLM uploads its
+        ``/usr/local/bin/git`` refusal shim and chmods it executable).
+        Uses the single-file upload path — not ``_upload_dir`` — because
+        these are small, harness-computed blobs of content rather than
+        local directories on disk.
+        """
+        uploads = self.harness.post_install_uploads
+        if uploads:
+            for remote_path, content in uploads.items():
+                await self.upload_content(sandbox_id, content, remote_path)
+
+        if self.harness.post_install_script:
+            self.logger.debug(f"Running post-install script in sandbox {sandbox_id}")
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                self.harness.post_install_script,
+                **self._get_install_execute_kwargs(),
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise vf.SandboxError(
+                    f"Post-install failed (exit={result.exit_code}): {output[:500]}"
+                )
+
     # -- Directory upload ------------------------------------------------------
 
     async def _upload_dir(
@@ -300,9 +347,16 @@ class ComposableEnv(CliAgentEnv):
         local_source: Traversable | Path,
         remote_dest: str,
     ) -> None:
-        """Tar, upload, and extract a directory into the sandbox."""
+        """Tar, upload, and extract a directory into the sandbox.
+
+        Building the gzipped tar is sync, CPU-bound, and for large sources can
+        take hundreds of milliseconds; offload it to a worker thread so the
+        event loop stays responsive when many rollouts upload in parallel.
+        """
         remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
-        tmp_path = self._build_dir_archive(local_source, remote_dest)
+        tmp_path = await asyncio.to_thread(
+            self._build_dir_archive, local_source, remote_dest
+        )
         try:
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
             dest_parent = shlex.quote(str(Path(remote_dest).parent))

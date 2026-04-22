@@ -26,9 +26,12 @@ from openai.types.chat.chat_completion_chunk import (
 
 from verifiers.errors import InfraError
 from verifiers.types import Response
-from verifiers.utils.logging_utils import truncate
+from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
+
+
+KEEPALIVE_INTERVAL_SECONDS = 10.0
 
 
 class StreamInterrupted(InfraError):
@@ -238,11 +241,56 @@ class InterceptionServer:
                 "Connection": "keep-alive",
             },
         )
-        await response.prepare(http_request)
 
+        start = time.monotonic()
+
+        # Half-open transport at accept raises here; surface it so the
+        # rollout reschedules instead of looking like a clean empty stream.
+        try:
+            await response.prepare(http_request)
+        except Exception as e:
+            logger.warning(
+                f"[{rollout_id}] Streaming response.prepare failed: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+            )
+            return response
+        # Reuse one get() task across keepalive cycles; asyncio.wait_for on
+        # Py 3.10/3.11 can silently drop an item when its timeout cancels.
+        get_task: asyncio.Task | None = None
         try:
             while True:
-                chunk_dict = await chunk_queue.get()
+                if get_task is None:
+                    get_task = asyncio.create_task(chunk_queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
+                )
+                if get_task not in done:
+                    # SSE comment keeps the TCP path warm across the vLLM wait
+                    # so idle-timeouts in any intermediary don't reap it.
+                    try:
+                        await response.write(b": keepalive\n\n")
+                    except Exception as e:
+                        waited_s = time.monotonic() - start
+                        logger.debug(
+                            f"[{rollout_id}] Streaming error during keepalive "
+                            f"after {print_time(waited_s)}: {e}"
+                        )
+                        self._set_rollout_error(
+                            rollout_id,
+                            StreamInterrupted(
+                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"{type(e).__name__}: {e}"
+                            ),
+                        )
+                        return response
+                    continue
+
+                chunk_dict = get_task.result()
+                get_task = None
 
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
@@ -250,18 +298,28 @@ class InterceptionServer:
 
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
+                # Force a loop yield so the transport flushes before close;
+                # otherwise burst contention can truncate the final chunk.
+                await asyncio.sleep(0)
 
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
-            logger.error(f"[{rollout_id}] Streaming error: {e}")
+            waited_s = time.monotonic() - start
+            logger.debug(
+                f"[{rollout_id}] Streaming error after {print_time(waited_s)}: {e}"
+            )
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"Interception stream to agent interrupted: {type(e).__name__}: {e}"
+                    f"stream write failed after {print_time(waited_s)}: "
+                    f"{type(e).__name__}: {e}"
                 ),
             )
             return response
+        finally:
+            if get_task is not None and not get_task.done():
+                get_task.cancel()
 
         try:
             await response_future
@@ -270,10 +328,23 @@ class InterceptionServer:
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
 
+        # Surface any write_eof failure so a tail truncation becomes a
+        # reschedulable error instead of a silent zero-turn completion.
         try:
             await response.write_eof()
-        except ConnectionResetError:
-            logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
+        except Exception as e:
+            waited_s = time.monotonic() - start
+            logger.warning(
+                f"[{rollout_id}] write_eof failed after {print_time(waited_s)}: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
         return response
 
 

@@ -14,7 +14,6 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
-DEFAULT_RLM_TOOL_NAMES = ["ipython", "summarize"]
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
@@ -23,6 +22,13 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 _REQUIRED_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
+
+_GIT_SHIM_BODY = (
+    "#!/bin/sh\n"
+    "echo \"Bash command 'git' is not allowed. "
+    'Please use a different command or tool." >&2\n'
+    "exit 1\n"
+)
 
 
 def resolve_local_checkout(
@@ -95,7 +101,27 @@ def rlm_harness(
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
+    rlm_tools: list[str] | None = None,
+    allow_git: bool = False,
 ) -> Harness:
+    """Build an RLM harness.
+
+    ``rlm_tools`` is the single source of truth for which builtin tools are
+    active. The same list drives both ``Harness.tool_names`` (so
+    ``ToolMonitorRubric`` tracks exactly the active tools) and
+    ``Harness.environment_vars["RLM_TOOLS"]`` (so the RLM sandbox advertises
+    the same set to the model). Callers do not need to — and should not —
+    add ``RLM_TOOLS`` to ``ComposableEnv(environment_vars=...)`` themselves;
+    the harness owns it.
+
+    ``allow_git`` defaults to False, mirroring opencode's bash tool. When
+    False, a ``/usr/local/bin/git`` shim is uploaded that refuses on any
+    invocation — this covers the RLM bash tool, the ipython tool's
+    ``!cmd`` / ``%%bash`` cells, and any ``subprocess.run(["git", ...])``
+    from inside ipython, since all three resolve via PATH and hit the
+    shim first. Set ``allow_git=True`` for environments that genuinely
+    need git.
+    """
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
     }
@@ -111,10 +137,18 @@ def rlm_harness(
                 rlm_repo_url=rlm_repo_url,
                 rlm_ref=rlm_ref,
                 gh_token=gh_token,
-            )
+            ),
         }
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
+
+    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython", "summarize"]
+
+    post_install_uploads: dict[str, str] | None = None
+    post_install_script: str | None = None
+    if not allow_git:
+        post_install_uploads = {"/usr/local/bin/git": _GIT_SHIM_BODY}
+        post_install_script = "chmod +x /usr/local/bin/git"
 
     return Harness(
         install_script=build_install_script(),
@@ -128,5 +162,8 @@ def rlm_harness(
         metrics_path="{workdir}/.rlm/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
-        tool_names=list(DEFAULT_RLM_TOOL_NAMES),
+        tool_names=tool_names,
+        environment_vars={"RLM_TOOLS": ",".join(tool_names)},
+        post_install_uploads=post_install_uploads,
+        post_install_script=post_install_script,
     )

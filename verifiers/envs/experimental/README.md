@@ -2,6 +2,10 @@
 
 Newer and more experimental environment classes that may have some sharper edges + change more frequently.
 
+## SandboxMixin
+
+`SandboxMixin` works with both container and VM sandboxes. If your environment needs a VM, pass `CreateSandboxRequest(..., vm=True)` to `create_sandbox`. For a GPU VM, also set `gpu_count` and `gpu_type`. Everyday sandbox operations like file upload, file reads, background jobs, and cleanup work the same way. Port exposure and SSH are currently container-only.
+
 ## GymEnv
 
 Universal runner for Gym-compatible environments. Wraps any environment that implements `reset(seed)` and `step(action)` methods (following the OpenAI Gym / Gymnasium API). Supports both old-style 4-tuple and new-style 5-tuple step returns.
