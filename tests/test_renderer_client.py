@@ -1,3 +1,4 @@
+from functools import lru_cache
 from unittest.mock import patch
 
 import pytest
@@ -5,7 +6,7 @@ import pytest
 import verifiers as vf
 from verifiers.errors import EmptyModelResponseError
 from renderers import RendererPool
-from renderers.base import ParsedResponse
+from renderers.base import ParsedResponse, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
     _get_incremental_prompt_ids,
@@ -266,3 +267,178 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     )
 
     assert result == [1, 2, 3, 99, 40, 50]
+
+
+# ── Parity across real renderers: truncated most-recent step ──────────
+#
+# When vLLM hits max_tokens mid-completion, the previous step carries
+# is_truncated=True and completion_ids without an end-of-turn stop token.
+# The anchor loop in _get_incremental_prompt_ids used to skip every
+# truncated step regardless of whether the renderer opts in to
+# synthesize-close, so the bridge never ran and the caller fell back to a
+# full re-render. The extension property then broke whenever BPE
+# round-trip diverged and the rollout fragmented.
+#
+# These tests run across every renderer in the parity matrix to make
+# sure that regression stays fixed: with synth_ok, the bridge anchors on
+# the truncated step and returns prefix-preserving ids; without synth_ok
+# (DefaultRenderer default), it bails to None and the caller falls back.
+
+# Mirror of packages/renderers/tests/conftest.py::RENDERER_MODELS so the
+# bridge-over-truncation parity lines up with the render_ids parity.
+#
+# Some entries carry an xfail reason: those renderers have pre-existing
+# bridge limitations independent of synthesize-close. The test still
+# runs across them to document the current state and to auto-flip to a
+# pass if the underlying renderer is fixed.
+_TRUNCATED_ANCHOR_MODELS = [
+    pytest.param("Qwen/Qwen3-8B", "auto", id="Qwen/Qwen3-8B"),
+    pytest.param(
+        "Qwen/Qwen3.5-9B",
+        "auto",
+        id="Qwen/Qwen3.5-9B",
+        marks=pytest.mark.xfail(
+            reason="Qwen3.5Renderer.render_ids raises on [dummy_assistant] "
+            "alone (requires a user query); the bridge's dummy-assistant "
+            "trick can't work until the renderer tolerates that call.",
+            strict=False,
+        ),
+    ),
+    pytest.param(
+        "zai-org/GLM-5",
+        "auto",
+        id="zai-org/GLM-5",
+        marks=pytest.mark.xfail(
+            reason="GLM family emits no per-turn close token; render_ids("
+            "[dummy_assistant]) ends on raw content so "
+            "build_incremental_prompt_ids can't find a boundary in "
+            "bridge_base_ids. Pre-existing; not introduced by the anchor fix.",
+            strict=False,
+        ),
+    ),
+    pytest.param(
+        "zai-org/GLM-4.7-Flash",
+        "auto",
+        id="zai-org/GLM-4.7-Flash",
+        marks=pytest.mark.xfail(
+            reason="Same GLM next-turn-marker template as GLM-5.",
+            strict=False,
+        ),
+    ),
+    pytest.param(
+        "THUDM/GLM-4.5-Air",
+        "auto",
+        id="THUDM/GLM-4.5-Air",
+        marks=pytest.mark.xfail(
+            reason="Same GLM next-turn-marker template as GLM-5.",
+            strict=False,
+        ),
+    ),
+    pytest.param("MiniMaxAI/MiniMax-M2.5", "auto", id="MiniMaxAI/MiniMax-M2.5"),
+    pytest.param(
+        "Qwen/Qwen2.5-0.5B-Instruct", "default", id="Qwen/Qwen2.5-0.5B-Instruct"
+    ),
+]
+
+
+@lru_cache(maxsize=None)
+def _load_tokenizer_and_renderer(
+    model_name: str, renderer_name: str, synth_close: bool
+):
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    kwargs = {}
+    # Only DefaultRenderer consumes synthesize_close_on_truncation; other
+    # renderers hard-code it at the class level.
+    if renderer_name == "default":
+        kwargs["synthesize_close_on_truncation"] = synth_close
+    renderer = create_renderer(tokenizer, renderer=renderer_name, **kwargs)
+    return tokenizer, renderer
+
+
+def _build_truncated_state(tokenizer, renderer):
+    """Construct a single-step trajectory whose most-recent step is
+    truncated. prev_prompt_ids / prev_completion_ids use the renderer's
+    own tokens so the assertion reflects what the real orchestrator
+    hands the bridge — the exact tokens vLLM produced for the partial
+    assistant turn, with no end-of-turn marker at the end.
+    """
+    step_prompt = [{"role": "user", "content": "Guess a 5-letter word."}]
+    prev_prompt_ids = renderer.render_ids(step_prompt, add_generation_prompt=True)
+    truncated_text = (
+        "I'll start with a common word. Let me think about this — "
+        "the most frequent letters are E, A, R, I, O, T, N, S, L"
+    )
+    prev_completion_ids = tokenizer.encode(truncated_text, add_special_tokens=False)
+
+    step_completion = [{"role": "assistant", "content": truncated_text}]
+    state = {
+        "trajectory": [
+            {
+                "prompt": step_prompt,
+                "completion": step_completion,
+                "tokens": {
+                    "prompt_ids": list(prev_prompt_ids),
+                    "completion_ids": list(prev_completion_ids),
+                    "is_truncated": True,
+                },
+                "is_truncated": True,
+            }
+        ]
+    }
+    next_turn_prompt = step_prompt + step_completion + [
+        {"role": "user", "content": "Your guess was invalid. Give a 5-letter word."}
+    ]
+    return prev_prompt_ids, prev_completion_ids, state, next_turn_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_name,renderer_name",
+    _TRUNCATED_ANCHOR_MODELS,
+)
+async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
+    model_name, renderer_name
+):
+    """With synth_ok=True, the bridge anchors on the truncated step and
+    returns new prompt_ids that start with prev_prompt + prev_completion
+    byte-identically (the extension invariant). This is what keeps
+    interleave_rollout from fragmenting the rollout into two samples."""
+    tokenizer, renderer = _load_tokenizer_and_renderer(
+        model_name, renderer_name, synth_close=True
+    )
+    prev_prompt_ids, prev_completion_ids, state, next_turn_prompt = (
+        _build_truncated_state(tokenizer, renderer)
+    )
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=next_turn_prompt, state=state, tools=None
+    )
+
+    prefix = list(prev_prompt_ids) + list(prev_completion_ids)
+    assert result is not None, f"{model_name}: bridge returned None on truncated anchor"
+    assert result[: len(prefix)] == prefix, (
+        f"{model_name}: bridge result does not prefix-preserve "
+        f"prev_prompt + prev_completion"
+    )
+    assert len(result) > len(prefix), (
+        f"{model_name}: bridge produced no tail tokens for the new user turn"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_incremental_prompt_ids_bails_for_default_renderer_without_synth_close():
+    """Without synth_ok, DefaultRenderer must bail to None so the caller
+    falls back to a full apply_chat_template re-render — preserving main's
+    TITO-on-truncation behavior for anyone who hasn't opted in."""
+    tokenizer, renderer = _load_tokenizer_and_renderer(
+        "Qwen/Qwen2.5-0.5B-Instruct", "default", synth_close=False
+    )
+    _, _, state, next_turn_prompt = _build_truncated_state(tokenizer, renderer)
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=next_turn_prompt, state=state, tools=None
+    )
+
+    assert result is None
