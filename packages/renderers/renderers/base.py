@@ -417,16 +417,33 @@ def build_incremental_prompt_ids(
 
     previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
     try:
-        stop_token_ids = set(renderer.get_stop_token_ids())
+        stop_token_ids_list = list(renderer.get_stop_token_ids())
     except Exception:
-        stop_token_ids = set()
+        stop_token_ids_list = []
+    stop_token_ids = set(stop_token_ids_list)
 
-    boundary_idx = len(previous_ids) - 1
+    boundary_idx: int | None = None
     if stop_token_ids:
         for idx in range(len(previous_ids) - 1, len(previous_prompt_ids) - 1, -1):
             if previous_ids[idx] in stop_token_ids:
                 boundary_idx = idx
                 break
+
+    if boundary_idx is None:
+        # No stop token in previous_completion_ids — vLLM truncated the prior
+        # turn at max_tokens. Synthesize the renderer's preferred close (first
+        # entry of get_stop_token_ids — typically <|im_end|> for chatml-family)
+        # so the bridge can extend cleanly. The synthetic close lands in the
+        # next step's prompt_ids as a context token (mask=False); it is not in
+        # the prior step's stored completion_ids so the trainer never computes
+        # a loss/KL on it. Without this fallback every truncated turn fragments
+        # the rollout in interleave_rollout, inflating samples_per_rollout
+        # proportional to the truncation rate.
+        if not stop_token_ids_list:
+            return None
+        previous_ids = previous_ids + [stop_token_ids_list[0]]
+        boundary_idx = len(previous_ids) - 1
+
     previous_ids = previous_ids[: boundary_idx + 1]
     boundary_token_id = previous_ids[-1]
 

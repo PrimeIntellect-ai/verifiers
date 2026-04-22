@@ -97,3 +97,52 @@ def test_build_incremental_prompt_ids_falls_back_when_stop_boundary_missing():
         )
         is None
     )
+
+
+def test_build_incremental_prompt_ids_synthesizes_close_for_truncated_completion():
+    """When prev_completion has no stop token (vLLM truncated at max_tokens),
+    the bridge synthesizes the renderer's preferred close token so the result
+    still extends prev_prompt + prev_completion cleanly."""
+    # Renderer's stop token is 99. bridge_base ends with 99 so the dummy
+    # boundary is found. Previous_completion_ids ends with a non-stop token
+    # (mid-sentence truncation).
+    renderer = _BridgeRenderer(
+        bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
+    )
+
+    result = build_incremental_prompt_ids(
+        renderer,
+        previous_prompt_ids=[1, 2],
+        previous_completion_ids=[3, 4, 5],  # no 99 → "truncated"
+        new_messages=[{"role": "user", "content": "next"}],
+    )
+
+    # Expect: prev_prompt + prev_completion + synthetic_close(99) + bridge_tail.
+    # The bridge tail starts at the gap point after the dummy's stop in
+    # bridge_base — for this fixture that's [30, 40, 50] (the post-stop
+    # newline scaffolding plus the new-message tokens).
+    assert result == [1, 2, 3, 4, 5, 99, 30, 40, 50]
+    # Critical invariant: result must extend prev_prompt + prev_completion
+    # so interleave_rollout's prefix check passes.
+    assert result[:5] == [1, 2, 3, 4, 5]
+
+
+def test_build_incremental_prompt_ids_returns_none_when_no_stop_tokens_at_all():
+    """If the renderer has no stop tokens at all (and prev was truncated),
+    we have no close to synthesize and must give up."""
+
+    class _NoStopRenderer(_BridgeRenderer):
+        def get_stop_token_ids(self):
+            return []
+
+    renderer = _NoStopRenderer(bridge_base=[10], bridge_full=[10, 40])
+
+    assert (
+        build_incremental_prompt_ids(
+            renderer,
+            previous_prompt_ids=[1],
+            previous_completion_ids=[3, 4, 5],
+            new_messages=[{"role": "user", "content": "next"}],
+        )
+        is None
+    )
