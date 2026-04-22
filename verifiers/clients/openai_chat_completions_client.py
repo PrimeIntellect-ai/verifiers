@@ -296,6 +296,18 @@ class OpenAIChatCompletionsClient(
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
+        response_dict = response.model_dump()
+        error = response_dict.get("error")
+        if error:
+            error_message = error
+            if isinstance(error, Mapping):
+                error_message = error.get("message") or error
+                error_code = error.get("code")
+                if error_code is not None:
+                    error_message = f"{error_message} (code: {error_code})"
+            raise InvalidModelResponseError(
+                f"Model provider returned error response: {error_message}"
+            )
         if response.choices is None:
             raise EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
