@@ -54,7 +54,7 @@ async def completions_request(
 
     pool = renderer if isinstance(renderer, RendererPool) else None
 
-    # -- Prepare: tokenize prompt + extract images --
+    # -- Prepare: tokenize prompt --
     def _prepare(r: Renderer):
         prepared_prompt_ids = (
             list(prompt_ids)
@@ -62,13 +62,12 @@ async def completions_request(
             else r.render_ids(messages, tools=tools, add_generation_prompt=True)
         )
         stop_token_ids = r.get_stop_token_ids()
-        images = _extract_images(messages)
-        return prepared_prompt_ids, stop_token_ids, images
+        return prepared_prompt_ids, stop_token_ids
 
     if pool is not None:
-        prompt_ids, stop_token_ids, images = await _run_pooled(pool, _prepare)
+        prompt_ids, stop_token_ids = await _run_pooled(pool, _prepare)
     else:
-        prompt_ids, stop_token_ids, images = _prepare(renderer)
+        prompt_ids, stop_token_ids = _prepare(renderer)
 
     # -- Build request body --
     body: dict[str, Any] = {
@@ -76,8 +75,6 @@ async def completions_request(
         "prompt_token_ids": prompt_ids,
         "stop_token_ids": stop_token_ids,
     }
-    if images:
-        body["images"] = images
 
     for key in ["temperature", "top_p", "seed", "n"]:
         if key in sampling_args:
@@ -131,41 +128,3 @@ async def completions_request(
         "usage": data.get("usage"),
         "routed_experts": routed_experts,
     }
-
-
-def _extract_images(messages: list[Message]) -> list[dict[str, str]]:
-    from io import BytesIO
-    from pathlib import Path
-
-    images: list[dict[str, str]] = []
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if item.get("type") == "image_url":
-                url = (item.get("image_url") or {}).get("url", "")
-                if url.startswith("data:image"):
-                    header, b64_data = url.split(",", 1)
-                    media_type = header.split(";")[0].split(":")[1]
-                    images.append({"data": b64_data, "media_type": media_type})
-                elif url.startswith("file://"):
-                    raw = Path(url.removeprefix("file://")).read_bytes()
-                    images.append(
-                        {
-                            "data": base64.b64encode(raw).decode("ascii"),
-                            "media_type": "image/png",
-                        }
-                    )
-            elif item.get("type") == "image":
-                image = item.get("image")
-                if image is not None and hasattr(image, "save"):
-                    buffer = BytesIO()
-                    image.save(buffer, format="PNG")
-                    images.append(
-                        {
-                            "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
-                            "media_type": "image/png",
-                        }
-                    )
-    return images
