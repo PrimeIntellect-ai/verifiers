@@ -66,7 +66,7 @@ def _download_file(url: str, path: str) -> None:
             with urllib.request.urlopen(url, timeout=60) as response:
                 Path(path).write_bytes(response.read())
             return
-        except OSError:
+        except Exception:
             if attempt == 2:
                 raise
             time.sleep(2**attempt)
@@ -99,11 +99,11 @@ class SWEBenchProRubric(vf.Rubric):
                 sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
             )
             state["test_output"] = test_output
+            return float(self.taskset._calculate_reward(test_output, info))
         except Exception as e:
-            logger.warning(f"SWE-bench Pro test execution failed: {e}")
+            logger.warning(f"SWE-bench Pro scoring failed: {e}")
             state["test_output"] = f"ERROR: {e}"
             return 0.0
-        return float(self.taskset._calculate_reward(test_output, info))
 
     @vf.cleanup
     async def cleanup_sandbox(self, state: vf.State) -> None:
@@ -283,6 +283,7 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                 output = ((result.stdout or "") + (result.stderr or ""))[:500]
                 raise RuntimeError(f"selected test restore failed: {output}")
 
+        # The agent patch may include test edits; restore benchmark tests before scoring.
         test_patch = info["test_patch"]
         if test_patch.strip():
             await revert_and_reapply_test_patch(
@@ -348,18 +349,21 @@ class SWEBenchProTaskSet(SandboxTaskSet):
             return 0.0
         try:
             parsed = json.loads(match.group(1))
-        except json.JSONDecodeError:
+            fail_to_pass = ast.literal_eval(info.get("fail_to_pass") or "[]")
+            pass_to_pass = ast.literal_eval(info.get("pass_to_pass") or "[]")
+        except (json.JSONDecodeError, SyntaxError, ValueError, TypeError):
+            return 0.0
+        tests = parsed.get("tests", [])
+        if not isinstance(tests, list):
             return 0.0
         passed_tests = {
             test["name"]
-            for test in parsed.get("tests", [])
+            for test in tests
             if isinstance(test, dict)
             and test.get("status") == "PASSED"
             and "name" in test
         }
-        expected = set(ast.literal_eval(info["fail_to_pass"])) | set(
-            ast.literal_eval(info["pass_to_pass"])
-        )
+        expected = set(fail_to_pass) | set(pass_to_pass)
         if not expected:
             return 0.0
         return float(expected <= passed_tests)
