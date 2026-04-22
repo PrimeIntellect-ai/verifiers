@@ -27,7 +27,6 @@ from datetime import datetime
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import chatml_bridge
 from renderers.parsing import parse_gpt_oss
 
 # ---------------------------------------------------------------------------
@@ -272,9 +271,40 @@ class GptOssRenderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return chatml_bridge(
-            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
-        )
+        """Harmony-aware bridge.
+
+        The dummy-assistant trick doesn't work here because a lone assistant
+        renders as ``<|channel|>final<|message|>x<|return|>`` (is_last=True
+        layout) while the same assistant inside a longer conversation
+        renders as ``<|channel|>analysis<|message|><|end|><|channel|>final
+        <|message|>x<|end|>`` (is_last=False layout) — the former is not a
+        prefix of the latter.
+
+        We bypass the dummy-base/dummy-full comparison: we just render the
+        new messages (plus the generation prompt) and append that token
+        stream to ``previous_ids``. When the prior completion was
+        truncated (no harmony stop token at its end), we synthesize
+        ``<|end|>`` — the non-last-assistant close — so the template
+        structure stays valid.
+        """
+        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+        if not previous_ids or not new_messages:
+            return None
+
+        # Harmony turn closes cleanly on <|return|> or <|call|>; both come
+        # back from vLLM inside completion_ids. If prev_completion ends on
+        # raw content instead, synthesize <|end|> so the bridge has an
+        # explicit close to append to.
+        if previous_ids[-1] not in {self._return, self._call}:
+            previous_ids = previous_ids + [self._end]
+
+        try:
+            continuation = self.render_ids(
+                list(new_messages), tools=tools, add_generation_prompt=True
+            )
+        except Exception:
+            return None
+        return previous_ids + list(continuation)
 
     # ── rendering helpers ────────────────────────────────────────────────────
 

@@ -304,23 +304,7 @@ _TRUNCATED_ANCHOR_MODELS = [
         "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     ),
-    # GPT-OSS harmony format renders a lone assistant message with
-    # channel=final, but in a longer conversation the first assistant
-    # turn gets channel=analysis first — so render([dummy_assistant])
-    # isn't a prefix of render([dummy_assistant, *new_messages]) and
-    # the chatml_bridge prefix check fails. Fixing it needs a custom
-    # bridge that understands harmony's analysis/final channels.
-    pytest.param(
-        "openai/gpt-oss-20b",
-        "gpt_oss",
-        id="openai/gpt-oss-20b",
-        marks=pytest.mark.xfail(
-            reason="Harmony-format templates render lone assistant with a "
-            "different channel than in-context, breaking the dummy-assistant "
-            "trick. Needs a harmony-aware bridge.",
-            strict=False,
-        ),
-    ),
+    pytest.param("openai/gpt-oss-20b", "gpt_oss", id="openai/gpt-oss-20b"),
     pytest.param(
         "Qwen/Qwen2.5-0.5B-Instruct", "default", id="Qwen/Qwen2.5-0.5B-Instruct"
     ),
