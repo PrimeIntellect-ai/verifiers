@@ -77,10 +77,13 @@ class Nemotron3Renderer:
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
 
-        # Look up special token IDs from the tokenizer (not hardcoded)
+        # Look up special token IDs from the tokenizer (not hardcoded).
+        # <|endoftext|> is optional: Nemotron-3 Nano / Super tokenizers ship
+        # <|im_end|> as the sole EOS; older / larger variants additionally
+        # include <|endoftext|>. Both work with the same chat template.
         self._im_start = self._token_id("<|im_start|>")
         self._im_end = self._token_id("<|im_end|>")
-        self._endoftext = self._token_id("<|endoftext|>")
+        self._endoftext = self._token_id("<|endoftext|>", optional=True)
         self._think = self._token_id("<think>")
         self._think_end = self._token_id("</think>")
         self._tool_call = self._token_id("<tool_call>")
@@ -88,11 +91,14 @@ class Nemotron3Renderer:
         self._tool_response = self._token_id("<tool_response>")
         self._tool_response_end = self._token_id("</tool_response>")
 
-    def _token_id(self, token: str) -> int:
+    def _token_id(self, token: str, *, optional: bool = False) -> int | None:
         tid = self._tokenizer.convert_tokens_to_ids(token)
-        assert isinstance(tid, int) and tid != self._tokenizer.unk_token_id, (
-            f"Special token {token!r} not found in tokenizer vocabulary"
-        )
+        if not isinstance(tid, int) or tid == self._tokenizer.unk_token_id:
+            if optional:
+                return None
+            raise AssertionError(
+                f"Special token {token!r} not found in tokenizer vocabulary"
+            )
         return tid
 
     def _encode(self, text: str) -> list[int]:
@@ -329,10 +335,13 @@ class Nemotron3Renderer:
         ).token_ids
 
     def parse_response(self, token_ids: list[int]) -> ParsedResponse:
+        stop_ids = {self._im_end}
+        if self._endoftext is not None:
+            stop_ids.add(self._endoftext)
         return parse_qwen35(
             self._tokenizer,
             token_ids,
-            stop_ids={self._im_end, self._endoftext},
+            stop_ids=stop_ids,
             think_id=self._think,
             think_end_id=self._think_end,
             tool_call_id=self._tool_call,
@@ -340,7 +349,10 @@ class Nemotron3Renderer:
         )
 
     def get_stop_token_ids(self) -> list[int]:
-        return [self._im_end, self._endoftext]
+        stop = [self._im_end]
+        if self._endoftext is not None:
+            stop.append(self._endoftext)
+        return stop
 
     def bridge_to_next_turn(
         self,

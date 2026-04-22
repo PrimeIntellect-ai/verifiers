@@ -234,6 +234,7 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "moonshotai/Kimi-K2": "kimi_k2",
     "nvidia/Llama-3": "nemotron3",
     "nvidia/Nemotron": "nemotron3",
+    "nvidia/NVIDIA-Nemotron": "nemotron3",
 }
 
 

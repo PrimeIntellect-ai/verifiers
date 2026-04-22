@@ -299,20 +299,10 @@ _TRUNCATED_ANCHOR_MODELS = [
     pytest.param("zai-org/GLM-4.7-Flash", "auto", id="zai-org/GLM-4.7-Flash"),
     pytest.param("THUDM/GLM-4.5-Air", "auto", id="THUDM/GLM-4.5-Air"),
     pytest.param("MiniMaxAI/MiniMax-M2.5", "auto", id="MiniMaxAI/MiniMax-M2.5"),
-    # Nemotron3Renderer asserts a '<|endoftext|>' special token at
-    # construction, which isn't in the NVIDIA-Nemotron-3-Nano-* tokenizer
-    # vocab. The renderer was written for a different Nemotron family;
-    # revisit when we add a Nemotron-3-Nano-compatible renderer (or when
-    # NVIDIA ships a tokenizer with the expected specials).
     pytest.param(
         "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-        "nemotron3",
+        "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-        marks=pytest.mark.xfail(
-            reason="Nemotron3Renderer expects '<|endoftext|>' in the "
-            "tokenizer vocab; Nemotron-3-Nano tokenizer lacks it.",
-            strict=False,
-        ),
     ),
     # GPT-OSS harmony format renders a lone assistant message with
     # channel=final, but in a longer conversation the first assistant
