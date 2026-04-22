@@ -260,6 +260,13 @@ class GLM5Renderer:
 
             emit_special(self._tool_call_tok, msg_idx)
             emit_text(name, msg_idx)
+            # OpenAI canonical form: arguments is a JSON string. Parse it so the
+            # per-argument rendering below still works.
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
             if isinstance(arguments, dict):
                 for arg_name, arg_value in arguments.items():
                     emit_special(self._arg_key, msg_idx)

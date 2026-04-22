@@ -273,6 +273,13 @@ class MiniMaxM2Renderer:
                 arguments = func.get("arguments", {})
 
                 invoke_block += '<invoke name="' + name + '">\n'
+                # OpenAI canonical form: arguments is a JSON string. Parse it so the
+                # per-argument rendering below still works.
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
                 if isinstance(arguments, dict):
                     for arg_name, arg_value in arguments.items():
                         val_str = (

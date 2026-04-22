@@ -433,6 +433,13 @@ class Nemotron3Renderer:
                 emit_text("\n<function=" + name + ">\n", msg_idx)
 
                 # Render arguments
+                # OpenAI canonical form: arguments is a JSON string. Parse it so the
+                # per-argument rendering below still works.
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
                 if isinstance(arguments, dict):
                     for arg_name, arg_value in arguments.items():
                         if isinstance(arg_value, (dict, list)):
