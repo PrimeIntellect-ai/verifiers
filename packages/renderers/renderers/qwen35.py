@@ -118,7 +118,15 @@ class Qwen35Renderer:
 
     @staticmethod
     def _last_query_index(messages: list[Message]) -> int:
-        """Find the index of the last 'real' user query (not a tool_response wrapper)."""
+        """Find the index of the last 'real' user query (not a tool_response wrapper).
+
+        Returns ``len(messages)`` — an out-of-range sentinel — when no such
+        query exists. Callers compare ``msg_idx > last_query_index`` to
+        decide whether an assistant turn sits after the last user query
+        (and so keeps its thinking block). The sentinel makes that check
+        uniformly ``False``, which is the only reasonable default for
+        assistant-only inputs (e.g. the bridge's dummy-assistant render).
+        """
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             if msg.get("role") != "user":
@@ -129,7 +137,7 @@ class Qwen35Renderer:
                 and content.endswith("</tool_response>")
             ):
                 return i
-        raise ValueError("No user query found in messages.")
+        return len(messages)
 
     # ------------------------------------------------------------------
     # Core render method

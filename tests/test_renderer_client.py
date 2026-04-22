@@ -293,17 +293,7 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
 # pass if the underlying renderer is fixed.
 _TRUNCATED_ANCHOR_MODELS = [
     pytest.param("Qwen/Qwen3-8B", "auto", id="Qwen/Qwen3-8B"),
-    pytest.param(
-        "Qwen/Qwen3.5-9B",
-        "auto",
-        id="Qwen/Qwen3.5-9B",
-        marks=pytest.mark.xfail(
-            reason="Qwen3.5Renderer.render_ids raises on [dummy_assistant] "
-            "alone (requires a user query); the bridge's dummy-assistant "
-            "trick can't work until the renderer tolerates that call.",
-            strict=False,
-        ),
-    ),
+    pytest.param("Qwen/Qwen3.5-9B", "auto", id="Qwen/Qwen3.5-9B"),
     pytest.param(
         "zai-org/GLM-5",
         "auto",

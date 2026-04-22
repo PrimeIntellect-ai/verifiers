@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    build_incremental_prompt_ids,
+)
 from renderers.parsers import (
     ReasoningParser,
     ToolParser,
@@ -139,6 +145,29 @@ class DefaultRenderer:
         if self._tokenizer.eos_token_id is not None:
             stop_ids.append(self._tokenizer.eos_token_id)
         return stop_ids
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        """Return prompt_ids for the next turn that extend prev_prompt + prev_completion.
+
+        DefaultRenderer doesn't know its template, so it defers to the generic
+        ``build_incremental_prompt_ids`` algorithm (which walks the template
+        output via the dummy-assistant trick). Hand-coded renderers should
+        override this with template-specific logic.
+        """
+        return build_incremental_prompt_ids(
+            self,
+            previous_prompt_ids,
+            previous_completion_ids,
+            new_messages,
+            tools=tools,
+        )
 
 
 def _resolve_parser(value, tokenizer, factory):
