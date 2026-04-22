@@ -2,40 +2,6 @@
 
 Newer and more experimental environment classes that may have some sharper edges + change more frequently.
 
-## SandboxMixin
-
-`SandboxMixin` (in `sandbox_mixin.py`) provides sandbox lifecycle management
-(creation with retries + rate limiting, tracking, cleanup, and typed errors)
-to `Environment` and `Rubric` subclasses. See `docs/environments.md` for the
-full programming model.
-
-### VM sandboxes
-
-Opt in by setting `vm=True` on the `CreateSandboxRequest` passed to
-`create_sandbox`. VM sandboxes are required for GPU attachments; the
-`CreateSandboxRequest` pydantic validator enforces that `gpu_count > 0`
-implies `vm=True` and a non-null `gpu_type`.
-
-Once created, `create_sandbox` populates the following state fields for
-downstream rubrics and helpers:
-
-- `state["sandbox_is_vm"]: bool`
-- `state["sandbox_gpu_count"]: int`
-- `state["sandbox_gpu_type"]: str | None`
-
-VM and container sandboxes share the same `sandbox_creations_per_minute`
-rate limiter and `sandbox_wait_for_creation_max_attempts` readiness cap.
-If VM boots are slow or quota-constrained, raise both via
-`init_sandbox_client`.
-
-Port exposure (`expose` / `unexpose` / `list_exposed_ports`) and SSH
-sessions are not supported by the sandbox gateway on VM-backed sandboxes;
-if you call them via `self.sandbox_client`, the SDK will raise
-`APIError`. Subclasses that need to fail fast on their own may raise
-`SandboxVMUnsupportedError` (exported from `sandbox_mixin`, not a
-`vf.SandboxError` subclass so it is not treated as retryable) when
-`state["sandbox_is_vm"]` is true.
-
 ## GymEnv
 
 Universal runner for Gym-compatible environments. Wraps any environment that implements `reset(seed)` and `step(action)` methods (following the OpenAI Gym / Gymnasium API). Supports both old-style 4-tuple and new-style 5-tuple step returns.

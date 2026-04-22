@@ -1,11 +1,7 @@
-from verifiers.envs.experimental.sandbox_mixin import (
-    SandboxMixin,
-    SandboxVMUnsupportedError,
-)
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 
 __all__ = [
     "SandboxMixin",
-    "SandboxVMUnsupportedError",
     "SandboxSpec",
     "SandboxTaskSet",
     "Task",

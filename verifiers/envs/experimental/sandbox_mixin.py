@@ -46,15 +46,6 @@ class SandboxNotReadyError(vf.SandboxError): ...
 class SandboxSetupError(vf.SandboxError): ...
 
 
-class SandboxVMUnsupportedError(Exception):
-    """Raised when a feature is invoked that the sandbox API does not support on VM-backed sandboxes.
-
-    Intentionally not a :class:`vf.SandboxError` subclass: most environments
-    treat ``SandboxError`` as retryable, but unsupported VM code paths are
-    programmer errors that should fail loudly rather than trigger retries.
-    """
-
-
 @dataclass(frozen=True)
 class SandboxTimeouts:
     """Per-operation HTTP timeouts (seconds) for sandbox client calls.
@@ -225,15 +216,9 @@ class SandboxMixin:
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
 
-        is_vm = bool(getattr(request, "vm", False))
         self.register_sandbox(sandbox.id)
         state["sandbox_id"] = sandbox.id
-        state["sandbox_is_vm"] = is_vm
-        state["sandbox_gpu_count"] = int(getattr(request, "gpu_count", 0) or 0)
-        state["sandbox_gpu_type"] = getattr(request, "gpu_type", None)
-        self.logger.debug(
-            f"Created sandbox {sandbox.id} (vm={is_vm}, gpu_count={state['sandbox_gpu_count']})"
-        )
+        self.logger.debug(f"Created sandbox {sandbox.id}")
 
         try:
             await self.sandbox_client.wait_for_creation(
