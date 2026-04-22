@@ -41,8 +41,6 @@ def run_cli(make_metadata, make_state, make_input):
             "api_base_url": "https://api.openai.com/v1",
             "header": None,
             "headers": None,
-            "header_from_state": None,
-            "headers_from_state": None,
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
