@@ -309,8 +309,7 @@ class HarborDatasetRubric(vf.Rubric):
             logger.warning(f"Test execution failed: {e}")
             state["test_output"] = f"ERROR: {e}"
             return 0.0
-        task = HarborTaskSet(info["task_dir"])
-        return float(task._calculate_reward(test_output, info))
+        return float(self.taskset._calculate_reward(test_output, info))
 
     @vf.cleanup
     async def cleanup_sandbox(self, state: vf.State) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import re
 import shutil
@@ -108,7 +109,19 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
                 text=True,
             )
             source = clone_dir / tasks_subdir
-            shutil.copytree(source, target, ignore=shutil.ignore_patterns(".git"))
+            with tempfile.TemporaryDirectory(
+                prefix=f".{target.name}.", dir=target.parent
+            ) as tmp_target:
+                staged_target = Path(tmp_target) / "dataset"
+                shutil.copytree(
+                    source, staged_target, ignore=shutil.ignore_patterns(".git")
+                )
+                try:
+                    staged_target.rename(target)
+                except OSError as e:
+                    if e.errno in {errno.EEXIST, errno.ENOTEMPTY} and target.exists():
+                        return target
+                    raise
         return target
 
     def select_task_names(
