@@ -48,6 +48,7 @@ This folder contains installable example environments that showcase common usage
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
+  - **terminal_bench_2**: Runs mini-SWE-agent on Terminal-Bench 2 Harbor-native task directories.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
 ### Composition
