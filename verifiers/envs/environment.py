@@ -258,13 +258,19 @@ class Environment(ABC):
                 asyncio.run(self._teardown())
 
         atexit.register(_sync_teardown)
-        signal.signal(
-            signal.SIGINT,
-            lambda sig, frame: (
-                _sync_teardown(),
-                signal.default_int_handler(sig, frame),
-            ),
-        )
+        # SIGINT handling is left to Python / asyncio defaults. A custom
+        # handler here would fire ``_sync_teardown`` fire-and-forget (it
+        # does ``asyncio.create_task`` on a running loop, returns
+        # immediately, nothing awaits the result) and then raise
+        # ``KeyboardInterrupt`` from inside the handler, which lands at an
+        # arbitrary bytecode boundary on the main thread. That can
+        # interrupt TUI teardown mid-cleanup and leave the terminal in a
+        # degenerate state (tty in cbreak, alt-screen still active, etc.)
+        # — the classic "tmux pane is dead after Ctrl+C" symptom. Letting
+        # asyncio handle SIGINT instead yields a predictable cancellation
+        # at the next ``await`` boundary, and the ``atexit`` above still
+        # runs teardown on normal process exit (including after a
+        # KeyboardInterrupt that propagates out of asyncio.run).
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
 
     def _ensure_example_id(self, dataset: Dataset) -> Dataset:
