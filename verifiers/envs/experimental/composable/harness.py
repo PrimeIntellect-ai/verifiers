@@ -96,6 +96,18 @@ class Harness:
         taskset wins over harness. This is the right place to put env
         vars that track other harness config (e.g. ``RLM_TOOLS`` paired
         with ``tool_names``) so they can't silently desync.
+    post_install_uploads:
+        Optional mapping from sandbox path → file content. Uploaded via
+        the single-file upload path (same as instruction / system
+        prompt) AFTER ``install_script`` finishes. Use for small
+        harness-computed assets — e.g. RLM's ``/usr/local/bin/git``
+        refusal shim. For large directories use ``upload_dir_mapping``
+        instead.
+    post_install_script:
+        Optional shell snippet run AFTER ``post_install_uploads`` land in
+        the sandbox. Typical use: ``chmod +x`` on the uploaded files, or
+        any other wiring that needs them in place first. Failure is
+        fatal, same as ``install_script``.
     """
 
     install_script: str | None = None
@@ -115,6 +127,8 @@ class Harness:
     metrics_keys: list[str] | None = None
     tool_names: list[str] | None = None
     environment_vars: dict[str, str] | None = None
+    post_install_uploads: dict[str, str] | None = None
+    post_install_script: str | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""
