@@ -690,7 +690,12 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
-        eval_headers_from_state = build_extra_headers_from_state(raw)
+        # Default X-Session-ID → example_id for sticky DP-aware routing;
+        # user-supplied headers_from_state / --header-from-state override.
+        eval_headers_from_state = {
+            "X-Session-ID": "example_id",
+            **build_extra_headers_from_state(raw),
+        }
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
