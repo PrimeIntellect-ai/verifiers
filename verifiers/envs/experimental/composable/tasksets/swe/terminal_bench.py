@@ -68,6 +68,10 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
         if dataset_path is not None:
             return Path(dataset_path).expanduser()
 
+        subdir_path = Path(tasks_subdir)
+        if subdir_path.is_absolute() or ".." in subdir_path.parts:
+            raise ValueError("tasks_subdir must stay within the Terminal-Bench repo.")
+
         root = Path(cache_dir or Path.home() / ".cache" / "verifiers")
         safe_ref = re.sub(r"[^A-Za-z0-9_.-]+", "-", git_ref).strip("-") or "head"
         source_key = hashlib.sha256(f"{repo_url}\n{tasks_subdir}".encode()).hexdigest()
@@ -108,7 +112,12 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
                 capture_output=True,
                 text=True,
             )
-            source = clone_dir / tasks_subdir
+            clone_root = clone_dir.resolve()
+            source = (clone_dir / subdir_path).resolve()
+            if not source.is_relative_to(clone_root):
+                raise ValueError(
+                    "tasks_subdir must stay within the Terminal-Bench repo."
+                )
             with tempfile.TemporaryDirectory(
                 prefix=f".{target.name}.", dir=target.parent
             ) as tmp_target:
