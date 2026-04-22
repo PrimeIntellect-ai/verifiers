@@ -230,11 +230,8 @@ class InterceptionServer:
 
         start = time.monotonic()
 
-        # prepare() sends the response headers and attaches the writer to the
-        # transport. If the transport is already half-open (e.g. the peer
-        # closed between accept and our first write), prepare itself can
-        # raise, and the old code path let that exception escape silently.
-        # Surface it as StreamInterrupted so the rollout is rescheduled.
+        # Half-open transport at accept raises here; surface it so the
+        # rollout reschedules instead of looking like a clean empty stream.
         try:
             await response.prepare(http_request)
         except Exception as e:
@@ -247,12 +244,8 @@ class InterceptionServer:
                 StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
             )
             return response
-        # Reuse a single get() task across keepalive cycles instead of
-        # recreating it each iteration. ``asyncio.wait_for`` on Python
-        # 3.10/3.11 has a race where a timeout cancels an inner task that
-        # may have already dequeued an item, silently dropping it.
-        # ``asyncio.wait`` does not cancel its tasks on timeout, so a
-        # pending ``get()`` task carries forward safely.
+        # Reuse one get() task across keepalive cycles; asyncio.wait_for on
+        # Py 3.10/3.11 can silently drop an item when its timeout cancels.
         get_task: asyncio.Task | None = None
         try:
             while True:
@@ -262,9 +255,8 @@ class InterceptionServer:
                     {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
                 )
                 if get_task not in done:
-                    # Idle window — emit SSE keepalive comment to keep
-                    # intermediaries (tunnel, LB, kube-proxy) from closing
-                    # the connection during the long vLLM wait.
+                    # SSE comment keeps the TCP path warm across the vLLM wait
+                    # so idle-timeouts in any intermediary don't reap it.
                     try:
                         await response.write(b": keepalive\n\n")
                     except Exception as e:
@@ -292,12 +284,8 @@ class InterceptionServer:
 
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
-                # Per-chunk event-loop yield. Empirically suppresses a
-                # warmup-burst race where concurrent SSE handlers starve
-                # aiohttp's transport/heartbeat tasks and the client
-                # interprets a truncated stream as clean completion.
-                # Cheaper substitute for the NDJSON chunk trace that
-                # originally surfaced this effect (reverted in 4f900a23).
+                # Force a loop yield so the transport flushes before close;
+                # otherwise burst contention can truncate the final chunk.
                 await asyncio.sleep(0)
 
         except asyncio.CancelledError:
@@ -326,12 +314,8 @@ class InterceptionServer:
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
 
-        # write_eof sends the final empty chunk and flushes the transport.
-        # A failure here means the client/peer went away between the last
-        # chunk and the trailing newline. Prior code caught only
-        # ConnectionResetError at DEBUG — surface any failure as
-        # StreamInterrupted so the rollout is rescheduled instead of being
-        # accepted as a clean completion with 0 turns.
+        # Surface any write_eof failure so a tail truncation becomes a
+        # reschedulable error instead of a silent zero-turn completion.
         try:
             await response.write_eof()
         except Exception as e:
