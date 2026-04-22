@@ -37,10 +37,57 @@ _TOOLS_FOOTER = (
 )
 
 
+def _glm_bridge(
+    renderer,
+    previous_prompt_ids: list[int],
+    previous_completion_ids: list[int],
+    new_messages: list[Message],
+    *,
+    tools: list[ToolSpec] | None = None,
+) -> list[int] | None:
+    """Shared bridge for GLM-family templates that use next-turn markers.
+
+    GLM renders each message as ``<|role|>content`` with no per-turn close
+    token; an assistant turn ends when the next ``<|user|>`` or
+    ``<|observation|>`` marker appears, which vLLM treats as a stop token
+    and emits into ``completion_ids``. So the expected layout at bridge
+    time is either
+
+        prev_prompt + prev_completion(...ends with <|user|>)
+
+    (clean stop) or
+
+        prev_prompt + prev_completion(...ends with raw content)
+
+    (truncation). In both cases we compute the append delta by rendering
+    [dummy_assistant, *new_messages] with the generation prompt and
+    slicing off the first ``len(render([dummy_assistant]))`` tokens — the
+    remainder starts with the next-turn marker, which we dedup against
+    the prev tail when it's already there.
+    """
+    previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+    if not previous_ids or not new_messages:
+        return None
+    dummy_assistant: Message = {"role": "assistant", "content": "x"}
+    try:
+        base = renderer.render_ids(
+            [dummy_assistant], tools=tools, add_generation_prompt=False
+        )
+        full = renderer.render_ids(
+            [dummy_assistant, *new_messages], tools=tools, add_generation_prompt=True
+        )
+    except Exception:
+        return None
+    if full[: len(base)] != base:
+        return None
+    bridge_ids = list(full[len(base) :])
+    if bridge_ids and previous_ids[-1] == bridge_ids[0]:
+        bridge_ids = bridge_ids[1:]
+    return previous_ids + bridge_ids
+
+
 class GLM5Renderer:
     """Deterministic message → token renderer for GLM-5 models."""
-
-    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -210,6 +257,16 @@ class GLM5Renderer:
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._endoftext, self._user, self._observation]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return _glm_bridge(self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools)
 
     def _render_assistant(
         self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text

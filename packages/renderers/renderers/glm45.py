@@ -16,6 +16,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.glm5 import _glm_bridge
 from renderers.parsing import parse_glm
 
 _TOOLS_HEADER = (
@@ -41,8 +42,6 @@ _TOOLS_FOOTER = (
 
 class GLM45Renderer:
     """Deterministic message → token renderer for GLM-4.5 Air models."""
-
-    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -211,6 +210,18 @@ class GLM45Renderer:
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._endoftext, self._user, self._observation]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return _glm_bridge(
+            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        )
 
     def _render_assistant(
         self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text

@@ -294,36 +294,9 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
 _TRUNCATED_ANCHOR_MODELS = [
     pytest.param("Qwen/Qwen3-8B", "auto", id="Qwen/Qwen3-8B"),
     pytest.param("Qwen/Qwen3.5-9B", "auto", id="Qwen/Qwen3.5-9B"),
-    pytest.param(
-        "zai-org/GLM-5",
-        "auto",
-        id="zai-org/GLM-5",
-        marks=pytest.mark.xfail(
-            reason="GLM family emits no per-turn close token; render_ids("
-            "[dummy_assistant]) ends on raw content so "
-            "build_incremental_prompt_ids can't find a boundary in "
-            "bridge_base_ids. Pre-existing; not introduced by the anchor fix.",
-            strict=False,
-        ),
-    ),
-    pytest.param(
-        "zai-org/GLM-4.7-Flash",
-        "auto",
-        id="zai-org/GLM-4.7-Flash",
-        marks=pytest.mark.xfail(
-            reason="Same GLM next-turn-marker template as GLM-5.",
-            strict=False,
-        ),
-    ),
-    pytest.param(
-        "THUDM/GLM-4.5-Air",
-        "auto",
-        id="THUDM/GLM-4.5-Air",
-        marks=pytest.mark.xfail(
-            reason="Same GLM next-turn-marker template as GLM-5.",
-            strict=False,
-        ),
-    ),
+    pytest.param("zai-org/GLM-5", "auto", id="zai-org/GLM-5"),
+    pytest.param("zai-org/GLM-4.7-Flash", "auto", id="zai-org/GLM-4.7-Flash"),
+    pytest.param("THUDM/GLM-4.5-Air", "auto", id="THUDM/GLM-4.5-Air"),
     pytest.param("MiniMaxAI/MiniMax-M2.5", "auto", id="MiniMaxAI/MiniMax-M2.5"),
     pytest.param(
         "Qwen/Qwen2.5-0.5B-Instruct", "default", id="Qwen/Qwen2.5-0.5B-Instruct"
