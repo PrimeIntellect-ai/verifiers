@@ -42,6 +42,8 @@ _VIDEO_PLACEHOLDER = "<|vision_start|><|video_pad|><|vision_end|>"
 class Qwen3VLRenderer:
     """Deterministic message to token renderer for Qwen3-VL models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

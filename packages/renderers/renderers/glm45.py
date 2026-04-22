@@ -42,6 +42,8 @@ _TOOLS_FOOTER = (
 class GLM45Renderer:
     """Deterministic message → token renderer for GLM-4.5 Air models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

@@ -36,6 +36,8 @@ _TOOLS_FOOTER = (
 class Qwen3Renderer:
     """Deterministic message → token renderer for Qwen3 models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

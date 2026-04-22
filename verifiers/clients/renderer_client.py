@@ -471,8 +471,30 @@ async def _get_incremental_prompt_ids(
     if not trajectory:
         return None
 
+    # If the most recent step was truncated, the caller must decide whether to
+    # bridge across it (requires synthesizing a close token, only safe for
+    # renderers with a known template) or to bail and let the caller do a full
+    # re-render (matches main's TITO → MITO fallback behavior on truncation).
+    # Checking the *most recent* step specifically — an older truncated step
+    # plus a later non-truncated one would have been recovered by the caller's
+    # full re-render at the time; we only worry about the current bridge.
+    trajectory_list = list(trajectory)
+    most_recent_step = trajectory_list[-1] if trajectory_list else None
+    most_recent_truncated = (
+        _step_is_truncated(most_recent_step) if most_recent_step else False
+    )
+    synth_ok = await _run_with_renderer(
+        renderer,
+        lambda r: getattr(r, "synthesize_close_on_truncation", False),
+    )
+    if most_recent_truncated and not synth_ok:
+        # DefaultRenderer (or any other non-opt-in renderer): fall back to a
+        # full re-render on the caller side. Fragmentation rate on truncated
+        # rollouts ≈ main's TITO path (~22% BPE-luck-dependent).
+        return None
+
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
+    for step in reversed(trajectory_list):
         if _step_is_truncated(step):
             continue
 

@@ -67,6 +67,8 @@ def _render_extra_keys(obj: dict[str, Any], handled_keys: set[str]) -> list[str]
 class Nemotron3Renderer:
     """Deterministic message → token renderer for Nemotron 3 models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

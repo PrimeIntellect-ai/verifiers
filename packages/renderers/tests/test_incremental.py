@@ -99,14 +99,19 @@ def test_build_incremental_prompt_ids_falls_back_when_stop_boundary_missing():
     )
 
 
+class _OptInBridgeRenderer(_BridgeRenderer):
+    """A _BridgeRenderer that opts in to synthesize-close on truncation,
+    modeling a hand-coded renderer like Qwen3Renderer where the canonical
+    end-of-turn token is known."""
+
+    synthesize_close_on_truncation = True
+
+
 def test_build_incremental_prompt_ids_synthesizes_close_for_truncated_completion():
-    """When prev_completion has no stop token (vLLM truncated at max_tokens),
-    the bridge synthesizes the renderer's preferred close token so the result
-    still extends prev_prompt + prev_completion cleanly."""
-    # Renderer's stop token is 99. bridge_base ends with 99 so the dummy
-    # boundary is found. Previous_completion_ids ends with a non-stop token
-    # (mid-sentence truncation).
-    renderer = _BridgeRenderer(
+    """Opt-in renderer: when prev_completion has no stop token (vLLM truncated
+    at max_tokens), the bridge synthesizes the renderer's preferred close so
+    the result still extends prev_prompt + prev_completion cleanly."""
+    renderer = _OptInBridgeRenderer(
         bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
     )
 
@@ -118,20 +123,36 @@ def test_build_incremental_prompt_ids_synthesizes_close_for_truncated_completion
     )
 
     # Expect: prev_prompt + prev_completion + synthetic_close(99) + bridge_tail.
-    # The bridge tail starts at the gap point after the dummy's stop in
-    # bridge_base — for this fixture that's [30, 40, 50] (the post-stop
-    # newline scaffolding plus the new-message tokens).
     assert result == [1, 2, 3, 4, 5, 99, 30, 40, 50]
-    # Critical invariant: result must extend prev_prompt + prev_completion
-    # so interleave_rollout's prefix check passes.
+    # Critical invariant: result extends prev_prompt + prev_completion so
+    # interleave_rollout's prefix check passes.
     assert result[:5] == [1, 2, 3, 4, 5]
 
 
-def test_build_incremental_prompt_ids_returns_none_when_no_stop_tokens_at_all():
-    """If the renderer has no stop tokens at all (and prev was truncated),
-    we have no close to synthesize and must give up."""
+def test_build_incremental_prompt_ids_does_not_synthesize_for_default_renderer():
+    """Non-opt-in renderer (e.g. DefaultRenderer): when prev is truncated, do
+    NOT synthesize a close. Return None so the caller falls back to a full
+    re-render — matches main's TITO-on-truncation behavior."""
+    # _BridgeRenderer has no synthesize_close_on_truncation attribute → False.
+    renderer = _BridgeRenderer(
+        bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
+    )
 
-    class _NoStopRenderer(_BridgeRenderer):
+    result = build_incremental_prompt_ids(
+        renderer,
+        previous_prompt_ids=[1, 2],
+        previous_completion_ids=[3, 4, 5],  # no 99 → "truncated"
+        new_messages=[{"role": "user", "content": "next"}],
+    )
+
+    assert result is None
+
+
+def test_build_incremental_prompt_ids_returns_none_when_no_stop_tokens_at_all():
+    """Even an opt-in renderer must bail when there's literally no stop token
+    to synthesize."""
+
+    class _NoStopRenderer(_OptInBridgeRenderer):
         def get_stop_token_ids(self):
             return []
 

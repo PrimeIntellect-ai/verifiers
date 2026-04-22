@@ -140,6 +140,15 @@ class RenderedConversation:
 class Renderer(Protocol):
     """Owns message ↔ token conversion for a specific model family."""
 
+    # Opt-in flag that ``build_incremental_prompt_ids`` reads when the prior
+    # turn's completion was truncated (no stop token in completion_ids). When
+    # True, the bridge appends ``get_stop_token_ids()[0]`` as a synthetic close
+    # so the resulting prompt extends the prior step's tokens exactly. Default
+    # False because this is only sound for renderers whose canonical close
+    # token we *know* — which is true for all hand-coded renderers but not for
+    # DefaultRenderer (which wraps arbitrary HF chat templates).
+    synthesize_close_on_truncation: bool = False
+
     def render(
         self,
         messages: list[Message],
@@ -431,15 +440,31 @@ def build_incremental_prompt_ids(
 
     if boundary_idx is None:
         # No stop token in previous_completion_ids — vLLM truncated the prior
-        # turn at max_tokens. Synthesize the renderer's preferred close (first
-        # entry of get_stop_token_ids — typically <|im_end|> for chatml-family)
-        # so the bridge can extend cleanly. The synthetic close lands in the
-        # next step's prompt_ids as a context token (mask=False); it is not in
-        # the prior step's stored completion_ids so the trainer never computes
-        # a loss/KL on it. Without this fallback every truncated turn fragments
-        # the rollout in interleave_rollout, inflating samples_per_rollout
-        # proportional to the truncation rate.
-        if not stop_token_ids_list:
+        # turn at max_tokens.
+        #
+        # Only renderers that explicitly opt in via
+        # ``synthesize_close_on_truncation = True`` will bridge over this case.
+        # The opt-in is gated per-renderer because synthesizing a close token
+        # that the model didn't emit is only sound when we *know* the template's
+        # expected close (which we do for hand-coded renderers: Qwen3, GLM,
+        # DeepSeekV3, etc. — their get_stop_token_ids()[0] is the canonical
+        # end-of-turn marker by construction).
+        #
+        # DefaultRenderer leaves this False because it wraps an unknown HF chat
+        # template; ``tokenizer.eos_token_id`` is usually the right close for
+        # chatml-family fine-tunes but not universally. Returning None here
+        # matches main's TITO behavior on truncation — the caller falls back to
+        # a full re-render, which extends whenever BPE round-trip is stable.
+        # Fragmentation rate lands at ~main's 22%, not the 100% you'd get
+        # otherwise.
+        #
+        # The synthetic close is KL-safe for opt-in renderers: it lands in the
+        # next step's prompt_ids AFTER step_N's completion_ids, so when
+        # interleave_rollout merges the two steps into one sample, it becomes a
+        # mask=False "context" token. The trainer's KL sum weights it by the
+        # mask, so the token's logprob never enters the loss.
+        synth_ok = getattr(renderer, "synthesize_close_on_truncation", False)
+        if not synth_ok or not stop_token_ids_list:
             return None
         previous_ids = previous_ids + [stop_token_ids_list[0]]
         boundary_idx = len(previous_ids) - 1

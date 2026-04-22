@@ -43,6 +43,8 @@ _TOOLS_INSTRUCTIONS = (
 class Qwen35Renderer:
     """Deterministic message → token renderer for Qwen3.5 models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

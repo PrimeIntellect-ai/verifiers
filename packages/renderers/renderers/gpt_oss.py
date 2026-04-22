@@ -127,6 +127,8 @@ _SYSTEM_PROMPT_TEMPLATE = (
 class GptOssRenderer:
     """Deterministic message → token renderer for OpenAI OSS (Harmony) models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,

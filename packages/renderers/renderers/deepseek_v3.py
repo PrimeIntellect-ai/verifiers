@@ -33,6 +33,8 @@ def _ds_token(name: str) -> str:
 class DeepSeekV3Renderer:
     """Deterministic message → token renderer for DeepSeek V3 models."""
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
