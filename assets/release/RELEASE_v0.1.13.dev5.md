@@ -10,6 +10,10 @@
 
 ## Changes included in v0.1.13.dev5 (since v0.1.13.dev4)
 
+### Latest changes from main
+
+- Includes the latest `main` changes through the interception proxy streaming resilience fix (#1194), along with the `mini_swe_agent` harness (#1219) and `SandboxMixin` VM sandbox support/docs (#1222).
+
 ### Features and enhancements
 
 - Add mini-swe-agent harness (#1219)
