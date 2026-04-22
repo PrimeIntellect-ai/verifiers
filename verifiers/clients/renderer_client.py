@@ -495,7 +495,7 @@ async def _get_incremental_prompt_ids(
 
     normalized_prompt = _normalize_for_comparison(prompt)
     for step in reversed(trajectory_list):
-        if _step_is_truncated(step):
+        if _step_is_truncated(step) and not synth_ok:
             continue
 
         token_ids = _step_token_ids(step)

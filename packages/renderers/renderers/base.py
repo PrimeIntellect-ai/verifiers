@@ -278,6 +278,7 @@ def create_renderer_pool(
     *,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
+    synthesize_close_on_truncation: bool = False,
 ) -> RendererPool:
     """Create a RendererPool with *size* independent tokenizer copies.
 
@@ -285,8 +286,9 @@ def create_renderer_pool(
     HuggingFace fast tokenizers release the GIL during Rust encoding, so
     threads achieve real parallelism.
 
-    ``tool_parser`` and ``reasoning_parser`` are forwarded to
-    ``create_renderer`` when the pool falls back to ``DefaultRenderer``.
+    ``tool_parser``, ``reasoning_parser``, and ``synthesize_close_on_truncation``
+    are forwarded to ``create_renderer`` when the pool falls back to
+    ``DefaultRenderer``.
     """
 
     def factory(
@@ -294,6 +296,7 @@ def create_renderer_pool(
         _renderer=renderer,
         _tool_parser=tool_parser,
         _reasoning_parser=reasoning_parser,
+        _synth_close=synthesize_close_on_truncation,
     ) -> Renderer:
         from transformers import AutoTokenizer
 
@@ -303,6 +306,7 @@ def create_renderer_pool(
             renderer=_renderer,
             tool_parser=_tool_parser,
             reasoning_parser=_reasoning_parser,
+            synthesize_close_on_truncation=_synth_close,
         )
 
     return RendererPool(factory, size=size)
@@ -314,6 +318,7 @@ def create_renderer(
     *,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
+    synthesize_close_on_truncation: bool = False,
 ) -> Renderer:
     """Create a Renderer by name, or auto-detect from the tokenizer's model name.
 
@@ -327,6 +332,11 @@ def create_renderer(
                   have their own parsing wired in.
         reasoning_parser: Name of a reasoning parser registered in
                   ``renderers.parsers``. Only consumed by DefaultRenderer.
+        synthesize_close_on_truncation: When True, DefaultRenderer bridges over
+                  vLLM-truncated turns by appending the tokenizer's EOS token
+                  in place of the missing end-of-turn marker. See the package
+                  README for when it's safe to enable. Only consumed by
+                  DefaultRenderer; hand-coded renderers set this themselves.
     """
     _populate_registry()
 
@@ -335,6 +345,8 @@ def create_renderer(
         default_kwargs["tool_parser"] = tool_parser
     if reasoning_parser is not None:
         default_kwargs["reasoning_parser"] = reasoning_parser
+    if synthesize_close_on_truncation:
+        default_kwargs["synthesize_close_on_truncation"] = True
 
     if renderer != "auto":
         cls = RENDERER_REGISTRY.get(renderer)
@@ -346,8 +358,9 @@ def create_renderer(
             return cls(tokenizer, **default_kwargs)
         if default_kwargs:
             logger.info(
-                "tool_parser/reasoning_parser are only consumed by DefaultRenderer; "
-                "ignoring for renderer=%r which has built-in parsing.",
+                "tool_parser / reasoning_parser / synthesize_close_on_truncation "
+                "are only consumed by DefaultRenderer; ignoring for renderer=%r "
+                "which has built-in behavior.",
                 renderer,
             )
         return cls(tokenizer)
