@@ -21,8 +21,7 @@ from verifiers.types import (
 class NeMoRLChatCompletionsClient(OpenAIChatCompletionsClient):
     """
     Client for NeMo Gym vllm_model server.
-    Formats requests properly for NeMo RL's retokenization fix.
-    Implements token ids request for retokenization fix in NeMo RL and formats properly for verifiers.
+    Formats requests for NeMo RL's server-side vLLM retokenization fix, and translates to verifiers format.
     """
 
     @handle_openai_overlong_prompt
