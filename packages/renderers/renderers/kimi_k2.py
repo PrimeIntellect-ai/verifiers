@@ -195,8 +195,11 @@ class KimiK2Renderer:
                 emit_text("\n", i)
 
             elif role == "assistant":
+                # Kimi strips reasoning from historical assistant turns and
+                # only keeps it for the most-recent plain assistant. Off-by-one
+                # here would drop reasoning from the last turn too.
                 is_last_turn = (
-                    last_plain_assistant_idx == -1 or i > last_plain_assistant_idx
+                    last_plain_assistant_idx == -1 or i >= last_plain_assistant_idx
                 )
                 self._render_assistant(
                     msg,
@@ -304,7 +307,14 @@ class KimiK2Renderer:
                     if not isinstance(arguments, str)
                     else arguments
                 )
-                tc_id = tc.get("id") or f"functions.{name}:{idx}"
+                # The Kimi template encodes the function name into the
+                # tool-call id (``functions.{name}:{idx}``) — that's how its
+                # parser recovers the name. An opaque OpenAI-style id
+                # (``call_abc123``) would round-trip to a function name of
+                # ``call_abc123``, so we only use the caller-provided id if
+                # it's in the template's expected shape.
+                raw_id = tc.get("id") or ""
+                tc_id = raw_id if ":" in raw_id else f"functions.{name}:{idx}"
                 emit_special(self._tool_call_begin, msg_idx)
                 emit_text(tc_id, msg_idx)
                 emit_special(self._tool_call_argument_begin, msg_idx)

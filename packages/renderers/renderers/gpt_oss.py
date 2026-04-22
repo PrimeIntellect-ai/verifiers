@@ -106,7 +106,7 @@ def _format_tool_definition(tool: ToolSpec) -> str:
 
 
 # ---------------------------------------------------------------------------
-# System-prompt template (matches Tinker reference)
+# System-prompt template
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_TEMPLATE = (

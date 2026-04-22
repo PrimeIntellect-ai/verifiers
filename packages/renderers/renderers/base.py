@@ -230,6 +230,7 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "THUDM/GLM-4.5": "glm4.5",
     "MiniMaxAI/MiniMax-M2": "minimax-m2",
     "deepseek-ai/DeepSeek": "deepseek_v3",
+    "moonshotai/Kimi-K2.6": "kimi_k25",
     "moonshotai/Kimi-K2.5": "kimi_k25",
     "moonshotai/Kimi-K2": "kimi_k2",
     "nvidia/Llama-3": "nemotron3",

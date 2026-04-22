@@ -10,6 +10,11 @@ from transformers import AutoTokenizer
 from renderers import create_renderer
 
 # (HuggingFace model name, renderer name or "auto")
+#
+# This is the baseline matrix for render-parity and parse tests. Models
+# here must pass the full test_render_ids barrage against
+# apply_chat_template. Additional models for narrower tests (e.g. the
+# roundtrip test) live with their own parametrization in the test file.
 RENDERER_MODELS = [
     ("Qwen/Qwen3-8B", "auto"),
     ("Qwen/Qwen3.5-9B", "auto"),

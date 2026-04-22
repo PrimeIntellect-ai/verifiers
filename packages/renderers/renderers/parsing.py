@@ -1,4 +1,4 @@
-"""Token-level parsing — Tinker-style, operates on token IDs directly.
+"""Token-level parsing — operates on token IDs directly.
 
 Finds special token boundaries by scanning token IDs, then decodes only
 the text segments between them. No regex on decoded text, no false positives
@@ -671,27 +671,14 @@ def parse_gpt_oss(
     """
     import re
 
-    # Locate terminal tokens
+    # Only <|return|> terminates the whole turn. <|call|> closes an
+    # individual tool-call commentary block — a single turn may contain
+    # several, so we must NOT truncate at the first <|call|>.
     return_pos = _find(token_ids, return_id)
-    call_pos = _find(token_ids, call_id)
-
-    if return_pos == -1 and call_pos == -1:
-        # No terminal found — decode everything as raw content
-        return ParsedResponse(
-            content=_decode(tokenizer, token_ids),
-            reasoning_content=None,
-            tool_calls=None,
-        )
-
-    # Pick earliest terminal
-    if return_pos == -1:
-        stop_pos = call_pos
-    elif call_pos == -1:
-        stop_pos = return_pos
+    if return_pos != -1:
+        ids = token_ids[:return_pos]
     else:
-        stop_pos = min(return_pos, call_pos)
-
-    ids = token_ids[:stop_pos]
+        ids = list(token_ids)
 
     reasoning_parts: list[str] = []
     content_parts: list[str] = []
@@ -712,19 +699,18 @@ def parse_gpt_oss(
         header_ids = ids[i + 1 : msg_pos]
         header_text = _decode(tokenizer, header_ids)
 
-        # Body: tokens from after <|message|> up to next <|start|> or <|end|>
+        # Body: tokens from after <|message|> up to the next block boundary
+        # (<|start|>, <|end|>, or <|call|> — the last closes a tool-call
+        # commentary block within the same turn).
         body_start = msg_pos + 1
-        next_start = _find(ids, start_id, body_start)
-        next_end = _find(ids, end_id, body_start)
-
-        if next_start == -1 and next_end == -1:
-            body_end = len(ids)
-        elif next_start == -1:
-            body_end = next_end
-        elif next_end == -1:
-            body_end = next_start
-        else:
-            body_end = min(next_start, next_end)
+        candidates = [
+            pos for pos in (
+                _find(ids, start_id, body_start),
+                _find(ids, end_id, body_start),
+                _find(ids, call_id, body_start),
+            ) if pos != -1
+        ]
+        body_end = min(candidates) if candidates else len(ids)
 
         body_text = _decode(tokenizer, ids[body_start:body_end])
 
@@ -757,9 +743,9 @@ def parse_gpt_oss(
             # Commentary without a tool recipient is a user-visible preamble
             content_parts.append(body_text)
 
-        # Advance: skip body + optional <|end|>
+        # Advance: skip body + any trailing <|end|> / <|call|>
         i = body_end
-        if i < len(ids) and ids[i] == end_id:
+        if i < len(ids) and ids[i] in (end_id, call_id):
             i += 1
 
     reasoning = "".join(reasoning_parts).strip() or None

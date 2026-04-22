@@ -41,7 +41,7 @@ _IMAGE_PREFIX = "<|media_begin|>image<|media_content|>"
 _IMAGE_SUFFIX = "<|media_end|>\n"
 
 # ---------------------------------------------------------------------------
-# TypeScript-style tool declaration (ported from tinker kimi_k2_5_tool_declaration_ts.py)
+# TypeScript-style tool declaration
 # ---------------------------------------------------------------------------
 
 _TS_INDENT = "  "
@@ -834,8 +834,14 @@ class KimiK25Renderer:
                     if not isinstance(arguments, str)
                     else arguments
                 )
-                # Build tool_id: "functions.name:index"
-                tool_id = tc.get("id") or f"functions.{func_name}:{tc_idx}"
+                # Build tool_id: "functions.name:index". The Kimi parser
+                # extracts the function name from this field, so opaque
+                # OpenAI-style ids (``call_abc123``) would round-trip to a
+                # function name of ``call_abc123``. Only honor a
+                # caller-provided id when it's already in the expected
+                # ``<name>:<idx>`` shape.
+                raw_id = tc.get("id") or ""
+                tool_id = raw_id if ":" in raw_id else f"functions.{func_name}:{tc_idx}"
                 emit_special(self._tool_call_begin, msg_idx)
                 emit_text(tool_id, msg_idx)
                 emit_special(self._tool_call_argument_begin, msg_idx)
