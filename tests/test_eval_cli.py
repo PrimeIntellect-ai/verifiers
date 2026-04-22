@@ -41,6 +41,8 @@ def run_cli(make_metadata, make_state, make_input):
             "api_base_url": "https://api.openai.com/v1",
             "header": None,
             "headers": None,
+            "header_from_state": None,
+            "headers_from_state": None,
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
@@ -245,6 +247,40 @@ def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
         "X-B": "override",
         "X-C": "c",
     }
+
+
+def test_cli_default_session_id_header_from_state(monkeypatch, run_cli):
+    """With no override, X-Session-ID defaults to example_id via ClientConfig."""
+    captured = run_cli(monkeypatch, {}, endpoints={})
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "example_id",
+    }
+
+
+def test_cli_headers_from_state_table_and_list_merge(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "headers_from_state": {"X-Session-ID": "trajectory_id", "X-Task": "task"},
+            "header_from_state": ["X-Route: info", "X-Task: example_id"],
+        },
+        endpoints={},
+    )
+
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "trajectory_id",
+        "X-Task": "example_id",
+        "X-Route": "info",
+    }
+
+
+def test_cli_header_from_state_rejects_empty_value(monkeypatch, run_cli):
+    with pytest.raises(ValueError, match="state_key cannot be empty"):
+        run_cli(
+            monkeypatch,
+            {"header_from_state": ["X-Session-ID: "]},
+            endpoints={},
+        )
 
 
 def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_cli):

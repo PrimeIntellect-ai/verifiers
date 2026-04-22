@@ -12,7 +12,7 @@ from typing import (
     TypeAlias,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -447,6 +447,12 @@ class ClientConfig(BaseModel):
     @classmethod
     def validate_extra_headers(cls, value: object) -> dict[str, str]:
         return _validate_extra_headers_value(value)
+
+    @model_validator(mode="after")
+    def _default_session_id_header(self) -> "ClientConfig":
+        """Default X-Session-ID → example_id so sticky DP-aware routing works without explicit config."""
+        self.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        return self
 
     @field_validator("endpoint_configs", mode="before")
     @classmethod

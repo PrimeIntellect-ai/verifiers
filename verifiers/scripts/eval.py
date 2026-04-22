@@ -142,6 +142,47 @@ def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
     return {**eval_headers_table, **eval_headers_from_list}
 
 
+def build_extra_headers_from_state(raw: dict[str, Any]) -> dict[str, str]:
+    """Build the header-name → state-key map for `ClientConfig.extra_headers_from_state`.
+
+    Reads a TOML table (`headers_from_state = { "X-Session-ID" = "trajectory_id" }`)
+    and/or a repeatable list (`--header-from-state "X-Session-ID: trajectory_id"`).
+    The CLI list wins on key collisions with the table.
+    """
+    table: dict[str, str] = {}
+    raw_table = raw.get("headers_from_state")
+    if raw_table is not None:
+        table = _validate_extra_headers_value(raw_table)
+
+    raw_list = raw.get("header_from_state")
+    if raw_list is None:
+        raw_list = []
+    if not isinstance(raw_list, list):
+        raise ValueError(
+            "'header_from_state' must be a list of 'Name: state_key' strings"
+        )
+
+    from_list: dict[str, str] = {}
+    for entry in raw_list:
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"Each 'header_from_state' entry must be a string 'Name: state_key', got: {entry!r}"
+            )
+        if ":" not in entry:
+            raise ValueError(
+                f"--header-from-state must be 'Name: state_key', got: {entry!r}"
+            )
+        key, value = entry.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if not key:
+            raise ValueError("--header-from-state name cannot be empty")
+        if not value:
+            raise ValueError("--header-from-state state_key cannot be empty")
+        from_list[key] = value
+
+    return {**table, **from_list}
+
+
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
@@ -278,6 +319,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
+    )
+    parser.add_argument(
+        "--header-from-state",
+        action="append",
+        default=None,
+        help=(
+            "Per-request HTTP header whose value is read from the rollout state. "
+            "'Name: state_key' (e.g. 'X-Session-ID: trajectory_id'). Repeatable. "
+            "Defaults to X-Session-ID=example_id if unset."
+        ),
     )
     parser.add_argument(
         "--num-examples",
@@ -639,6 +690,7 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
+        eval_headers_from_state = build_extra_headers_from_state(raw)
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
@@ -683,7 +735,7 @@ def main(argv: list[str] | None = None):
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
-            extra_headers_from_state={"X-Session-ID": "example_id"},
+            extra_headers_from_state=eval_headers_from_state,
         )
 
         # Backward-compatible TOML field: resume_path
