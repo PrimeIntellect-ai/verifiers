@@ -156,11 +156,6 @@ class SandboxMixin:
         request-level (httpx) timeouts, distinct from container-lifetime
         (``SandboxSpec.timeout_minutes``) and rollout-level
         (``MultiTurnEnv.timeout_seconds``) limits.
-
-        The same ``sandbox_wait_for_creation_max_attempts`` and
-        ``sandbox_creations_per_minute`` apply to both container and
-        VM-backed sandboxes; tune them up when using VMs if boot times or
-        quotas demand it.
         """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -199,9 +194,6 @@ class SandboxMixin:
 
         When a sandbox_creation_rate_limit is configured, this method
         throttles to avoid overwhelming the sandbox API under burst load.
-        The same rate limiter and readiness-attempt cap apply to both
-        container and VM-backed requests; see :meth:`init_sandbox_client` to
-        tune them when VM boots are slow.
 
         Raises:
             SandboxCreationError: If sandbox creation fails after retries.
