@@ -25,7 +25,7 @@ from openai.types.chat.chat_completion_chunk import (
 
 from verifiers.errors import InfraError
 from verifiers.types import Response
-from verifiers.utils.logging_utils import truncate
+from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -244,9 +244,7 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(
-                    f"prepare failed: {type(e).__name__}: {e}"
-                ),
+                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
             )
             return response
         # Reuse a single get() task across keepalive cycles instead of
@@ -273,12 +271,12 @@ class InterceptionServer:
                         waited_s = time.monotonic() - start
                         logger.debug(
                             f"[{rollout_id}] Streaming error during keepalive "
-                            f"after {waited_s:.1f}s: {e}"
+                            f"after {print_time(waited_s)}: {e}"
                         )
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {waited_s:.1f}s: "
+                                f"keepalive write failed after {print_time(waited_s)}: "
                                 f"{type(e).__name__}: {e}"
                             ),
                         )
@@ -307,12 +305,12 @@ class InterceptionServer:
         except Exception as e:
             waited_s = time.monotonic() - start
             logger.debug(
-                f"[{rollout_id}] Streaming error after {waited_s:.1f}s: {e}"
+                f"[{rollout_id}] Streaming error after {print_time(waited_s)}: {e}"
             )
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {waited_s:.1f}s: "
+                    f"stream write failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -339,13 +337,13 @@ class InterceptionServer:
         except Exception as e:
             waited_s = time.monotonic() - start
             logger.warning(
-                f"[{rollout_id}] write_eof failed after {waited_s:.1f}s: "
+                f"[{rollout_id}] write_eof failed after {print_time(waited_s)}: "
                 f"{type(e).__name__}: {e}"
             )
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"write_eof failed after {waited_s:.1f}s: "
+                    f"write_eof failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
