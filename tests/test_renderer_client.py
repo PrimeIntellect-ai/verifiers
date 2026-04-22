@@ -294,10 +294,43 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
 _TRUNCATED_ANCHOR_MODELS = [
     pytest.param("Qwen/Qwen3-8B", "auto", id="Qwen/Qwen3-8B"),
     pytest.param("Qwen/Qwen3.5-9B", "auto", id="Qwen/Qwen3.5-9B"),
+    pytest.param("Qwen/Qwen3-VL-4B-Instruct", "auto", id="Qwen/Qwen3-VL-4B-Instruct"),
     pytest.param("zai-org/GLM-5", "auto", id="zai-org/GLM-5"),
     pytest.param("zai-org/GLM-4.7-Flash", "auto", id="zai-org/GLM-4.7-Flash"),
     pytest.param("THUDM/GLM-4.5-Air", "auto", id="THUDM/GLM-4.5-Air"),
     pytest.param("MiniMaxAI/MiniMax-M2.5", "auto", id="MiniMaxAI/MiniMax-M2.5"),
+    # Nemotron3Renderer asserts a '<|endoftext|>' special token at
+    # construction, which isn't in the NVIDIA-Nemotron-3-Nano-* tokenizer
+    # vocab. The renderer was written for a different Nemotron family;
+    # revisit when we add a Nemotron-3-Nano-compatible renderer (or when
+    # NVIDIA ships a tokenizer with the expected specials).
+    pytest.param(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "nemotron3",
+        id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        marks=pytest.mark.xfail(
+            reason="Nemotron3Renderer expects '<|endoftext|>' in the "
+            "tokenizer vocab; Nemotron-3-Nano tokenizer lacks it.",
+            strict=False,
+        ),
+    ),
+    # GPT-OSS harmony format renders a lone assistant message with
+    # channel=final, but in a longer conversation the first assistant
+    # turn gets channel=analysis first — so render([dummy_assistant])
+    # isn't a prefix of render([dummy_assistant, *new_messages]) and
+    # the chatml_bridge prefix check fails. Fixing it needs a custom
+    # bridge that understands harmony's analysis/final channels.
+    pytest.param(
+        "openai/gpt-oss-20b",
+        "gpt_oss",
+        id="openai/gpt-oss-20b",
+        marks=pytest.mark.xfail(
+            reason="Harmony-format templates render lone assistant with a "
+            "different channel than in-context, breaking the dummy-assistant "
+            "trick. Needs a harmony-aware bridge.",
+            strict=False,
+        ),
+    ),
     pytest.param(
         "Qwen/Qwen2.5-0.5B-Instruct", "default", id="Qwen/Qwen2.5-0.5B-Instruct"
     ),

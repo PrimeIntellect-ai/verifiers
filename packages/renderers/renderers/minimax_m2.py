@@ -17,6 +17,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.bridges import chatml_bridge
 from renderers.parsing import parse_minimax
 
 _DEFAULT_SYSTEM = (
@@ -46,8 +47,6 @@ _TOOLS_INSTRUCTIONS = (
 
 class MiniMaxM2Renderer:
     """Deterministic message → token renderer for MiniMax M2 / M2.5 models."""
-
-    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -217,6 +216,18 @@ class MiniMaxM2Renderer:
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._eos]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return chatml_bridge(
+            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        )
 
     def _render_assistant(
         self, msg, orig_idx, conv_idx, last_user_index, *, emit_special, emit_text

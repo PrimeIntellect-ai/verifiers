@@ -16,7 +16,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.glm5 import _glm_bridge
+from renderers.bridges import glm_bridge
 from renderers.parsing import parse_glm
 
 _TOOLS_HEADER = (
@@ -219,7 +219,7 @@ class GLM45Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return _glm_bridge(
+        return glm_bridge(
             self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
         )
 

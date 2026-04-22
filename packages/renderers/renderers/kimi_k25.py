@@ -28,6 +28,7 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import ImagePart, Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.bridges import chatml_bridge
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -473,8 +474,6 @@ class KimiK25Renderer:
     The tokenizer should be ``moonshotai/Kimi-K2-Instruct`` (same as K2).
     """
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -670,6 +669,18 @@ class KimiK25Renderer:
         if self._endoftext is not None:
             stop.append(self._endoftext)
         return stop
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return chatml_bridge(
+            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

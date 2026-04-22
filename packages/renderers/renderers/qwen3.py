@@ -14,6 +14,7 @@ import json
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.bridges import chatml_bridge
 from renderers.parsing import parse_qwen3
 
 _TOOLS_HEADER = (
@@ -35,8 +36,6 @@ _TOOLS_FOOTER = (
 
 class Qwen3Renderer:
     """Deterministic message → token renderer for Qwen3 models."""
-
-    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -199,6 +198,18 @@ class Qwen3Renderer:
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._im_end, self._endoftext]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return chatml_bridge(
+            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        )
 
     def _render_assistant(
         self,

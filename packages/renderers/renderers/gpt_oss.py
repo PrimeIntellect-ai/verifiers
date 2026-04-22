@@ -27,6 +27,7 @@ from datetime import datetime
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.bridges import chatml_bridge
 from renderers.parsing import parse_gpt_oss
 
 # ---------------------------------------------------------------------------
@@ -126,8 +127,6 @@ _SYSTEM_PROMPT_TEMPLATE = (
 
 class GptOssRenderer:
     """Deterministic message → token renderer for OpenAI OSS (Harmony) models."""
-
-    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -264,6 +263,18 @@ class GptOssRenderer:
 
     def get_stop_token_ids(self) -> list[int]:
         return [self._return, self._call]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        return chatml_bridge(
+            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        )
 
     # ── rendering helpers ────────────────────────────────────────────────────
 
