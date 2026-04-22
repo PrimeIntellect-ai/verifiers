@@ -283,6 +283,22 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                 output = ((result.stdout or "") + (result.stderr or ""))[:500]
                 raise RuntimeError(f"selected test restore failed: {output}")
 
+        test_checkout_command = "\n".join(
+            line.strip()
+            for line in info["before_repo_set_cmd"].splitlines()
+            if re.match(r"^git\s+checkout\s+\S+\s+--\s+", line.strip())
+        )
+        if test_checkout_command:
+            result = await sandbox_client.execute_command(
+                sandbox_id,
+                f"set -e\n{test_checkout_command}",
+                working_dir=self.agent_workdir,
+                timeout=120,
+            )
+            if result.exit_code != 0:
+                output = ((result.stdout or "") + (result.stderr or ""))[:500]
+                raise RuntimeError(f"benchmark test checkout failed: {output}")
+
         # The agent patch may include test edits; restore benchmark tests before scoring.
         test_patch = info["test_patch"]
         if test_patch.strip():
@@ -309,12 +325,10 @@ class SWEBenchProTaskSet(SandboxTaskSet):
                 Path(local_path).unlink(missing_ok=True)
 
         selected_tests_arg = shlex.quote(",".join(selected_tests))
-        test_setup_command = info["before_repo_set_cmd"].strip()
         command = (
             "set -e\n"
             "mkdir -p /logs/verifier /workspace\n"
             f"cd {agent_workdir}\n\n"
-            f"{test_setup_command}\n\n"
             f"bash /workspace/run_script.sh {selected_tests_arg} "
             "> /workspace/stdout.log 2> /workspace/stderr.log || true\n"
             "python /workspace/parser.py /workspace/stdout.log "

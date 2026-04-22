@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import time
 import urllib.request
+from pathlib import Path
 
+import pytest
+
+from verifiers.envs.experimental.composable.tasksets.swe import swe_bench_pro
 from verifiers.envs.experimental.composable.tasksets.swe.swe_bench_pro import (
     SWEBenchProTaskSet,
     _download_file,
@@ -104,3 +108,69 @@ def test_download_file_retries_normal_fetch_errors(monkeypatch, tmp_path) -> Non
 
     assert attempts == 3
     assert out_path.read_bytes() == b"script"
+
+
+@pytest.mark.asyncio
+async def test_run_tests_filters_destructive_before_repo_set_cmd(
+    monkeypatch,
+) -> None:
+    class Result:
+        def __init__(self, stdout: str = "", stderr: str = "", exit_code: int = 0):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.exit_code = exit_code
+
+    class SandboxClient:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+            self.background_jobs: list[str] = []
+
+        async def execute_command(self, sandbox_id, command, **kwargs):
+            self.commands.append(command)
+            if command == "cat /logs/verifier/scoring.log":
+                return Result("SWEBENCH_PRO_OUTPUT_START\n{}\nSWEBENCH_PRO_OUTPUT_END")
+            return Result()
+
+        async def upload_file(self, sandbox_id, remote_path, local_path):
+            assert Path(local_path).exists()
+
+        async def run_background_job(self, sandbox_id, command, timeout):
+            self.background_jobs.append(command)
+            return Result()
+
+    def fake_download(url: str, path: str) -> None:
+        Path(path).write_text("script")
+
+    monkeypatch.setattr(swe_bench_pro, "_download_file", fake_download)
+
+    taskset = SWEBenchProTaskSet.__new__(SWEBenchProTaskSet)
+    taskset.agent_workdir = "/app"
+    taskset.run_scripts_url = "https://example.test/run_scripts"
+    sandbox_client = SandboxClient()
+
+    await taskset._run_tests(
+        sandbox_client,
+        "sandbox-id",
+        {
+            "info": {
+                "base_commit": "base123",
+                "instance_id": "instance-1",
+                "selected_test_files_to_run": "['tests/foo.py']",
+                "test_patch": "",
+                "before_repo_set_cmd": (
+                    "git reset --hard base123\n"
+                    "git clean -fd\n"
+                    "git checkout base123\n"
+                    "git checkout target456 -- tests/foo.py"
+                ),
+            }
+        },
+        test_timeout=60,
+    )
+
+    checkout_commands = [
+        command for command in sandbox_client.commands if "target456" in command
+    ]
+    assert checkout_commands == ["set -e\ngit checkout target456 -- tests/foo.py"]
+    assert "git reset --hard base123" not in sandbox_client.background_jobs[0]
+    assert "git clean -fd" not in sandbox_client.background_jobs[0]
