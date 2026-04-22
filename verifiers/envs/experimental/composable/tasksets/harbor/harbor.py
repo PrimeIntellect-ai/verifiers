@@ -37,7 +37,14 @@ def _load_task_entry(task_dir: Path, example_id: int) -> dict:
     }
     info_json = task_dir / "info.json"
     if info_json.exists():
-        info.update(json.loads(info_json.read_text()))
+        reserved_info_keys = {"task_dir", "task_name", "docker_image", "config"}
+        info.update(
+            {
+                key: value
+                for key, value in json.loads(info_json.read_text()).items()
+                if key not in reserved_info_keys
+            }
+        )
 
     return {
         "question": instruction,
@@ -400,7 +407,7 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         return await task._run_tests(sandbox_client, sandbox_id, state, test_timeout)
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
-        task = HarborTaskSet(info["task_dir"])
+        task = HarborTaskSet(info["task_dir"], agent_workdir=self.agent_workdir)
         return task._calculate_reward(test_output, info)
 
     async def _apply_gold_patch(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -68,7 +69,8 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
 
         root = Path(cache_dir or Path.home() / ".cache" / "verifiers")
         safe_ref = re.sub(r"[^A-Za-z0-9_.-]+", "-", git_ref).strip("-") or "head"
-        target = root / "terminal-bench-2" / safe_ref
+        source_key = hashlib.sha256(f"{repo_url}\n{tasks_subdir}".encode()).hexdigest()
+        target = root / "terminal-bench-2" / source_key[:16] / safe_ref
         if force_download and target.exists():
             shutil.rmtree(target)
         if target.exists():
@@ -82,11 +84,22 @@ class TerminalBench2TaskSet(HarborDatasetTaskSet):
                     "git",
                     "clone",
                     "--depth=1",
-                    "--branch",
-                    git_ref,
+                    "--no-checkout",
                     repo_url,
                     str(clone_dir),
                 ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(clone_dir), "fetch", "--depth=1", "origin", git_ref],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(clone_dir), "checkout", "--detach", "FETCH_HEAD"],
                 check=True,
                 capture_output=True,
                 text=True,
