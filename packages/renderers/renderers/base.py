@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import queue
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol, TypedDict, runtime_checkable
+
+logger = logging.getLogger("renderers.base")
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +306,18 @@ def create_renderer(tokenizer, renderer: str = "auto") -> Renderer:
         if model_name.startswith(prefix):
             return RENDERER_REGISTRY[renderer_name](tokenizer)
 
-    # No match — fall back to default (apply_chat_template)
+    # No match — fall back to default (apply_chat_template). This is correct but
+    # slower than a model-specific renderer and disables tool-call parsing. Warn
+    # so users can pick an explicit renderer for their model family.
+    available = ", ".join(sorted(n for n in RENDERER_REGISTRY if n != "default"))
+    logger.warning(
+        "No renderer auto-detected for %r; falling back to DefaultRenderer "
+        "(apply_chat_template). Tool calls will not parse and performance will "
+        "be lower than a model-specific renderer. Pass renderer=<name> explicitly "
+        "to silence this. Available: %s.",
+        model_name or "<unnamed tokenizer>",
+        available,
+    )
     return RENDERER_REGISTRY["default"](tokenizer)
 
 
