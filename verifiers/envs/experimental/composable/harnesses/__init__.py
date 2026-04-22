@@ -16,6 +16,13 @@ from verifiers.envs.experimental.composable.harnesses.opencode import (
     build_opencode_run_command,
     opencode_harness,
 )
+from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
+    MINI_SWE_AGENT_CONFIG,
+    MINI_SWE_AGENT_INSTALL_SCRIPT,
+    build_mini_swe_agent_install_script,
+    build_mini_swe_agent_run_command,
+    mini_swe_agent_harness,
+)
 
 __all__ = [
     "rlm_harness",
@@ -32,4 +39,9 @@ __all__ = [
     "DEFAULT_DISABLED_TOOLS",
     "DEFAULT_RELEASE_SHA256",
     "DEFAULT_SYSTEM_PROMPT",
+    "mini_swe_agent_harness",
+    "build_mini_swe_agent_install_script",
+    "build_mini_swe_agent_run_command",
+    "MINI_SWE_AGENT_INSTALL_SCRIPT",
+    "MINI_SWE_AGENT_CONFIG",
 ]
