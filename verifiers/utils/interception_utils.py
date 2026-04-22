@@ -33,6 +33,7 @@ from verifiers.utils.logging_utils import truncate
 logger = logging.getLogger(__name__)
 
 
+KEEPALIVE_INTERVAL_SECONDS = 10.0
 # Sample the server-side TCP_INFO state every N seconds during a streaming
 # response so we can see the socket transition (e.g. to CLOSE_WAIT) before
 # the write that surfaces the failure. 0 disables.
@@ -398,9 +399,45 @@ class InterceptionServer:
                     tcp_state_ref,
                 )
             )
+        # Reuse a single get() task across keepalive cycles instead of
+        # recreating it each iteration. ``asyncio.wait_for`` on Python
+        # 3.10/3.11 has a race where a timeout cancels an inner task that
+        # may have already dequeued an item, silently dropping it.
+        # ``asyncio.wait`` does not cancel its tasks on timeout, so a
+        # pending ``get()`` task carries forward safely.
+        get_task: asyncio.Task | None = None
         try:
             while True:
-                chunk_dict = await chunk_queue.get()
+                if get_task is None:
+                    get_task = asyncio.create_task(chunk_queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
+                )
+                if get_task not in done:
+                    # Idle window — emit SSE keepalive comment to keep
+                    # intermediaries (tunnel, LB, kube-proxy) from closing
+                    # the connection during the long vLLM wait.
+                    try:
+                        await response.write(b": keepalive\n\n")
+                    except Exception as e:
+                        waited_s = time.monotonic() - start
+                        diag = _tcp_diag(http_request.transport, peer, tcp_state_ref)
+                        logger.debug(
+                            f"[{rollout_id}] Streaming error during keepalive "
+                            f"after {waited_s:.1f}s {diag}: {e}"
+                        )
+                        self._set_rollout_error(
+                            rollout_id,
+                            StreamInterrupted(
+                                f"keepalive write failed after {waited_s:.1f}s "
+                                f"{diag}: {type(e).__name__}: {e}"
+                            ),
+                        )
+                        return response
+                    continue
+
+                chunk_dict = get_task.result()
+                get_task = None
 
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
@@ -433,6 +470,8 @@ class InterceptionServer:
             )
             return response
         finally:
+            if get_task is not None and not get_task.done():
+                get_task.cancel()
             if tcp_sampler is not None and not tcp_sampler.done():
                 tcp_sampler.cancel()
 

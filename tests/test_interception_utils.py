@@ -133,3 +133,74 @@ async def test_streaming_write_failure_surfaces_to_state(monkeypatch):
     assert "ConnectionResetError" in str(state["error"])
 
 
+async def test_keepalive_emitted_during_idle(monkeypatch):
+    """During the idle window (no chunks on chunk_queue) the handler must
+    emit SSE keepalive comments so upstream idle-timeouts don't fire."""
+    monkeypatch.setattr(interception_utils, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    writes: list[bytes] = []
+
+    async def fake_write(data: bytes) -> None:
+        writes.append(data)
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=fake_write)
+    fake_response.write_eof = AsyncMock()
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()  # starts empty
+    response_future: asyncio.Future = asyncio.Future()
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    task = asyncio.create_task(
+        server._handle_streaming_response(MagicMock(), "r1", intercept)
+    )
+    await asyncio.sleep(0.2)  # enough for a few keepalive cycles
+
+    # Close the loop cleanly: EOF sentinel + resolved future → handler returns.
+    response_future.set_result(None)
+    await chunk_queue.put(None)
+    await task
+
+    assert any(w == b": keepalive\n\n" for w in writes), (
+        f"expected at least one keepalive write, got writes={writes}"
+    )
+
+
+async def test_keepalive_write_failure_surfaces_to_state(monkeypatch):
+    """A failed keepalive write (upstream already cut the TCP connection)
+    must funnel into ``state["error"]`` with elapsed-time instrumentation."""
+    monkeypatch.setattr(interception_utils, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=ConnectionResetError("tunnel died"))
+    fake_response.write_eof = AsyncMock()
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()  # never produces
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": asyncio.Future(),
+    }
+
+    await server._handle_streaming_response(MagicMock(), "r1", intercept)
+
+    assert isinstance(state["error"], StreamInterrupted)
+    msg = str(state["error"])
+    assert "keepalive write failed" in msg
+    assert "ConnectionResetError" in msg
