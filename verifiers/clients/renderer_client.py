@@ -81,9 +81,10 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser, reasoning_parser)
-    # so that different parser configs for the same model don't collide.
-    _shared_pools: ClassVar[dict[tuple[str, str, str | None, str | None], RendererPool]] = {}
+    # Cache key is (renderer_model_name, renderer_name, tool_parser,
+    # reasoning_parser, pool_size) so that different parser configs or pool
+    # sizes for the same model don't collide.
+    _shared_pools: ClassVar[dict[tuple[str, str, str | None, str | None, int], RendererPool]] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
@@ -94,7 +95,10 @@ class RendererClient(
     ):
         super().__init__(config)
         self._renderer = renderer
-        self._pool_size = pool_size
+        # ClientConfig.renderer_pool_size wins over the constructor default so
+        # callers can tune pool size via config without subclassing.
+        cfg_size = getattr(config, "renderer_pool_size", None)
+        self._pool_size = cfg_size if cfg_size is not None else pool_size
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
@@ -118,7 +122,7 @@ class RendererClient(
         reasoning_parser = (
             self._config.reasoning_parser if self._config is not None else None
         )
-        cache_key = (renderer_model, renderer_name, tool_parser, reasoning_parser)
+        cache_key = (renderer_model, renderer_name, tool_parser, reasoning_parser, self._pool_size)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
