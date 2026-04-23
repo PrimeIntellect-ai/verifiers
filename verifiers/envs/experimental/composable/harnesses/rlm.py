@@ -15,7 +15,6 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
-DEFAULT_RLM_MAX_TURNS_IN_CONTEXT = -1
 DEFAULT_RLM_EXEC_TIMEOUT = 300
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
@@ -101,8 +100,8 @@ def rlm_harness(
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
-    rlm_max_turns_in_context: int = DEFAULT_RLM_MAX_TURNS_IN_CONTEXT,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
+    summarize_at_tokens: int | None = None,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -119,8 +118,11 @@ def rlm_harness(
     - ``rlm_tools`` → ``RLM_TOOLS`` (also drives ``Harness.tool_names`` so
       ``ToolMonitorRubric`` tracks exactly the active tools)
     - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
-    - ``rlm_max_turns_in_context`` → ``RLM_MAX_TURNS_IN_CONTEXT``
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+    - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
+      a positive int, rlm auto-compacts the current branch once the
+      prompt_tokens of a turn reach the threshold. ``None`` disables
+      auto-compaction.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -154,13 +156,22 @@ def rlm_harness(
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
 
-    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython", "summarize"]
+    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
 
     post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
     if not allow_git:
         post_install_uploads = {"/usr/local/bin/git": _GIT_SHIM_BODY}
         post_install_script = "chmod +x /usr/local/bin/git"
+
+    environment_vars: dict[str, str] = {
+        "RLM_TOOLS": ",".join(tool_names),
+        "RLM_MAX_TURNS": str(rlm_max_turns),
+        "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+    }
+    summarize_env = _format_summarize_at_tokens(summarize_at_tokens)
+    if summarize_env is not None:
+        environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
 
     return Harness(
         install_script=build_install_script(),
@@ -175,12 +186,26 @@ def rlm_harness(
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,
-        environment_vars={
-            "RLM_TOOLS": ",".join(tool_names),
-            "RLM_MAX_TURNS": str(rlm_max_turns),
-            "RLM_MAX_TURNS_IN_CONTEXT": str(rlm_max_turns_in_context),
-            "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
-        },
+        environment_vars=environment_vars,
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
     )
+
+
+def _format_summarize_at_tokens(value: int | None) -> str | None:
+    """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string.
+
+    Returns ``None`` when auto-compaction should be disabled (matches what
+    the engine expects when the env var is absent). Rejects bad shapes
+    here so configuration errors surface at harness-build time rather
+    than deep inside the sandbox.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"summarize_at_tokens must be an int or None (got {type(value).__name__})"
+        )
+    if value <= 0:
+        raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+    return str(value)

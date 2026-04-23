@@ -88,7 +88,7 @@ class Harness:
         ``ComposableEnv`` auto-registers a ``ToolMonitorRubric`` that
         counts calls to each named tool (plus a total) from the
         assistant messages the harness emits into the trajectory.
-        Example: ``["ipython", "summarize"]`` for the RLM harness.
+        Example: ``["ipython"]`` for the RLM harness.
     environment_vars:
         Harness-owned environment variables for the sandbox. Merged by
         ``ComposableEnv`` between the caller-supplied ``environment_vars=``
