@@ -121,6 +121,16 @@ async def completions_request(
             .tolist()
         )
 
+    # vLLM's /v1/generate only knows about the raw generate loop, so it
+    # returns finish_reason in {"stop","length",…} — never "tool_calls",
+    # which is a chat-completions concept. When we extract tool calls
+    # client-side from the tokens, promote "stop" → "tool_calls" so
+    # OpenAI-compatible agent loops (AI SDK, opencode) continue past the
+    # tool turn instead of treating the response as final output.
+    finish_reason = choice.get("finish_reason")
+    if parsed.tool_calls and finish_reason == "stop":
+        finish_reason = "tool_calls"
+
     return {
         "prompt_ids": list(prompt_ids),
         "completion_ids": list(completion_ids),
@@ -128,7 +138,7 @@ async def completions_request(
         "content": parsed.content,
         "reasoning_content": parsed.reasoning_content,
         "tool_calls": parsed.tool_calls,
-        "finish_reason": choice.get("finish_reason"),
+        "finish_reason": finish_reason,
         "usage": data.get("usage"),
         "routed_experts": routed_experts,
     }
