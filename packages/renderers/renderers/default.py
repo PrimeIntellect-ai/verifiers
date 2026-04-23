@@ -8,6 +8,9 @@ parsers are plugged in.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import (
@@ -22,6 +25,58 @@ from renderers.parsers import (
     get_reasoning_parser,
     get_tool_parser,
 )
+
+
+def _decode_tool_call_arguments(messages: list) -> list:
+    """JSON-decode assistant tool_call ``arguments`` strings into dicts.
+
+    OpenAI-format tool_calls carry ``arguments`` as a JSON-encoded string.
+    Several chat templates (GLM-4.5, GLM-5) iterate ``arguments.items()``
+    directly and crash on strings. Others (Qwen3 Hermes-style) branch on
+    string-vs-dict and handle both. Decoding to dict is safe for both.
+
+    Works on Pydantic AssistantMessage objects and plain dicts. Preserves
+    non-JSON argument strings as-is so Hermes-style templates can still
+    render them via the ``is string`` branch.
+    """
+    out: list[Any] = []
+    for m in messages:
+        if isinstance(m, dict):
+            role = m.get("role")
+            tcs = m.get("tool_calls")
+        else:
+            role = getattr(m, "role", None)
+            tcs = getattr(m, "tool_calls", None)
+        if role != "assistant" or not tcs:
+            out.append(m)
+            continue
+
+        md = m if isinstance(m, dict) else m.model_dump()  # type: ignore[attr-defined]
+        md = dict(md)
+        new_tcs: list[Any] = []
+        for tc in md.get("tool_calls") or []:
+            tc = dict(tc) if isinstance(tc, dict) else tc
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(fn, dict):
+                fn = dict(fn)
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        fn["arguments"] = json.loads(args)
+                    except (ValueError, TypeError):
+                        pass
+                tc["function"] = fn
+            else:
+                args = tc.get("arguments") if isinstance(tc, dict) else None
+                if isinstance(args, str):
+                    try:
+                        tc["arguments"] = json.loads(args)
+                    except (ValueError, TypeError):
+                        pass
+            new_tcs.append(tc)
+        md["tool_calls"] = new_tcs
+        out.append(md)
+    return out
 
 
 class DefaultRenderer:
@@ -87,6 +142,7 @@ class DefaultRenderer:
         if tools is not None:
             kwargs["tools"] = tools
         kwargs["return_dict"] = False
+        messages = _decode_tool_call_arguments(messages)
         result = self._tokenizer.apply_chat_template(messages, **kwargs)
         return list(result)
 
