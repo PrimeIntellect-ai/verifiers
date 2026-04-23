@@ -290,10 +290,14 @@ class ThinkTextReasoningParser:
             return None, text
         before, _, after = text.partition("</think>")
         if "<think>" in before:
-            reasoning = before.split("<think>", 1)[-1].strip()
+            reasoning = before.split("<think>", 1)[-1]
         else:
-            reasoning = before.strip()
-        return (reasoning or None), after.lstrip("\n").strip()
+            reasoning = before
+        # Preserve whitespace on both sides of the `</think>` boundary —
+        # chat templates round-trip it verbatim (GLM-4.5 emits reasoning and
+        # content back-to-back with no separator), so stripping here causes
+        # re-render drift that breaks the trajectory-step extension property.
+        return (reasoning or None), after
 
 
 # ── Registries ───────────────────────────────────────────────────────

@@ -250,3 +250,99 @@ def test_roundtrip_multiple_tool_calls(
     assert _normalize_args(parsed.tool_calls[1]["function"]["arguments"]) == {
         "zone": "JST"
     }
+
+
+# ── byte-exact re-render invariant ─────────────────────────────────────
+#
+# When the chat template round-trips content/reasoning verbatim (no
+# separator between `</think>` and content), the parser MUST preserve
+# whitespace at the `</think>` boundary. Otherwise parse→re-render
+# drops a `\n` token, the rendered assistant message BPE-realigns by
+# ~O(tens of tokens), and multi-turn RL's extension property breaks at
+# step 2+ on every rollout.
+#
+# Narrow scope: exercise the parser contract directly so this test
+# surfaces only the strip-whitespace regression, not any of the pre-
+# existing hand-coded-renderer round-trip quirks.
+
+
+def test_think_reasoning_parser_preserves_boundary_whitespace():
+    """ThinkTextReasoningParser (used when `reasoning_parser='think'`) must
+    preserve whitespace directly on either side of `</think>` for
+    byte-exact round-trip through templates like GLM-4.5 that emit
+    reasoning and content back-to-back with no separator.
+
+    Regression: the parser used to call `.strip()` and `.lstrip('\\n')`,
+    which drops the newline the model naturally emits after `</think>`,
+    breaking multi-turn trajectory token extension.
+    """
+    from renderers.parsers import ThinkTextReasoningParser
+
+    parser = ThinkTextReasoningParser(tokenizer=None)
+
+    # Model naturally emits `\n<think>...</think>\nCONTENT` — the \n on
+    # each side of `</think>` is load-bearing.
+    reasoning, content = parser.extract(
+        "\n<think>Reason text</think>\nThe answer is four."
+    )
+
+    assert reasoning == "Reason text", (
+        f"reasoning boundary stripped: {reasoning!r}"
+    )
+    assert content.startswith("\n"), (
+        f"content lost leading '\\n' after </think>: {content!r}"
+    )
+    assert content == "\nThe answer is four.", (
+        f"content mangled: {content!r}"
+    )
+
+
+def test_think_reasoning_parser_preserves_trailing_reasoning_whitespace():
+    """If the model put a `\\n` BEFORE `</think>`, that belongs in
+    reasoning_content — the template renders it as part of the `<think>`
+    block and dropping it shifts downstream tokens.
+    """
+    from renderers.parsers import ThinkTextReasoningParser
+
+    parser = ThinkTextReasoningParser(tokenizer=None)
+    reasoning, content = parser.extract(
+        "<think>Line one\nLine two\n</think>Final answer."
+    )
+    assert reasoning == "Line one\nLine two\n", (
+        f"lost trailing '\\n' inside <think>: {reasoning!r}"
+    )
+    assert content == "Final answer.", f"content mangled: {content!r}"
+
+
+def test_default_renderer_fallback_parser_preserves_boundary_whitespace(
+    rt_tokenizer,
+):
+    """DefaultRenderer's built-in fallback (when no explicit reasoning
+    parser is configured) must apply the same whitespace-preservation
+    rule so models with `<think>`-emitting templates round-trip.
+
+    Uses whatever `rt_tokenizer` is available but skips if the tokenizer
+    can't round-trip `<think>` tags cleanly — we only care about the
+    parser's text handling here.
+    """
+    from renderers.default import DefaultRenderer
+
+    renderer = DefaultRenderer(rt_tokenizer, tool_parser=None, reasoning_parser=None)
+
+    # Encode `<think>reason</think>\nvisible` as text and run through
+    # parse_response. We don't need the template to emit `<think>` here
+    # — we only exercise the parser's text-splitting logic.
+    text = "<think>reason</think>\nvisible"
+    ids = rt_tokenizer.encode(text, add_special_tokens=False)
+    # If decoding doesn't round-trip the `\n`, the test is N/A for this
+    # tokenizer — this is a parser-level invariant, not a tokenizer one.
+    if rt_tokenizer.decode(ids, skip_special_tokens=False) != text:
+        pytest.skip("tokenizer decode does not round-trip the fixture text")
+
+    parsed = renderer.parse_response(ids)
+    assert parsed.reasoning_content == "reason", (
+        f"reasoning stripped beyond `</think>`: {parsed.reasoning_content!r}"
+    )
+    assert (parsed.content or "").startswith("\n"), (
+        f"content lost leading '\\n' after `</think>`: {parsed.content!r}"
+    )

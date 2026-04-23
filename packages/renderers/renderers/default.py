@@ -172,7 +172,15 @@ class DefaultRenderer:
 
         # 3. Extract reasoning from the decoded text. Falls back to a built-in
         #    <think>...</think> sniff so unconfigured users get the same behavior
-        #    as before.
+        #    as before. Preserve whitespace at the <think>/</think> boundary —
+        #    the chat template round-trips it verbatim (e.g. GLM emits
+        #    `{{ '\\n<think>' + reasoning_content + '</think>' }}` then
+        #    `{{- content }}` with no separator), so a leading `\\n` on content
+        #    or trailing `\\n` on reasoning_content must stay in the parsed
+        #    fields for re-render to be byte-identical. Stripping here causes
+        #    the re-rendered assistant message to shift by one BPE token after
+        #    `</think>`, cascading through downstream tokenization and breaking
+        #    the "extension property" in trajectory step tokenization.
         if self._reasoning_parser is not None:
             reasoning_content, text = self._reasoning_parser.extract(text)
         else:
@@ -180,17 +188,17 @@ class DefaultRenderer:
             if "</think>" in text:
                 before, after = text.split("</think>", 1)
                 if "<think>" in before:
-                    reasoning_content = before.split("<think>", 1)[-1].strip()
+                    reasoning_content = before.split("<think>", 1)[-1]
                 else:
-                    reasoning_content = before.strip()
-                text = after.strip()
+                    reasoning_content = before
+                text = after
 
         # Strip any remaining special tokens from the final content (we kept
         # them around for the reasoning parser above).
         text = _strip_special_tokens(self._tokenizer, text)
 
         return ParsedResponse(
-            content=text.strip(),
+            content=text,
             reasoning_content=reasoning_content if reasoning_content else None,
             tool_calls=tool_calls,
         )
