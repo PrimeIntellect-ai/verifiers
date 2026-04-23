@@ -291,12 +291,22 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def _normalize_for_comparison(value: Any) -> Any:
+def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
+    # tool_call.arguments is serialized as a string on one side (our trajectory
+    # uses json.dumps with default separators) and often comes back from
+    # upstream scaffolds re-stringified with JS JSON.stringify (compact, no
+    # spaces). Both encode the same dict; parse and normalize structurally so
+    # pure-format drift doesn't block incremental prompt matching.
+    if _key == "arguments" and isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            pass
     if hasattr(value, "model_dump"):
         return _normalize_for_comparison(value.model_dump(exclude_none=True))
     if isinstance(value, Mapping):
         return {
-            str(k): _normalize_for_comparison(v)
+            str(k): _normalize_for_comparison(v, _key=str(k))
             for k, v in value.items()
             if v is not None
         }
