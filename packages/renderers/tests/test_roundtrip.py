@@ -177,7 +177,10 @@ def test_roundtrip_single_tool_call(
         "content": "",
         "tool_calls": [
             {
-                "id": "call_0",
+                # Kimi's parser extracts the function name from the id
+                # field ("functions.{name}:{idx}") — other renderers ignore
+                # the id shape, so this form is compatible across the matrix.
+                "id": "functions.get_weather:0",
                 "function": {
                     "name": "get_weather",
                     "arguments": '{"city": "Tokyo"}',
@@ -213,14 +216,17 @@ def test_roundtrip_multiple_tool_calls(
         "content": "",
         "tool_calls": [
             {
-                "id": "call_0",
+                # Kimi's parser extracts the function name from the id
+                # field ("functions.{name}:{idx}") — other renderers ignore
+                # the id shape, so this form is compatible across the matrix.
+                "id": "functions.get_weather:0",
                 "function": {
                     "name": "get_weather",
                     "arguments": '{"city": "Tokyo"}',
                 },
             },
             {
-                "id": "call_1",
+                "id": "functions.get_time:1",
                 "function": {
                     "name": "get_time",
                     "arguments": '{"zone": "JST"}',

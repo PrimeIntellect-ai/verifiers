@@ -41,6 +41,12 @@ _TOOLS_FOOTER = (
 class GLM5Renderer:
     """Deterministic message → token renderer for GLM-5 models."""
 
+    # GLM-5.1 flips this on: even when the most-recent assistant has no
+    # reasoning content, the template wraps it with ``<think></think>``
+    # instead of just emitting ``</think>`` as a separator. Subclassed in
+    # GLM51Renderer; GLM-5 proper keeps this off.
+    empty_think_on_last_assistant: bool = False
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -105,6 +111,15 @@ class GLM5Renderer:
                 return i
         return -1
 
+    @staticmethod
+    def _format_tool_spec(tool: ToolSpec) -> str:
+        """Serialise a single tool spec to the exact JSON the Jinja template
+        emits. GLM-5 just ``tojson``s the dict as passed; GLM-5.1 overrides
+        this to unwrap the OpenAI-style ``{"type":"function","function":…}``
+        envelope and filter internal-only keys first.
+        """
+        return json.dumps(tool, ensure_ascii=False)
+
     def render(
         self,
         messages: list[Message],
@@ -136,7 +151,7 @@ class GLM5Renderer:
             emit_special(self._system, -1)
             tool_text = _TOOLS_HEADER
             for tool in tools:
-                tool_text += json.dumps(tool, ensure_ascii=False) + "\n"
+                tool_text += self._format_tool_spec(tool) + "\n"
             tool_text += _TOOLS_FOOTER
             emit_text(tool_text, -1)
 
@@ -245,6 +260,13 @@ class GLM5Renderer:
             emit_special(self._think, msg_idx)
             emit_text(reasoning_content.strip(), msg_idx)
             emit_special(self._think_end, msg_idx)
+        elif (
+            self.empty_think_on_last_assistant and msg_idx > last_user_index
+        ):
+            # GLM-5.1: wrap the last assistant with an empty <think></think>
+            # even without reasoning, matching the Jinja template.
+            emit_special(self._think, msg_idx)
+            emit_special(self._think_end, msg_idx)
         else:
             emit_special(self._think_end, msg_idx)
 
@@ -297,3 +319,30 @@ class GLM5Renderer:
         emit_special(self._tool_response_tok, msg_idx)
         emit_text(content, msg_idx)
         emit_special(self._tool_response_end_tok, msg_idx)
+
+
+class GLM51Renderer(GLM5Renderer):
+    """Deterministic message → token renderer for GLM-5.1 models.
+
+    Diverges from GLM-5 in two places:
+
+    - The most-recent assistant turn is wrapped with an empty
+      ``<think></think>`` block even when no ``reasoning_content`` is
+      supplied. Historical assistants collapse to just ``</think>``.
+    - Tool specs are unwrapped before serialisation: if the caller
+      passes the OpenAI ``{"type":"function","function":{…}}`` envelope,
+      only the inner ``function`` payload is rendered (minus
+      ``defer_loading`` / ``strict`` internal keys).
+    """
+
+    empty_think_on_last_assistant = True
+
+    @staticmethod
+    def _format_tool_spec(tool: ToolSpec) -> str:
+        spec = tool["function"] if "function" in tool else tool
+        spec = {
+            k: v
+            for k, v in spec.items()
+            if k not in ("defer_loading", "strict")
+        }
+        return json.dumps(spec, ensure_ascii=False)

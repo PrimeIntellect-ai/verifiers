@@ -15,13 +15,22 @@ from renderers import create_renderer
 # here must pass the full test_render_ids barrage against
 # apply_chat_template. Additional models for narrower tests (e.g. the
 # roundtrip test) live with their own parametrization in the test file.
+#
+# Not yet here: Kimi K2.5 / K2.6 (template diverges fundamentally from
+# K2), GPT-OSS (missing harmony system-preamble implementation), and any
+# GLM-5.1 tool-cycle cases. See test_roundtrip.py for the wider matrix.
 RENDERER_MODELS = [
     ("Qwen/Qwen3-8B", "auto"),
     ("Qwen/Qwen3.5-9B", "auto"),
+    ("Qwen/Qwen3-VL-4B-Instruct", "auto"),
     ("zai-org/GLM-5", "auto"),
+    ("zai-org/GLM-5.1", "auto"),
     ("zai-org/GLM-4.7-Flash", "auto"),
     ("THUDM/GLM-4.5-Air", "auto"),
     ("MiniMaxAI/MiniMax-M2.5", "auto"),
+    ("moonshotai/Kimi-K2-Instruct", "auto"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "auto"),
+    ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "auto"),
     ("Qwen/Qwen2.5-0.5B-Instruct", "default"),
 ]
 

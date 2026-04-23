@@ -11,6 +11,11 @@ from transformers import AutoProcessor, AutoTokenizer
 
 
 def _expected(tokenizer, messages, **kwargs):
+    # Match the Renderer Protocol's default for add_generation_prompt (False)
+    # — some tokenizers (e.g. Kimi's) default it to True in their config,
+    # which would otherwise make this parity check fail on the flag alone.
+    # Callers that explicitly want the gen prompt still pass it through.
+    kwargs.setdefault("add_generation_prompt", False)
     result = tokenizer.apply_chat_template(
         messages, tokenize=True, return_dict=False, **kwargs
     )

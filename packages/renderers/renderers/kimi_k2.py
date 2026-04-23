@@ -60,10 +60,18 @@ class KimiK2Renderer:
             return []
         return self._tokenizer.encode(text, add_special_tokens=False)
 
-    def _ensure_system_message(self, messages: list[Message]) -> list[Message]:
+    def _ensure_system_message(
+        self, messages: list[Message]
+    ) -> tuple[list[Message], int]:
         """Prepend default system message if none present.
 
-        Mirrors the HuggingFace chat template behavior:
+        Returns ``(messages, auto_injected_idx)``. ``auto_injected_idx`` is
+        the index of the auto-injected system message in the returned list,
+        or ``-1`` if no injection happened. The Jinja template emits a
+        literal ``\\n`` after the auto-injected system's ``<|im_end|>``
+        (but not after a user-supplied system), so the caller uses this
+        index to replicate that.
+
         - If messages is empty: return list with just the default system message.
         - If first message is tool_declare and no system follows: insert default
           system after tool_declare.
@@ -71,19 +79,19 @@ class KimiK2Renderer:
         - Otherwise: return unchanged.
         """
         if not messages:
-            return [{"role": "system", "content": _DEFAULT_SYSTEM}]
+            return [{"role": "system", "content": _DEFAULT_SYSTEM}], 0
 
         first_role = messages[0].get("role")
         if first_role == "tool_declare":
             if len(messages) >= 2 and messages[1].get("role") == "system":
-                return messages
+                return messages, -1
             default_sys: Message = {"role": "system", "content": _DEFAULT_SYSTEM}
-            return [messages[0], default_sys] + list(messages[1:])
+            return [messages[0], default_sys] + list(messages[1:]), 1
         elif first_role != "system":
             default_sys = {"role": "system", "content": _DEFAULT_SYSTEM}
-            return [default_sys] + list(messages)
+            return [default_sys] + list(messages), 0
 
-        return messages
+        return messages, -1
 
     @staticmethod
     def _extract_thinking(msg: Message, content: str) -> tuple[str, str]:
@@ -116,10 +124,15 @@ class KimiK2Renderer:
         if not messages:
             raise ValueError("No messages provided.")
 
-        # Inject tools as tool_declare message + ensure system message
+        # Inject tools as tool_declare message + ensure system message.
+        # The Jinja template emits the tools list directly (no
+        # ``{"type":"function","function":...}`` wrapper) using
+        # ``tojson(separators=(',', ':'))``, which produces compact JSON
+        # with sorted keys — match both to stay byte-identical.
         if tools:
-            tools_payload = [{"type": "function", "function": t} for t in tools]
-            tools_json = json.dumps(tools_payload, ensure_ascii=False)
+            tools_json = json.dumps(
+                list(tools), separators=(",", ":"), sort_keys=True, ensure_ascii=False
+            )
             tool_declare_msg: Message = {
                 "role": "tool_declare",
                 "content": tools_json,
@@ -129,7 +142,7 @@ class KimiK2Renderer:
                 messages = [tool_declare_msg] + list(messages)
             # else leave as-is (caller already included tool_declare)
 
-        messages = self._ensure_system_message(messages)
+        messages, auto_system_idx = self._ensure_system_message(messages)
 
         token_ids: list[int] = []
         indices: list[int] = []
@@ -176,7 +189,10 @@ class KimiK2Renderer:
                 emit_special(self._im_middle, i)
                 emit_text(content, i)
                 emit_special(self._im_end, i)
-                emit_text("\n", i)
+                # Jinja emits a literal newline only after the auto-injected
+                # system's <|im_end|> (see _ensure_system_message's contract).
+                if i == auto_system_idx:
+                    emit_text("\n", i)
 
             elif role == "tool_declare":
                 emit_special(self._im_system, i)
@@ -184,7 +200,6 @@ class KimiK2Renderer:
                 emit_special(self._im_middle, i)
                 emit_text(content, i)
                 emit_special(self._im_end, i)
-                emit_text("\n", i)
 
             elif role == "user":
                 emit_special(self._im_user, i)
@@ -192,7 +207,6 @@ class KimiK2Renderer:
                 emit_special(self._im_middle, i)
                 emit_text(content, i)
                 emit_special(self._im_end, i)
-                emit_text("\n", i)
 
             elif role == "assistant":
                 # Kimi strips reasoning from historical assistant turns and
@@ -222,7 +236,6 @@ class KimiK2Renderer:
                 emit_special(self._im_middle, i)
                 emit_text(content, i)
                 emit_special(self._im_end, i)
-                emit_text("\n", i)
 
         # Generation prompt
         if add_generation_prompt:
@@ -286,12 +299,12 @@ class KimiK2Renderer:
         emit_text("assistant", msg_idx)
         emit_special(self._im_middle, msg_idx)
 
-        # Thinking block: preserve for last-turn assistant messages, strip for historical
-        if self._enable_thinking and is_last_turn and reasoning_content:
-            emit_text("<think>" + reasoning_content + "</think>", msg_idx)
-        else:
-            emit_text("<think></think>", msg_idx)
-
+        # Kimi K2's Jinja template has no reasoning-content support — the
+        # assistant turn renders just its content verbatim. Drop any
+        # reasoning_content to stay byte-identical with apply_chat_template;
+        # round-trip's reasoning assertion is guarded on non-None so this
+        # stays consistent across the matrix.
+        _ = reasoning_content, is_last_turn  # intentionally unused for K2
         emit_text(content, msg_idx)
 
         # Tool calls
@@ -307,14 +320,11 @@ class KimiK2Renderer:
                     if not isinstance(arguments, str)
                     else arguments
                 )
-                # The Kimi template encodes the function name into the
-                # tool-call id (``functions.{name}:{idx}``) — that's how its
-                # parser recovers the name. An opaque OpenAI-style id
-                # (``call_abc123``) would round-trip to a function name of
-                # ``call_abc123``, so we only use the caller-provided id if
-                # it's in the template's expected shape.
-                raw_id = tc.get("id") or ""
-                tc_id = raw_id if ":" in raw_id else f"functions.{name}:{idx}"
+                # The Jinja template emits ``tool_call['id']`` verbatim —
+                # empty when missing. Round-trip parseability requires the
+                # caller to provide an id in ``functions.{name}:{idx}`` form
+                # (that's where the Kimi parser recovers the function name).
+                tc_id = tc.get("id") or ""
                 emit_special(self._tool_call_begin, msg_idx)
                 emit_text(tc_id, msg_idx)
                 emit_special(self._tool_call_argument_begin, msg_idx)
@@ -323,7 +333,6 @@ class KimiK2Renderer:
             emit_special(self._tool_calls_section_end, msg_idx)
 
         emit_special(self._im_end, msg_idx)
-        emit_text("\n", msg_idx)
 
     def _render_tool(
         self,
@@ -343,4 +352,3 @@ class KimiK2Renderer:
         emit_text(f"## Return of {tool_call_id}\n", msg_idx)
         emit_text(content, msg_idx)
         emit_special(self._im_end, msg_idx)
-        emit_text("\n", msg_idx)

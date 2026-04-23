@@ -145,6 +145,10 @@ class Nemotron3Renderer:
     @staticmethod
     def _format_tool_declaration(tool: ToolSpec) -> str:
         """Format a single tool declaration in Nemotron 3 XML format."""
+        # Accept the OpenAI-style ``{"type":"function","function":{...}}``
+        # envelope by unwrapping before formatting.
+        if "function" in tool and isinstance(tool["function"], dict):
+            tool = tool["function"]
         lines = [
             "<function>",
             f"<name>{tool['name']}</name>",
@@ -271,6 +275,17 @@ class Nemotron3Renderer:
             emit_special(self._im_end, 0)
             emit_text("\n", 0)
 
+        # Track the most-recent plain (non-tool-call) assistant so we can
+        # preserve its reasoning while stripping reasoning from earlier
+        # assistants — the Nemotron-3 template matches this pattern.
+        last_plain_assistant_idx = -1
+        for j in range(len(messages) - 1, -1, -1):
+            if messages[j].get("role") == "assistant" and not messages[j].get(
+                "tool_calls"
+            ):
+                last_plain_assistant_idx = j
+                break
+
         # ── 2. Iterate messages ─────────────────────────────────────
         for i, msg in enumerate(messages):
             role = msg["role"]
@@ -288,10 +303,12 @@ class Nemotron3Renderer:
                 emit_text("\n", i)
 
             elif role == "assistant":
+                is_last_turn = i >= last_plain_assistant_idx
                 self._render_assistant(
                     msg,
                     i,
                     content,
+                    is_last_turn=is_last_turn,
                     emit_special=emit_special,
                     emit_text=emit_text,
                     emit_ids=emit_ids,
@@ -376,6 +393,7 @@ class Nemotron3Renderer:
         msg_idx: int,
         content: str,
         *,
+        is_last_turn: bool,
         emit_special,
         emit_text,
         emit_ids,
@@ -398,17 +416,25 @@ class Nemotron3Renderer:
         emit_special(self._im_start, msg_idx)
         emit_text("assistant\n", msg_idx)
 
-        # Nemotron 3: <think></think> is prepended to ALL assistant messages
-        # that lack thinking content (not just those after the last user query).
-        if reasoning_content:
-            # Has thinking: emit full think block with single \n separator
+        # Nemotron 3 keeps reasoning on the most-recent plain assistant but
+        # strips it from historical turns, which collapse to an empty
+        # <think></think> block. Empty <think></think> is also emitted when
+        # the turn has no reasoning at all.
+        if reasoning_content and is_last_turn:
             emit_special(self._think, msg_idx)
             emit_text("\n" + reasoning_content + "\n", msg_idx)
             emit_special(self._think_end, msg_idx)
             # Single \n separator (not \n\n like Qwen3.5)
             emit_text("\n" + content, msg_idx)
+        elif reasoning_content:
+            # Historical assistant whose reasoning got stripped — template
+            # keeps a single \n between the collapsed <think></think> and
+            # the content as a marker that reasoning existed.
+            emit_special(self._think, msg_idx)
+            emit_special(self._think_end, msg_idx)
+            emit_text("\n" + content, msg_idx)
         else:
-            # No thinking: prepend empty <think></think>
+            # No reasoning ever — <think></think> glued directly to content.
             emit_special(self._think, msg_idx)
             emit_special(self._think_end, msg_idx)
             emit_text(content, msg_idx)

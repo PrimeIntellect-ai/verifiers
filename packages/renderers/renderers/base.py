@@ -225,6 +225,7 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     "Qwen/Qwen3.5": "qwen3.5",
     "Qwen/Qwen3-VL": "qwen3_vl",
     "Qwen/Qwen3": "qwen3",
+    "zai-org/GLM-5.1": "glm5.1",
     "zai-org/GLM-5": "glm5",
     "zai-org/GLM-4.7": "glm5",
     "THUDM/GLM-4.5": "glm4.5",
@@ -244,7 +245,7 @@ def _populate_registry():
         return
     from renderers.default import DefaultRenderer
     from renderers.deepseek_v3 import DeepSeekV3Renderer
-    from renderers.glm5 import GLM5Renderer
+    from renderers.glm5 import GLM5Renderer, GLM51Renderer
     from renderers.glm45 import GLM45Renderer
     from renderers.gpt_oss import GptOssRenderer
     from renderers.kimi_k2 import KimiK2Renderer
@@ -262,6 +263,7 @@ def _populate_registry():
             "qwen3_vl": Qwen3VLRenderer,
             "qwen3.5": Qwen35Renderer,
             "glm5": GLM5Renderer,
+            "glm5.1": GLM51Renderer,
             "glm4.5": GLM45Renderer,
             "minimax-m2": MiniMaxM2Renderer,
             "deepseek_v3": DeepSeekV3Renderer,
