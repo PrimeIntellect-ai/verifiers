@@ -14,9 +14,14 @@ tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
 r = create_renderer(tok, renderer="auto")  # → Qwen3Renderer
 ```
 
-`renderer="auto"` matches the tokenizer's `name_or_path` against
-`MODEL_RENDERER_MAP` (longest prefix wins). Anything that doesn't match falls
-back to `DefaultRenderer`.
+`renderer="auto"` looks up the tokenizer's `name_or_path` in
+`MODEL_RENDERER_MAP` by **exact match**. Prefix matching is intentionally
+not used — models with the same architecture can ship different chat
+templates (base vs instruct, fine-tune renames), and routing them by
+prefix would silently pick a renderer that doesn't produce
+template-parity output. Fine-tunes and renamed checkpoints must pass
+`renderer=<name>` explicitly; anything unknown falls back to
+`DefaultRenderer`.
 
 To force a specific renderer:
 
@@ -67,8 +72,8 @@ end-of-turn marker for the template you're using. This is true for all
 chatml-family fine-tunes (Qwen3, GLM, DeepSeek, Kimi, MiniMax, Nemotron,
 GPT-OSS) — if you're using one of those, prefer the model-specific
 renderer, which sets this on by construction. Use the knob on
-`DefaultRenderer` for fine-tunes whose `name_or_path` doesn't match the
-`MODEL_RENDERER_MAP` prefixes (e.g. `your-org/Qwen3-something`).
+`DefaultRenderer` for fine-tunes whose `name_or_path` isn't in
+`MODEL_RENDERER_MAP` (e.g. `your-org/Qwen3-something`).
 
 **Leave off when:** the template's end-of-turn marker isn't
 `eos_token_id` (rare but possible), or you want to exactly mirror main's

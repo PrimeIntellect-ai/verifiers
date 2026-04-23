@@ -245,24 +245,56 @@ class RendererPool:
 
 RENDERER_REGISTRY: dict[str, type] = {}
 
-# Maps model name prefixes to renderer names. Checked in order;
-# longer prefixes first so "Qwen/Qwen3.5" matches before "Qwen/Qwen3".
+# Exact canonical HF model names → renderer. We do NOT use prefix
+# matching because models with the same architecture may ship different
+# chat templates (base vs instruct, tuned vs pretrained) — matching on
+# prefix silently routes them to a renderer that doesn't produce
+# template-parity output. Fine-tunes and renamed checkpoints MUST pass
+# ``renderer=<name>`` explicitly; the auto path falls back to
+# ``DefaultRenderer`` (which uses ``apply_chat_template`` verbatim) and
+# logs a loud INFO line with the chosen fallback.
 MODEL_RENDERER_MAP: dict[str, str] = {
-    "Qwen/Qwen3.5": "qwen3.5",
-    "Qwen/Qwen3-VL": "qwen3_vl",
-    "Qwen/Qwen3": "qwen3",
-    "zai-org/GLM-5.1": "glm5.1",
+    # Qwen3 — base and Instruct variants share the same chat template.
+    "Qwen/Qwen3-0.6B": "qwen3",
+    "Qwen/Qwen3-1.7B": "qwen3",
+    "Qwen/Qwen3-4B": "qwen3",
+    "Qwen/Qwen3-4B-Instruct-2507": "qwen3",
+    "Qwen/Qwen3-4B-Thinking-2507": "qwen3",
+    "Qwen/Qwen3-8B": "qwen3",
+    "Qwen/Qwen3-14B": "qwen3",
+    "Qwen/Qwen3-32B": "qwen3",
+    "Qwen/Qwen3-30B-A3B": "qwen3",
+    "Qwen/Qwen3-235B-A22B": "qwen3",
+    # Qwen3.5.
+    "Qwen/Qwen3.5-9B": "qwen3.5",
+    "Qwen/Qwen3.5-35B-A3B": "qwen3.5",
+    # Qwen3-VL.
+    "Qwen/Qwen3-VL-4B-Instruct": "qwen3_vl",
+    "Qwen/Qwen3-VL-8B-Instruct": "qwen3_vl",
+    "Qwen/Qwen3-VL-30B-A3B-Instruct": "qwen3_vl",
+    # GLM-5 family (GLM-4.7 reuses the GLM-5 template).
     "zai-org/GLM-5": "glm5",
-    "zai-org/GLM-4.7": "glm5",
-    "THUDM/GLM-4.5": "glm4.5",
+    "zai-org/GLM-4.7-Flash": "glm5",
+    "zai-org/GLM-5.1": "glm5.1",
+    # GLM-4.5.
+    "THUDM/GLM-4.5-Air": "glm4.5",
+    "zai-org/GLM-4.5-Air": "glm4.5",
+    # MiniMax.
     "MiniMaxAI/MiniMax-M2": "minimax-m2",
-    "deepseek-ai/DeepSeek": "deepseek_v3",
-    "moonshotai/Kimi-K2.6": "kimi_k25",
+    "MiniMaxAI/MiniMax-M2.5": "minimax-m2",
+    # DeepSeek V3.
+    "deepseek-ai/DeepSeek-V3": "deepseek_v3",
+    "deepseek-ai/DeepSeek-V3-Base": "deepseek_v3",
+    # Kimi K2 (K2.5 and K2.6 share the K2.5 template, distinct from K2).
+    "moonshotai/Kimi-K2-Instruct": "kimi_k2",
     "moonshotai/Kimi-K2.5": "kimi_k25",
-    "moonshotai/Kimi-K2": "kimi_k2",
-    "nvidia/Llama-3": "nemotron3",
-    "nvidia/Nemotron": "nemotron3",
-    "nvidia/NVIDIA-Nemotron": "nemotron3",
+    "moonshotai/Kimi-K2.6": "kimi_k25",
+    # Nemotron 3.
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": "nemotron3",
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16": "nemotron3",
+    # GPT-OSS.
+    "openai/gpt-oss-20b": "gpt_oss",
+    "openai/gpt-oss-120b": "gpt_oss",
 }
 
 
@@ -395,11 +427,15 @@ def create_renderer(
             )
         return cls(tokenizer)
 
-    # Auto-detect from model name
+    # Auto-detect from model name via exact match on the canonical HF id.
+    # Fine-tunes and renamed checkpoints miss on purpose — their chat
+    # template may differ from the original even when the architecture
+    # matches, so silently mapping them would produce template-parity
+    # bugs. Set ``renderer=<name>`` explicitly for those.
     model_name = getattr(tokenizer, "name_or_path", "")
-    for prefix, renderer_name in MODEL_RENDERER_MAP.items():
-        if model_name.startswith(prefix):
-            return RENDERER_REGISTRY[renderer_name](tokenizer)
+    renderer_name = MODEL_RENDERER_MAP.get(model_name)
+    if renderer_name is not None:
+        return RENDERER_REGISTRY[renderer_name](tokenizer)
 
     # No match — fall back to default (apply_chat_template). For fine-tunes
     # with customized chat templates this is the *correct* choice, so we don't
