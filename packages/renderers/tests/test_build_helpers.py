@@ -7,6 +7,11 @@ from renderers import build_supervised_sample, build_trajectory_step
 
 
 def _expected(tokenizer, messages, **kwargs):
+    # Match the Renderer Protocol's default for add_generation_prompt
+    # (False); some tokenizers default it to True in their config
+    # (e.g. Kimi) which would otherwise flip the parity check on the flag
+    # alone. Callers wanting the gen prompt still pass it through.
+    kwargs.setdefault("add_generation_prompt", False)
     result = tokenizer.apply_chat_template(
         messages, tokenize=True, return_dict=False, **kwargs
     )

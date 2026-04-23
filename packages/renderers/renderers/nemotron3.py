@@ -191,15 +191,20 @@ class Nemotron3Renderer:
     # Message normalization
     # ------------------------------------------------------------------
 
-    def _normalize_messages(self, messages: list[Message]) -> list[Message]:
+    def _normalize_messages(
+        self, messages: list[Message]
+    ) -> tuple[list[Message], bool]:
         """Prepend empty system message if none exists.
 
         Nemotron 3's HF template always outputs a system message block even
-        when none is provided.
+        when none is provided. Returns ``(messages, auto_injected)`` so the
+        caller can emit the injected system's tokens with ``msg_idx=-1``
+        (keeping message_indices aligned with the caller's input list —
+        ``build_supervised_sample`` relies on this).
         """
         if not messages or messages[0].get("role") != "system":
-            return [{"role": "system", "content": ""}] + list(messages)
-        return list(messages)
+            return [{"role": "system", "content": ""}] + list(messages), True
+        return list(messages), False
 
     # ------------------------------------------------------------------
     # Core render method
@@ -216,7 +221,16 @@ class Nemotron3Renderer:
             raise ValueError("No messages provided.")
 
         # Always ensure an empty system message is present.
-        messages = self._normalize_messages(messages)
+        messages, auto_system_injected = self._normalize_messages(messages)
+        # Offset to map indices in the normalized list back to the caller's
+        # original message list. The injected system itself uses msg_idx=-1
+        # (sentinel) so build_supervised_sample can't dereference it.
+        idx_offset = -1 if auto_system_injected else 0
+
+        def orig_idx(i: int) -> int:
+            if auto_system_injected and i == 0:
+                return -1
+            return i + idx_offset
 
         tokens: list[int] = []
         indices: list[int] = []
@@ -237,7 +251,7 @@ class Nemotron3Renderer:
 
         if tools:
             # Nemotron 3: system prompt BEFORE tools block
-            sys_idx = 0 if first_is_system else -1
+            sys_idx = orig_idx(0) if first_is_system else -1
 
             emit_special(self._im_start, sys_idx)
             emit_text("system\n", sys_idx)
@@ -269,11 +283,12 @@ class Nemotron3Renderer:
             emit_text("\n", sys_idx)
 
         elif first_is_system:
+            sys_idx = orig_idx(0)
             sys_content = self._render_content(messages[0].get("content")).strip()
-            emit_special(self._im_start, 0)
-            emit_text("system\n" + sys_content, 0)
-            emit_special(self._im_end, 0)
-            emit_text("\n", 0)
+            emit_special(self._im_start, sys_idx)
+            emit_text("system\n" + sys_content, sys_idx)
+            emit_special(self._im_end, sys_idx)
+            emit_text("\n", sys_idx)
 
         # Track the most-recent plain (non-tool-call) assistant so we can
         # preserve its reasoning while stripping reasoning from earlier
@@ -290,6 +305,7 @@ class Nemotron3Renderer:
         for i, msg in enumerate(messages):
             role = msg["role"]
             content = self._render_content(msg.get("content")).strip()
+            msg_orig_idx = orig_idx(i)
 
             if role == "system":
                 if i != 0:
@@ -297,16 +313,16 @@ class Nemotron3Renderer:
                 continue  # Already handled above
 
             elif role == "user":
-                emit_special(self._im_start, i)
-                emit_text("user\n" + content, i)
-                emit_special(self._im_end, i)
-                emit_text("\n", i)
+                emit_special(self._im_start, msg_orig_idx)
+                emit_text("user\n" + content, msg_orig_idx)
+                emit_special(self._im_end, msg_orig_idx)
+                emit_text("\n", msg_orig_idx)
 
             elif role == "assistant":
                 is_last_turn = i >= last_plain_assistant_idx
                 self._render_assistant(
                     msg,
-                    i,
+                    msg_orig_idx,
                     content,
                     is_last_turn=is_last_turn,
                     emit_special=emit_special,
@@ -319,6 +335,8 @@ class Nemotron3Renderer:
                     messages,
                     i,
                     content,
+                    msg_orig_idx=msg_orig_idx,
+                    auto_system_injected=auto_system_injected,
                     emit_special=emit_special,
                     emit_text=emit_text,
                 )
@@ -419,41 +437,42 @@ class Nemotron3Renderer:
         # Nemotron 3 keeps reasoning on the most-recent plain assistant but
         # strips it from historical turns, which collapse to an empty
         # <think></think> block. Empty <think></think> is also emitted when
-        # the turn has no reasoning at all.
+        # the turn has no reasoning at all. The trailing ``\n`` (when
+        # tool_calls follow) is glued to ``content`` in a single emit_text
+        # so BPE sees ``content\n`` as one chunk, matching how
+        # apply_chat_template tokenises the concatenated template string.
+        tool_calls = msg.get("tool_calls") or []
+        # A \n is always required between the text/think block and the first
+        # <tool_call>, whether the content is empty or not.
+        content_suffix = "\n" if tool_calls else ""
+
         if reasoning_content and is_last_turn:
             emit_special(self._think, msg_idx)
             emit_text("\n" + reasoning_content + "\n", msg_idx)
             emit_special(self._think_end, msg_idx)
             # Single \n separator (not \n\n like Qwen3.5)
-            emit_text("\n" + content, msg_idx)
+            emit_text("\n" + content + content_suffix, msg_idx)
         elif reasoning_content:
             # Historical assistant whose reasoning got stripped — template
             # keeps a single \n between the collapsed <think></think> and
             # the content as a marker that reasoning existed.
             emit_special(self._think, msg_idx)
             emit_special(self._think_end, msg_idx)
-            emit_text("\n" + content, msg_idx)
+            emit_text("\n" + content + content_suffix, msg_idx)
         else:
             # No reasoning ever — <think></think> glued directly to content.
             emit_special(self._think, msg_idx)
             emit_special(self._think_end, msg_idx)
-            emit_text(content, msg_idx)
+            emit_text(content + content_suffix, msg_idx)
 
-        # Tool calls
-        tool_calls = msg.get("tool_calls") or []
+        # Tool calls (leading \n was glued to the content above; each
+        # iteration's trailing \n after </tool_call> handles the
+        # separator to the next block).
         if tool_calls:
             for tc_idx, tc in enumerate(tool_calls):
                 func = tc.get("function") or tc
                 name = func.get("name", "")
                 arguments = func.get("arguments", {})
-
-                # Single \n separator before <tool_call>
-                if tc_idx == 0:
-                    if content.strip():
-                        emit_text("\n", msg_idx)
-                    # else: no separator
-                else:
-                    emit_text("\n", msg_idx)
 
                 emit_special(self._tool_call, msg_idx)
                 emit_text("\n<function=" + name + ">\n", msg_idx)
@@ -499,6 +518,8 @@ class Nemotron3Renderer:
         msg_idx: int,
         content: str,
         *,
+        msg_orig_idx: int,
+        auto_system_injected: bool,
         emit_special,
         emit_text,
     ) -> None:
@@ -507,18 +528,20 @@ class Nemotron3Renderer:
         next_is_tool = (
             msg_idx + 1 < len(messages) and messages[msg_idx + 1]["role"] == "tool"
         )
+        oi = msg_orig_idx
 
         if not prev_is_tool:
-            emit_special(self._im_start, msg_idx)
-            emit_text("user", msg_idx)
+            emit_special(self._im_start, oi)
+            emit_text("user\n", oi)
+        # else: the previous tool's trailing \n already provides the
+        # separator into this block.
 
-        emit_text("\n", msg_idx)
-        emit_special(self._tool_response, msg_idx)
-        emit_text("\n" + content + "\n", msg_idx)
-        emit_special(self._tool_response_end, msg_idx)
+        emit_special(self._tool_response, oi)
+        emit_text("\n" + content + "\n", oi)
+        emit_special(self._tool_response_end, oi)
         # Nemotron 3: trailing \n after </tool_response>
-        emit_text("\n", msg_idx)
+        emit_text("\n", oi)
 
         if not next_is_tool:
-            emit_special(self._im_end, msg_idx)
-            emit_text("\n", msg_idx)
+            emit_special(self._im_end, oi)
+            emit_text("\n", oi)

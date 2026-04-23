@@ -140,9 +140,36 @@ class KimiK2Renderer:
             # Prepend tool_declare if not already present
             if messages[0].get("role") != "tool_declare":
                 messages = [tool_declare_msg] + list(messages)
+                tool_declare_injected = True
+            else:
+                tool_declare_injected = False
             # else leave as-is (caller already included tool_declare)
+        else:
+            tool_declare_injected = False
 
+        prev_messages_len = len(messages)
         messages, auto_system_idx = self._ensure_system_message(messages)
+        auto_system_injected = len(messages) > prev_messages_len
+
+        # Map indices in the (possibly-normalised) ``messages`` list back to
+        # the caller's original list. Injected system / tool_declare get
+        # msg_idx=-1 (sentinel) so build_supervised_sample can't dereference
+        # past the caller's input length.
+        injected_positions = set()
+        if tool_declare_injected:
+            injected_positions.add(0)
+        if auto_system_idx >= 0:
+            injected_positions.add(auto_system_idx)
+        n_injected_before = [0] * (len(messages) + 1)
+        for k in range(len(messages)):
+            n_injected_before[k + 1] = n_injected_before[k] + (
+                1 if k in injected_positions else 0
+            )
+
+        def orig_idx(i: int) -> int:
+            if i in injected_positions:
+                return -1
+            return i - n_injected_before[i]
 
         token_ids: list[int] = []
         indices: list[int] = []
@@ -183,30 +210,32 @@ class KimiK2Renderer:
                         parts.append(part)
                 content = "".join(parts)
 
+            oi = orig_idx(i)
+
             if role == "system":
-                emit_special(self._im_system, i)
-                emit_text("system", i)
-                emit_special(self._im_middle, i)
-                emit_text(content, i)
-                emit_special(self._im_end, i)
+                emit_special(self._im_system, oi)
+                emit_text("system", oi)
+                emit_special(self._im_middle, oi)
+                emit_text(content, oi)
+                emit_special(self._im_end, oi)
                 # Jinja emits a literal newline only after the auto-injected
                 # system's <|im_end|> (see _ensure_system_message's contract).
                 if i == auto_system_idx:
-                    emit_text("\n", i)
+                    emit_text("\n", oi)
 
             elif role == "tool_declare":
-                emit_special(self._im_system, i)
-                emit_text("tool_declare", i)
-                emit_special(self._im_middle, i)
-                emit_text(content, i)
-                emit_special(self._im_end, i)
+                emit_special(self._im_system, oi)
+                emit_text("tool_declare", oi)
+                emit_special(self._im_middle, oi)
+                emit_text(content, oi)
+                emit_special(self._im_end, oi)
 
             elif role == "user":
-                emit_special(self._im_user, i)
-                emit_text("user", i)
-                emit_special(self._im_middle, i)
-                emit_text(content, i)
-                emit_special(self._im_end, i)
+                emit_special(self._im_user, oi)
+                emit_text("user", oi)
+                emit_special(self._im_middle, oi)
+                emit_text(content, oi)
+                emit_special(self._im_end, oi)
 
             elif role == "assistant":
                 # Kimi strips reasoning from historical assistant turns and
@@ -217,7 +246,7 @@ class KimiK2Renderer:
                 )
                 self._render_assistant(
                     msg,
-                    i,
+                    oi,
                     content,
                     is_last_turn=is_last_turn,
                     emit_special=emit_special,
@@ -226,15 +255,15 @@ class KimiK2Renderer:
 
             elif role == "tool":
                 self._render_tool(
-                    msg, i, content, emit_special=emit_special, emit_text=emit_text
+                    msg, oi, content, emit_special=emit_special, emit_text=emit_text
                 )
 
             else:
                 # Unknown role: use system-style formatting
-                emit_special(self._im_system, i)
-                emit_text(role, i)
-                emit_special(self._im_middle, i)
-                emit_text(content, i)
+                emit_special(self._im_system, oi)
+                emit_text(role, oi)
+                emit_special(self._im_middle, oi)
+                emit_text(content, oi)
                 emit_special(self._im_end, i)
 
         # Generation prompt

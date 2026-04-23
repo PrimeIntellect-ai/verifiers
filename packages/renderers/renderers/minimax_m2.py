@@ -325,7 +325,15 @@ class MiniMaxM2Renderer:
             emit_text("tool", orig_idx)
 
         content = self._visible_text(msg.get("content"))
-        emit_text("\n<response>" + content + "</response>", orig_idx)
+        # Leading ``\n`` before ``<response>`` only on the first of a
+        # consecutive run — subsequent ones piggyback on the trailing ``\n``
+        # emitted below, so BPE can merge ``</response>\n<response>``
+        # through a single emit_text call instead of splitting the merge.
+        prefix = "" if prev_is_tool else "\n"
+        suffix = "\n" if next_is_tool else ""
+        emit_text(
+            prefix + "<response>" + content + "</response>" + suffix, orig_idx
+        )
 
         if not next_is_tool:
             emit_special(self._eos, orig_idx)
