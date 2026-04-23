@@ -101,6 +101,19 @@ def relative_reward(completions: list, answers: list, **kwargs) -> list[float]:
     return [s / max_score for s in scores]
 ```
 
+## Datasets
+
+### I'm getting a pyarrow `ArrowInvalid: offset overflow` error with large datasets
+
+This happens when dataset rows contain very large strings (e.g., code datasets like DeepCoder's `lcbv5`) that exceed pyarrow's 2 GB per-batch limit during `.map()` calls. Verifiers defaults `writer_batch_size` to `200` in `map_kwargs` to prevent this. If you still see the error, lower the value:
+
+```python
+env = MyEnv(
+    dataset=dataset,
+    map_kwargs={"writer_batch_size": 16},
+)
+```
+
 ## Training
 
 ### How do I use a local vLLM server?
