@@ -26,7 +26,13 @@ from datetime import datetime
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+)
 from renderers.parsing import parse_gpt_oss
 
 # ---------------------------------------------------------------------------
@@ -126,6 +132,8 @@ _SYSTEM_PROMPT_TEMPLATE = (
 
 class GptOssRenderer:
     """Deterministic message → token renderer for OpenAI OSS (Harmony) models."""
+
+    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -271,40 +279,69 @@ class GptOssRenderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        """Harmony-aware bridge.
+        """Hand-written Harmony bridge.
 
-        The dummy-assistant trick doesn't work here because a lone assistant
-        renders as ``<|channel|>final<|message|>x<|return|>`` (is_last=True
-        layout) while the same assistant inside a longer conversation
-        renders as ``<|channel|>analysis<|message|><|end|><|channel|>final
-        <|message|>x<|end|>`` (is_last=False layout) — the former is not a
-        prefix of the latter.
-
-        We bypass the dummy-base/dummy-full comparison: we just render the
-        new messages (plus the generation prompt) and append that token
-        stream to ``previous_ids``. When the prior completion was
-        truncated (no harmony stop token at its end), we synthesize
-        ``<|end|>`` — the non-last-assistant close — so the template
-        structure stays valid.
+        Harmony's assistant layout depends on whether the turn is the last
+        in the conversation (``<|return|>`` close vs ``<|end|>`` close,
+        ``final`` channel vs ``analysis`` preamble). That makes any
+        prefix-based diff over ``render()`` output unsafe — the same
+        assistant renders differently in the two positions. Instead we
+        hand-emit each new message directly, re-using the per-role
+        helpers from ``render()`` so the bridge can never drift.
         """
-        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
-        if not previous_ids or not new_messages:
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
             return None
 
-        # Harmony turn closes cleanly on <|return|> or <|call|>; both come
-        # back from vLLM inside completion_ids. If prev_completion ends on
-        # raw content instead, synthesize <|end|> so the bridge has an
-        # explicit close to append to.
+        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+        # Harmony stops cleanly on <|return|> or <|call|>; content beyond
+        # those means vLLM hit max_tokens. Synthesise <|end|> — the
+        # non-terminal close — so the template stays well-formed.
         if previous_ids[-1] not in {self._return, self._call}:
+            if not self.synthesize_close_on_truncation:
+                return None
             previous_ids = previous_ids + [self._end]
 
-        try:
-            continuation = self.render_ids(
-                list(new_messages), tools=tools, add_generation_prompt=True
-            )
-        except Exception:
-            return None
-        return previous_ids + list(continuation)
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            if role == "tool":
+                self._render_tool_result(
+                    msg, i, emit_special=emit_special, emit_text=emit_text
+                )
+            elif role in ("user", "system", "developer", "_gptoss_internal_system"):
+                # New messages never carry the original first-message tools
+                # block; the tool definitions were baked into prev_prompt_ids
+                # at turn 0 and don't need to be re-rendered mid-rollout.
+                self._render_message(
+                    msg,
+                    i,
+                    is_last=False,
+                    tools=None,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
+                )
+            else:
+                return None
+
+        # Generation prompt: <|start|>assistant<|channel|>analysis<|message|>
+        emit_special(self._start, -1)
+        emit_text("assistant", -1)
+        emit_special(self._channel, -1)
+        emit_text("analysis", -1)
+        emit_special(self._message, -1)
+
+        return previous_ids + ext
 
     # ── rendering helpers ────────────────────────────────────────────────────
 

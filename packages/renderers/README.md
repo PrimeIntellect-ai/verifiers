@@ -41,24 +41,26 @@ behavior.
 ### `synthesize_close_on_truncation`
 
 When a turn hits `max_tokens` in vLLM, its `completion_ids` have no
-end-of-turn marker. The multi-turn bridge
-(`build_incremental_prompt_ids`) can't find a stop-token boundary and
-returns `None`, forcing a full `apply_chat_template` re-render. That
-re-render runs the raw completion text back through BPE, which often
-doesn't round-trip cleanly at the truncation boundary — the extension
-property breaks and `interleave_rollout` fragments the rollout into
-multiple `TrainingSample`s. Observable symptom: `samples_per_rollout`
-creeps above 1.0 roughly in step with the truncation rate.
+end-of-turn marker. The multi-turn bridge (`bridge_to_next_turn`) can't
+find a turn-close boundary and returns `None`, forcing a full
+`apply_chat_template` re-render. That re-render runs the raw completion
+text back through BPE, which often doesn't round-trip cleanly at the
+truncation boundary — the extension property breaks and
+`interleave_rollout` fragments the rollout into multiple
+`TrainingSample`s. Observable symptom: `samples_per_rollout` creeps
+above 1.0 roughly in step with the truncation rate.
 
 With `synthesize_close_on_truncation=True`, the bridge appends the
-renderer's first stop token (for `DefaultRenderer`: the tokenizer's
-`eos_token_id`) to the end of the truncated completion and then stitches
-the new messages on top as usual. Returned `new_prompt_ids` start with
-the exact `prev_prompt_ids + prev_completion_ids`, so extension holds
-and the rollout stays one sample. The synthetic token lands in
-`completion_ids` of the merged sample with `completion_mask=False`, so
-loss and KL never see it — identical to the old re-render path, which
-placed the same token in `prompt_ids` of the fragmented sample.
+renderer's canonical turn-close (for `DefaultRenderer`: the tokenizer's
+`eos_token_id`; for hand-coded renderers: the template's `<|im_end|>`,
+`<|endoftext|>`, or equivalent) to the end of the truncated completion
+and hand-emits the new messages on top. Returned `new_prompt_ids` start
+with the exact `prev_prompt_ids + prev_completion_ids`, so extension
+holds and the rollout stays one sample. The synthetic token lands in
+`prompt_ids` of the merged sample with `prompt_mask=False`, so loss
+and KL never see it. Hand-coded renderers default this to `True`
+because they know their template; `DefaultRenderer` keeps it opt-in
+because it doesn't.
 
 **Enable when:** you know `tokenizer.eos_token_id` is the canonical
 end-of-turn marker for the template you're using. This is true for all

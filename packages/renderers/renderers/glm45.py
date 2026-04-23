@@ -15,8 +15,13 @@ from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import glm_bridge
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+)
 from renderers.parsing import parse_glm
 
 _TOOLS_HEADER = (
@@ -42,6 +47,8 @@ _TOOLS_FOOTER = (
 
 class GLM45Renderer:
     """Deterministic message → token renderer for GLM-4.5 Air models."""
+
+    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -219,9 +226,63 @@ class GLM45Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return glm_bridge(
-            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
-        )
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
+            return None
+
+        # Same next-turn-marker scheme as GLM-5, but role markers are
+        # followed by a literal ``\n`` in the prompt text.
+        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+        stop_ids = {self._endoftext, self._user, self._observation}
+        if not previous_ids[len(previous_prompt_ids):] or previous_ids[-1] not in stop_ids:
+            if not self.synthesize_close_on_truncation:
+                return None
+            previous_ids.append(self._endoftext)
+
+        last_prev = previous_ids[-1]
+
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            content = self._visible_text(msg.get("content"))
+            if role == "user":
+                if not (i == 0 and last_prev == self._user):
+                    emit_special(self._user, i)
+                user_text = "\n" + content
+                if not self._enable_thinking and not content.endswith("/nothink"):
+                    user_text += "/nothink"
+                emit_text(user_text, i)
+            elif role == "system":
+                emit_special(self._system, i)
+                emit_text("\n" + content, i)
+            elif role == "tool":
+                prev_is_tool = i > 0 and new_messages[i - 1].get("role") == "tool"
+                if i == 0 and last_prev == self._observation:
+                    pass
+                elif not prev_is_tool:
+                    emit_special(self._observation, i)
+                emit_text("\n<tool_response>\n" + content + "\n</tool_response>", i)
+            else:
+                return None
+
+        # Generation prompt.
+        emit_special(self._assistant, -1)
+        if not self._enable_thinking:
+            emit_text("\n", -1)
+            emit_special(self._think, -1)
+            emit_special(self._think_end, -1)
+
+        return previous_ids + ext
 
     def _render_assistant(
         self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text

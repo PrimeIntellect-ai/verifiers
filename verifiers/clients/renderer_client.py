@@ -29,7 +29,6 @@ from renderers import (
     Renderer,
     RendererPool,
     ToolSpec,
-    build_incremental_prompt_ids,
     create_renderer,
 )
 from renderers import ToolCall as RendererToolCall
@@ -498,29 +497,18 @@ async def _get_incremental_prompt_ids(
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
-        # Prefer a renderer's own bridge_to_next_turn if it defines one. Hand-
-        # coded renderers implement this with template-aware logic (e.g. GLM
-        # knows its next-turn marker, Qwen3.5 knows its thinking-block rules);
-        # DefaultRenderer's implementation delegates to the generic algorithm.
-        # Renderers that don't define the method fall back to the generic
-        # helper here so we can migrate incrementally.
+        # Every Renderer defines bridge_to_next_turn; when it returns None
+        # (DefaultRenderer always, hand-coded renderers when they can't
+        # prove the contract, e.g. a truncated prior without the opt-in
+        # ``synthesize_close_on_truncation``) the caller falls back to a
+        # fresh render of the full prompt.
         bridged = await _run_with_renderer(
             renderer,
-            lambda r: (
-                r.bridge_to_next_turn(
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    tail,
-                    tools=tools,
-                )
-                if hasattr(r, "bridge_to_next_turn")
-                else build_incremental_prompt_ids(
-                    r,
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    tail,
-                    tools=tools,
-                )
+            lambda r: r.bridge_to_next_turn(
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
             ),
         )
         if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):

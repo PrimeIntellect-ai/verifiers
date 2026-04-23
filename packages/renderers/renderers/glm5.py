@@ -16,8 +16,13 @@ from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import glm_bridge
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+)
 from renderers.parsing import parse_glm
 
 _TOOLS_HEADER = (
@@ -40,6 +45,8 @@ _TOOLS_FOOTER = (
 
 class GLM5Renderer:
     """Deterministic message → token renderer for GLM-5 models."""
+
+    synthesize_close_on_truncation = True
 
     # GLM-5.1 flips this on: even when the most-recent assistant has no
     # reasoning content, the template wraps it with ``<think></think>``
@@ -233,7 +240,69 @@ class GLM5Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return glm_bridge(self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools)
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
+            return None
+
+        # GLM has no per-turn close token. An assistant turn ends when the
+        # next turn's role marker appears, OR the model emits <|endoftext|>.
+        # vLLM includes these in ``stop_token_ids`` so a clean stop leaves
+        # one of {endoftext, user, observation} at the tail of
+        # previous_completion_ids. Truncation means none is there yet.
+        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
+        stop_ids = {self._endoftext, self._user, self._observation}
+        if not previous_ids[len(previous_prompt_ids):] or previous_ids[-1] not in stop_ids:
+            # Truncation: opt-in renderers synthesise <|endoftext|> as the
+            # canonical turn end.
+            if not self.synthesize_close_on_truncation:
+                return None
+            previous_ids.append(self._endoftext)
+
+        last_prev = previous_ids[-1]
+
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            content = self._visible_text(msg.get("content"))
+            if role == "user":
+                # Dedup: model already emitted <|user|> as its stop token.
+                if not (i == 0 and last_prev == self._user):
+                    emit_special(self._user, i)
+                emit_text(content, i)
+            elif role == "system":
+                emit_special(self._system, i)
+                emit_text(content, i)
+            elif role == "tool":
+                prev_is_tool = i > 0 and new_messages[i - 1].get("role") == "tool"
+                if i == 0 and last_prev == self._observation:
+                    # Model already emitted <|observation|>; don't repeat.
+                    pass
+                elif not prev_is_tool:
+                    emit_special(self._observation, i)
+                emit_special(self._tool_response_tok, i)
+                emit_text(content, i)
+                emit_special(self._tool_response_end_tok, i)
+            else:
+                return None
+
+        # Generation prompt — match the gen-prompt branch of ``render()``.
+        emit_special(self._assistant, -1)
+        if self._enable_thinking:
+            emit_special(self._think, -1)
+        else:
+            emit_special(self._think_end, -1)
+
+        return previous_ids + ext
 
     def _render_assistant(
         self, msg, msg_idx, content, last_user_index, *, emit_special, emit_text

@@ -13,8 +13,14 @@ import json
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import chatml_bridge
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+    trim_to_turn_close,
+)
 from renderers.parsing import parse_qwen3
 
 _TOOLS_HEADER = (
@@ -36,6 +42,13 @@ _TOOLS_FOOTER = (
 
 class Qwen3Renderer:
     """Deterministic message → token renderer for Qwen3 models."""
+
+    # Hand-coded renderers know their canonical turn-close (``<|im_end|>``)
+    # by construction, so bridging over a vLLM-truncated prior turn is safe:
+    # the synthetic close lands in the next step's prompt_ids as mask=False
+    # context, never in completion_ids, and the trainer's KL never weights
+    # it. DefaultRenderer overrides this to opt-in only.
+    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -207,9 +220,67 @@ class Qwen3Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return chatml_bridge(
-            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
+            return None
+
+        previous_ids = trim_to_turn_close(
+            previous_prompt_ids,
+            previous_completion_ids,
+            {self._im_end, self._endoftext},
+            synthesize_close=(
+                self._im_end if self.synthesize_close_on_truncation else None
+            ),
         )
+        if previous_ids is None:
+            return None
+
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        # Trailing ``\n`` after the turn-close token. ``render()`` emits this
+        # as part of the prior turn, but vLLM stops on ``<|im_end|>`` so the
+        # ``\n`` never lands in prev_completion.
+        emit_text("\n", -1)
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            content = msg.get("content") if isinstance(msg.get("content"), str) else ""
+            if role == "user":
+                emit_special(self._im_start, i)
+                emit_text("user\n" + content, i)
+                emit_special(self._im_end, i)
+                emit_text("\n", i)
+            elif role == "system":
+                emit_special(self._im_start, i)
+                emit_text("system\n" + content, i)
+                emit_special(self._im_end, i)
+                emit_text("\n", i)
+            elif role == "tool":
+                self._render_tool(
+                    new_messages,
+                    i,
+                    content,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
+                )
+            else:
+                return None
+
+        emit_special(self._im_start, -1)
+        emit_text("assistant\n", -1)
+        if not self._enable_thinking:
+            emit_text("<think>\n\n</think>\n\n", -1)
+
+        return previous_ids + ext
 
     def _render_assistant(
         self,

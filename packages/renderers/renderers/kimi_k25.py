@@ -27,8 +27,15 @@ from typing import Any
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import ImagePart, Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import chatml_bridge
+from renderers.base import (
+    ImagePart,
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+    trim_to_turn_close,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -474,6 +481,8 @@ class KimiK25Renderer:
     The tokenizer should be ``moonshotai/Kimi-K2-Instruct`` (same as K2).
     """
 
+    synthesize_close_on_truncation = True
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -678,9 +687,76 @@ class KimiK25Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return chatml_bridge(
-            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
+            return None
+
+        close_ids: set[int] = {self._im_end}
+        if self._endoftext is not None:
+            close_ids.add(self._endoftext)
+        previous_ids = trim_to_turn_close(
+            previous_prompt_ids,
+            previous_completion_ids,
+            close_ids,
+            synthesize_close=(
+                self._im_end if self.synthesize_close_on_truncation else None
+            ),
         )
+        if previous_ids is None:
+            return None
+
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        def emit_ids(ids: list[int], _msg_idx: int = -1) -> None:
+            ext.extend(ids)
+
+        # Trailing ``\n`` after ``<|im_end|>``.
+        emit_text("\n", -1)
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            if role == "user":
+                emit_special(self._im_user, i)
+                emit_text("user", i)
+                emit_special(self._im_middle, i)
+                self._emit_content(
+                    msg.get("content"), i, emit_special, emit_text, emit_ids
+                )
+                emit_special(self._im_end, i)
+                emit_text("\n", i)
+            elif role == "system":
+                emit_special(self._im_system, i)
+                emit_text("system", i)
+                emit_special(self._im_middle, i)
+                emit_text((msg.get("content") or ""), i)
+                emit_special(self._im_end, i)
+                emit_text("\n", i)
+            elif role == "tool":
+                self._render_tool_response(
+                    msg, i, emit_special=emit_special, emit_text=emit_text
+                )
+            else:
+                return None
+
+        # Generation prompt.
+        emit_special(self._im_assistant, -1)
+        emit_text("assistant", -1)
+        emit_special(self._im_middle, -1)
+        if self._enable_thinking:
+            emit_text("<think>", -1)
+        else:
+            emit_text("<think></think>", -1)
+
+        return previous_ids + ext
 
     # ------------------------------------------------------------------
     # Internal helpers

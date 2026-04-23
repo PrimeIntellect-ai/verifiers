@@ -15,7 +15,6 @@ from renderers.base import (
     ParsedResponse,
     RenderedTokens,
     ToolSpec,
-    build_incremental_prompt_ids,
 )
 from renderers.parsers import (
     ReasoningParser,
@@ -154,20 +153,13 @@ class DefaultRenderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        """Return prompt_ids for the next turn that extend prev_prompt + prev_completion.
-
-        DefaultRenderer doesn't know its template, so it defers to the generic
-        ``build_incremental_prompt_ids`` algorithm (which walks the template
-        output via the dummy-assistant trick). Hand-coded renderers should
-        override this with template-specific logic.
+        """DefaultRenderer wraps an unknown Jinja template — it has no
+        hand-coded extension logic to emit. Return ``None`` so the caller
+        falls back to a full re-render; that's correct whenever the
+        template is prefix-stable under the new messages, which our parity
+        suite enforces for anything we ship a renderer for.
         """
-        return build_incremental_prompt_ids(
-            self,
-            previous_prompt_ids,
-            previous_completion_ids,
-            new_messages,
-            tools=tools,
-        )
+        return None
 
 
 def _resolve_parser(value, tokenizer, factory):

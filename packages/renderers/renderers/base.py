@@ -140,12 +140,12 @@ class RenderedConversation:
 class Renderer(Protocol):
     """Owns message ↔ token conversion for a specific model family."""
 
-    # Opt-in flag that ``build_incremental_prompt_ids`` reads when the prior
-    # turn's completion was truncated (no stop token in completion_ids). When
-    # True, the bridge appends ``get_stop_token_ids()[0]`` as a synthetic close
-    # so the resulting prompt extends the prior step's tokens exactly. Default
-    # False because this is only sound for renderers whose canonical close
-    # token we *know* — which is true for all hand-coded renderers but not for
+    # Opt-in flag that ``bridge_to_next_turn`` reads when the prior turn's
+    # completion was truncated (no turn-close token in completion_ids). When
+    # True, the bridge appends the renderer's canonical close as a synthetic
+    # turn boundary so the next prompt extends the prior step's tokens
+    # exactly. Default False because this is only sound for renderers whose
+    # close we *know* — true for hand-coded renderers, not for
     # DefaultRenderer (which wraps arbitrary HF chat templates).
     synthesize_close_on_truncation: bool = False
 
@@ -175,6 +175,32 @@ class Renderer(Protocol):
 
     def get_stop_token_ids(self) -> list[int]:
         """Return token IDs that signal generation should stop."""
+        ...
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Message],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> list[int] | None:
+        """Extend ``prev_prompt_ids + prev_completion_ids`` with the tokens
+        the next turn adds, without re-rendering the sampled tokens.
+
+        Contract: if the return value ``B`` is not None, then
+        ``B[: len(prev_prompt) + len(prev_completion)] == prev_prompt + prev_completion``
+        and ``B`` ends at the position where the next assistant turn begins
+        generating (i.e. equivalent to rendering the full message list so far
+        with ``add_generation_prompt=True`` — except prev sampled tokens are
+        kept verbatim rather than re-rendered).
+
+        Return ``None`` whenever the renderer can't prove that contract
+        holds — the caller falls back to a full re-render. In particular,
+        bridges refuse assistant messages in ``new_messages`` (those would
+        re-tokenize model-sampled content) and refuse truncated priors
+        unless ``synthesize_close_on_truncation`` is set.
+        """
         ...
 
 
@@ -423,103 +449,49 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
     return max_len
 
 
-def build_incremental_prompt_ids(
-    renderer: Renderer,
+def trim_to_turn_close(
     previous_prompt_ids: list[int],
     previous_completion_ids: list[int],
-    new_messages: list[Message],
+    close_token_ids: set[int],
     *,
-    tools: list[ToolSpec] | None = None,
+    synthesize_close: int | None = None,
 ) -> list[int] | None:
-    """Append new environment messages to exact previous tokens.
+    """Return the longest prefix of ``prev_prompt + prev_completion`` that
+    ends at a turn-close token, or ``None`` if none exists and
+    ``synthesize_close`` is not provided.
 
-    This mirrors the old token route's bridge trick: render a dummy assistant
-    message followed by the new environment messages, then keep only the suffix
-    after the dummy assistant boundary.  The sampled assistant tokens themselves
-    are never re-rendered.
+    Scans only within ``prev_completion_ids`` — a close token in
+    ``prev_prompt_ids`` is structural template scaffolding, not a turn
+    boundary the current step's completion produced.
+
+    When ``prev_completion_ids`` has no close token, the prior turn was
+    truncated at max_tokens. The caller opts in to synthesising the
+    canonical close by passing ``synthesize_close`` (its token id).
+    Otherwise the caller falls back to a fresh re-render.
+
+    Hand-coded renderers pass this helper a set they know describes their
+    turn boundaries. DefaultRenderer can't know its template's close, so
+    it doesn't call this — it returns ``None`` from ``bridge_to_next_turn``
+    unconditionally.
     """
-    if not previous_prompt_ids or not previous_completion_ids or not new_messages:
-        return None
-
     previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
-    try:
-        stop_token_ids_list = list(renderer.get_stop_token_ids())
-    except Exception:
-        stop_token_ids_list = []
-    stop_token_ids = set(stop_token_ids_list)
-
-    boundary_idx: int | None = None
-    if stop_token_ids:
-        for idx in range(len(previous_ids) - 1, len(previous_prompt_ids) - 1, -1):
-            if previous_ids[idx] in stop_token_ids:
-                boundary_idx = idx
-                break
-
-    if boundary_idx is None:
-        # No stop token in previous_completion_ids — vLLM truncated the prior
-        # turn at max_tokens.
-        #
-        # Only renderers that explicitly opt in via
-        # ``synthesize_close_on_truncation = True`` will bridge over this case.
-        # The opt-in is gated per-renderer because synthesizing a close token
-        # that the model didn't emit is only sound when we *know* the template's
-        # expected close (which we do for hand-coded renderers: Qwen3, GLM,
-        # DeepSeekV3, etc. — their get_stop_token_ids()[0] is the canonical
-        # end-of-turn marker by construction).
-        #
-        # DefaultRenderer leaves this False because it wraps an unknown HF chat
-        # template; ``tokenizer.eos_token_id`` is usually the right close for
-        # chatml-family fine-tunes but not universally. Returning None here
-        # matches main's TITO behavior on truncation — the caller falls back to
-        # a full re-render, which extends whenever BPE round-trip is stable.
-        # Fragmentation rate lands at ~main's 22%, not the 100% you'd get
-        # otherwise.
-        #
-        # The synthetic close is KL-safe for opt-in renderers: it lands in the
-        # next step's prompt_ids AFTER step_N's completion_ids, so when
-        # interleave_rollout merges the two steps into one sample, it becomes a
-        # mask=False "context" token. The trainer's KL sum weights it by the
-        # mask, so the token's logprob never enters the loss.
-        synth_ok = getattr(renderer, "synthesize_close_on_truncation", False)
-        if not synth_ok or not stop_token_ids_list:
-            return None
-        previous_ids = previous_ids + [stop_token_ids_list[0]]
-        boundary_idx = len(previous_ids) - 1
-
-    previous_ids = previous_ids[: boundary_idx + 1]
-    boundary_token_id = previous_ids[-1]
-
-    dummy_assistant: Message = {"role": "assistant", "content": "x"}
-
-    try:
-        bridge_full_ids = renderer.render_ids(
-            [dummy_assistant, *new_messages],
-            tools=tools,
-            add_generation_prompt=True,
-        )
-        bridge_base_ids = renderer.render_ids(
-            [dummy_assistant],
-            tools=tools,
-            add_generation_prompt=False,
-        )
-    except Exception:
+    for idx in range(len(previous_ids) - 1, len(previous_prompt_ids) - 1, -1):
+        if previous_ids[idx] in close_token_ids:
+            return previous_ids[: idx + 1]
+    if synthesize_close is None:
         return None
+    previous_ids.append(synthesize_close)
+    return previous_ids
 
-    if bridge_full_ids[: len(bridge_base_ids)] != bridge_base_ids:
-        return None
 
-    gap: int | None = None
-    for idx in range(len(bridge_base_ids) - 1, -1, -1):
-        if bridge_base_ids[idx] == boundary_token_id:
-            gap = len(bridge_base_ids) - idx - 1
-            break
-    if gap is None:
-        return None
+def reject_assistant_in_extension(new_messages: list[Message]) -> bool:
+    """Return True if any message in ``new_messages`` is an assistant turn.
 
-    bridge_ids = list(bridge_full_ids[len(bridge_base_ids) - gap :])
-    if bridge_ids and bridge_ids[0] == boundary_token_id:
-        bridge_ids = bridge_ids[1:]
-    return previous_ids + bridge_ids
+    Bridges refuse to re-tokenize assistant content because it would
+    replace model-sampled tokens with canonical template text — violating
+    the contract that sampled tokens land in training exactly as emitted.
+    """
+    return any(m.get("role") == "assistant" for m in new_messages)
 
 
 def build_trajectory_step(

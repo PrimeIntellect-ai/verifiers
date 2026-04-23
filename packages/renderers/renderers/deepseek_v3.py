@@ -16,8 +16,14 @@ import json
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from renderers.base import Message, ParsedResponse, RenderedTokens, ToolSpec
-from renderers.bridges import chatml_bridge
+from renderers.base import (
+    Message,
+    ParsedResponse,
+    RenderedTokens,
+    ToolSpec,
+    reject_assistant_in_extension,
+    trim_to_turn_close,
+)
 from renderers.parsing import parse_deepseek_v3
 
 # Fullwidth vertical bar used in DeepSeek special token names.
@@ -33,6 +39,8 @@ def _ds_token(name: str) -> str:
 
 class DeepSeekV3Renderer:
     """Deterministic message → token renderer for DeepSeek V3 models."""
+
+    synthesize_close_on_truncation = True
 
     def __init__(
         self,
@@ -227,9 +235,74 @@ class DeepSeekV3Renderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        return chatml_bridge(
-            self, previous_prompt_ids, previous_completion_ids, new_messages, tools=tools
+        if (
+            not previous_prompt_ids
+            or not new_messages
+            or reject_assistant_in_extension(new_messages)
+        ):
+            return None
+
+        previous_ids = trim_to_turn_close(
+            previous_prompt_ids,
+            previous_completion_ids,
+            {self._eos},
+            synthesize_close=(
+                self._eos if self.synthesize_close_on_truncation else None
+            ),
         )
+        if previous_ids is None:
+            return None
+
+        ext: list[int] = []
+
+        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
+            ext.append(token_id)
+
+        def emit_text(text: str, _msg_idx: int = -1) -> None:
+            ext.extend(self._encode(text))
+
+        for i, msg in enumerate(new_messages):
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                content = "".join(
+                    p.get("text", "") for p in content if isinstance(p, dict)
+                )
+            content = str(content)
+
+            if role == "user":
+                emit_special(self._user_token, i)
+                emit_text(content, i)
+            elif role == "system":
+                # Post-initial system messages render as user turns.
+                emit_special(self._user_token, i)
+                emit_text(content, i)
+            elif role == "tool":
+                prev_is_tool = i > 0 and new_messages[i - 1].get("role") == "tool"
+                next_is_tool = (
+                    i + 1 < len(new_messages)
+                    and new_messages[i + 1].get("role") == "tool"
+                )
+                if not prev_is_tool:
+                    emit_special(self._tool_outputs_begin, i)
+                emit_special(self._tool_output_begin, i)
+                emit_text(content, i)
+                emit_special(self._tool_output_end, i)
+                if not next_is_tool:
+                    emit_special(self._tool_outputs_end, i)
+            else:
+                return None
+
+        # Generation prompt — skip ``<｜Assistant｜>`` when the prior new
+        # message was a tool response (matches render()'s behaviour: tool
+        # output flows directly into assistant content).
+        last_role = new_messages[-1].get("role") if new_messages else None
+        if last_role != "tool":
+            emit_special(self._assistant_token, -1)
+        if self._enable_thinking:
+            emit_text("<think>\n", -1)
+
+        return previous_ids + ext
 
     # ------------------------------------------------------------------
     # Assistant rendering

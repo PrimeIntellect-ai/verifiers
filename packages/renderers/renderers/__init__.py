@@ -13,11 +13,12 @@ from renderers.base import (
     ToolCall,
     ToolCallFunction,
     ToolSpec,
-    build_incremental_prompt_ids,
     build_supervised_sample,
     build_trajectory_step,
     create_renderer,
     create_renderer_pool,
+    reject_assistant_in_extension,
+    trim_to_turn_close,
 )
 from renderers.deepseek_v3 import DeepSeekV3Renderer
 from renderers.default import DefaultRenderer
@@ -59,9 +60,10 @@ __all__ = [
     "ToolCall",
     "ToolCallFunction",
     "ToolSpec",
-    "build_incremental_prompt_ids",
     "build_supervised_sample",
     "build_trajectory_step",
     "create_renderer",
     "create_renderer_pool",
+    "reject_assistant_in_extension",
+    "trim_to_turn_close",
 ]

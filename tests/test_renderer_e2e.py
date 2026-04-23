@@ -7,8 +7,8 @@ Asserts the four load-bearing invariants:
 
 1. vLLM sees exactly what the client rendered (``returned_prompt_ids == sent_prompt_ids``).
 2. Multi-turn prompts extend the previous turn's ``prompt_ids + completion_ids``
-   bitwise (no re-tokenization across turns — the ``build_incremental_prompt_ids``
-   bridge trick).
+   bitwise (no re-tokenization across turns — the per-renderer
+   ``bridge_to_next_turn`` method).
 3. Sampler-side completion tokens appear verbatim in ``trajectory[step]['tokens']``;
    the trainer sees exactly what the sampler produced.
 4. Completion IDs we scripted survive round-trip through the full rollout.
@@ -32,15 +32,13 @@ from verifiers.types import Messages, State
 
 
 def _renderer_has_extension_property(renderer) -> bool:
-    """Runtime probe: does ``build_incremental_prompt_ids`` actually stitch?
+    """Runtime probe: does ``renderer.bridge_to_next_turn`` actually stitch?
 
-    Simulates one turn of sampling and asks the stitcher to extend it.
-    Returns True iff the stitcher returns bitwise-extended tokens (not None).
-    This is the operational definition of "extension property" — whether the
-    client will take the bridge-trick path or the re-render fallback.
+    Simulates one turn of sampling and asks the renderer's bridge to extend
+    it. Returns True iff the bridge returns tokens that extend prev (not
+    None). This is the operational definition of "extension property" —
+    whether the client will take the bridge path or the re-render fallback.
     """
-    from renderers.base import build_incremental_prompt_ids
-
     prev_prompt = renderer.render_ids(
         [{"role": "user", "content": "u"}], add_generation_prompt=True
     )
@@ -56,8 +54,7 @@ def _renderer_has_extension_property(renderer) -> bool:
     if stop_ids:
         prev_completion.append(stop_ids[0])
 
-    result = build_incremental_prompt_ids(
-        renderer,
+    result = renderer.bridge_to_next_turn(
         prev_prompt,
         prev_completion,
         [{"role": "user", "content": "next"}],
@@ -295,7 +292,7 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
     """Three-turn rollout: user → asst → user follow-up → asst → user follow-up → asst.
 
     Asserts invariants 1, 2, 3. Invariant 2 (prefix stability across turns)
-    is the critical one — it validates ``build_incremental_prompt_ids``.
+    is the critical one — it validates each renderer's ``bridge_to_next_turn``.
     """
     tokenizer, renderer = tokenizer_and_renderer
     model_name, _ = model_family
@@ -393,11 +390,11 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
 
     # --- Invariant 2 (extension): bitwise extension across turns. Only
     # holds for renderers whose history form of an assistant message contains
-    # the generation stop token (the anchor for ``build_incremental_prompt_ids``).
+    # the generation stop token (the anchor ``bridge_to_next_turn`` trims to).
     # When this holds, the client stitches the previous turn's exact tokens
-    # (including stop) with a fresh render of just the new env messages —
-    # which necessarily diverges from a naive full re-render, so invariant 1
-    # is skipped.
+    # (including stop) with the renderer's hand-emitted extension — which
+    # necessarily diverges from a naive full re-render, so invariant 1 is
+    # skipped.
     if has_extension:
         for turn_idx in range(1, 3):
             prev_prompt = trajectory[turn_idx - 1]["tokens"]["prompt_ids"]
@@ -408,7 +405,7 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
             assert this_prompt[: len(prev_combined)] == prev_combined, (
                 f"turn {turn_idx}: prompt_ids is NOT a bitwise extension of "
                 f"turn {turn_idx - 1}'s prompt+completion for {model_name}. "
-                f"build_incremental_prompt_ids should have stitched, but didn't."
+                f"bridge_to_next_turn should have stitched, but didn't."
             )
             assert len(this_prompt) > len(prev_combined), (
                 f"turn {turn_idx}: prompt didn't grow past previous combined for {model_name}"
@@ -424,7 +421,7 @@ async def test_extension_break_emits_diagnostic_log(caplog):
     both token streams so the divergence point is visible offline.
 
     Uses Qwen3.5 because its ``strip_thinking_from_history`` behavior
-    deterministically trips ``build_incremental_prompt_ids``. No real vLLM
+    deterministically trips ``bridge_to_next_turn``. No real vLLM
     involved.
     """
     import re

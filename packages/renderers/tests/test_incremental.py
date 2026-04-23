@@ -1,31 +1,18 @@
+"""Unit tests for ``trim_to_turn_close`` and the bridge contract invariants
+that every renderer's ``bridge_to_next_turn`` must uphold.
+
+Cross-renderer parity is validated in test_render_ids.py and test_roundtrip.py;
+this file exercises the shared primitive + protocol-level guarantees with a
+fake renderer so we get fast, deterministic coverage of the tricky corners
+(truncation opt-in, assistant-in-extension rejection, empty inputs).
+"""
+
 from renderers.base import (
     ParsedResponse,
     RenderedConversation,
-    build_incremental_prompt_ids,
+    reject_assistant_in_extension,
+    trim_to_turn_close,
 )
-
-
-class _BridgeRenderer:
-    supports_tools = True
-
-    def __init__(self, bridge_base=None, bridge_full=None):
-        self.bridge_base = bridge_base or [10, 99, 30]
-        self.bridge_full = bridge_full or [10, 99, 30, 40, 50]
-        self.calls = []
-
-    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
-        self.calls.append((messages, tools, add_generation_prompt))
-        if len(messages) == 1 and add_generation_prompt is False:
-            return list(self.bridge_base)
-        if len(messages) > 1 and add_generation_prompt is True:
-            return list(self.bridge_full)
-        raise AssertionError((messages, tools, add_generation_prompt))
-
-    def parse_response(self, token_ids):
-        return ParsedResponse(content="")
-
-    def get_stop_token_ids(self):
-        return [99]
 
 
 def test_rendered_conversation_keeps_exact_token_tape():
@@ -44,126 +31,153 @@ def test_rendered_conversation_keeps_exact_token_tape():
     assert conv.completion_ids == []
 
 
-def test_build_incremental_prompt_ids_keeps_bridge_after_dummy_boundary():
-    renderer = _BridgeRenderer(
-        bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
-    )
-
-    result = build_incremental_prompt_ids(
-        renderer,
-        previous_prompt_ids=[1, 2],
-        previous_completion_ids=[3, 99],
-        new_messages=[{"role": "tool", "content": "result", "tool_call_id": "call_0"}],
-    )
-
-    assert result == [1, 2, 3, 99, 30, 40, 50]
+# ---------------------------------------------------------------------------
+# trim_to_turn_close
+# ---------------------------------------------------------------------------
 
 
-def test_build_incremental_prompt_ids_skips_duplicate_stop_token():
-    renderer = _BridgeRenderer(bridge_base=[10, 99], bridge_full=[10, 99, 99, 40])
-
-    result = build_incremental_prompt_ids(
-        renderer,
-        previous_prompt_ids=[1],
-        previous_completion_ids=[99],
-        new_messages=[{"role": "user", "content": "next"}],
-    )
-
-    assert result == [1, 99, 40]
+def test_trim_to_turn_close_trims_to_last_close_in_completion():
+    # prev = [1, 2] + [3, 99, 30] (stop token 99). Trim to the 99 boundary,
+    # drop the [30] that the model sampled after the stop token.
+    result = trim_to_turn_close([1, 2], [3, 99, 30], {99})
+    assert result == [1, 2, 3, 99]
 
 
-def test_build_incremental_prompt_ids_trims_post_stop_scaffolding():
-    renderer = _BridgeRenderer(bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40])
-
-    result = build_incremental_prompt_ids(
-        renderer,
-        previous_prompt_ids=[1],
-        previous_completion_ids=[3, 99, 30],
-        new_messages=[{"role": "tool", "content": "result", "tool_call_id": "call_0"}],
-    )
-
-    assert result == [1, 3, 99, 30, 40]
-
-
-def test_build_incremental_prompt_ids_falls_back_when_stop_boundary_missing():
-    renderer = _BridgeRenderer(bridge_base=[10, 11], bridge_full=[10, 11, 40])
-
-    assert (
-        build_incremental_prompt_ids(
-            renderer,
-            previous_prompt_ids=[1],
-            previous_completion_ids=[99],
-            new_messages=[{"role": "user", "content": "next"}],
-        )
-        is None
-    )
-
-
-class _OptInBridgeRenderer(_BridgeRenderer):
-    """A _BridgeRenderer that opts in to synthesize-close on truncation,
-    modeling a hand-coded renderer like Qwen3Renderer where the canonical
-    end-of-turn token is known."""
-
-    synthesize_close_on_truncation = True
-
-
-def test_build_incremental_prompt_ids_synthesizes_close_for_truncated_completion():
-    """Opt-in renderer: when prev_completion has no stop token (vLLM truncated
-    at max_tokens), the bridge synthesizes the renderer's preferred close so
-    the result still extends prev_prompt + prev_completion cleanly."""
-    renderer = _OptInBridgeRenderer(
-        bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
-    )
-
-    result = build_incremental_prompt_ids(
-        renderer,
-        previous_prompt_ids=[1, 2],
-        previous_completion_ids=[3, 4, 5],  # no 99 → "truncated"
-        new_messages=[{"role": "user", "content": "next"}],
-    )
-
-    # Expect: prev_prompt + prev_completion + synthetic_close(99) + bridge_tail.
-    assert result == [1, 2, 3, 4, 5, 99, 30, 40, 50]
-    # Critical invariant: result extends prev_prompt + prev_completion so
-    # interleave_rollout's prefix check passes.
-    assert result[:5] == [1, 2, 3, 4, 5]
-
-
-def test_build_incremental_prompt_ids_does_not_synthesize_for_default_renderer():
-    """Non-opt-in renderer (e.g. DefaultRenderer): when prev is truncated, do
-    NOT synthesize a close. Return None so the caller falls back to a full
-    re-render — matches main's TITO-on-truncation behavior."""
-    # _BridgeRenderer has no synthesize_close_on_truncation attribute → False.
-    renderer = _BridgeRenderer(
-        bridge_base=[10, 99, 30], bridge_full=[10, 99, 30, 40, 50]
-    )
-
-    result = build_incremental_prompt_ids(
-        renderer,
-        previous_prompt_ids=[1, 2],
-        previous_completion_ids=[3, 4, 5],  # no 99 → "truncated"
-        new_messages=[{"role": "user", "content": "next"}],
-    )
-
+def test_trim_to_turn_close_ignores_close_in_prompt():
+    # A stop-token id that happens to appear in prev_prompt (as structural
+    # template scaffolding) must not be treated as a turn boundary.
+    result = trim_to_turn_close([99, 1], [3, 4, 5], {99})
     assert result is None
 
 
-def test_build_incremental_prompt_ids_returns_none_when_no_stop_tokens_at_all():
-    """Even an opt-in renderer must bail when there's literally no stop token
-    to synthesize."""
+def test_trim_to_turn_close_synthesises_when_truncated():
+    # Truncation: no stop token in completion. With synthesize_close=99,
+    # append the synthetic close and return prev + [99].
+    result = trim_to_turn_close([1, 2], [3, 4, 5], {99}, synthesize_close=99)
+    assert result == [1, 2, 3, 4, 5, 99]
 
-    class _NoStopRenderer(_OptInBridgeRenderer):
-        def get_stop_token_ids(self):
-            return []
 
-    renderer = _NoStopRenderer(bridge_base=[10], bridge_full=[10, 40])
+def test_trim_to_turn_close_returns_none_on_truncation_without_synth():
+    # Truncation without synth opt-in → caller falls back to fresh render.
+    result = trim_to_turn_close([1, 2], [3, 4, 5], {99})
+    assert result is None
 
-    assert (
-        build_incremental_prompt_ids(
-            renderer,
-            previous_prompt_ids=[1],
-            previous_completion_ids=[3, 4, 5],
-            new_messages=[{"role": "user", "content": "next"}],
+
+def test_trim_to_turn_close_accepts_multiple_close_tokens():
+    # Multiple close tokens: pick the LAST one that appears in completion.
+    result = trim_to_turn_close([1], [3, 50, 4, 99, 30], {50, 99})
+    assert result == [1, 3, 50, 4, 99]
+
+
+# ---------------------------------------------------------------------------
+# reject_assistant_in_extension
+# ---------------------------------------------------------------------------
+
+
+def test_reject_assistant_in_extension_true_when_assistant_present():
+    assert reject_assistant_in_extension(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "x"}]
+    )
+
+
+def test_reject_assistant_in_extension_false_for_tool_user_only():
+    assert not reject_assistant_in_extension(
+        [{"role": "tool", "content": "result"}, {"role": "user", "content": "next"}]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Contract tests against a minimal fake renderer
+# ---------------------------------------------------------------------------
+
+
+class _FakeRenderer:
+    """Minimal Renderer whose bridge exercises the contract:
+
+    - Extension token is a single sentinel ID 42.
+    - ``<|im_end|>`` ≡ 99 is the canonical close.
+    """
+
+    synthesize_close_on_truncation = True
+
+    def __init__(self):
+        self._im_end = 99
+
+    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
+        raise NotImplementedError
+
+    def parse_response(self, token_ids):
+        return ParsedResponse(content="")
+
+    def get_stop_token_ids(self):
+        return [self._im_end]
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids,
+        previous_completion_ids,
+        new_messages,
+        *,
+        tools=None,
+    ):
+        if not previous_prompt_ids or not new_messages:
+            return None
+        if reject_assistant_in_extension(new_messages):
+            return None
+        previous_ids = trim_to_turn_close(
+            previous_prompt_ids,
+            previous_completion_ids,
+            {self._im_end},
+            synthesize_close=(
+                self._im_end if self.synthesize_close_on_truncation else None
+            ),
         )
+        if previous_ids is None:
+            return None
+        return previous_ids + [42]
+
+
+def test_fake_bridge_extends_verbatim_on_clean_stop():
+    renderer = _FakeRenderer()
+    prev_prompt = [1, 2]
+    prev_completion = [3, 99]
+    result = renderer.bridge_to_next_turn(
+        prev_prompt, prev_completion, [{"role": "user", "content": "next"}]
+    )
+    assert result == [1, 2, 3, 99, 42]
+    assert result[: len(prev_prompt) + len(prev_completion)] == prev_prompt + prev_completion
+
+
+def test_fake_bridge_synthesises_on_truncation():
+    renderer = _FakeRenderer()
+    result = renderer.bridge_to_next_turn(
+        [1, 2], [3, 4, 5], [{"role": "user", "content": "next"}]
+    )
+    # Truncated prev; synth-close appends 99 then extension 42.
+    assert result == [1, 2, 3, 4, 5, 99, 42]
+
+
+def test_fake_bridge_rejects_assistant_in_extension():
+    renderer = _FakeRenderer()
+    result = renderer.bridge_to_next_turn(
+        [1], [99], [{"role": "assistant", "content": "x"}]
+    )
+    assert result is None
+
+
+def test_fake_bridge_returns_none_without_synth_opt_in():
+    renderer = _FakeRenderer()
+    renderer.synthesize_close_on_truncation = False
+    result = renderer.bridge_to_next_turn(
+        [1], [3, 4, 5], [{"role": "user", "content": "next"}]
+    )
+    assert result is None
+
+
+def test_fake_bridge_rejects_empty_inputs():
+    renderer = _FakeRenderer()
+    assert (
+        renderer.bridge_to_next_turn([], [99], [{"role": "user", "content": "x"}])
         is None
     )
+    assert renderer.bridge_to_next_turn([1], [99], []) is None
