@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from importlib.abc import Traversable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Self
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
 from verifiers.types import Messages, State
@@ -279,13 +279,13 @@ class TaskSet:
 
     # -- Combinators ---------------------------------------------------------
 
-    def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
+    def filter(self, predicate: Callable[[dict], bool]) -> Self:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone._dataset = self._dataset.filter(predicate)
         return clone
 
-    def take(self, n: int) -> TaskSet:
+    def take(self, n: int) -> Self:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone._dataset = self._dataset.select(range(min(n, len(self._dataset))))
