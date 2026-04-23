@@ -101,7 +101,7 @@ def rlm_harness(
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
-    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
+    summarize_at_tokens: int | None = None,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -119,11 +119,10 @@ def rlm_harness(
       ``ToolMonitorRubric`` tracks exactly the active tools)
     - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
-    - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set,
-      rlm auto-compacts the current branch once the prompt_tokens of a
-      turn reach the threshold. Pass an int for a fixed threshold, or a
-      ``(lo, hi)`` tuple/list to draw a uniform threshold per rollout
-      and after each compaction. ``None`` disables auto-compaction.
+    - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
+      a positive int, rlm auto-compacts the current branch once the
+      prompt_tokens of a turn reach the threshold. ``None`` disables
+      auto-compaction.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -193,41 +192,20 @@ def rlm_harness(
     )
 
 
-def _format_summarize_at_tokens(
-    value: int | tuple[int, int] | list[int] | None,
-) -> str | None:
+def _format_summarize_at_tokens(value: int | None) -> str | None:
     """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string.
 
     Returns ``None`` when auto-compaction should be disabled (matches what
-    the engine expects when the env var is absent). An int becomes
-    ``"N"``; a 2-element sequence becomes ``"lo,hi"``. Any other shape is
-    rejected here so configuration errors surface at harness-build time
-    rather than deep inside the sandbox.
+    the engine expects when the env var is absent). Rejects bad shapes
+    here so configuration errors surface at harness-build time rather
+    than deep inside the sandbox.
     """
     if value is None:
         return None
-    if isinstance(value, bool):
-        raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
-    if isinstance(value, int):
-        if value <= 0:
-            raise ValueError(f"summarize_at_tokens must be positive (got {value})")
-        return str(value)
-    if isinstance(value, (tuple, list)):
-        if len(value) != 2:
-            raise ValueError(
-                f"summarize_at_tokens pair must have 2 elements (got {value!r})"
-            )
-        lo, hi = int(value[0]), int(value[1])
-        if lo <= 0 or hi <= 0:
-            raise ValueError(
-                f"summarize_at_tokens values must be positive (got lo={lo}, hi={hi})"
-            )
-        if lo > hi:
-            raise ValueError(
-                f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
-            )
-        return f"{lo},{hi}"
-    raise ValueError(
-        f"summarize_at_tokens must be int, (lo, hi), or None "
-        f"(got {type(value).__name__})"
-    )
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"summarize_at_tokens must be an int or None (got {type(value).__name__})"
+        )
+    if value <= 0:
+        raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+    return str(value)
