@@ -50,6 +50,10 @@ This folder contains installable example environments that showcase common usage
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
+- **Composable CLI benchmarks**
+  - **swebench_pro**: SWE-bench Pro composed from the `tasksets` and `harnesses` packages.
+  - **terminal_bench_2**: Terminal-Bench 2 composed from the `tasksets` and `harnesses` packages.
+
 ### Composition
 - **EnvGroup**
   - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
@@ -73,7 +77,7 @@ This folder contains installable example environments that showcase common usage
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
 - **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
+- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`, `swebench_pro`, `terminal_bench_2`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`

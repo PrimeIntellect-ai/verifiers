@@ -1,0 +1,43 @@
+"""Claude Code harness exports."""
+
+from harnesses.claude_code.claude_code import (  # noqa: F401
+    CLAUDE_CODE_CLI_PACKAGE,
+    CLAUDE_CODE_CLI_SHA256,
+    CLAUDE_CODE_CLI_VERSION,
+    CLAUDE_CODE_CONFIG,
+    CLAUDE_CODE_INSTALL_SCRIPT,
+    DEFAULT_AGENT_WORKDIR,
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_INSTRUCTION_PATH,
+    DEFAULT_LOG_PATH,
+    DEFAULT_OUTPUT_FORMAT,
+    DEFAULT_PACKAGE_SHA256,
+    DEFAULT_PACKAGE_VERSION,
+    DEFAULT_PERMISSION_MODE,
+    DEFAULT_SYSTEM_PROMPT_PATH,
+    build_claude_code_install_script,
+    build_claude_code_mcp_config,
+    build_claude_code_run_command,
+    claude_code_harness,
+)
+
+__all__ = [
+    "CLAUDE_CODE_CLI_PACKAGE",
+    "CLAUDE_CODE_CLI_SHA256",
+    "CLAUDE_CODE_CLI_VERSION",
+    "CLAUDE_CODE_CONFIG",
+    "CLAUDE_CODE_INSTALL_SCRIPT",
+    "DEFAULT_AGENT_WORKDIR",
+    "DEFAULT_CONFIG_DIR",
+    "DEFAULT_INSTRUCTION_PATH",
+    "DEFAULT_LOG_PATH",
+    "DEFAULT_OUTPUT_FORMAT",
+    "DEFAULT_PACKAGE_SHA256",
+    "DEFAULT_PACKAGE_VERSION",
+    "DEFAULT_PERMISSION_MODE",
+    "DEFAULT_SYSTEM_PROMPT_PATH",
+    "build_claude_code_install_script",
+    "build_claude_code_mcp_config",
+    "build_claude_code_run_command",
+    "claude_code_harness",
+]

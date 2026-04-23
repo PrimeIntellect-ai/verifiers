@@ -2,21 +2,31 @@
 
 import importlib
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
 
 import verifiers as vf
-from verifiers.envs.experimental.composable import (
-    ComposableEnv,
-    Harness,
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "packages"
+sys.path.insert(0, str(PACKAGE_ROOT / "tasksets"))
+sys.path.insert(0, str(PACKAGE_ROOT / "harnesses"))
+
+from harnesses import Harness  # noqa: E402
+from tasksets import (  # noqa: E402
     SandboxSpec,
     SandboxTaskSet,
     Task,
+    TaskRuntimeSpec,
     TaskSet,
     discover_sibling_dir,
 )
+from verifiers.envs.composable_skills import TaskSkills  # noqa: E402
+from verifiers.envs.composable_tools import TaskTools  # noqa: E402
+from verifiers.envs.composable_env import ComposableEnv  # noqa: E402
 
 
 # ── Mock Rubrics ──────────────────────────────────────────────────────
@@ -58,8 +68,14 @@ class MockSandboxTaskSet(SandboxTaskSet):
     def get_workdir(self, info):
         return "/testbed"
 
-    def get_env_vars(self):
+    def get_env_vars(self, info=None):
         return {"FOO": "bar"}
+
+    def get_agent_timeout_seconds(self, info):
+        return info.get("timeout")
+
+    def get_test_timeout_seconds(self, info):
+        return info.get("test_timeout")
 
 
 class MockTaskSet(TaskSet):
@@ -70,6 +86,61 @@ class MockTaskSet(TaskSet):
 
     def get_rubric(self):
         return MockMathRubric()
+
+
+class MockToolTaskSet(MockSandboxTaskSet):
+    def get_tools(self, info):
+        return TaskTools(
+            mcp_servers=[
+                {
+                    "name": "task-mcp",
+                    "transport": "streamable-http",
+                    "url": "http://127.0.0.1:8000/mcp",
+                }
+            ],
+            env_vars={"TASK_TOOL_URL": "http://127.0.0.1:8000/mcp"},
+        )
+
+    async def prepare_tools(self, state, tools):
+        state["tools_prepared"] = True
+        return tools
+
+
+class MockRuntimeTaskSet(SandboxTaskSet):
+    def get_instruction(self, info):
+        return "Use the runtime spec."
+
+    def get_rubric(self):
+        return MockSandboxRubric()
+
+    def get_runtime_spec(self, info):
+        return TaskRuntimeSpec(
+            sandbox=SandboxSpec(
+                image="runtime-image:latest",
+                start_command="sleep infinity",
+                cpu_cores=3,
+                memory_gb=6,
+                disk_size_gb=12,
+                gpu_count=1,
+                gpu_type="L4",
+                vm=True,
+                timeout_minutes=45,
+                environment_vars={"SPEC_VAR": "spec"},
+            ),
+            workdir="/runtime",
+            env_vars={"RUNTIME_VAR": "runtime"},
+            agent_timeout_seconds=321,
+            test_timeout_seconds=654,
+            tools=TaskTools(
+                mcp_servers=[
+                    {
+                        "name": "runtime-tool",
+                        "transport": "stdio",
+                        "command": "tool-server",
+                    }
+                ]
+            ),
+        )
 
 
 def _make_dataset(n=3):
@@ -93,9 +164,41 @@ def test_sandbox_spec_defaults():
 
 
 def test_sandbox_spec_custom():
-    spec = SandboxSpec(image="lean-tactic:v4.27", gpu_count=1)
+    spec = SandboxSpec(
+        image="lean-tactic:v4.27",
+        start_command="sleep infinity",
+        gpu_count=1,
+        vm=True,
+        environment_vars={"A": "B"},
+    )
     assert spec.image == "lean-tactic:v4.27"
+    assert spec.start_command == "sleep infinity"
     assert spec.gpu_count == 1
+    assert spec.vm is True
+    assert spec.environment_vars == {"A": "B"}
+
+
+def test_task_runtime_spec_defaults():
+    runtime = TaskRuntimeSpec()
+    assert runtime.sandbox is None
+    assert runtime.workdir == "/app"
+    assert runtime.env_vars == {}
+    assert runtime.tools == TaskTools()
+    assert runtime.skills == TaskSkills()
+
+
+def test_composable_env_uses_standalone_packages():
+    harness = Harness(run_command="true")
+
+    assert harness.run_command == "true"
+    assert SandboxSpec().image == "python:3.11-slim"
+    assert issubclass(MockSandboxTaskSet, SandboxTaskSet)
+
+
+def test_harness_is_agent_only_configuration():
+    harness = Harness(run_command="true")
+
+    assert not hasattr(harness, "sandbox_spec")
 
 
 # ── Task from SandboxTaskSet ───────────────────────────────────────────
@@ -207,6 +310,184 @@ async def test_composable_env_exports_task_workdir():
 
 
 @pytest.mark.asyncio
+async def test_composable_env_exports_task_timeout_to_agent_env_vars():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+        timeout_seconds=3600,
+    )
+
+    env_vars = await env.build_env_vars(
+        {
+            "info": {"id": 0, "timeout": 123},
+            "interception_base_url": "https://test.trycloudflare.com/v1",
+        }
+    )
+
+    assert env.get_agent_timeout_seconds({"info": {"timeout": 123}}) == 123
+    assert env_vars["OPENAI_TIMEOUT"] == "123"
+    assert env_vars["OPENAI_REQUEST_TIMEOUT"] == "123"
+    assert env_vars["HTTPX_TIMEOUT"] == "123"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_uses_runtime_spec_fields():
+    taskset = MockRuntimeTaskSet(dataset=_make_dataset(), name="runtime")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="base",
+            configure_tools=lambda tools: Harness(
+                run_command=f"run-{tools.mcp_servers[0]['name']}"
+            ),
+        ),
+        timeout_seconds=3600,
+    )
+
+    state = {
+        "sandbox_id": "sbx",
+        "info": {"id": 0},
+        "interception_base_url": "https://test.trycloudflare.com/v1",
+    }
+    env_vars = await env.build_env_vars(state)
+
+    assert await env.get_docker_image(state) == "runtime-image:latest"
+    assert env.get_sandbox_start_command(state) == "sleep infinity"
+    assert env.get_sandbox_resources(state) == {
+        "cpu_cores": 3,
+        "memory_gb": 6,
+        "disk_size_gb": 12,
+        "gpu_count": 1,
+        "gpu_type": "L4",
+        "vm": True,
+        "timeout_minutes": 45,
+    }
+    assert env.get_agent_timeout_seconds(state) == 321
+    assert env_vars["SPEC_VAR"] == "spec"
+    assert env_vars["RUNTIME_VAR"] == "runtime"
+    assert env_vars["AGENT_WORKDIR"] == "/runtime"
+
+    await env._populate_sandbox_context(state)
+    await env._prepare_task_tools(state)
+    assert state["test_timeout"] == 654
+    assert await env.get_run_command(state) == "run-runtime-tool"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_registers_task_tools_with_rollout_harness():
+    taskset = MockToolTaskSet(dataset=_make_dataset(), name="test")
+
+    def configure_tools(tools):
+        return Harness(
+            run_command=f"run-with-{tools.mcp_servers[0]['name']}",
+            instruction_path="/configured/prompt.txt",
+            log_path="/logs/configured.log",
+        )
+
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="base", configure_tools=configure_tools),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        start_background_job=AsyncMock(return_value=SimpleNamespace(job_id="job")),
+        get_background_job=AsyncMock(
+            return_value=SimpleNamespace(completed=True, exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    state = {"sandbox_id": "sbx", "info": {"id": 0, "test_timeout": 77}}
+    await env.post_sandbox_setup(state)
+
+    assert state["tools_prepared"] is True
+    assert await env.get_run_command(state) == "run-with-task-mcp"
+    assert await env.build_agent_env_vars(state) == {
+        "TASK_TOOL_URL": "http://127.0.0.1:8000/mcp"
+    }
+    env.sandbox_client.execute_command.assert_awaited_once_with(
+        "sbx", "mkdir -p /configured", timeout=10
+    )
+
+    await env.start_agent(state)
+    env.sandbox_client.start_background_job.assert_awaited_once_with(
+        "sbx",
+        "run-with-task-mcp",
+        env={"TASK_TOOL_URL": "http://127.0.0.1:8000/mcp"},
+    )
+    await env.cleanup_agent(state)
+
+
+@pytest.mark.asyncio
+async def test_composable_env_registers_task_skills_with_rollout_harness(
+    tmp_path, monkeypatch
+):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+
+    def configure_skills(skills):
+        return Harness(
+            run_command=f"run-with-skills-{skills.skills_dir}",
+            instruction_path="/configured/prompt.txt",
+            skills_path=skills.skills_dir,
+        )
+
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(
+            run_command="base",
+            skills_path="/task/skills",
+            configure_skills=configure_skills,
+        ),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+    env.upload_file = AsyncMock()
+
+    state = {"sandbox_id": "sbx", "info": {"id": 0}}
+    await env.post_sandbox_setup(state)
+
+    assert state["_task_skills"].skills_dir == "/task/skills"
+    assert await env.get_run_command(state) == "run-with-skills-/task/skills"
+    env.upload_file.assert_awaited_once()
+    upload_call = env.upload_file.await_args
+    assert upload_call.args[0] == "sbx"
+    assert upload_call.args[1] == "/tmp/_upload_task_skills.tar.gz"
+
+
+def test_harness_rejects_task_tools_without_registration_callback():
+    with pytest.raises(ValueError, match="cannot register task-provided tools"):
+        Harness(run_command="true").with_tools(
+            TaskTools(
+                mcp_servers=[
+                    {
+                        "name": "task-mcp",
+                        "transport": "stdio",
+                        "command": "server",
+                    }
+                ]
+            )
+        )
+
+
+def test_harness_rejects_task_skills_without_registration_callback():
+    with pytest.raises(ValueError, match="cannot register task-provided skills"):
+        Harness(run_command="true").with_skills(TaskSkills(skills_dir="/task/skills"))
+
+
+@pytest.mark.asyncio
 async def test_composable_env_quotes_paths_in_mkdir_command():
     taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
     env = ComposableEnv(
@@ -225,13 +506,16 @@ async def test_composable_env_quotes_paths_in_mkdir_command():
     env.taskset.setup = AsyncMock()
     env.upload_content = AsyncMock()
 
-    await env.post_sandbox_setup({"sandbox_id": "sbx", "info": {"id": 0}})
+    state = {"sandbox_id": "sbx", "info": {"id": 0, "test_timeout": 77}}
+
+    await env.post_sandbox_setup(state)
 
     env.sandbox_client.execute_command.assert_awaited_once_with(
         "sbx",
         "mkdir -p '/tmp/other path' '/tmp/with space'",
         timeout=10,
     )
+    assert state["test_timeout"] == 77
 
 
 @pytest.mark.asyncio
@@ -540,12 +824,20 @@ def test_get_skills_dir_returns_none_without_skills(tmp_path, monkeypatch):
     assert taskset.get_skills_dir() is None
 
 
-def test_get_upload_dirs_includes_skills_automatically(tmp_path, monkeypatch):
+def test_get_skills_includes_auto_discovered_source_dir(tmp_path, monkeypatch):
     mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
     monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
     taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
-    upload_dirs = taskset.get_upload_dirs()
-    assert "skills" in upload_dirs
+    skills = taskset.get_skills({"id": 0})
+    assert skills.source_dir is not None
+    assert skills.skills_dir is None
+
+
+def test_get_upload_dirs_does_not_include_skills(tmp_path, monkeypatch):
+    mod, _ = _make_temp_taskset_package(tmp_path, monkeypatch, with_skills=True)
+    monkeypatch.setattr(MockSandboxTaskSetWithSkills, "__module__", mod.__name__)
+    taskset = MockSandboxTaskSetWithSkills(dataset=_make_dataset(), name="test")
+    assert taskset.get_upload_dirs() == {}
 
 
 def test_get_upload_dirs_empty_without_skills(tmp_path, monkeypatch):
