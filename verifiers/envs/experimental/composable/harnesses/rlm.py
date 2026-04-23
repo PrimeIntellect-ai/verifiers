@@ -210,9 +210,7 @@ def _format_summarize_at_tokens(
         raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
     if isinstance(value, int):
         if value <= 0:
-            raise ValueError(
-                f"summarize_at_tokens must be positive (got {value})"
-            )
+            raise ValueError(f"summarize_at_tokens must be positive (got {value})")
         return str(value)
     if isinstance(value, (tuple, list)):
         if len(value) != 2:
