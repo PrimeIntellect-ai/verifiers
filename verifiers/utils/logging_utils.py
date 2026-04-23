@@ -122,6 +122,15 @@ def setup_logging(
         root_handler.setLevel(log_level)
         root.addHandler(root_handler)
 
+        # Mute httpcore/httpx per-request DEBUG trace noise. At scale, env workers
+        # poll background jobs at ~1Hz * max_inflight_rollouts, producing thousands
+        # of DEBUG lines/sec from httpcore.http11 with no diagnostic value. Pin
+        # these two namespaces above root DEBUG; real connection errors still
+        # surface as httpx exceptions. For wire-level debugging, use the
+        # HTTPX_LOG_LEVEL opt-in (see envs/experimental/sandbox_mixin.py).
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 @contextmanager
 def log_level(level: str | int):
