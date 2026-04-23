@@ -15,6 +15,8 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
+DEFAULT_RLM_MAX_TURNS_IN_CONTEXT = -1
+DEFAULT_RLM_EXEC_TIMEOUT = 300
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
@@ -98,6 +100,9 @@ def rlm_harness(
     instruction_path: str = "/task/instruction.md",
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_ref: str = DEFAULT_RLM_REF,
+    rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
+    rlm_max_turns_in_context: int = DEFAULT_RLM_MAX_TURNS_IN_CONTEXT,
+    rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -106,13 +111,20 @@ def rlm_harness(
 ) -> Harness:
     """Build an RLM harness.
 
-    ``rlm_tools`` is the single source of truth for which builtin tools are
-    active. The same list drives both ``Harness.tool_names`` (so
-    ``ToolMonitorRubric`` tracks exactly the active tools) and
-    ``Harness.environment_vars["RLM_TOOLS"]`` (so the RLM sandbox advertises
-    the same set to the model). Callers do not need to — and should not —
-    add ``RLM_TOOLS`` to ``ComposableEnv(environment_vars=...)`` themselves;
-    the harness owns it.
+    The harness is the single source of truth for every ``RLM_*`` sandbox
+    env var the RLM subprocess reads. Kwargs map 1:1 onto env vars written
+    to ``Harness.environment_vars`` and merged into the sandbox by
+    ``ComposableEnv`` (harness-wins):
+
+    - ``rlm_tools`` → ``RLM_TOOLS`` (also drives ``Harness.tool_names`` so
+      ``ToolMonitorRubric`` tracks exactly the active tools)
+    - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
+    - ``rlm_max_turns_in_context`` → ``RLM_MAX_TURNS_IN_CONTEXT``
+    - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+
+    Callers do not need to — and should not — add these keys to
+    ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
+    here and the harness owns the env var plumbing.
 
     ``allow_git`` defaults to False, mirroring opencode's bash tool. When
     False, a ``/usr/local/bin/git`` shim is uploaded that refuses on any
@@ -163,7 +175,12 @@ def rlm_harness(
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,
-        environment_vars={"RLM_TOOLS": ",".join(tool_names)},
+        environment_vars={
+            "RLM_TOOLS": ",".join(tool_names),
+            "RLM_MAX_TURNS": str(rlm_max_turns),
+            "RLM_MAX_TURNS_IN_CONTEXT": str(rlm_max_turns_in_context),
+            "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+        },
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
     )
