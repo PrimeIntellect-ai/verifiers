@@ -11,6 +11,7 @@ from verifiers.clients.renderer_client import (
     RendererClient,
     _get_incremental_prompt_ids,
     _is_valid_incremental_tail,
+    _step_token_ids,
     _to_renderer_message,
 )
 from verifiers.types import (
@@ -412,3 +413,76 @@ async def test_get_incremental_prompt_ids_bails_for_default_renderer_without_syn
     )
 
     assert result is None
+
+
+# ── _step_token_ids: fallback to raw response tokens when step.tokens was
+# truncated by parse_response_tokens (empty completion_ids / prompt_ids on
+# overlong turns). The bridge needs un-truncated anchor tokens to chain
+# across turns; training budget is still enforced at sample-assembly time.
+
+
+class _RawTokens:
+    def __init__(self, prompt_ids, completion_ids):
+        self.prompt_ids = prompt_ids
+        self.completion_ids = completion_ids
+
+
+class _ResponseMessage:
+    def __init__(self, tokens):
+        self.tokens = tokens
+
+
+class _Response:
+    def __init__(self, message):
+        self.message = message
+
+
+def test_step_token_ids_happy_path():
+    """Populated step.tokens → returns those directly without inspecting response."""
+    step = {
+        "tokens": {"prompt_ids": [1, 2, 3], "completion_ids": [4, 5]},
+        "response": None,
+    }
+    assert _step_token_ids(step) == ([1, 2, 3], [4, 5])
+
+
+def test_step_token_ids_falls_back_on_empty_completion():
+    """Overlong prompt: parse_response_tokens zeros completion_ids in step.tokens
+    but raw tokens on step.response.message.tokens are still intact. Fallback
+    must return the raw tokens so bridge can extend past the overlong turn."""
+    step = {
+        "tokens": {"prompt_ids": [1, 2, 3], "completion_ids": []},
+        "response": _Response(
+            _ResponseMessage(_RawTokens([10, 11, 12, 13], [14, 15, 16]))
+        ),
+    }
+    assert _step_token_ids(step) == ([10, 11, 12, 13], [14, 15, 16])
+
+
+def test_step_token_ids_falls_back_when_tokens_is_none():
+    """step.tokens==None (e.g. agent-completed sentinel or uninitialized step)
+    should still fall back to raw response tokens when available."""
+    step = {
+        "tokens": None,
+        "response": _Response(_ResponseMessage(_RawTokens([20, 21], [22, 23]))),
+    }
+    assert _step_token_ids(step) == ([20, 21], [22, 23])
+
+
+def test_step_token_ids_returns_none_when_both_sources_empty():
+    """If both step.tokens and response.message.tokens are empty/absent, must
+    return None (caller falls back to full re-render)."""
+    step = {
+        "tokens": {"prompt_ids": [], "completion_ids": []},
+        "response": _Response(_ResponseMessage(_RawTokens([], []))),
+    }
+    assert _step_token_ids(step) is None
+
+
+def test_step_token_ids_returns_none_when_truncated_and_no_response():
+    """Guard: empty step.tokens + no response object → None, not an AttributeError."""
+    step = {
+        "tokens": {"prompt_ids": [1, 2], "completion_ids": []},
+        "response": None,
+    }
+    assert _step_token_ids(step) is None
