@@ -87,7 +87,11 @@ async def completions_request(
         body["max_tokens"] = max_tokens
 
     extra_body = sampling_args.get("extra_body", {})
-    for key in ["repetition_penalty", "min_tokens", "min_p", "top_k"]:
+    # ``cache_salt`` is set by prime-rl's orchestrator per ckpt_step to
+    # invalidate stale prefix-cache KV after each policy update. Without
+    # forwarding it here, vLLM silently reuses KV computed with older
+    # weights → the renderers-path mismatch_kl drifts up over training.
+    for key in ["repetition_penalty", "min_tokens", "min_p", "top_k", "cache_salt"]:
         if key in extra_body:
             body[key] = extra_body[key]
 
