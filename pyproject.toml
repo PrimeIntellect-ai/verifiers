@@ -91,6 +91,10 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+composable = [
+    "harnesses>=0.1.0",
+    "tasksets>=0.1.0",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
@@ -107,6 +111,17 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
+
+[tool.uv.workspace]
+members = [
+    "packages/harnesses",
+    "packages/tasksets",
+]
+
+[tool.uv.sources]
+verifiers = { workspace = true }
+harnesses = { workspace = true }
+tasksets = { workspace = true }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

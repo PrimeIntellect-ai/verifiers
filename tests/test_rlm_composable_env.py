@@ -14,27 +14,20 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 import verifiers as vf
-from verifiers.envs.experimental.composable import (
-    composable_env as composable_env_module,
+import verifiers.envs.composable_env as composable_env_module
+from harnesses import Harness
+from harnesses import rlm as rlm_module
+from harnesses.rlm import (
+    build_install_script,
+    resolve_local_checkout,
+    rlm_harness,
 )
-from verifiers.envs.experimental.composable import (
-    ComposableEnv,
-    Harness,
-    SandboxSpec,
-    SandboxTaskSet,
-)
-from verifiers.envs.experimental.composable.harnesses import rlm as rlm_module
-from verifiers.envs.experimental.utils import (
-    git_checkout_cache as git_checkout_cache_module,
-)
-from verifiers.envs.experimental.utils.file_locks import (
+from tasksets import SandboxSpec, SandboxTaskSet
+from verifiers.envs.composable_env import ComposableEnv
+from verifiers.utils import git_checkout_cache as git_checkout_cache_module
+from verifiers.utils.file_locks import (
     exclusive_path_lock,
     shared_path_lock,
-)
-from verifiers.envs.experimental.composable.harnesses.rlm import (
-    build_install_script,
-    rlm_harness,
-    resolve_local_checkout,
 )
 
 

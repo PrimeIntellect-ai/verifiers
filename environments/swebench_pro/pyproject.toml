@@ -1,0 +1,27 @@
+[project]
+name = "swebench-pro"
+description = "SWE-bench Pro environment"
+license = "MIT"
+tags = ["eval", "cli_agent", "swe-bench"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[composable]>=0.1.12.dev4",
+    "harnesses",
+    "tasksets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["swebench_pro.py", "pyproject.toml", "README.md"]
+
+[tool.uv.sources]
+harnesses = { path = "../../packages/harnesses", editable = true }
+tasksets = { path = "../../packages/tasksets", editable = true }
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

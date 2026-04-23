@@ -37,6 +37,9 @@ SKIPPED_ENV_LOADING_ENVS = [
     # Skip generic load checks here and cover via dedicated OpenEnv tests.
     "openenv_echo",
     "openenv_textarena",
+    # These load external benchmark tasksets; covered by composable package tests.
+    "swebench_pro",
+    "terminal_bench_2",
 ]
 
 

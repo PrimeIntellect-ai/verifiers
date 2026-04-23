@@ -252,7 +252,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_request = CreateSandboxRequest(
             name=rollout_id,
             docker_image=docker_image,
-            start_command=self.start_command,
+            start_command=self.get_sandbox_start_command(state),
             cpu_cores=resources["cpu_cores"],
             memory_gb=resources["memory_gb"],
             disk_size_gb=resources["disk_size_gb"],
@@ -293,6 +293,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
 
+    def get_sandbox_start_command(self, state: State) -> str:
+        """Get the sandbox start command. Override for per-instance commands."""
+        return self.start_command
+
     def get_sandbox_resources(self, state: State) -> dict[str, Any]:
         """Get sandbox resource allocation. Override for per-instance resources."""
         return {
@@ -304,6 +308,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "vm": self.gpu_count > 0,
             "timeout_minutes": math.ceil(self.timeout_seconds / 60),
         }
+
+    def get_agent_timeout_seconds(self, state: State) -> float:
+        """Get the wall-clock timeout for the agent command."""
+        return self.timeout_seconds
 
     # Keys set by build_env_vars that subclasses must not override.
     PROTECTED_ENV_VARS = frozenset(
@@ -321,9 +329,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
-        env_vars.setdefault("OPENAI_TIMEOUT", "3600")
-        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
-        env_vars.setdefault("HTTPX_TIMEOUT", "3600")
+        timeout_seconds = str(int(math.ceil(self.get_agent_timeout_seconds(state))))
+        env_vars.setdefault("OPENAI_TIMEOUT", timeout_seconds)
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", timeout_seconds)
+        env_vars.setdefault("HTTPX_TIMEOUT", timeout_seconds)
         secret = os.environ.get("INTERCEPTION_SECRET")
         if secret:
             env_vars["OPENAI_API_KEY"] = secret
@@ -336,16 +345,26 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
+    async def get_run_command(self, state: State) -> str:
+        return self.run_command
+
+    async def build_agent_env_vars(self, state: State) -> dict[str, str]:
+        return {}
+
     async def start_agent(self, state: State) -> None:
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
+        run_command = await self.get_run_command(state)
+        agent_env_vars = await self.build_agent_env_vars(state)
+        kwargs = {"env": agent_env_vars} if agent_env_vars else {}
 
         self.logger.debug(f"Starting agent in sandbox {sandbox_id}")
         try:
             background_job: BackgroundJob = (
                 await self.sandbox_client.start_background_job(
                     sandbox_id,
-                    self.run_command,
+                    run_command,
+                    **kwargs,
                 )
             )
         except Exception as e:
@@ -367,15 +386,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             return
 
         try:
+            timeout_seconds = self.get_agent_timeout_seconds(state)
             await asyncio.wait_for(
                 self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
+                timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            self.logger.warning(f"Agent timed out after {timeout_seconds}s")
             state["agent_timed_out"] = True
             state["error"] = make_agent_error(
-                state, f"Agent timed out after {self.timeout_seconds}s"
+                state, f"Agent timed out after {timeout_seconds}s"
             )
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
@@ -648,10 +668,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if self._interception_server is not None:
             await self._interception_server.stop()
 
-    @vf.cleanup
-    async def cleanup_interception_context(self, state: State):
-        """Cleanup interception context for rollout"""
-        # Cancel completion wait task if still running
+    async def cleanup_agent(self, state: State) -> None:
+        """Cancel completion polling and forget the background job handle."""
         task = state.get("completion_wait_task")
         if task and not task.done():
             task.cancel()
@@ -659,9 +677,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 await task
             except asyncio.CancelledError:
                 pass
-
         state.pop("background_job", None)
 
+    @vf.cleanup
+    async def cleanup_interception_context(self, state: State):
+        """Cleanup interception context for rollout"""
+        await self.cleanup_agent(state)
         rollout_id = state.get("rollout_id")
         if rollout_id and self._interception_server is not None:
             self._interception_server.unregister_rollout(rollout_id)
