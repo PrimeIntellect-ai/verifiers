@@ -489,9 +489,18 @@ async def _get_incremental_prompt_ids(
     normalized_prompt = _normalize_for_comparison(prompt)
     skips = []
     for step_idx, step in enumerate(reversed(trajectory_list)):
+        tokens_obj = _get_value(step, "tokens")
         token_ids = _step_token_ids(step)
         if token_ids is None:
-            skips.append(f"step-{step_idx}:no_tokens")
+            if tokens_obj is None:
+                reason = "no_tokens_obj"
+            elif not _get_value(tokens_obj, "prompt_ids"):
+                reason = "empty_prompt_ids"
+            elif not _get_value(tokens_obj, "completion_ids"):
+                reason = "empty_completion_ids"
+            else:
+                reason = "no_tokens_other"
+            skips.append(f"step-{step_idx}:{reason}")
             continue
 
         previous_messages = _step_rendered_messages(step)
