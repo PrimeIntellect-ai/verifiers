@@ -30,6 +30,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv (native function-calling)**
   - **tool_test**: Validates parallel tool calls and checks exact tool usage via `ToolRubric` + custom reward.
   - **wiki_search**: Multi-tool retrieval (search/view/read) with `ToolEnv`; final judgment combined via `RubricGroup` with a `JudgeRubric`.
+  - **nemo_workplace_assistant**: NeMo Gym resource-server adapter example with dynamic per-row tools, session seeding, and `/verify`-based rewards.
 
 ### Sandboxes
 - **PythonEnv (ipython-style REPL)**
