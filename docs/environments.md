@@ -780,7 +780,9 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together. 
+The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together.
+
+Nested `EnvGroup`s are supported — when an `EnvGroup` is used as a sub-environment, the inner group's task names are preserved and routed correctly through the nesting chain. Requesting a task that doesn't exist in any sub-environment raises a `ValueError` with the list of available tasks.
 
 ## Performance
 
