@@ -473,37 +473,42 @@ async def _get_incremental_prompt_ids(
     state: Any,
     tools: list[ToolSpec] | None,
 ) -> list[int] | None:
+    # TRACE: temporary WARN-level logging to diagnose why bridge doesn't fire
+    # for opencode rollouts. Remove once root cause identified.
     if not state:
+        _incremental_logger.warning("INCR_TRACE: no_state prompt_msgs=%d", len(prompt))
         return None
 
     trajectory = _get_value(state, "trajectory")
     if not trajectory:
+        _incremental_logger.warning("INCR_TRACE: empty_trajectory prompt_msgs=%d", len(prompt))
         return None
 
-    # Each renderer's bridge_to_next_turn (or the generic fallback) decides
-    # how to handle a truncated anchor, so we don't special-case truncation
-    # here. When the bridge can't extend (e.g. DefaultRenderer without
-    # synthesize_close_on_truncation), it returns None and the caller falls
-    # back to a full re-render — matching main's TITO-on-truncation behavior.
     trajectory_list = list(trajectory)
 
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(trajectory_list):
+    skips = []
+    for step_idx, step in enumerate(reversed(trajectory_list)):
         token_ids = _step_token_ids(step)
         if token_ids is None:
+            skips.append(f"step-{step_idx}:no_tokens")
             continue
 
         previous_messages = _step_rendered_messages(step)
         if not previous_messages or len(previous_messages) >= len(prompt):
+            skips.append(f"step-{step_idx}:bad_prev_msgs(prev={len(previous_messages)},cur={len(prompt)})")
             continue
         prefix_len = len(previous_messages)
         if normalized_prompt[:prefix_len] != _normalize_for_comparison(
             previous_messages
         ):
+            skips.append(f"step-{step_idx}:norm_mismatch")
             continue
 
         tail = prompt[prefix_len:]
         if not _is_valid_incremental_tail(tail):
+            tail_roles = [_message_role(m) for m in tail]
+            skips.append(f"step-{step_idx}:bad_tail({tail_roles})")
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
@@ -521,20 +526,23 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             ),
         )
-        if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):
-            await _run_with_renderer(
-                renderer,
-                lambda r: _log_extension_break(
-                    r,
-                    turn_n=len(list(trajectory)),
-                    prev_prompt_ids=list(previous_prompt_ids),
-                    prev_completion_ids=list(previous_completion_ids),
-                    full_prompt=prompt,
-                    tools=tools,
-                ),
+        if bridged is None:
+            _incremental_logger.warning(
+                "INCR_TRACE: bridge_returned_None prompt_msgs=%d prev_prompt=%d prev_comp=%d tail=%s",
+                len(prompt), len(previous_prompt_ids), len(previous_completion_ids),
+                [_message_role(m) for m in tail],
+            )
+        else:
+            _incremental_logger.warning(
+                "INCR_TRACE: bridge_OK prompt_msgs=%d bridged_len=%d",
+                len(prompt), len(bridged),
             )
         return bridged
 
+    _incremental_logger.warning(
+        "INCR_TRACE: no_matching_step prompt_msgs=%d traj_len=%d skips=%s",
+        len(prompt), len(trajectory_list), skips,
+    )
     return None
 
 
