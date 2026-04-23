@@ -1,6 +1,6 @@
 ---
 name: review-environments
-description: Review verifiers environments for correctness, robustness, and ecosystem compatibility. Use when asked for environment code review, quality audit, migration validation, or release readiness checks for local environments or environments pulled from the Hub.
+description: Review verifiers environments for correctness, robustness, and ecosystem compatibility. Use when asked for environment code review, quality audit, migration validation, or release readiness checks for local environments, environments browsed with `prime env inspect`, or environments pulled from the Hub.
 ---
 
 # Review Environments
@@ -10,21 +10,28 @@ Find correctness risks and regressions first, then assess maintainability and ec
 
 ## Review Input Modes
 1. Local environment module in `./environments/<env_name>`.
-2. Pulled Hub environment via `prime env pull owner/name`.
-3. Installed package under active workspace.
+2. Hub environment browsed remotely via `prime env inspect owner/name`.
+3. Pulled Hub environment via `prime env pull owner/name`.
+4. Installed package under active workspace.
 
 ## Review Workflow
 1. Identify environment contract:
 - `load_environment(...)`
 - base class and rollout behavior
 - rubric and metrics
-2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
+2. If the environment lives on the Hub, inspect its README and source before pulling:
+```bash
+prime env info owner/name
+prime env inspect owner/name
+prime env inspect owner/name README.md
+```
+3. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
 ```bash
 prime env install <env>
 prime eval run <env> -m openai/gpt-4.1-mini -n 5
 ```
-3. Trace reward pipeline and validate scoring semantics.
-4. Run targeted checks for tool/stateful behavior where applicable.
+4. Trace reward pipeline and validate scoring semantics.
+5. Run targeted checks for tool/stateful behavior where applicable.
 
 ## Endpoint And Model Selection Nudge
 1. Encourage endpoint alias setup in `configs/endpoints.toml` for reproducible review runs.
