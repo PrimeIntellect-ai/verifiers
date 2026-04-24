@@ -51,16 +51,6 @@ class ModelRequest:
     context: dict[str, object] = field(default_factory=dict)
 
 
-def require_messages(value: object, field_name: str) -> Messages:
-    if isinstance(value, list) and all(
-        isinstance(message, Message) for message in value
-    ):
-        return cast(Messages, value)
-    raise TypeError(
-        f"{field_name} must return vf.Messages, got {type(value).__name__}."
-    )
-
-
 class ToolMonitorRubric(Rubric):
     def __init__(self, tool_names: list[str] | None = None):
         super().__init__()
@@ -338,7 +328,11 @@ class Harness:
         messages = await call_state_hook(user.respond, task, state, resources)
         if messages is None:
             return []
-        return require_messages(messages, "user.respond")
+        assert isinstance(messages, list), "user.respond must return vf.Messages."
+        assert all(isinstance(message, Message) for message in messages), (
+            "user.respond must return vf.Messages."
+        )
+        return cast(Messages, messages)
 
     def get_tool_calls(self, state: State) -> list[ToolCall]:
         message = self.new_message(state)
@@ -361,7 +355,10 @@ class Harness:
         self, task: Task, state: State, resources: Resources
     ) -> ModelRequest | None:
         prompt = await self.get_prompt_messages(task, state, resources)
-        prompt = require_messages(prompt, "get_prompt_messages")
+        assert isinstance(prompt, list), "get_prompt_messages must return vf.Messages."
+        assert all(isinstance(message, Message) for message in prompt), (
+            "get_prompt_messages must return vf.Messages."
+        )
         if await self.is_completed(task, state, resources):
             return None
         return ModelRequest(prompt=prompt)
@@ -503,6 +500,15 @@ class Harness:
         first_prompt = state["prompt"]
         last = state["trajectory"][-1]
         full = concat_messages([last["prompt"], last["completion"]])
+        if state.get("final_env_response"):
+            final_env_response = state["final_env_response"]
+            assert isinstance(final_env_response, list), (
+                "final_env_response must be vf.Messages."
+            )
+            assert all(
+                isinstance(message, Message) for message in final_env_response
+            ), "final_env_response must be vf.Messages."
+            full = concat_messages([full, cast(Messages, final_env_response)])
         state["completion"] = full[len(first_prompt) :]
         return state
 

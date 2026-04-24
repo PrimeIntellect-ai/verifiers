@@ -278,10 +278,7 @@ class EndpointHarness(Harness):
     async def finalize_state(
         self, task: Task, state: State, resources: Resources
     ) -> State:
-        if state["trajectory"]:
-            state["completion"] = state["trajectory"][-1]["completion"]
-        else:
-            state["completion"] = []
+        state = await super().finalize_state(task, state, resources)
         start = state["timing"]["start_time"]
         state["timing"]["generation_ms"] = (time.time() - start) * 1000
         state["timing"]["total_ms"] = state["timing"]["generation_ms"]
