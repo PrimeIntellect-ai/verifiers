@@ -501,24 +501,59 @@ async def _get_incremental_prompt_ids(
     # synthesize_close_on_truncation), it returns None and the caller falls
     # back to a full re-render — matching main's TITO-on-truncation behavior.
     trajectory_list = list(trajectory)
+    turn_n = len(trajectory_list)
 
     normalized_prompt = _normalize_for_comparison(prompt)
+    last_reason: str | None = None
+    last_detail: str | None = None
     for step in reversed(trajectory_list):
         token_ids = _step_token_ids(step)
         if token_ids is None:
+            last_reason = "empty_completion_ids"
+            prev_prompt_len = len(list(_get_value(step, "prompt", []) or []))
+            prev_comp_len = len(list(_get_value(step, "completion", []) or []))
+            last_detail = (
+                f"step has no usable token_ids "
+                f"(prompt_msgs={prev_prompt_len}, completion_msgs={prev_comp_len}) "
+                f"— likely training-budget truncation zeroed completion_ids"
+            )
             continue
 
         previous_messages = _step_rendered_messages(step)
         if not previous_messages or len(previous_messages) >= len(prompt):
+            last_reason = "no_valid_prefix"
+            last_detail = (
+                f"prev_messages={len(previous_messages)}, cur_prompt={len(prompt)}"
+            )
             continue
         prefix_len = len(previous_messages)
-        if normalized_prompt[:prefix_len] != _normalize_for_comparison(
-            previous_messages
-        ):
+        norm_prev = _normalize_for_comparison(previous_messages)
+        if normalized_prompt[:prefix_len] != norm_prev:
+            # Find the first diverging message index so we can show what
+            # changed between the two renderings.
+            div_idx = next(
+                (i for i in range(prefix_len) if normalized_prompt[i] != norm_prev[i]),
+                prefix_len,
+            )
+            prev_msg = norm_prev[div_idx] if div_idx < len(norm_prev) else None
+            cur_msg = (
+                normalized_prompt[div_idx] if div_idx < len(normalized_prompt) else None
+            )
+            last_reason = "norm_mismatch"
+            last_detail = (
+                f"first diverging message at idx={div_idx} / {prefix_len}\n"
+                f"  prev: {prev_msg!r}\n"
+                f"  cur:  {cur_msg!r}"
+            )
             continue
 
         tail = prompt[prefix_len:]
         if not _is_valid_incremental_tail(tail):
+            last_reason = "invalid_tail"
+            last_detail = (
+                f"tail roles = "
+                f"{[getattr(m, 'role', None) or _get_value(m, 'role') for m in tail]}"
+            )
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
@@ -537,11 +572,15 @@ async def _get_incremental_prompt_ids(
             ),
         )
         if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):
+            # _log_extension_break emits the full "extension break at turn N"
+            # diagnostic (both token streams, divergence point, decoded text).
+            # No extra category=bridge_returned_none line — the dump itself
+            # already tags the break as a bridge failure.
             await _run_with_renderer(
                 renderer,
                 lambda r: _log_extension_break(
                     r,
-                    turn_n=len(list(trajectory)),
+                    turn_n=turn_n,
                     prev_prompt_ids=list(previous_prompt_ids),
                     prev_completion_ids=list(previous_completion_ids),
                     full_prompt=prompt,
@@ -550,6 +589,17 @@ async def _get_incremental_prompt_ids(
             )
         return bridged
 
+    if last_reason is not None:
+        _incremental_logger.debug(
+            "extension break turn %d: category=%s\n  %s",
+            turn_n,
+            last_reason,
+            last_detail or "",
+        )
+    else:
+        _incremental_logger.debug(
+            "extension break turn %d: category=no_trajectory_match", turn_n
+        )
     return None
 
 
