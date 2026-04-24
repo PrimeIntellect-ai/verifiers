@@ -6,9 +6,8 @@ tags = ["swe", "multi-turn", "sandbox", "taskset-harness"]
 license = "Apache-2.0"
 description = "Taskset/harness Mini SWE Agent Plus port using sandbox-backed tools."
 dependencies = [
-    "verifiers>=0.1.13",
+    "verifiers>=0.1.13.dev0",
     "datasets",
-    "jinja2",
     "prime-sandboxes>=0.2.13",
     "swebench==4.1.0",
 ]

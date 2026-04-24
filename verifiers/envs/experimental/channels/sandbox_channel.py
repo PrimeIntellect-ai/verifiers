@@ -168,8 +168,56 @@ class SandboxResources:
             await self.creation_rate_limiter.acquire()
         sandbox = await self.with_retry(self.client.create)(request)
         self.active_sandboxes.add(sandbox.id)
-        await self.client.wait_for_creation(sandbox.id, max_attempts=max_attempts)
+        try:
+            await self.client.wait_for_creation(sandbox.id, max_attempts=max_attempts)
+        except Exception:
+            try:
+                await self.delete(sandbox.id)
+            except Exception as cleanup_error:
+                self.logger.warning(
+                    f"Failed to delete sandbox after creation failure: {cleanup_error}"
+                )
+            raise
         return sandbox.id
+
+    async def create_from_spec(
+        self, name: str, spec: SandboxSpec, *, max_attempts: int
+    ) -> str:
+        from prime_sandboxes import CreateSandboxRequest
+
+        request = CreateSandboxRequest(
+            name=name,
+            docker_image=spec.image,
+            start_command=spec.start_command,
+            cpu_cores=spec.cpu_cores,
+            memory_gb=spec.memory_gb,
+            disk_size_gb=spec.disk_size_gb,
+            gpu_count=spec.gpu_count,
+            gpu_type=spec.gpu_type,
+            vm=spec.vm if spec.vm is not None else spec.gpu_count > 0,
+            network_access=spec.network_access,
+            timeout_minutes=spec.timeout_minutes,
+            environment_vars=spec.environment_vars,
+            secrets=spec.secrets,
+            team_id=spec.team_id,
+            advanced_configs=spec.advanced_configs,
+            registry_credentials_id=spec.registry_credentials_id,
+            labels=spec.labels,
+        )
+        return await self.create(request, max_attempts=max_attempts)
+
+    async def run_setup_commands(
+        self, sandbox_id: str, commands: list[str], *, timeout: int
+    ) -> None:
+        for command in commands:
+            result = await self.with_retry(self.client.execute_command)(
+                sandbox_id, command, timeout=timeout
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise RuntimeError(
+                    f"Sandbox setup command failed (exit={result.exit_code}): {output[:500]}"
+                )
 
     async def delete(self, sandbox_id: str) -> None:
         await self.with_retry(self.client.delete)(sandbox_id)
@@ -215,8 +263,14 @@ def resolve_sandbox(
             if key == "spec" and key in merged:
                 merged[key] = merge_sandbox_spec(merged[key], value)
                 continue
+            if key == "runtime" and key in merged:
+                merged[key] = merge_sandbox_runtime(merged[key], value)
+                continue
             if key == "uploads" and key in merged:
                 merged[key] = merge_sandbox_uploads(merged[key], value)
+                continue
+            if key == "tool_sandboxes" and key in merged:
+                merged[key] = merge_tool_sandboxes(merged[key], value)
                 continue
             if key in merged and merged[key] != value:
                 raise ValueError(
@@ -231,6 +285,8 @@ def resolve_sandbox(
         objects["sandbox_scoring"] = bool(merged["scoring"])
     if "uploads" in merged:
         objects["sandbox_uploads"] = sandbox_uploads(merged["uploads"])
+    if "tool_sandboxes" in merged:
+        objects["tool_sandboxes"] = tool_sandboxes(merged["tool_sandboxes"])
     if "runtime" in merged:
         if context.phase != "env":
             return ResourcePatch(objects=objects)
@@ -274,6 +330,7 @@ sandbox_channel = Channel(
         "sandbox_runtime": SandboxResources,
         "sandbox_scoring": bool,
         "sandbox_uploads": dict,
+        "tool_sandboxes": dict,
     },
     resolve_fn=resolve_sandbox,
 )
@@ -302,10 +359,71 @@ def merge_sandbox_uploads(existing: object, incoming: object) -> dict[str, objec
     return uploads
 
 
+def merge_sandbox_runtime(existing: object, incoming: object) -> dict[str, object]:
+    runtime = sandbox_runtime(existing)
+    for key, value in sandbox_runtime(incoming).items():
+        if key in runtime and runtime[key] != value:
+            raise ValueError(f"Conflicting sandbox runtime key: {key!r}")
+        runtime[key] = value
+    return runtime
+
+
+def merge_tool_sandboxes(existing: object, incoming: object) -> dict[str, object]:
+    sandboxes = tool_sandboxes(existing)
+    for name, config in tool_sandboxes(incoming).items():
+        if name in sandboxes and sandboxes[name] != config:
+            raise ValueError(f"Duplicate sandbox tool name: {name!r}")
+        sandboxes[name] = config
+    return sandboxes
+
+
 def sandbox_uploads(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise TypeError("Sandbox uploads must be a mapping.")
     return {str(name): source for name, source in value.items()}
+
+
+def sandbox_runtime(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Sandbox runtime config must be a mapping.")
+    return {str(name): config for name, config in value.items()}
+
+
+def tool_sandboxes(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Sandbox tool configs must be a mapping.")
+    return {str(name): config for name, config in value.items()}
+
+
+def resolve_sandbox_spec(base: SandboxSpec, seed: object) -> SandboxSpec:
+    if isinstance(seed, SandboxSpec):
+        return seed
+    if not isinstance(seed, SandboxSeed):
+        return base
+    return SandboxSpec(
+        image=seed.image or base.image,
+        cpu_cores=seed.cpu_cores or base.cpu_cores,
+        memory_gb=seed.memory_gb or base.memory_gb,
+        disk_size_gb=seed.disk_size_gb or base.disk_size_gb,
+        gpu_count=seed.gpu_count if seed.gpu_count is not None else base.gpu_count,
+        gpu_type=seed.gpu_type or base.gpu_type,
+        vm=seed.vm if seed.vm is not None else base.vm,
+        network_access=(
+            seed.network_access
+            if seed.network_access is not None
+            else base.network_access
+        ),
+        timeout_minutes=seed.timeout_minutes or base.timeout_minutes,
+        start_command=seed.start_command or base.start_command,
+        environment_vars={**base.environment_vars, **seed.environment_vars},
+        secrets=seed.secrets or base.secrets,
+        team_id=seed.team_id or base.team_id,
+        advanced_configs=seed.advanced_configs or base.advanced_configs,
+        registry_credentials_id=(
+            seed.registry_credentials_id or base.registry_credentials_id
+        ),
+        labels=[*base.labels, *seed.labels],
+    )
 
 
 def channel_logger(context: ChannelContext) -> logging.Logger:

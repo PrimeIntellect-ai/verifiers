@@ -5,7 +5,7 @@ tags = ["rl", "search", "qa", "taskset-harness"]
 license = "Apache-2.0"
 description = "Taskset/harness DeepDive port with Serper search tools."
 dependencies = [
-    "verifiers>=0.1.13",
+    "verifiers>=0.1.13.dev0",
     "aiohttp>=3.10.0",
     "datasets>=4.0.0",
     "openai",

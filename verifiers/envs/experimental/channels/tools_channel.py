@@ -22,6 +22,7 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    ChannelMap,
     LifecycleHooks,
     ResourcePatch,
     as_list,
@@ -416,6 +417,21 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         if self._mcp_runtime is not None:
             await self._mcp_runtime.teardown()
 
+    def channel_contributions(self) -> dict[str, tuple[ChannelConfig, ...]]:
+        contributions: dict[str, tuple[ChannelConfig, ...]] = {}
+        for tool in self._tools.values():
+            channels_fn = getattr(tool, "channels", None)
+            if not callable(channels_fn):
+                continue
+            channels = channels_fn()
+            if not isinstance(channels, Mapping):
+                raise TypeError("tool.channels() must return a channel mapping.")
+            for name, config in cast(ChannelMap, channels).items():
+                if name == "tools":
+                    raise ValueError("Tools cannot contribute to the tools channel.")
+                contributions[name] = (*contributions.get(name, ()), config)
+        return contributions
+
     def _normalize_tool(self, tool: Any) -> Any:
         if isinstance(tool, CallableTool | Tool | MCPToolWrapper):
             return tool
@@ -615,17 +631,19 @@ def resolve_tools(
     tool_names = registry.names()
     if tool_names:
         rubric_contributions = (ToolMonitorRubric(tool_names=tool_names),)
+    contributions = registry.channel_contributions()
+    contributions["rubric"] = (*contributions.get("rubric", ()), *rubric_contributions)
     return ResourcePatch(
         objects={"tools": registry},
         hooks=LifecycleHooks(teardown=(registry.teardown,)),
-        contributions={"rubric": rubric_contributions},
+        contributions=contributions,
     )
 
 
 tools_channel = Channel(
     name="tools",
     outputs={"tools": ToolRegistry},
-    extends="rubric",
+    extends=("rubric", "sandbox", "stop", "cleanup", "teardown"),
     always_resolve=True,
     resolve_fn=resolve_tools,
 )

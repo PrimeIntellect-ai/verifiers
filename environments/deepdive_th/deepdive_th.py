@@ -26,7 +26,7 @@ LoadedSource = Dataset | Iterable[Mapping[str, Any]] | None
 Source = LoadedSource | Callable[[], LoadedSource]
 
 
-class SerperAPIError(vf.Error):
+class SerperAPIError(vf.InfraError):
     pass
 
 
@@ -470,16 +470,16 @@ def make_deepdive_rubric(
 def load_taskset(
     dataset_name: str = DEFAULT_DATASET_NAME,
     dataset_split: str = DEFAULT_DATASET_SPLIT,
-    dataset_test_size: float = 0.02,
-    dataset_seed: int = 42,
+    dataset_test_size: float = 0.1,
+    dataset_seed: int = 2025,
     serper_api_key_var: str = "SERPER_API_KEY",
-    judge_model: str = "gpt-4.1-nano",
+    judge_model: str = "gpt-4.1-mini",
     judge_base_url: str | None = None,
     max_search_results: int = 10,
     max_response_chars: int = 20_000,
-    serper_timeout: float = 20.0,
+    serper_timeout: float = 15.0,
     redundancy_penalty_weight: float = 0.0,
-    finish_with_tool: bool = False,
+    finish_with_tool: bool = True,
     log_level: str = "INFO",
 ) -> vf.Taskset:
     logger.setLevel(getattr(logging, log_level.upper()))
@@ -527,16 +527,16 @@ def load_environment(
     max_turns: int = 32,
     dataset_name: str = DEFAULT_DATASET_NAME,
     dataset_split: str = DEFAULT_DATASET_SPLIT,
-    dataset_test_size: float = 0.02,
-    dataset_seed: int = 42,
+    dataset_test_size: float = 0.1,
+    dataset_seed: int = 2025,
     serper_api_key_var: str = "SERPER_API_KEY",
-    judge_model: str = "gpt-4.1-nano",
+    judge_model: str = "gpt-4.1-mini",
     judge_base_url: str | None = None,
     max_search_results: int = 10,
     max_response_chars: int = 20_000,
-    serper_timeout: float = 20.0,
+    serper_timeout: float = 15.0,
     redundancy_penalty_weight: float = 0.0,
-    finish_with_tool: bool = False,
+    finish_with_tool: bool = True,
     log_level: str = "INFO",
 ) -> vf.Environment:
     return vf.Env(

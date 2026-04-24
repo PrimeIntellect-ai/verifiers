@@ -431,6 +431,8 @@ class CliHarness(EndpointHarness):
             sandbox_path = mapping.get(name)
             if sandbox_path is None:
                 continue
+            if callable(local_source):
+                local_source = local_source()
             if isinstance(local_source, (str, Path)):
                 await self.upload_path(sandbox_id, Path(local_source), sandbox_path)
             else:

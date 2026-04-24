@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import json
 import logging
-import os
 import re
 import tempfile
 import time
@@ -13,7 +12,6 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from datasets import Dataset, load_dataset
-from jinja2 import StrictUndefined, Template
 from prime_sandboxes import CommandTimeoutError, SandboxOOMError, SandboxTimeoutError
 
 import verifiers as vf
@@ -26,12 +24,29 @@ Source = LoadedSource | Callable[[], LoadedSource]
 
 REPO_PATH = "/testbed"
 ALT_PATH = "/root"
-PATH_ENV = (
-    "PATH=/opt/miniconda3/bin:/testbed/.venv/bin:/root/.local/bin:"
-    "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
+PATH_SWEBENCH = (
+    "PATH=/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/bin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
-ENV_VARS = f"export {PATH_ENV} PAGER=cat MANPAGER=cat LESS=-R PIP_PROGRESS_BAR=off TQDM_DISABLE=1;"
+PATH_R2E = (
+    "PATH=/testbed/.venv/bin:/root/.local/bin:/root/.cargo/bin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+ENV_VARS_SWEBENCH = (
+    f"export {PATH_SWEBENCH} PAGER=cat MANPAGER=cat LESS=-R "
+    "PIP_PROGRESS_BAR=off TQDM_DISABLE=1;"
+)
+ENV_VARS_R2E = (
+    f"export {PATH_R2E} PAGER=cat MANPAGER=cat LESS=-R "
+    "PIP_PROGRESS_BAR=off TQDM_DISABLE=1;"
+)
+R2E_TESTS_ARCHIVE = "/tmp/.vf_r2e_tests.tar.gz"
+FINAL_MARKER = "MINI_SWE_AGENT_FINAL_OUTPUT"
+PATCH_BROKE_TESTS_EXIT_CODES = {
+    2: "collection error",
+    4: "usage error",
+    5: "no tests collected",
+}
 
 PROMPT_TEMPLATE = """<pr_description>
 
@@ -57,34 +72,9 @@ SYSTEM_PROMPT = """You are a helpful assistant that can interact multiple times 
 
 Your response must contain exactly ONE tool call with the tool name and arguments."""
 
-ACTION_OBSERVATION_TEMPLATE = """<returncode>{{ exit_code }}</returncode>
-{% if output | length < 10000 -%}
-<output>
-{{ output -}}
-</output>
-{%- else -%}
-<warning>
-The output of your last command was too long.
-Use a more selective command.
-</warning>
-<output_head>
-{{ output[:5000] }}
-</output_head>
-<elided_chars>
-{{ output | length - 10000 }} characters elided
-</elided_chars>
-<output_tail>
-{{ output[-5000:] }}
-</output_tail>
-{%- endif -%}"""
-
-FORMAT_ERROR_TEMPLATE = (
-    """Please always provide exactly one tool call. Found {{ actions }} tool calls."""
+FORMAT_ERROR_MESSAGE = (
+    "Please always provide exactly one tool call. Found {count} tool calls."
 )
-
-
-def render_template(template: str, **kwargs: object) -> str:
-    return Template(template, undefined=StrictUndefined).render(**kwargs)
 
 
 def decolor_dict_keys(value: dict[str, str]) -> dict[str, str]:
@@ -123,12 +113,11 @@ def swebench_log_parsers():
 
 def make_swebench_test_spec(info: Mapping[str, Any]):
     module = importlib.import_module("swebench.harness.test_spec.test_spec")
-    return module.make_test_spec(info, namespace="swebench")
+    return module.make_test_spec(cast(Any, dict(info)), namespace="swebench")
 
 
 def get_logs_eval(test_spec: object, content: str) -> tuple[dict[str, str], bool]:
     constants = swebench_constants()
-
     repo = str(getattr(test_spec, "repo"))
     version = str(getattr(test_spec, "version"))
     test_cmd = constants.MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]
@@ -160,35 +149,6 @@ def get_harness(dataset_name: str) -> str:
     return "swebench"
 
 
-class MiniSweTaskset(vf.Taskset):
-    def __init__(
-        self,
-        source: Source,
-        harness: Literal["r2e", "swebench"],
-        labels: list[str],
-        rubric: vf.Rubric,
-    ):
-        self.harness = harness
-        self.labels = labels
-        super().__init__(source=source, rubric=rubric, name="mini-swe-agent-plus-th")
-
-    def channels(self, task: vf.Task | None = None) -> vf.ChannelMap:
-        channels = super().channels(task)
-        if task is None:
-            return channels
-        info = dict(task.info)
-        image = str(info.get("docker_image") or "")
-        if self.harness == "swebench":
-            image = make_swebench_test_spec(info).instance_image_key
-        channels["sandbox"] = {
-            "spec": vf.SandboxSeed(
-                image=f"us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox/{image}",
-                labels=[*self.labels, f"mini-swe-task:{task.example_id}"],
-            )
-        }
-        return channels
-
-
 class MiniSweMonitorRubric(vf.Rubric):
     def __init__(self):
         super().__init__()
@@ -196,6 +156,8 @@ class MiniSweMonitorRubric(vf.Rubric):
         self.add_metric(self.rollout_duration_seconds)
         self.add_metric(self.sandbox_oom)
         self.add_metric(self.sandbox_timeout)
+        self.add_metric(self.sandbox_image_pull_error)
+        self.add_metric(self.patch_broke_tests)
 
     async def command_timeout_count(self, state: vf.State) -> int:
         return int(state.get("command_timeout_count", 0))
@@ -209,6 +171,12 @@ class MiniSweMonitorRubric(vf.Rubric):
     async def sandbox_timeout(self, state: vf.State) -> float:
         return float(bool(state.get("sandbox_timeout")))
 
+    async def sandbox_image_pull_error(self, state: vf.State) -> float:
+        return float(bool(state.get("sandbox_image_pull_error")))
+
+    async def patch_broke_tests(self, state: vf.State) -> float:
+        return float(bool(state.get("patch_broke_tests")))
+
 
 class MiniSweRubric(vf.Rubric):
     def __init__(self, harness: Literal["r2e", "swebench"]):
@@ -220,6 +188,8 @@ class MiniSweRubric(vf.Rubric):
         if state.get("error") is not None:
             return 0
         if state.get("max_command_timeouts_reached"):
+            return 0
+        if state.get("patch_broke_tests"):
             return 0
         if self.harness == "swebench":
             return self.swebench_reward(state, info)
@@ -259,178 +229,74 @@ class MiniSweRubric(vf.Rubric):
         return int(bool(parsed) and parsed == expected)
 
 
-class MiniSweHarness(vf.Harness):
+class MiniSweTaskset(vf.Taskset):
     def __init__(
         self,
-        system_prompt: str | None = SYSTEM_PROMPT,
-        sandbox: vf.SandboxSpec | None = None,
-        harness: Literal["r2e", "swebench"] = "r2e",
-        sandbox_command_timeout: int = 90,
-        test_timeout: int = 900,
-        total_timeout_minutes: int = 360,
-        rollout_timeout_seconds: float = 5400.0,
-        max_command_timeouts: int = 5,
-        allow_git: bool = False,
-        sandbox_wait_for_creation_max_attempts: int = 120,
-        sandbox_client_max_workers: int = 64,
-        labels: list[str] | None = None,
-        max_turns: int = 200,
-        rubric: vf.Rubric | None = None,
-        tools: Iterable[object] | None = None,
+        source: Source,
+        harness: Literal["r2e", "swebench"],
+        labels: list[str],
+        rubric: vf.Rubric,
+        test_timeout: int,
+        rollout_timeout_seconds: float,
+        max_command_timeouts: int,
+        sandbox_client_max_workers: int,
+        skip_swebench_install: bool,
     ):
-        rubrics: list[vf.Rubric] = [MiniSweMonitorRubric()]
-        if rubric is not None:
-            rubrics.insert(0, rubric)
-        rubric = vf.RubricGroup(rubrics)
-        base_tools = [self.execute_bash, self.edit_via_str_replace]
-        super().__init__(
-            rubric=rubric,
-            system_prompt=system_prompt,
-            tools=[*base_tools, *(tools or [])],
-            max_turns=max_turns,
-        )
-        self.sandbox_spec = sandbox or vf.SandboxSpec(
-            cpu_cores=4,
-            memory_gb=4,
-            disk_size_gb=2,
-            timeout_minutes=total_timeout_minutes,
-            labels=labels or ["mini-swe-agent-plus-th"],
-        )
         self.harness = harness
-        self.sandbox_command_timeout = sandbox_command_timeout
+        self.labels = labels
         self.test_timeout = test_timeout
         self.rollout_timeout_seconds = rollout_timeout_seconds
         self.max_command_timeouts = max_command_timeouts
-        self.allow_git = allow_git
-        self.sandbox_wait_for_creation_max_attempts = (
-            sandbox_wait_for_creation_max_attempts
-        )
         self.sandbox_client_max_workers = sandbox_client_max_workers
+        self.skip_swebench_install = skip_swebench_install
+        super().__init__(source=source, rubric=rubric, name="mini-swe-agent-plus-th")
 
     def channels(self, task: vf.Task | None = None) -> vf.ChannelMap:
         channels = super().channels(task)
-        channels["sandbox"] = {
-            "spec": self.sandbox_spec,
-            "runtime": {"client_max_workers": self.sandbox_client_max_workers},
+        sandbox_channel: dict[str, object] = {
+            "runtime": {"client_max_workers": self.sandbox_client_max_workers}
         }
+        if task is not None:
+            info = dict(task.info)
+            image = str(info.get("docker_image") or "")
+            if self.harness == "swebench":
+                image = make_swebench_test_spec(info).instance_image_key
+            sandbox_channel["spec"] = vf.SandboxSeed(
+                image=f"us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox/{image}",
+                labels=[*self.labels, f"mini-swe-task:{task.example_id}"],
+                setup_commands=self.setup_commands(),
+            )
+        channels["sandbox"] = sandbox_channel
         return channels
 
-    async def setup_state(self, task: vf.Task, resources: vf.Resources) -> vf.State:
-        state = await super().setup_state(task, resources)
-        state["command_timeout_count"] = 0
-        state["sandbox_state"] = {"command_execution_times": []}
-        await self.setup_sandbox(task, state, resources)
-        return state
-
-    def resolve_sandbox_spec(self, resources: vf.Resources) -> vf.SandboxSpec:
-        seed = resources.get("sandbox_request")
-        spec = self.sandbox_spec
-        if isinstance(seed, vf.SandboxSpec):
-            return seed
-        if not isinstance(seed, vf.SandboxSeed):
-            return spec
-        return vf.SandboxSpec(
-            image=seed.image or spec.image,
-            cpu_cores=seed.cpu_cores or spec.cpu_cores,
-            memory_gb=seed.memory_gb or spec.memory_gb,
-            disk_size_gb=seed.disk_size_gb or spec.disk_size_gb,
-            gpu_count=seed.gpu_count if seed.gpu_count is not None else spec.gpu_count,
-            network_access=(
-                seed.network_access
-                if seed.network_access is not None
-                else spec.network_access
-            ),
-            timeout_minutes=seed.timeout_minutes or spec.timeout_minutes,
-            start_command=seed.start_command or spec.start_command,
-            environment_vars={**spec.environment_vars, **seed.environment_vars},
-            labels=[*spec.labels, *seed.labels],
-        )
-
-    async def setup_sandbox(
-        self, task: vf.Task, state: vf.State, resources: vf.Resources
-    ) -> None:
-        from prime_sandboxes import CreateSandboxRequest
-
-        spec = self.resolve_sandbox_spec(resources)
-        request = CreateSandboxRequest(
-            name=f"mini-swe-{task.example_id}-{os.urandom(4).hex()}",
-            docker_image=spec.image,
-            start_command=spec.start_command,
-            cpu_cores=spec.cpu_cores,
-            memory_gb=spec.memory_gb,
-            disk_size_gb=spec.disk_size_gb,
-            gpu_count=spec.gpu_count,
-            gpu_type=spec.gpu_type,
-            vm=spec.vm if spec.vm is not None else spec.gpu_count > 0,
-            network_access=spec.network_access,
-            timeout_minutes=spec.timeout_minutes,
-            environment_vars=spec.environment_vars,
-            secrets=spec.secrets,
-            team_id=spec.team_id,
-            advanced_configs=spec.advanced_configs,
-            registry_credentials_id=spec.registry_credentials_id,
-            labels=spec.labels,
-        )
-        runtime = resources.require("sandbox_runtime", SandboxResources)
-        sandbox_id = await runtime.create(
-            request,
-            max_attempts=self.sandbox_wait_for_creation_max_attempts,
-        )
-        state["sandbox_id"] = sandbox_id
-        await self.setup_repo(state)
-
-    async def setup_repo(self, state: vf.State) -> None:
+    def setup_commands(self) -> list[str]:
         if self.harness == "swebench":
-            await self.execute_command_raise_on_exit_code(
-                state, "ln -s /opt/miniconda3/envs/testbed /root/.venv"
-            )
-            return
-        for command in (
+            return ["ln -s /opt/miniconda3/envs/testbed /root/.venv"]
+        return [
             f"ln -s {REPO_PATH}/.venv {ALT_PATH}/.venv",
             f"ln -s {REPO_PATH}/.venv/bin/python {ALT_PATH}/.local/bin/python",
             f"ln -s {REPO_PATH}/.venv/bin/python {ALT_PATH}/.local/bin/python3",
             f"find {REPO_PATH}/.venv/bin -type f -executable -exec ln -sf {{}} {ALT_PATH}/.local/bin/ \\;",
-            f"mv /r2e_tests {ALT_PATH}/r2e_tests",
-            f"ln -s {ALT_PATH}/r2e_tests {REPO_PATH}/r2e_tests",
-        ):
-            await self.execute_command_raise_on_exit_code(state, command)
+            f"tar -C / -czf {R2E_TESTS_ARCHIVE} r2e_tests",
+            "rm -rf /r2e_tests",
+        ]
 
-    async def get_env_messages(
-        self, task: vf.Task, state: vf.State, resources: vf.Resources
-    ) -> vf.Messages:
-        tool_calls = self.get_tool_calls(state)
-        if len(tool_calls) > 1:
-            return [
-                vf.UserMessage(
-                    content=render_template(
-                        FORMAT_ERROR_TEMPLATE,
-                        actions=len(tool_calls),
-                    )
-                )
-            ]
-        messages = await super().get_env_messages(task, state, resources)
-        for message in messages:
-            content = str(getattr(message, "content", ""))
-            if "MINI_SWE_AGENT_FINAL_OUTPUT" in content:
-                state["agent_signaled_done"] = True
-                state["is_completed"] = True
-        return messages
-
-    async def _execute_command(
+    async def execute_command(
         self,
         state: vf.State,
+        resources: vf.Resources,
         command: str,
-        timeout: int | None = None,
+        timeout: int,
         working_dir: str | None = None,
     ) -> tuple[int, str]:
-        resources = cast(vf.Resources, self.resources)
         runtime = resources.require("sandbox_runtime", SandboxResources)
+        sandbox_id = str(state["sandbox_id"])
         start = time.time()
         try:
             result = await runtime.with_retry(runtime.client.execute_command)(
-                state["sandbox_id"],
+                sandbox_id,
                 command,
-                timeout=timeout or self.sandbox_command_timeout,
+                timeout=timeout,
                 working_dir=working_dir,
             )
         except (SandboxOOMError, SandboxTimeoutError) as e:
@@ -442,206 +308,242 @@ class MiniSweHarness(vf.Harness):
             state["command_timeout_count"] = (
                 int(state.get("command_timeout_count", 0)) + 1
             )
-            state["sandbox_state"]["command_execution_times"].append(
-                time.time() - start
-            )
+            self.record_command_time(state, time.time() - start)
             return (
                 -1,
                 f"The last command <command>{command}</command> timed out and has been killed.\n"
                 "Try another command and avoid interactive input.",
             )
+        self.record_command_time(state, time.time() - start)
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         parts = [stdout] if stdout else []
         if stderr:
             parts.append(f"stderr:\n{stderr}")
-        state["sandbox_state"]["command_execution_times"].append(time.time() - start)
         return result.exit_code, "\n".join(parts) if parts else "(no output)"
+
+    def record_command_time(self, state: vf.State, seconds: float) -> None:
+        tool_states = state.setdefault("sandbox_tools", {})
+        sandbox_state = tool_states.setdefault(
+            "mini_swe", {"command_execution_times": []}
+        )
+        command_times = sandbox_state.setdefault("command_execution_times", [])
+        command_times.append(seconds)
 
     async def execute_command_raise_on_exit_code(
         self,
         state: vf.State,
+        resources: vf.Resources,
         command: str,
+        timeout: int,
         working_dir: str | None = None,
-        timeout: int | None = None,
-    ):
-        exit_code, output = await self._execute_command(
-            state, command, timeout, working_dir
+    ) -> None:
+        exit_code, output = await self.execute_command(
+            state, resources, command, timeout, working_dir
         )
         if exit_code != 0:
             raise vf.SandboxError(f"Error executing command: {command}\n{output}")
 
-    async def execute_bash(self, command: str, state: vf.State) -> str:
-        """Execute a bash command in the task sandbox."""
-        blocked = {"ipython", "jupyter", "nohup"}
-        if not self.allow_git:
-            blocked.add("git")
-        for segment in re.split(r"&&|\|\||;|\|", command):
-            first = segment.strip().split()[0] if segment.strip() else ""
-            if first in blocked:
-                return f"Bash command '{first}' is not allowed. Please use a different command or tool."
-        exit_code, output = await self._execute_command(
-            state,
-            f"{ENV_VARS} {command}",
-            timeout=self.sandbox_command_timeout,
-            working_dir=REPO_PATH,
-        )
-        if exit_code == -1:
-            return output
-        return render_template(
-            ACTION_OBSERVATION_TEMPLATE,
-            exit_code=exit_code,
-            output=output,
-        )
-
-    async def edit_via_str_replace(
-        self,
-        path: str,
-        old_str: str,
-        new_str: str,
-        state: vf.State,
-        context_lines: int = 3,
-        encoding: str = "utf-8",
-    ) -> str:
-        """Replace one exact string occurrence in a file inside the task sandbox."""
-        resources = cast(vf.Resources, self.resources)
-        runtime = resources.require("sandbox_runtime", SandboxResources)
-        target = f"{REPO_PATH}/{path.lstrip('/')}"
-        result = await runtime.with_retry(runtime.client.read_file)(
-            state["sandbox_id"], target
-        )
-        text = result.content
-        occurrences = [match.start() for match in re.finditer(re.escape(old_str), text)]
-        if not occurrences:
-            return (
-                f"No replacement performed: old_str did not appear verbatim in {path}."
-            )
-        if len(occurrences) > 1:
-            lines = [text.count("\n", 0, idx) + 1 for idx in occurrences]
-            return f"No replacement performed. Multiple occurrences of old_str at lines {lines}."
-        start = occurrences[0]
-        replacement_line = text.count("\n", 0, start) + 1
-        new_content = text[:start] + new_str + text[start + len(old_str) :]
-        with tempfile.NamedTemporaryFile("w", delete=False, encoding=encoding) as f:
-            f.write(new_content)
-            local_path = f.name
-        try:
-            await runtime.with_retry(runtime.client.upload_file)(
-                state["sandbox_id"], target, local_path
-            )
-        finally:
-            Path(local_path).unlink(missing_ok=True)
-        lines = new_content.splitlines()
-        snippet_start = max(1, replacement_line - context_lines)
-        snippet_end = min(
-            len(lines), replacement_line + context_lines + new_str.count("\n")
-        )
-        width = len(str(snippet_end))
-        snippet = "\n".join(
-            f"{idx:>{width}} | {lines[idx - 1]}"
-            for idx in range(snippet_start, snippet_end + 1)
-        )
-        return f"The file {path} has been edited successfully.\n{snippet}"
-
     async def run_background_job(
         self,
         state: vf.State,
+        resources: vf.Resources,
         command: str,
         timeout: int,
         working_dir: str | None = None,
         poll_interval: int = 3,
     ):
-        resources = cast(vf.Resources, self.resources)
         runtime = resources.require("sandbox_runtime", SandboxResources)
+        sandbox_id = str(state["sandbox_id"])
         job = await runtime.with_retry(runtime.client.start_background_job)(
-            sandbox_id=state["sandbox_id"],
+            sandbox_id=sandbox_id,
             command=command,
             working_dir=working_dir,
         )
         for _ in range(0, timeout + poll_interval, poll_interval):
             result = await runtime.with_retry(runtime.client.get_background_job)(
-                state["sandbox_id"], job
+                sandbox_id, job
             )
             if result.completed:
                 return result
             await asyncio.sleep(poll_interval)
         raise CommandTimeoutError(
-            sandbox_id=state["sandbox_id"], command=command, timeout=timeout
+            sandbox_id=sandbox_id, command=command, timeout=timeout
         )
 
-    async def run_tests_swebench(self, state: vf.State) -> str:
+    async def read_test_output_tail(
+        self,
+        state: vf.State,
+        resources: vf.Resources,
+        path: str,
+        max_chars: int = 4000,
+    ) -> str:
+        try:
+            _, output = await self.execute_command(
+                state,
+                resources,
+                f"tail -c {int(max_chars)} {path} 2>/dev/null",
+                self.test_timeout,
+            )
+            return output[-max_chars:]
+        except Exception:
+            return ""
+
+    def mark_patch_broke_tests(
+        self, state: vf.State, exit_code: int, tail: str, path: str
+    ) -> None:
+        state["patch_broke_tests"] = True
+        state["patch_broke_tests_reason"] = (
+            f"pytest exit_code={exit_code} "
+            f"({PATCH_BROKE_TESTS_EXIT_CODES[exit_code]}) from {path}"
+        )
+        state["patch_broke_tests_exit_code"] = exit_code
+        state["patch_broke_tests_tail"] = tail[-800:] if tail else ""
+
+    async def run_tests_swebench(self, state: vf.State, resources: vf.Resources) -> str:
         test_spec = make_swebench_test_spec(state["info"])
+        eval_script = test_spec.eval_script
+        if self.skip_swebench_install:
+            try:
+                diff_command = (
+                    "cd /testbed && git -c core.fileMode=false diff --name-only HEAD"
+                )
+                exit_code, output = await self.execute_command(
+                    state, resources, diff_command, self.test_timeout
+                )
+                if exit_code == 0:
+                    changed = [
+                        line.strip() for line in output.splitlines() if line.strip()
+                    ]
+                    compiled_exts = {
+                        ".pyx",
+                        ".pxd",
+                        ".pxi",
+                        ".c",
+                        ".cc",
+                        ".cpp",
+                        ".h",
+                        ".hpp",
+                        ".f",
+                        ".f90",
+                    }
+                    build_files = {
+                        "setup.py",
+                        "setup.cfg",
+                        "pyproject.toml",
+                        "meson.build",
+                        "CMakeLists.txt",
+                    }
+                    needs_rebuild = any(
+                        Path(path).name in build_files
+                        or "/_build_utils/" in path
+                        or "/__check_build/" in path
+                        or Path(path).suffix in compiled_exts
+                        for path in changed
+                    )
+                    if not needs_rebuild:
+                        specs = swebench_constants().MAP_REPO_VERSION_TO_SPECS[
+                            test_spec.repo
+                        ][test_spec.version]
+                        install_cmd = specs.get("install")
+                        if install_cmd:
+                            lines = [
+                                line
+                                for line in test_spec.eval_script_list
+                                if line.strip() != install_cmd.strip()
+                            ]
+                            eval_script = (
+                                "\n".join(["#!/bin/bash", "set -uxo pipefail", *lines])
+                                + "\n"
+                            )
+            except Exception as e:
+                logger.warning(f"Failed to inspect SWE-bench diff: {e!r}")
         with tempfile.NamedTemporaryFile(suffix=".sh", mode="w") as eval_file:
-            eval_file.write(test_spec.eval_script)
+            eval_file.write(eval_script)
             eval_file.flush()
-            resources = cast(vf.Resources, self.resources)
             runtime = resources.require("sandbox_runtime", SandboxResources)
             await runtime.with_retry(runtime.client.upload_file)(
-                state["sandbox_id"], "/eval.sh", eval_file.name
+                str(state["sandbox_id"]), "/eval.sh", eval_file.name
             )
-        await self.execute_command_raise_on_exit_code(state, "chmod +x /eval.sh")
+        await self.execute_command_raise_on_exit_code(
+            state, resources, "chmod +x /eval.sh", self.test_timeout
+        )
         result = await self.run_background_job(
             state,
-            f"{ENV_VARS} /eval.sh > /test_output.txt 2>&1",
+            resources,
+            f"{ENV_VARS_SWEBENCH} /eval.sh > /test_output.txt 2>&1",
             self.test_timeout,
         )
+        if result.exit_code in PATCH_BROKE_TESTS_EXIT_CODES:
+            tail = await self.read_test_output_tail(
+                state, resources, "/test_output.txt"
+            )
+            self.mark_patch_broke_tests(
+                state, result.exit_code, tail, "/test_output.txt"
+            )
+            return ""
         if result.exit_code > 1:
             raise vf.SandboxError(f"Error running tests: {result}")
-        resources = cast(vf.Resources, self.resources)
         runtime = resources.require("sandbox_runtime", SandboxResources)
         output = await runtime.with_retry(runtime.client.execute_command)(
-            state["sandbox_id"], "cat /test_output.txt", timeout=self.test_timeout
+            str(state["sandbox_id"]),
+            "cat /test_output.txt",
+            timeout=self.test_timeout,
         )
         return output.stdout
 
-    async def run_tests_r2e(self, state: vf.State) -> str:
+    async def run_tests_r2e(self, state: vf.State, resources: vf.Resources) -> str:
+        await self.execute_command_raise_on_exit_code(
+            state,
+            resources,
+            f"tar -C {REPO_PATH} -xzf {R2E_TESTS_ARCHIVE}",
+            self.test_timeout,
+        )
         result = await self.run_background_job(
             state,
-            f"{ENV_VARS} ln -sf /root/r2e_tests r2e_tests && /bin/bash run_tests.sh > test_output.txt 2>&1",
+            resources,
+            f"{ENV_VARS_R2E} /bin/bash run_tests.sh > test_output.txt 2>&1",
             self.test_timeout,
             working_dir=REPO_PATH,
         )
+        if result.exit_code in PATCH_BROKE_TESTS_EXIT_CODES:
+            tail = await self.read_test_output_tail(
+                state, resources, f"{REPO_PATH}/test_output.txt"
+            )
+            self.mark_patch_broke_tests(
+                state, result.exit_code, tail, f"{REPO_PATH}/test_output.txt"
+            )
+            return ""
         if result.exit_code > 1:
-            raise vf.SandboxError(f"Error running tests: {result}")
-        resources = cast(vf.Resources, self.resources)
+            tail = await self.read_test_output_tail(
+                state, resources, f"{REPO_PATH}/test_output.txt"
+            )
+            raise vf.SandboxError(f"Error running tests: {result}; tail={tail!r}")
         runtime = resources.require("sandbox_runtime", SandboxResources)
         output = await runtime.with_retry(runtime.client.execute_command)(
-            state["sandbox_id"],
+            str(state["sandbox_id"]),
             f"cat {REPO_PATH}/test_output.txt",
             timeout=self.test_timeout,
         )
         return output.stdout
 
-    async def run_tests(self, state: vf.State) -> str:
+    async def run_tests(self, state: vf.State, resources: vf.Resources) -> str:
         if self.harness == "swebench":
-            return await self.run_tests_swebench(state)
-        return await self.run_tests_r2e(state)
+            return await self.run_tests_swebench(state, resources)
+        return await self.run_tests_r2e(state, resources)
 
     @vf.cleanup(priority=20)
     async def run_tests_cleanup(
         self, task: vf.Task, state: vf.State, resources: vf.Resources
     ) -> None:
-        if state.get("error") is not None:
+        if state.get("error") is not None or not state.get("sandbox_id"):
             state["test_output"] = ""
             return
         try:
-            state["test_output"] = await self.run_tests(state)
+            state["test_output"] = await self.run_tests(state, resources)
         except Exception as e:
             state["test_output"] = ""
             state["error"] = vf.SandboxError(f"Error running tests: {e}")
-
-    @vf.cleanup(priority=-100)
-    async def cleanup_sandbox(
-        self, task: vf.Task, state: vf.State, resources: vf.Resources
-    ) -> None:
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return
-        runtime = resources.require("sandbox_runtime", SandboxResources)
-        try:
-            await runtime.delete(str(sandbox_id))
-        except Exception as e:
-            logger.warning("Failed to delete sandbox %s: %s", sandbox_id, e)
 
     @vf.stop
     async def agent_signaled_done(
@@ -697,13 +599,23 @@ def load_taskset(
     ] = "R2E-Gym/R2E-Gym-Subset",
     filter_repos: list[str] | None = None,
     labels: list[str] | None = None,
+    test_timeout: int = 900,
+    rollout_timeout_seconds: float = 5400.0,
+    max_command_timeouts: int = 5,
+    sandbox_client_max_workers: int = 64,
+    skip_swebench_install: bool = True,
 ) -> vf.Taskset:
     harness = cast(Literal["r2e", "swebench"], get_harness(dataset_name))
     return MiniSweTaskset(
         source=dataset_source(dataset_name, filter_repos),
         harness=harness,
         labels=labels or ["mini-swe-agent-plus-th"],
-        rubric=MiniSweRubric(harness),
+        rubric=vf.RubricGroup([MiniSweRubric(harness), MiniSweMonitorRubric()]),
+        test_timeout=test_timeout,
+        rollout_timeout_seconds=rollout_timeout_seconds,
+        max_command_timeouts=max_command_timeouts,
+        sandbox_client_max_workers=sandbox_client_max_workers,
+        skip_swebench_install=skip_swebench_install,
     )
 
 
@@ -712,17 +624,16 @@ def load_harness(
     max_turns: int = 200,
     sandbox_command_timeout: int = 90,
     total_timeout_minutes: int = 360,
-    test_timeout: int = 900,
     cpu_cores: int = 4,
     memory_gb: int = 4,
     disk_size_gb: int = 2,
     labels: list[str] | None = None,
     sandbox_client_max_workers: int = 64,
-    rollout_timeout_seconds: float = 5400.0,
-    max_command_timeouts: int = 5,
     allow_git: bool = False,
 ) -> vf.Harness:
-    harness = cast(Literal["r2e", "swebench"], get_harness(dataset_name))
+    blocked_commands = {"ipython", "jupyter", "nohup"}
+    if not allow_git:
+        blocked_commands.add("git")
     sandbox = vf.SandboxSpec(
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
@@ -730,17 +641,36 @@ def load_harness(
         timeout_minutes=total_timeout_minutes,
         labels=labels or ["mini-swe-agent-plus-th"],
     )
-    return MiniSweHarness(
+    sandbox_runtime = {"client_max_workers": sandbox_client_max_workers}
+    harness_kind = get_harness(dataset_name)
+    env_vars = ENV_VARS_SWEBENCH if harness_kind == "swebench" else ENV_VARS_R2E
+    command_prefix = f"export ALLOW_GIT=1; {env_vars}" if allow_git else env_vars
+    bash = vf.SandboxBashTool(
+        name="execute_bash",
         sandbox=sandbox,
-        harness=harness,
-        sandbox_command_timeout=sandbox_command_timeout,
-        test_timeout=test_timeout,
-        total_timeout_minutes=total_timeout_minutes,
-        rollout_timeout_seconds=rollout_timeout_seconds,
-        max_command_timeouts=max_command_timeouts,
-        allow_git=allow_git,
-        sandbox_client_max_workers=sandbox_client_max_workers,
+        sandbox_key="mini_swe",
+        sandbox_runtime=sandbox_runtime,
+        command_timeout=sandbox_command_timeout,
+        command_prefix=command_prefix,
+        working_dir=REPO_PATH,
+        blocked_commands=blocked_commands,
+        completion_marker=FINAL_MARKER,
+    )
+    edit = vf.SandboxEditTool(
+        name="edit_via_str_replace",
+        sandbox=sandbox,
+        sandbox_key="mini_swe",
+        sandbox_runtime=sandbox_runtime,
+        command_timeout=sandbox_command_timeout,
+        root_dir=REPO_PATH,
+    )
+    return vf.Harness(
+        system_prompt=SYSTEM_PROMPT,
+        tools=[bash, edit],
         max_turns=max_turns,
+        stop_errors=[vf.SandboxError],
+        max_tool_calls_per_turn=1,
+        tool_call_limit_message=FORMAT_ERROR_MESSAGE,
     )
 
 
@@ -763,26 +693,29 @@ def load_environment(
     max_command_timeouts: int = 5,
     allow_git: bool = False,
     filter_repos: list[str] | None = None,
+    skip_swebench_install: bool = True,
 ) -> vf.Environment:
     return vf.Env(
         taskset=load_taskset(
             dataset_name=dataset_name,
             filter_repos=filter_repos,
             labels=labels,
+            test_timeout=test_timeout,
+            rollout_timeout_seconds=rollout_timeout_seconds,
+            max_command_timeouts=max_command_timeouts,
+            sandbox_client_max_workers=sandbox_client_max_workers,
+            skip_swebench_install=skip_swebench_install,
         ),
         harness=load_harness(
             dataset_name=dataset_name,
             max_turns=max_turns,
             sandbox_command_timeout=sandbox_command_timeout,
             total_timeout_minutes=total_timeout_minutes,
-            test_timeout=test_timeout,
             cpu_cores=cpu_cores,
             memory_gb=memory_gb,
             disk_size_gb=disk_size_gb,
             labels=labels,
             sandbox_client_max_workers=sandbox_client_max_workers,
-            rollout_timeout_seconds=rollout_timeout_seconds,
-            max_command_timeouts=max_command_timeouts,
             allow_git=allow_git,
         ),
     )

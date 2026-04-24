@@ -90,6 +90,7 @@ packages:
   - `EndpointHarness`
   - `CliHarness`
   - `OpenCode`
+  - `RLMHarness`
 
 The channels submodule is core `verifiers` framework code. Tasksets and
 harnesses can declare channels, but channel resolution and resource
@@ -370,7 +371,8 @@ ResourcePatch(
 
 This lets channels submit to other channels without those target channels
 knowing about the source. For example, `tools` extends `rubric` by contributing
-`ToolMonitorRubric`; `rubric` does not inspect `tools`.
+`ToolMonitorRubric`; `rubric` does not inspect `tools`. `skills` extends
+`sandbox` by contributing a named upload; `sandbox` does not inspect `skills`.
 
 Unknown channel names hard-fail unless a taskset or harness registers a custom
 `Channel` through `channel_definitions()`.
@@ -400,6 +402,13 @@ Unknown channel names hard-fail unless a taskset or harness registers a custom
   - `metrics`: metric functions, default weight `0.0`
   - `rubrics`: existing `Rubric` objects/classes
 - Provides `extend_fn`, so follow-on rubric contributions compose naturally.
+
+`skills`
+
+- Accepts one skills directory.
+- Resolves to `skills`.
+- Extends `sandbox` by contributing that directory as the `skills` upload.
+- CLI harnesses choose the destination path by setting `skills_path`.
 
 `sandbox`
 
@@ -503,6 +512,7 @@ The registry owns:
 - callable dispatch
 - MCP runtime connections
 - hidden argument injection
+- tool channel contributions
 - teardown
 
 Hidden tool arguments are injected through `ToolInjector`, not hard-coded call
@@ -527,6 +537,35 @@ vf.ToolInjector(
 
 For StatefulToolEnv-style migrations, this provides hidden argument injection
 while keeping state serializable. Resources own runtime handles.
+
+Tools can also declare channel requirements directly through `tool.channels()`.
+The `tools` channel resolves those declarations before dependent channels, so a
+tool can request sandbox runtime, cleanup handlers, or task-specific resource
+configuration without requiring a custom harness.
+
+Sandbox-backed tools use this path:
+
+```python
+vf.Harness(
+    tools=[
+        vf.SandboxPythonTool(
+            sandbox=vf.SandboxSpec(image="python:3.11-slim"),
+            sandbox_use="auto",
+        )
+    ]
+)
+```
+
+Sandbox tool modes:
+
+- `auto`: reuse `state["sandbox_id"]` when present, otherwise create a sandbox
+  on first use.
+- `existing`: require `state["sandbox_id"]`.
+- `new`: create a tool-owned sandbox on first use.
+
+Created sandbox IDs are serializable state fields. The sandbox runtime client
+stays in resources. Tool-owned sandboxes are cleaned up through lifecycle
+channels after taskset cleanup/scoring handlers run.
 
 ## Endpoint Harness
 
@@ -570,7 +609,11 @@ It:
 - keeps the sandbox alive for scoring when requested
 - cleans up sandbox resources through lifecycle hooks
 
-`OpenCode` is the reference concrete CLI harness.
+`OpenCode` is the reference concrete CLI harness for coding agents.
+`RLMHarness` is the concrete CLI harness for the RLM agent. It owns the
+host-side RLM checkout cache, RLM install command, sandbox run command, RLM
+environment variables, disabled-git shim, tool metric names, session metrics
+collection, and `/task/rlm-skills` upload mapping.
 
 ## Harbor Taskset
 
@@ -606,7 +649,7 @@ OpenCode Harbor flows:
 
 ## Current Reference TH Environments
 
-Three reference migrations exist:
+Eight reference migrations exist:
 
 - `environments/reverse_text_th`
 - `environments/wiki_search_th`
@@ -632,12 +675,13 @@ These are the examples to keep current while the API stabilizes.
 
 ## Research Environment Coverage
 
-The research-environments repo has three important migration references for
+The research-environments repo has four important migration references for
 this refactor:
 
 - `deepdive`
 - `mini_swe_agent_plus`
 - `mini_swe_agent_plus_rlm`
+- `rlm_swe`
 
 `deepdive_th` ports the `deepdive` pattern into `Taskset + Harness`:
 
@@ -652,22 +696,30 @@ this refactor:
 `Taskset + Harness`:
 
 - the taskset owns dataset loading and per-row sandbox image selection
-- the harness owns sandbox setup, tool execution, stop conditions, and cleanup
-- bash and string-replacement tools are ordinary callable tools with hidden
-  state injection
+- the taskset owns SWE setup commands, stop conditions, and cleanup-time tests
+- the base harness owns the rollout loop and tool dispatch
+- bash and string-replacement are reusable sandbox-backed tools
 - sandbox IDs and command/test output are serializable state fields
 - sandbox clients and retry policy stay in resources
 
-`mini_swe_agent_plus_th` is an example-local harness, not a fourth framework
-harness pattern. It exists to pressure-test sandbox-backed tools with rollout
-lifetimes. If the same shape appears in `math_python`, SWE tasksets, or other
-tool-heavy envs, the shared pieces should move into the base harness or a small
-package harness rather than becoming another inheritance layer.
+`math_python_th` uses the same tool pattern with `SandboxPythonTool`, showing
+how a normal `Harness` can gain sandbox-lifetime Python execution without
+becoming a CLI harness.
 
-`mini_swe_agent_plus_rlm` and the other RLM envs point toward an eventual
-`RLMHarness` in the harnesses package. That harness should reuse the shared
-`Harness.run` request scheduler instead of owning a separate model-submission
-loop. The expected capabilities are:
+`rlm_swe` is the primary concrete reference for `RLMHarness`:
+
+- `RLMHarness` owns the RLM checkout cache, install/run commands, RLM env vars,
+  disabled-git shim, tool metric names, and RLM session metric extraction
+- the SWE taskset should own dataset loading, per-row sandbox images,
+  repository setup, skills, and scoring
+- taskset-provided skills flow through the `skills` channel, which contributes
+  a sandbox upload when a CLI harness declares `skills_path`
+
+`mini_swe_agent_plus_rlm` and the other RLM envs define the next layer of RLM
+support above the CLI harness. The shared harness request scheduler should
+remain the model-submission path; env-specific RLM behavior should become
+taskset channels, tool views, or small concrete harness options. The expected
+capabilities are:
 
 - root execution that can call model endpoints through the shared request path
 - sub-request fanout with multiple in-flight model calls
@@ -782,7 +834,9 @@ Channels are config-shaped and functional.
 
 - Channel definitions own canonicalization and resolution.
 - Target-channel merge semantics are channel-owned.
-- `extends` is added only because a concrete tools→rubric need emerged.
+- `extends` is added only when a concrete cross-channel need emerges. Current
+  examples are tools contributing monitor rubrics and skills contributing
+  sandbox uploads.
 
 `Rubric` itself is not refactored.
 
@@ -846,6 +900,8 @@ New shape:
 - live objects live in resources
 - hidden args use `ToolInjector`
 - cleanup uses `@cleanup` or lifecycle channel hooks
+- sandbox-backed tools use `SandboxBashTool`, `SandboxPythonTool`, or another
+  `SandboxTool` subclass when the stateful resource is a sandbox lifetime
 
 Stateful tools should accept explicit hidden parameters whose schemas are hidden
 by the registry:
@@ -887,6 +943,26 @@ Migration mapping:
 
 `ComposableEnv` is a correctness reference for sandbox upload, install,
 metrics, and OpenCode flow behavior.
+
+RLM-style composable envs migrate to `RLMHarness`:
+
+```python
+from verifiers.envs.experimental.modules.harnesses import RLMHarness
+
+vf.Env(
+    taskset=swe_taskset,
+    harness=RLMHarness(
+        workdir="/testbed",
+        gh_token=gh_token,
+        rlm_tools=["ipython", "summarize", "edit"],
+        keep_sandbox_for_scoring=True,
+    ),
+)
+```
+
+The current `rlm_swe` reference env maps directly to this split: the SWE
+taskset owns dataset/image/setup/scoring/skills, and `RLMHarness` owns the RLM
+CLI runtime.
 
 ### From `CliAgentEnv`
 

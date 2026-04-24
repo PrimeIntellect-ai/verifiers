@@ -63,8 +63,12 @@ __all__ = [
     "Task",
     "Taskset",
     "Harness",
+    "SandboxBashTool",
+    "SandboxEditTool",
+    "SandboxPythonTool",
     "SandboxSpec",
     "SandboxSeed",
+    "SandboxTool",
     "SandboxTimeouts",
     "Resources",
     "CallableTool",
@@ -158,8 +162,12 @@ _LAZY_IMPORTS = {
     "Task": "verifiers.envs.experimental.task:Task",
     "Taskset": "verifiers.envs.experimental.taskset:Taskset",
     "Harness": "verifiers.envs.experimental.harness:Harness",
+    "SandboxBashTool": "verifiers.envs.experimental.modules.tools:SandboxBashTool",
+    "SandboxEditTool": "verifiers.envs.experimental.modules.tools:SandboxEditTool",
+    "SandboxPythonTool": "verifiers.envs.experimental.modules.tools:SandboxPythonTool",
     "SandboxSpec": "verifiers.envs.experimental.channels:SandboxSpec",
     "SandboxSeed": "verifiers.envs.experimental.channels:SandboxSeed",
+    "SandboxTool": "verifiers.envs.experimental.modules.tools:SandboxTool",
     "SandboxTimeouts": "verifiers.envs.experimental.channels:SandboxTimeouts",
     "Resources": "verifiers.envs.experimental.resources:Resources",
     "CallableTool": "verifiers.envs.experimental.channels:CallableTool",
@@ -227,6 +235,12 @@ if TYPE_CHECKING:
         ChannelMap,
     )
     from .envs.experimental.harness import Harness  # noqa: F401
+    from .envs.experimental.modules.tools import (
+        SandboxBashTool,
+        SandboxEditTool,
+        SandboxPythonTool,
+        SandboxTool,
+    )  # noqa: F401
     from .envs.experimental.resources import Resources  # noqa: F401
     from .envs.experimental.channels import SandboxSeed, SandboxSpec, SandboxTimeouts  # noqa: F401
     from .envs.experimental.task import Task  # noqa: F401

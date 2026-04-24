@@ -22,6 +22,7 @@ from verifiers.types import (
     Tool,
     ToolMessage,
     TrajectoryStep,
+    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.error_utils import error_info
@@ -62,6 +63,8 @@ class Harness:
         parallel_model_requests: bool = False,
         error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
         stop_errors: list[type[Exception]] | None = None,
+        max_tool_calls_per_turn: int | None = None,
+        tool_call_limit_message: str = "Please provide at most {limit} tool call(s). Found {count}.",
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.resources: Resources | None = None
@@ -72,6 +75,8 @@ class Harness:
         self.parallel_model_requests = parallel_model_requests
         self.error_formatter = error_formatter
         self.stop_errors = stop_errors or []
+        self.max_tool_calls_per_turn = max_tool_calls_per_turn
+        self.tool_call_limit_message = tool_call_limit_message
         self._stop_conditions = discover_decorated(self, "stop")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
@@ -224,6 +229,18 @@ class Harness:
     ) -> Messages:
         tool_calls = self.get_tool_calls(state)
         if tool_calls:
+            if (
+                self.max_tool_calls_per_turn is not None
+                and len(tool_calls) > self.max_tool_calls_per_turn
+            ):
+                return [
+                    UserMessage(
+                        content=self.tool_call_limit_message.format(
+                            limit=self.max_tool_calls_per_turn,
+                            count=len(tool_calls),
+                        )
+                    )
+                ]
             outputs = []
             for tool_call in tool_calls:
                 outputs.append(await self.call_tool(tool_call, task, state, resources))

@@ -2,6 +2,7 @@ __all__ = [
     "CliHarness",
     "EndpointHarness",
     "OpenCode",
+    "RLMHarness",
 ]
 
 _LAZY_IMPORTS = {
@@ -10,6 +11,9 @@ _LAZY_IMPORTS = {
         "verifiers.envs.experimental.modules.harnesses.endpoint_harness:EndpointHarness"
     ),
     "OpenCode": "verifiers.envs.experimental.modules.harnesses.opencode_harness:OpenCode",
+    "RLMHarness": (
+        "verifiers.envs.experimental.modules.harnesses.rlm_harness:RLMHarness"
+    ),
 }
 
 
