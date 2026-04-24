@@ -268,6 +268,9 @@ MODEL_RENDERER_MAP: dict[str, str] = {
     # Qwen3.5.
     "Qwen/Qwen3.5-9B": "qwen3.5",
     "Qwen/Qwen3.5-35B-A3B": "qwen3.5",
+    "Qwen/Qwen3.5-122B-A10B": "qwen3.5",
+    # Qwen3.6.
+    "Qwen/Qwen3.6-35B-A3B": "qwen3.6",
     # Qwen3-VL.
     "Qwen/Qwen3-VL-4B-Instruct": "qwen3_vl",
     "Qwen/Qwen3-VL-8B-Instruct": "qwen3_vl",
@@ -313,6 +316,7 @@ def _populate_registry():
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen3_vl import Qwen3VLRenderer
     from renderers.qwen35 import Qwen35Renderer
+    from renderers.qwen36 import Qwen36Renderer
 
     RENDERER_REGISTRY.update(
         {
@@ -320,6 +324,7 @@ def _populate_registry():
             "qwen3": Qwen3Renderer,
             "qwen3_vl": Qwen3VLRenderer,
             "qwen3.5": Qwen35Renderer,
+            "qwen3.6": Qwen36Renderer,
             "glm5": GLM5Renderer,
             "glm5.1": GLM51Renderer,
             "glm4.5": GLM45Renderer,

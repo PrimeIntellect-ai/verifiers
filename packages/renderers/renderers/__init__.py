@@ -32,6 +32,7 @@ from renderers.nemotron3 import Nemotron3Renderer
 from renderers.qwen3 import Qwen3Renderer
 from renderers.qwen3_vl import Qwen3VLRenderer
 from renderers.qwen35 import Qwen35Renderer
+from renderers.qwen36 import Qwen36Renderer
 
 __all__ = [
     "Content",
@@ -51,6 +52,7 @@ __all__ = [
     "Qwen3Renderer",
     "Qwen3VLRenderer",
     "Qwen35Renderer",
+    "Qwen36Renderer",
     "RenderedConversation",
     "RenderedTokens",
     "Renderer",

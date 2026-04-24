@@ -26,6 +26,7 @@ import pytest
 _BRIDGE_MODELS = [
     ("Qwen/Qwen3-8B", "auto"),
     ("Qwen/Qwen3.5-9B", "auto"),
+    ("Qwen/Qwen3.6-35B-A3B", "auto"),
     ("zai-org/GLM-5", "auto"),
     ("zai-org/GLM-5.1", "auto"),
     ("THUDM/GLM-4.5-Air", "auto"),

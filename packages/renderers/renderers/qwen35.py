@@ -373,6 +373,29 @@ class Qwen35Renderer:
     # Assistant message rendering
     # ------------------------------------------------------------------
 
+    def _should_render_thinking(self, msg_idx: int, last_query_index: int) -> bool:
+        """Whether to emit a ``<think>`` block for the assistant message at ``msg_idx``.
+
+        Qwen3.5 only emits thinking for assistant turns that sit after the
+        last real user query. Subclasses (Qwen3.6) may override to mirror
+        the newer template's ``preserve_thinking`` knob.
+        """
+        return msg_idx > last_query_index
+
+    @staticmethod
+    def _render_arg_value(arg_value: Any) -> str:
+        """Serialise a single tool-call argument value to text.
+
+        Mirrors the Jinja args-value branch: dicts/lists → compact JSON;
+        everything else (including bool, int, None) → ``str(...)``. That
+        matches Qwen3.5's ``tojson`` for mapping/sequence / ``string`` for
+        the rest. Qwen3.6 overrides this to push non-strings through JSON
+        so bools round-trip as ``true``/``false`` instead of ``True``/``False``.
+        """
+        if isinstance(arg_value, (dict, list)):
+            return json.dumps(arg_value, ensure_ascii=False)
+        return str(arg_value)
+
     def _render_assistant(
         self,
         msg: Message,
@@ -403,7 +426,7 @@ class Qwen35Renderer:
 
         emit_special(self._im_start, msg_idx)
 
-        if msg_idx > last_query_index:
+        if self._should_render_thinking(msg_idx, last_query_index):
             # Include thinking block
             emit_text("assistant\n", msg_idx)
             emit_special(self._think, msg_idx)
@@ -442,10 +465,7 @@ class Qwen35Renderer:
                         arguments = {}
                 if isinstance(arguments, dict):
                     for arg_name, arg_value in arguments.items():
-                        if isinstance(arg_value, (dict, list)):
-                            value_str = json.dumps(arg_value, ensure_ascii=False)
-                        else:
-                            value_str = str(arg_value)
+                        value_str = self._render_arg_value(arg_value)
                         emit_text(
                             "<parameter="
                             + arg_name
