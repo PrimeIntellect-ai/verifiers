@@ -187,9 +187,7 @@ def rlm_harness(
     # Validate via whichever kwarg actually carried the value so a bad
     # fallback gets reported against its real source name.
     if max_context_tokens is not None:
-        max_context_env = _format_positive_int(
-            "max_context_tokens", max_context_tokens
-        )
+        max_context_env = _format_positive_int("max_context_tokens", max_context_tokens)
     elif max_seq_len is not None:
         max_context_env = _format_positive_int("max_seq_len", max_seq_len)
     else:
@@ -226,9 +224,7 @@ def _format_positive_int(name: str, value: int | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(
-            f"{name} must be an int or None (got {type(value).__name__})"
-        )
+        raise ValueError(f"{name} must be an int or None (got {type(value).__name__})")
     if value <= 0:
         raise ValueError(f"{name} must be positive (got {value})")
     return str(value)
