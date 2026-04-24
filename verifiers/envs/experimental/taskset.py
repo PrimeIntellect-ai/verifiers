@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from datasets import Dataset
 
 from verifiers.decorators import discover_decorated
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import RolloutInput
+from verifiers.types import Messages, RolloutInput, UserMessage
 from verifiers.utils.message_utils import normalize_messages
 
 from .channels import Channel, ChannelMap
@@ -121,7 +121,7 @@ class Taskset:
             row.setdefault("example_id", index)
             if "prompt" not in row:
                 question = row.get("question") or row.get("instruction") or ""
-                row["prompt"] = [{"role": "user", "content": str(question)}]
+                row["prompt"] = [UserMessage(content=str(question)).model_dump()]
             return row
 
         return dataset.map(format_row, with_indices=True)
@@ -134,10 +134,16 @@ class Taskset:
         raw_prompt = row.get("prompt")
         if raw_prompt is None:
             question = row.get("question") or row.get("instruction") or ""
-            raw_prompt = (
-                [{"role": "user", "content": str(question)}] if question else []
+            task_prompt: Messages | str = (
+                [UserMessage(content=str(question))] if question else []
             )
-        prompt = normalize_messages(raw_prompt, field_name="task.prompt")
+        elif isinstance(raw_prompt, str):
+            task_prompt = raw_prompt
+        elif isinstance(raw_prompt, list):
+            task_prompt = cast(Messages, raw_prompt)
+        else:
+            raise TypeError("task.prompt must be vf.Messages or str.")
+        prompt = normalize_messages(task_prompt, field_name="task.prompt")
         channels = row.get("channels") or {}
         if isinstance(channels, str):
             channels = json.loads(channels)
