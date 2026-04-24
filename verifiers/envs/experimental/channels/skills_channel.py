@@ -20,8 +20,7 @@ def resolve_skills(
 
 skills_channel = Channel(
     name="skills",
-    outputs=("skills",),
-    output_types={"skills": list},
+    outputs={"skills": list},
     always_resolve=True,
     resolve_fn=resolve_skills,
 )

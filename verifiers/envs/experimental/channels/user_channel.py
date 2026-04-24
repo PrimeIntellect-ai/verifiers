@@ -38,7 +38,6 @@ def resolve_user(
 
 user_channel = Channel(
     name="user",
-    outputs=("user",),
-    output_types={"user": User},
+    outputs={"user": User},
     resolve_fn=resolve_user,
 )

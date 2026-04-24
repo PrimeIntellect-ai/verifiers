@@ -624,9 +624,8 @@ def resolve_tools(
 
 tools_channel = Channel(
     name="tools",
-    outputs=("tools",),
-    output_types={"tools": ToolRegistry},
-    contributes_to=("rubric",),
+    outputs={"tools": ToolRegistry},
+    extends="rubric",
     always_resolve=True,
     resolve_fn=resolve_tools,
 )

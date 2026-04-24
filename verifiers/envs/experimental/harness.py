@@ -312,9 +312,10 @@ class Harness:
 
     async def add_model_response(
         self,
-        state: State,
         prompt: Messages,
         response: Response,
+        task: Task,
+        state: State,
         resources: Resources,
         extras: dict[str, object] | None = None,
     ) -> None:
@@ -359,9 +360,10 @@ class Harness:
         )
         response = await self.normalize_model_response(response, task, state, resources)
         await self.add_model_response(
-            state,
             prompt,
             response,
+            task,
+            state,
             resources,
             extras=extras,
         )

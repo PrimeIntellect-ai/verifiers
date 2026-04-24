@@ -22,8 +22,7 @@ def resolve_system_prompt(
 
 system_prompt_channel = Channel(
     name="system_prompt",
-    outputs=("system_prompt",),
-    output_types={"system_prompt": str},
+    outputs={"system_prompt": str},
     always_resolve=True,
     resolve_fn=resolve_system_prompt,
 )

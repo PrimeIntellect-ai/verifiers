@@ -1,0 +1,21 @@
+[project]
+name = "mini-swe-agent-plus-th"
+version = "0.1.0"
+requires-python = ">=3.10"
+tags = ["swe", "multi-turn", "sandbox", "taskset-harness"]
+license = "Apache-2.0"
+description = "Taskset/harness Mini SWE Agent Plus port using sandbox-backed tools."
+dependencies = [
+    "verifiers>=0.1.13",
+    "datasets",
+    "jinja2",
+    "prime-sandboxes>=0.2.13",
+    "swebench==4.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mini_swe_agent_plus_th.py", "pyproject.toml"]

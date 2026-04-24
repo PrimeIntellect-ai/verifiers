@@ -309,9 +309,7 @@ def attach_resources(rubric: Rubric, resources: object) -> None:
 
 rubric_channel = Channel(
     name="rubric",
-    outputs=("rubric",),
-    output_types={"rubric": Rubric},
-    extendable=True,
+    outputs={"rubric": Rubric},
     always_resolve=True,
     canonicalize_fn=canonicalize_rubric_config,
     resolve_fn=resolve_rubric_channel,

@@ -193,7 +193,6 @@ def channel_logger(context: ChannelContext) -> logging.Logger:
 
 endpoint_channel = Channel(
     name="endpoint",
-    outputs=("endpoint",),
-    output_types={"endpoint": Endpoint},
+    outputs={"endpoint": Endpoint},
     resolve_fn=resolve_endpoint,
 )

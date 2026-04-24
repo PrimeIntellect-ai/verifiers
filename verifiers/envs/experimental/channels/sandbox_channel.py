@@ -269,13 +269,8 @@ def materialize_sandbox(config: object, context: ChannelContext) -> ResourcePatc
 
 sandbox_channel = Channel(
     name="sandbox",
-    outputs=(
-        "sandbox_request",
-        "sandbox_runtime",
-        "sandbox_scoring",
-        "sandbox_uploads",
-    ),
-    output_types={
+    outputs={
+        "sandbox_request": object,
         "sandbox_runtime": SandboxResources,
         "sandbox_scoring": bool,
         "sandbox_uploads": dict,

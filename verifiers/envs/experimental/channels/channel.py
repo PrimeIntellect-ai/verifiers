@@ -14,6 +14,7 @@ ResolveFn = Callable[[list[ChannelConfig], "ChannelContext"], "ResourcePatch"]
 ExtendFn = Callable[[object, list[ChannelConfig], "ChannelContext"], object]
 ResourceType = type[object]
 LifecycleHandler = Callable[..., object]
+ChannelRefs = str | tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -83,15 +84,15 @@ class Channel:
     """Definition for one config-shaped channel."""
 
     name: str
-    outputs: tuple[str, ...] = ()
-    output_types: Mapping[str, ResourceType] = field(default_factory=dict)
-    requires: tuple[str, ...] = ()
-    contributes_to: tuple[str, ...] = ()
-    extendable: bool = False
+    outputs: Mapping[str, ResourceType] = field(default_factory=dict)
+    extends: ChannelRefs = ()
     always_resolve: bool = False
     canonicalize_fn: CanonicalizeFn | None = None
     resolve_fn: ResolveFn | None = None
     extend_fn: ExtendFn | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extends", normalize_channel_refs(self.extends))
 
     def canonicalize(self, config: ChannelConfig) -> ChannelConfig:
         if self.canonicalize_fn is None:
@@ -113,7 +114,7 @@ class Channel:
             )
         if not canonical:
             return ResourcePatch()
-        output_name = self.outputs[0] if self.outputs else self.name
+        output_name = first_output_name(self) or self.name
         return ResourcePatch(objects={output_name: canonical[0]})
 
     def is_empty(self, config: ChannelConfig) -> bool:
@@ -125,7 +126,7 @@ class Channel:
         configs: list[ChannelConfig],
         context: ChannelContext,
     ) -> object:
-        if not self.extendable or self.extend_fn is None:
+        if self.extend_fn is None:
             raise ValueError(f"Channel {self.name!r} cannot be extended.")
         return self.extend_fn(current, configs, context)
 
@@ -143,10 +144,6 @@ def resolve_channels(
         progressed = False
         for name in pending[:]:
             channel = channels[name]
-            if not channel_requirements_met(
-                channel, context, patch.objects, resolved_channels
-            ):
-                continue
             configs = configs_by_name.get(name, [])
             channel_context = ChannelContext(
                 objects={**context.objects, **patch.objects},
@@ -156,6 +153,7 @@ def resolve_channels(
             incoming = channel.resolve(configs, channel_context)
             extensions = enqueue_channel_contributions(
                 incoming.contributions,
+                source=channel,
                 configs_by_name=configs_by_name,
                 channels=channels,
                 pending=pending,
@@ -178,9 +176,7 @@ def resolve_channels(
             resolved_channels.add(name)
             progressed = True
         if not progressed:
-            missing = ", ".join(
-                f"{name}: {channels[name].requires}" for name in pending
-            )
+            missing = ", ".join(f"{name}: {channels[name].extends}" for name in pending)
             raise ValueError(f"Could not resolve channel dependencies: {missing}")
     return patch
 
@@ -210,11 +206,7 @@ def expand_channel_dependencies(
         expanded = False
         for name in tuple(names):
             channel = channels[name]
-            for dependency in channel.requires:
-                if dependency in channels and dependency not in names:
-                    names.add(dependency)
-                    expanded = True
-            for target in channel.contributes_to:
+            for target in channel.extends:
                 if target not in channels:
                     raise ValueError(
                         f"Channel {name!r} contributes to unknown channel {target!r}."
@@ -240,10 +232,6 @@ def ordered_channel_names(
             cycle = " -> ".join((*stack, name))
             raise ValueError(f"Circular channel dependency: {cycle}")
         temporary.add(name)
-        channel = channels[name]
-        for dependency in channel.requires:
-            if dependency in names:
-                visit(dependency, (*stack, name))
         for dependency in channels_contributing_to(name, names, channels):
             visit(dependency, (*stack, name))
         temporary.remove(name)
@@ -260,20 +248,14 @@ def channels_contributing_to(
     target: str, names: set[str], channels: Mapping[str, Channel]
 ) -> list[str]:
     return [
-        name
-        for name in channels
-        if name in names and target in channels[name].contributes_to
+        name for name in channels if name in names and target in channels[name].extends
     ]
 
 
-def channel_requirements_met(
-    channel: Channel,
-    context: ChannelContext,
-    objects: Mapping[str, object],
-    resolved_channels: set[str],
-) -> bool:
-    available = {*context.objects, *objects, *resolved_channels}
-    return all(requirement in available for requirement in channel.requires)
+def normalize_channel_refs(value: ChannelRefs) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
 
 
 def resolve_resource_objects(
@@ -302,6 +284,7 @@ def collect_channel_configs(
 def enqueue_channel_contributions(
     contributions: Mapping[str, tuple[ChannelConfig, ...]],
     *,
+    source: Channel,
     configs_by_name: dict[str, list[ChannelConfig]],
     channels: Mapping[str, Channel],
     pending: list[str],
@@ -315,11 +298,12 @@ def enqueue_channel_contributions(
             raise ValueError(
                 f"Channel {name!r} is not registered. Add it to channel_definitions()."
             )
+        if name not in source.extends:
+            raise ValueError(
+                f"Channel {source.name!r} contributed to {name!r} without declaring "
+                f"extends={name!r}."
+            )
         if name in resolved_channels:
-            if not channels[name].extendable:
-                raise ValueError(
-                    f"Channel {name!r} received a contribution after it was resolved."
-                )
             output_name, value = extend_resolved_channel(
                 name, configs, channels[name], patch, context
             )
@@ -338,14 +322,18 @@ def extend_resolved_channel(
     patch: ResourcePatch,
     context: ChannelContext,
 ) -> tuple[str, object]:
-    if not channel.outputs:
+    output_name = first_output_name(channel)
+    if output_name is None:
         raise ValueError(f"Extendable channel {name!r} must declare an output.")
-    output_name = channel.outputs[0]
     if output_name not in patch.objects:
         raise ValueError(f"Resolved resource {output_name!r} is not available.")
     current = patch.objects[output_name]
     extended = channel.extend(current, list(configs), context)
     return output_name, extended
+
+
+def first_output_name(channel: Channel) -> str | None:
+    return next(iter(channel.outputs), None)
 
 
 def raw_channels(owner: object, task: Task | None = None) -> Mapping[str, object]:
@@ -387,7 +375,7 @@ def channel_definitions(*owners: object) -> dict[str, Channel]:
 def channel_resource_types(channels: Mapping[str, Channel]) -> dict[str, ResourceType]:
     resource_types: dict[str, ResourceType] = {}
     for channel in channels.values():
-        for name, resource_type in channel.output_types.items():
+        for name, resource_type in channel.outputs.items():
             existing = resource_types.get(name)
             if existing is not None and existing != resource_type:
                 raise ValueError(f"Conflicting resource type for {name!r}.")
