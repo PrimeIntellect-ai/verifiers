@@ -13,13 +13,13 @@ from verifiers.decorators import discover_decorated, stop
 from verifiers.errors import Error, OverlongPromptError, ToolCallError, ToolParseError
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    AssistantMessage,
     Message,
     Messages,
     Response,
     State,
     SystemMessage,
     ToolCall,
+    Tool,
     ToolMessage,
     TrajectoryStep,
 )
@@ -35,7 +35,6 @@ from .channels import (
     ChannelMap,
     MCPServerSpec,
     ToolArgumentError,
-    ToolRegistry,
 )
 from .task import Task
 
@@ -46,40 +45,9 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class ModelRequest:
     prompt: Messages
-    tool_defs: object = None
+    tool_defs: list[Tool] | None = None
     extras: dict[str, object] | None = None
     context: dict[str, object] = field(default_factory=dict)
-
-
-class ToolMonitorRubric(Rubric):
-    def __init__(self, tool_names: list[str] | None = None):
-        super().__init__()
-        self.tool_names = list(tool_names or [])
-        self.add_metric(self.total_tool_calls)
-        for tool_name in self.tool_names:
-            self.add_metric(self.tool_call_count_func(tool_name))
-
-    async def total_tool_calls(self, completion: Messages) -> float:
-        total = 0
-        for message in completion:
-            if not isinstance(message, AssistantMessage):
-                continue
-            total += len(message.tool_calls or [])
-        return float(total)
-
-    def tool_call_count_func(self, tool_name: str) -> Callable:
-        async def tool_call_count(completion: Messages) -> float:
-            count = 0
-            for message in completion:
-                if not isinstance(message, AssistantMessage):
-                    continue
-                for tool_call in message.tool_calls or []:
-                    if tool_call.name == tool_name:
-                        count += 1
-            return float(count)
-
-        tool_call_count.__name__ = f"{tool_name}_calls"
-        return tool_call_count
 
 
 def serialized_error_type(error: object) -> str | None:
@@ -143,8 +111,6 @@ class Harness:
         rubrics = []
         if self.rubric is not None:
             rubrics.append(self.rubric)
-        if self.tools:
-            rubrics.append(ToolMonitorRubric(tool_names=self.tool_names()))
         if rubrics:
             channels["rubric"] = rubrics[0] if len(rubrics) == 1 else rubrics
         return channels
@@ -168,10 +134,12 @@ class Harness:
         if isinstance(raw_name, str) and raw_name:
             return raw_name
         if isinstance(tool, Mapping):
+            tool = cast(Mapping[str, object], tool)
             if "name" in tool:
                 return str(tool["name"])
             function_payload = tool.get("function")
             if isinstance(function_payload, Mapping) and "name" in function_payload:
+                function_payload = cast(Mapping[str, object], function_payload)
                 return str(function_payload["name"])
         function_name = getattr(tool, "__name__", None)
         if isinstance(function_name, str) and function_name:
@@ -192,7 +160,7 @@ class Harness:
         handlers.sort(
             key=lambda fn: (
                 -getattr(fn, f"{attr}_priority", 0),
-                getattr(fn, "__name__", ""),
+                str(getattr(fn, "__name__", "")),
             )
         )
         return handlers
@@ -251,7 +219,9 @@ class Harness:
                     step.get("is_truncated", False)
                     for step in state.get("trajectory", [])
                 )
-                state["stop_condition"] = condition.__name__
+                state["stop_condition"] = str(
+                    getattr(condition, "__name__", condition.__class__.__name__)
+                )
                 start = state["timing"]["start_time"]
                 now = time.time()
                 state["timing"]["generation_ms"] = (now - start) * 1000
@@ -267,10 +237,7 @@ class Harness:
         state["is_completed"] = False
         state["is_truncated"] = False
         state["stop_condition"] = None
-        tools = resources.get("tools")
-        if not isinstance(tools, ToolRegistry):
-            tools = ToolRegistry()
-        state["tool_defs"] = tools.defs()
+        state["tool_defs"] = resources.tools.defs()
         state["trajectory"] = []
         state["num_model_requests"] = 0
         state["completion"] = None
@@ -369,7 +336,7 @@ class Harness:
         task: Task,
         state: State,
         resources: Resources,
-        tool_defs: object = None,
+        tool_defs: list[Tool] | None = None,
         context: dict[str, object] | None = None,
     ) -> Response:
         if tool_defs is None:
@@ -427,7 +394,7 @@ class Harness:
         task: Task,
         state: State,
         resources: Resources,
-        tool_defs: object = None,
+        tool_defs: list[Tool] | None = None,
         extras: dict[str, object] | None = None,
         context: dict[str, object] | None = None,
     ) -> Response:

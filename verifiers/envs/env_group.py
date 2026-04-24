@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, Any, Mapping, final
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast, final
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -30,7 +31,7 @@ def _info_dict(info: object) -> dict[str, Any]:
             return parsed
         raise ValueError("RolloutInput info must decode to a dict for EnvGroup.")
     if isinstance(info, Mapping):
-        return dict(info)
+        return dict(cast(Mapping[str, Any], info))
     raise ValueError("RolloutInput info must be a dict for EnvGroup.")
 
 
@@ -98,7 +99,7 @@ class EnvGroupRubric(vf.Rubric):
         reward = 0.0
 
         # get the appropriate environment
-        env = self.env_map.get(env_name)
+        env = self.env_map.get(env_name) if env_name is not None else None
         if env is None:
             self.logger.warning(f"No environment found for EnvGroup route '{env_name}'")
             state["reward"] = reward
@@ -132,7 +133,7 @@ class EnvGroupRubric(vf.Rubric):
         num_states = len(states)
         route = _normalize_route((states[0].get("info") or {}).get(ENV_GROUP_INFO_KEY))
         env_name = route[0] if route else None
-        env = self.env_map.get(env_name)
+        env = self.env_map.get(env_name) if env_name is not None else None
         if env is None:
             self.logger.warning(f"No environment found for EnvGroup route '{env_name}'")
             for state in states:

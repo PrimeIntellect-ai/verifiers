@@ -22,14 +22,6 @@ def _get_chroma_semaphore() -> asyncio.Semaphore:
     return _chroma_semaphore
 
 
-class WikiSearchTaskset(vf.Taskset):
-    def __init__(self, rubric: vf.Rubric):
-        super().__init__(dataset=None, rubric=rubric)
-
-    def get_dataset(self):
-        return load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-
-
 def load_environment(
     max_turns: int = 10,
     judge_model: str = "gpt-4.1-mini",
@@ -204,12 +196,17 @@ def load_environment(
         judge_response = await judge(prompt, completion, answer, state)
         return float("yes" in judge_response.lower())
 
+    def source():
+        return load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+
     judge_rubric.add_reward_func(judge_reward_func, weight=1.0)
-    tools = [search_pages, view_sections, read_section]
-    taskset = WikiSearchTaskset(rubric=judge_rubric)
+    taskset = vf.Taskset(
+        source=source,
+        rubric=judge_rubric,
+        tools=[search_pages, view_sections, read_section],
+    )
     harness = vf.Harness(
         system_prompt="Use the provided Wikipedia search tools to help answer questions.",
-        tools=tools,
         max_turns=max_turns,
     )
     return vf.Env(taskset=taskset, harness=harness)

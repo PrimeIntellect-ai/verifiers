@@ -3,26 +3,39 @@ from __future__ import annotations
 from asyncio import Lock
 from collections.abc import AsyncIterator
 from collections.abc import Callable
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from verifiers.clients import Client
-from verifiers.types import SamplingArgs
+from verifiers.rubrics.rubric import Rubric
+from verifiers.types import DatasetBuilder, SamplingArgs
 
 from verifiers.envs.experimental.channels.channel import (
     lifecycle_handlers,
     resolve_resource_objects,
 )
-from verifiers.envs.experimental.channels import attach_resources
+from verifiers.envs.experimental.channels import (
+    Endpoint,
+    SandboxResources,
+    ToolMonitorRubric,
+    ToolRegistry,
+    User,
+    attach_resources,
+    compose_rubrics,
+)
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.taskset import Taskset
 
 if TYPE_CHECKING:
+    from datasets import Dataset
+
     from verifiers.envs.experimental.harness import Harness
 
 LifecycleHandler = Callable[..., object]
+T = TypeVar("T")
 
 
 @dataclass
@@ -35,6 +48,11 @@ class Resources:
     stop_conditions: list[LifecycleHandler] = field(default_factory=list)
     cleanup_handlers: list[LifecycleHandler] = field(default_factory=list)
     teardown_handlers: list[LifecycleHandler] = field(default_factory=list)
+    dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
+    eval_dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
+    env_id: str | None = field(default=None, init=False)
+    rubric: Rubric = field(init=False)
+    tools: ToolRegistry = field(init=False)
     _teardown_complete: bool = False
     _rollout_objects: ContextVar[dict[str, object] | None] = field(
         default_factory=lambda: ContextVar("vf_rollout_objects", default=None),
@@ -64,13 +82,25 @@ class Resources:
 
     def __post_init__(self) -> None:
         resolution = resolve_resource_objects(self.taskset, self.harness, phase="env")
-        self.dataset = self.taskset.get_dataset if self.taskset.has_dataset() else None
+        self.dataset = (
+            cast(DatasetBuilder, self.taskset.get_dataset)
+            if self.taskset.has_dataset()
+            else None
+        )
         self.eval_dataset = (
-            self.taskset.get_eval_dataset if self.taskset.has_eval_dataset() else None
+            cast(DatasetBuilder, self.taskset.get_eval_dataset)
+            if self.taskset.has_eval_dataset()
+            else None
         )
         self.env_id = self.taskset.name
         self.objects.update(resolution.objects)
-        self.rubric = self.objects["rubric"]
+        self.tools = self.require("tools", ToolRegistry)
+        tool_names = self.tools.names()
+        self.rubric = compose_rubrics(
+            self.require("rubric", Rubric),
+            ToolMonitorRubric(tool_names=tool_names) if tool_names else None,
+        )
+        self.objects["rubric"] = self.rubric
         self._extend_handlers("teardown", [self.tools.teardown])
         self._extend_handlers("stop", resolution.stop_conditions)
         self._extend_handlers("cleanup", resolution.cleanup_handlers)
@@ -101,6 +131,62 @@ class Resources:
 
     def get_global(self, name: str, default: object = None) -> object:
         return self.objects.get(name, default)
+
+    def require(self, name: str, expected_type: type[T]) -> T:
+        value = self.get(name)
+        if not isinstance(value, expected_type):
+            raise TypeError(
+                f"Resolved resource {name!r} must be {expected_type.__name__}."
+            )
+        return value
+
+    @property
+    def system_prompt(self) -> str:
+        return cast(str, self.require("system_prompt", str))
+
+    @property
+    def user(self) -> User | None:
+        value = self.get("user")
+        if value is None:
+            return None
+        if not isinstance(value, User):
+            raise TypeError("Resolved resource 'user' must implement User.")
+        return value
+
+    @property
+    def endpoint(self) -> Endpoint | None:
+        value = self.get("endpoint")
+        if value is None:
+            return None
+        if not isinstance(value, Endpoint):
+            raise TypeError("Resolved resource 'endpoint' must be Endpoint.")
+        return value
+
+    @property
+    def sandbox_runtime(self) -> SandboxResources | None:
+        value = self.get("sandbox_runtime")
+        if value is None:
+            return None
+        if not isinstance(value, SandboxResources):
+            raise TypeError(
+                "Resolved resource 'sandbox_runtime' must be SandboxResources."
+            )
+        return value
+
+    @property
+    def sandbox_request(self) -> object:
+        return self.get("sandbox_request")
+
+    @property
+    def sandbox_scoring(self) -> bool:
+        return bool(self.get("sandbox_scoring"))
+
+    @property
+    def upload_dirs(self) -> Mapping[str, object]:
+        value = self.get("upload_dirs")
+        if not isinstance(value, Mapping):
+            raise TypeError("Resolved resource 'upload_dirs' must be a mapping.")
+        return cast(Mapping[str, object], value)
 
     def rollout_objects(self) -> dict[str, object]:
         return self._rollout_objects.get() or {}

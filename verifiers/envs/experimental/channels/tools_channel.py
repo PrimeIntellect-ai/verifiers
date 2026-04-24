@@ -13,7 +13,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent, Tool as MCPTool
 
-from verifiers.types import Tool
+from verifiers.rubrics.rubric import Rubric
+from verifiers.types import AssistantMessage, Messages, Tool
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
@@ -57,6 +58,36 @@ INJECTABLE_TOOL_ARGS = frozenset(
 
 class ToolArgumentError(ValueError):
     pass
+
+
+class ToolMonitorRubric(Rubric):
+    def __init__(self, tool_names: list[str] | None = None):
+        super().__init__()
+        self.tool_names = list(tool_names or [])
+        self.add_metric(self.total_tool_calls)
+        for tool_name in self.tool_names:
+            self.add_metric(self.tool_call_count_func(tool_name))
+
+    async def total_tool_calls(self, completion: Messages) -> float:
+        total = 0
+        for message in completion:
+            if isinstance(message, AssistantMessage):
+                total += len(message.tool_calls or [])
+        return float(total)
+
+    def tool_call_count_func(self, tool_name: str) -> Callable[..., Any]:
+        async def tool_call_count(completion: Messages) -> float:
+            count = 0
+            for message in completion:
+                if not isinstance(message, AssistantMessage):
+                    continue
+                for tool_call in message.tool_calls or []:
+                    if tool_call.name == tool_name:
+                        count += 1
+            return float(count)
+
+        tool_call_count.__name__ = f"{tool_name}_calls"
+        return tool_call_count
 
 
 class MCPServerConnection:
@@ -267,6 +298,10 @@ class ToolRegistry(Mapping[str, Any]):
         for tool in self._tools.values():
             defs.append(self._tool_def(tool))
         return defs
+
+    def names(self) -> list[str]:
+        self.ensure_ready()
+        return list(self._tools)
 
     async def call(
         self,

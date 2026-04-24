@@ -131,10 +131,11 @@ The new code enforces three objects:
 `Harness.run(task, resources)` owns rollout control flow. `Env` only resolves
 resources, converts dataset rows to `Task`, and delegates.
 
-`Taskset.get_dataset()` and `Taskset.get_eval_dataset()` are the public
-dataset-shaped hooks. They are lazy and cached after first load, including when
-a concrete taskset overrides them. Callers should not need to choose between
-eager datasets and builder callables. `Env` passes the cached accessors into the
+`Taskset(source=..., eval_source=...)` is the public dataset-shaped interface.
+The source values can be lazy callables or already materialized rows. Internally,
+`Taskset.get_dataset()` and `Taskset.get_eval_dataset()` are the cached access
+paths; concrete tasksets may still override those methods when discovery logic
+is clearer as class behavior. `Env` passes the cached accessors into the
 existing `Environment` runtime without calling them during construction.
 
 New model calls go through the harness request scheduler. A harness produces a

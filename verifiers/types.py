@@ -237,9 +237,10 @@ class BaseRolloutInput(TypedDict):
 
 class RolloutInput(BaseRolloutInput, total=False):
     # required: prompt, example_id
-    # optional: answer, info
+    # optional: answer, info, channels
     answer: str
     info: Info | str
+    channels: dict[str, Any] | str
 
 
 class RolloutTiming(TypedDict, total=False):

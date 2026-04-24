@@ -3,7 +3,6 @@ from __future__ import annotations
 from verifiers.clients import Client
 from verifiers.decorators import teardown
 from verifiers.envs.environment import Environment
-from verifiers.rubrics.rubric import Rubric
 from verifiers.types import RolloutInput, SamplingArgs, State
 
 from .harness import Harness
@@ -20,7 +19,6 @@ class Env(Environment):
         harness: Harness,
     ):
         self.resources = Resources(taskset, harness)
-        attach_task_provider(self.resources.rubric, self.resources.taskset)
         super().__init__(
             dataset=self.resources.dataset,
             eval_dataset=self.resources.eval_dataset,
@@ -48,12 +46,3 @@ class Env(Environment):
     @teardown
     async def teardown_resources(self):
         await self.resources.teardown()
-
-
-def attach_task_provider(rubric: Rubric, taskset: Taskset) -> None:
-    rubric.add_score_object_provider(
-        lambda state: {"task": taskset.to_task(state["input"])}
-    )
-    rubric.add_group_score_object_provider(
-        lambda states: {"tasks": [taskset.to_task(state["input"]) for state in states]}
-    )

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any, cast
 
 from verifiers.decorators import cleanup, stop
 from verifiers.envs.experimental.channels import ChannelMap, Endpoint
 from verifiers.errors import Error
+from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ClientType, Messages, Response, State, Tool
 from verifiers.utils.message_utils import normalize_messages
 
@@ -30,15 +32,26 @@ class EndpointHarness(Harness):
         api_client_type: ClientType = "openai_chat_completions",
         max_turns: int = -1,
         poll_interval: float = 1.0,
-        **kwargs: object,
+        rubric: Rubric | None = None,
+        system_prompt: str | None = None,
+        tools: Iterable[object] | None = None,
+        parallel_model_requests: bool = True,
+        error_formatter: Callable[[Exception], str] = str,
+        stop_errors: list[type[Exception]] | None = None,
     ):
-        kwargs.setdefault("parallel_model_requests", True)
-        super().__init__(**kwargs)
+        super().__init__(
+            rubric=rubric,
+            system_prompt=system_prompt,
+            tools=tools,
+            max_turns=max_turns,
+            parallel_model_requests=parallel_model_requests,
+            error_formatter=error_formatter,
+            stop_errors=stop_errors,
+        )
         self.endpoint_port = endpoint_port
         self.endpoint_url = endpoint_url
         self.endpoint_secret = endpoint_secret
         self.api_client_type = api_client_type
-        self.max_turns = max_turns
         self.poll_interval = poll_interval
 
     def channels(self, task: Task | None = None) -> ChannelMap:
@@ -80,7 +93,13 @@ class EndpointHarness(Harness):
         return None
 
     async def normalize_endpoint_messages(self, messages: object) -> Messages:
-        return normalize_messages(messages, field_name="endpoint.messages")  # type: ignore[arg-type]
+        if isinstance(messages, str):
+            return normalize_messages(messages, field_name="endpoint.messages")
+        if isinstance(messages, list):
+            return normalize_messages(
+                cast(Messages, messages), field_name="endpoint.messages"
+            )
+        raise TypeError("Endpoint messages must be vf.Messages or str.")
 
     def normalize_endpoint_tools(self, tools: object) -> list[Tool] | None:
         if tools is None:
@@ -94,6 +113,7 @@ class EndpointHarness(Harness):
                 continue
             if not isinstance(raw_tool, dict):
                 raise TypeError("Endpoint tool definitions must be dicts.")
+            raw_tool = cast(dict[str, Any], raw_tool)
             function_payload = raw_tool.get("function")
             if raw_tool.get("type") == "function" and isinstance(
                 function_payload, dict
@@ -118,6 +138,7 @@ class EndpointHarness(Harness):
             if isinstance(tool, Tool):
                 names.append(tool.name)
             elif isinstance(tool, dict):
+                tool = cast(dict[str, Any], tool)
                 function = tool.get("function")
                 if isinstance(function, dict):
                     names.append(str(function.get("name", "")))
@@ -157,11 +178,13 @@ class EndpointHarness(Harness):
             tools: list[Tool] | None = []
         else:
             cache_key = self.endpoint_tool_cache_key(raw_tools)
-            cached_key, cached_tools = resources.runtime.get(
-                "endpoint_cached_tool_defs", (None, None)
-            )
+            cached = resources.runtime.get("endpoint_cached_tool_defs")
+            if isinstance(cached, tuple) and len(cached) == 2:
+                cached_key, cached_tools = cached
+            else:
+                cached_key, cached_tools = (None, None)
             if cache_key is not None and cache_key == cached_key:
-                tools = cached_tools
+                tools = cast(list[Tool] | None, cached_tools)
             else:
                 tools = self.normalize_endpoint_tools(raw_tools)
                 if cache_key is not None:
@@ -179,7 +202,7 @@ class EndpointHarness(Harness):
         task: Task,
         state: State,
         resources: Resources,
-        tool_defs: object = None,
+        tool_defs: list[Tool] | None = None,
         context: dict[str, object] | None = None,
     ) -> Response:
         request_id = context.get("endpoint_request_id") if context else None

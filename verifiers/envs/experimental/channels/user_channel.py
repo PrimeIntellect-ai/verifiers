@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
 from verifiers.types import Messages, State
 
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 UserResponse: TypeAlias = Messages | None
 
 
+@runtime_checkable
 class User(Protocol):
     def respond(
         self, task: Task, state: State, resources: Resources

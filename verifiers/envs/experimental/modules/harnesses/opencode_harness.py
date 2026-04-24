@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from verifiers.envs.experimental.channels import SandboxSpec
@@ -9,6 +10,8 @@ from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.modules.harnesses.cli_harness import (
     CliHarness,
 )
+from verifiers.rubrics.rubric import Rubric
+from verifiers.types import ClientType, State
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.resources import Resources
@@ -150,7 +153,19 @@ class OpenCode(CliHarness):
         model_key: str = "${OPENAI_MODEL##*/}",
         model_display_name: str | None = None,
         provider_timeout_ms: int = 3_600_000,
-        **kwargs: Any,
+        timeout_seconds: float = 3600.0,
+        environment_vars: dict[str, str] | None = None,
+        keep_sandbox_for_scoring: bool = False,
+        endpoint_port: int | None = None,
+        endpoint_url: str | None = None,
+        endpoint_secret: str | None = None,
+        api_client_type: ClientType = "openai_chat_completions",
+        rubric: Rubric | None = None,
+        tools: Iterable[object] | None = None,
+        max_turns: int = -1,
+        parallel_model_requests: bool = True,
+        error_formatter: Callable[[Exception], str] = str,
+        stop_errors: list[type[Exception]] | None = None,
     ):
         disabled_tools = (
             self.DEFAULT_DISABLED_TOOLS if disabled_tools is None else disabled_tools
@@ -196,18 +211,32 @@ cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_p
                 install_ripgrep=install_ripgrep,
             ),
             install_timeout=install_timeout,
-            **kwargs,
+            timeout_seconds=timeout_seconds,
+            environment_vars=environment_vars,
+            keep_sandbox_for_scoring=keep_sandbox_for_scoring,
+            endpoint_port=endpoint_port,
+            endpoint_url=endpoint_url,
+            endpoint_secret=endpoint_secret,
+            api_client_type=api_client_type,
+            rubric=rubric,
+            tools=tools,
+            max_turns=max_turns,
+            parallel_model_requests=parallel_model_requests,
+            error_formatter=error_formatter,
+            stop_errors=stop_errors,
         )
 
     async def setup_sandbox_contents(
-        self, task: Task, state, resources: Resources
+        self, task: Task, state: State, resources: Resources
     ) -> None:
         await super().setup_sandbox_contents(task, state, resources)
         await self.with_retry(self.sandbox_client.execute_command)(
             state["sandbox_id"], "mkdir -p /opencode"
         )
 
-    async def finalize_state(self, task, state, resources):
+    async def finalize_state(
+        self, task: Task, state: State, resources: Resources
+    ) -> State:
         if state.get("sandbox_id") and self.log_path:
             try:
                 result = await self.with_retry(self.sandbox_client.read_file)(

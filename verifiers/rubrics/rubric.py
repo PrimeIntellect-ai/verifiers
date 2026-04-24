@@ -116,10 +116,10 @@ class Rubric:
             completion=state["completion"],
             answer=state.get("answer", ""),
             state=state,
-            task=state.get("task"),
             info=state.get("info", {}),
             **self.class_objects,
         )
+        objects["task"] = self.task_for_state(state, objects.get("resources"))
         for provider in self.score_object_providers:
             objects.update(provider(state))
         return objects
@@ -138,6 +138,15 @@ class Rubric:
         for provider in self.group_score_object_providers:
             objects.update(provider(states))
         return objects
+
+    def task_for_state(self, state: State, resources: object | None) -> object:
+        if "task" in state:
+            return state.get("task")
+        taskset = getattr(resources, "taskset", None)
+        to_task = getattr(taskset, "to_task", None)
+        if callable(to_task) and "input" in state:
+            return to_task(state["input"])
+        return None
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:

@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any
+from collections.abc import Iterable
 
-from datasets import Dataset
-
-from verifiers.envs.experimental.taskset import Taskset
+from verifiers.envs.experimental.taskset import Source, Taskset
 from verifiers.rubrics.rubric import Rubric
 
 
 class DatasetTaskset(Taskset):
-    """Thin named wrapper around a Hugging Face Dataset or row iterable."""
+    """Thin named wrapper around a lazy task source."""
 
     def __init__(
         self,
-        dataset: Dataset | Iterable[Mapping[str, Any]],
-        eval_dataset: Dataset | Iterable[Mapping[str, Any]] | None = None,
+        source: Source,
+        eval_source: Source = None,
         rubric: Rubric | None = None,
+        tools: Iterable[object] | None = None,
         name: str | None = None,
     ):
         super().__init__(
-            dataset=dataset,
-            eval_dataset=eval_dataset,
+            source=source,
+            eval_source=eval_source,
             rubric=rubric,
+            tools=tools,
             name=name,
         )

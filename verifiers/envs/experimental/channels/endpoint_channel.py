@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from collections.abc import Mapping
-from typing import cast
+from typing import Any, cast
 
 from prime_tunnel import Tunnel
 
@@ -145,6 +145,7 @@ def resolve_endpoint(
         config = {}
     if not isinstance(config, Mapping):
         raise TypeError("The endpoint channel expects a mapping config.")
+    config = cast(Mapping[str, object], config)
     if context.phase != "env":
         return {}
     endpoint = Endpoint(
@@ -164,7 +165,7 @@ def resolve_endpoint(
 def optional_int(value: object) -> int | None:
     if value is None:
         return None
-    return int(value)
+    return int(cast(Any, value))
 
 
 def optional_str(value: object) -> str | None:
@@ -180,6 +181,8 @@ def endpoint_api_client_type(value: object) -> ClientType:
         "openai_chat_completions",
         "anthropic_messages",
         "openai_completions",
+        "openai_chat_completions_token",
+        "nemorl_chat_completions",
     }:
         raise ValueError(f"Unsupported endpoint API client type: {value!r}")
     return cast(ClientType, value)

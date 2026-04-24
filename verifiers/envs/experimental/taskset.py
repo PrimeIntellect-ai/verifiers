@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from functools import wraps
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 from datasets import Dataset
 
@@ -15,8 +15,9 @@ from verifiers.utils.message_utils import normalize_messages
 from .channels import Channel, ChannelMap
 from .task import Task
 
-DatasetSource = Dataset | Iterable[Mapping[str, Any]] | None
-DatasetGetter = Callable[["Taskset"], DatasetSource]
+LoadedSource = Dataset | Iterable[Mapping[str, Any]] | None
+Source = LoadedSource | Callable[[], LoadedSource]
+DatasetGetter = Callable[["Taskset"], LoadedSource]
 
 
 class Taskset:
@@ -39,24 +40,41 @@ class Taskset:
 
     def __init__(
         self,
-        dataset: DatasetSource = None,
-        eval_dataset: DatasetSource = None,
+        source: Source = None,
+        eval_source: Source = None,
         rubric: Rubric | None = None,
+        tools: Iterable[object] | None = None,
         name: str | None = None,
     ):
-        self._dataset_source = dataset
-        self._eval_dataset_source = eval_dataset
+        if source is not None and type(self).get_dataset is not Taskset.get_dataset:
+            raise ValueError(
+                "Tasksets may define get_dataset() or pass source, not both."
+            )
+        if (
+            eval_source is not None
+            and type(self).get_eval_dataset is not Taskset.get_eval_dataset
+        ):
+            raise ValueError(
+                "Tasksets may define get_eval_dataset() or pass eval_source, not both."
+            )
+        self._source = source
+        self._eval_source = eval_source
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._dataset_loaded = False
         self._eval_dataset_loaded = False
         self.rubric = rubric
+        self.tools = list(tools or [])
         self.name = name or ""
         self._stop_conditions = discover_decorated(self, "stop")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
 
-    def _coerce_dataset(self, dataset: DatasetSource) -> Dataset | None:
+    def _load_source(self, source: Source) -> Dataset | None:
+        loaded = source() if callable(source) else source
+        return self._coerce_dataset(loaded)
+
+    def _coerce_dataset(self, dataset: LoadedSource) -> Dataset | None:
         if dataset is None or isinstance(dataset, Dataset):
             return dataset
         return Dataset.from_list([dict(row) for row in dataset])
@@ -65,6 +83,8 @@ class Taskset:
         channels: dict[str, object] = {}
         if self.rubric is not None:
             channels["rubric"] = self.rubric
+        if self.tools:
+            channels["tools"] = self.tools
         if self._stop_conditions:
             channels["stop"] = self._stop_conditions
         if self._cleanup_handlers:
@@ -83,28 +103,26 @@ class Taskset:
 
     def has_dataset(self) -> bool:
         return (
-            self._dataset_source is not None
+            self._source is not None
             or type(self).get_dataset is not Taskset.get_dataset
         )
 
     def has_eval_dataset(self) -> bool:
         return (
-            self._eval_dataset_source is not None
+            self._eval_source is not None
             or type(self).get_eval_dataset is not Taskset.get_eval_dataset
         )
 
     def get_dataset(self) -> Dataset | None:
         if not self._dataset_loaded:
-            self._dataset = self._format_dataset(
-                self._coerce_dataset(self._dataset_source)
-            )
+            self._dataset = self._format_dataset(self._load_source(self._source))
             self._dataset_loaded = True
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset | None:
         if not self._eval_dataset_loaded:
             self._eval_dataset = self._format_dataset(
-                self._coerce_dataset(self._eval_dataset_source)
+                self._load_source(self._eval_source)
             )
             self._eval_dataset_loaded = True
         return self._eval_dataset

@@ -8,9 +8,11 @@ import tarfile
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from importlib import resources as importlib_resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 from prime_sandboxes import (
     SandboxOOMError,
@@ -20,6 +22,7 @@ from prime_sandboxes import (
 from verifiers.decorators import cleanup, stop
 from verifiers.envs.experimental.channels import (
     ChannelMap,
+    SandboxResources,
     SandboxSeed,
     SandboxSpec,
     SandboxTimeouts,
@@ -32,7 +35,7 @@ from verifiers.envs.experimental.task import Task
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.errors import InfraError, SandboxError
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import State
+from verifiers.types import ClientType, State
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.resources import Resources
@@ -147,22 +150,39 @@ class CliHarness(EndpointHarness):
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
         timeouts: SandboxTimeouts = SandboxTimeouts(),
-        **kwargs: object,
+        endpoint_port: int | None = None,
+        endpoint_url: str | None = None,
+        endpoint_secret: str | None = None,
+        api_client_type: ClientType = "openai_chat_completions",
+        rubric: Rubric | None = None,
+        tools: Iterable[object] | None = None,
+        max_turns: int = -1,
+        parallel_model_requests: bool = True,
+        error_formatter: Callable[[Exception], str] = str,
+        stop_errors: list[type[Exception]] | None = None,
     ):
-        rubric = kwargs.pop("rubric", None)
         if tool_names:
             rubric = compose_rubrics(rubric, ToolMonitorRubric(tool_names=tool_names))
         if metrics_path:
             rubric = compose_rubrics(rubric, HarnessMetricsRubric())
-        kwargs["rubric"] = compose_rubrics(
+        rubric = compose_rubrics(
             rubric,
             SandboxMonitorRubric(),
             CliMonitorRubric(),
         )
         super().__init__(
+            endpoint_port=endpoint_port,
+            endpoint_url=endpoint_url,
+            endpoint_secret=endpoint_secret,
+            api_client_type=api_client_type,
+            max_turns=max_turns,
             poll_interval=poll_interval,
+            rubric=rubric,
             system_prompt=system_prompt,
-            **kwargs,
+            tools=tools,
+            parallel_model_requests=parallel_model_requests,
+            error_formatter=error_formatter,
+            stop_errors=stop_errors,
         )
         self.command = command
         self.instruction_path = instruction_path
@@ -182,7 +202,6 @@ class CliHarness(EndpointHarness):
         self.metrics_prefix = metrics_prefix
         self.metrics_key = metrics_key
         self.metrics_keys = metrics_keys
-        self.tool_names = list(tool_names or [])
         self.timeout_seconds = timeout_seconds
         self.environment_vars = dict(environment_vars or {})
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
@@ -205,7 +224,7 @@ class CliHarness(EndpointHarness):
         self.with_retry = _CliSandboxRetryProxy(self)
 
     def channels(self, task: Task | None = None) -> ChannelMap:
-        channels = super().channels(task)
+        channels = dict(super().channels(task))
         channels["sandbox"] = {
             "spec": self.sandbox_spec,
             "runtime": {
@@ -225,10 +244,10 @@ class CliHarness(EndpointHarness):
         }
         return channels
 
-    def require_sandbox_runtime(self):
+    def require_sandbox_runtime(self) -> SandboxResources:
         sandbox_runtime = None
         if self.resources is not None:
-            sandbox_runtime = self.resources.get("sandbox_runtime")
+            sandbox_runtime = self.resources.sandbox_runtime
         if sandbox_runtime is None:
             raise RuntimeError("CliHarness requires sandbox resources.")
         return sandbox_runtime
@@ -325,9 +344,7 @@ class CliHarness(EndpointHarness):
             registry_credentials_id=spec.registry_credentials_id,
             labels=spec.labels,
         )
-        sandbox_runtime = resources.sandbox_runtime
-        if sandbox_runtime is None:
-            raise RuntimeError("CliHarness requires sandbox resources.")
+        sandbox_runtime = self.require_sandbox_runtime()
         sandbox_id = await sandbox_runtime.create(
             request,
             max_attempts=self.sandbox_wait_for_creation_max_attempts,
@@ -424,7 +441,9 @@ class CliHarness(EndpointHarness):
             if isinstance(local_source, (str, Path)):
                 await self.upload_path(sandbox_id, Path(local_source), sandbox_path)
             else:
-                with importlib_resources.as_file(local_source) as path:
+                with importlib_resources.as_file(
+                    cast(Traversable, local_source)
+                ) as path:
                     await self.upload_path(sandbox_id, path, sandbox_path)
 
     async def install_agent(self, sandbox_id: str) -> None:
@@ -621,9 +640,7 @@ class CliHarness(EndpointHarness):
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
             return
-        sandbox_runtime = resources.sandbox_runtime
-        if sandbox_runtime is None:
-            raise RuntimeError("CliHarness requires sandbox resources.")
+        sandbox_runtime = self.require_sandbox_runtime()
         if (self.keep_sandbox_for_scoring or resources.sandbox_scoring) and state.get(
             "is_completed"
         ):

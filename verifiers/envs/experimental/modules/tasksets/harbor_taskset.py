@@ -7,7 +7,7 @@ import shlex
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from datasets import Dataset
@@ -18,6 +18,9 @@ from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.taskset import Taskset
 from verifiers.errors import InfraError
 from verifiers.rubrics.rubric import Rubric
+
+if TYPE_CHECKING:
+    from verifiers.envs.experimental.resources import Resources
 
 NETWORK_MCP_TRANSPORTS = {"streamable-http", "http", "sse"}
 logger = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ class HarborRubric(Rubric):
         super().__init__(funcs=[self.harbor_reward], weights=[1.0])
 
     async def harbor_reward(
-        self, state, task: Task | None = None, resources=None
+        self, state, task: Task | None = None, resources: Resources | None = None
     ) -> float:
         error = state.get("error")
         if (
@@ -40,13 +43,11 @@ class HarborRubric(Rubric):
             state["harbor_reward"] = 0.0
             return 0.0
         sandbox_id = state.get("sandbox_id")
-        sandbox_runtime = (
-            resources.get("sandbox_runtime") if resources is not None else None
-        )
+        sandbox_runtime = resources.sandbox_runtime if resources is not None else None
         if not sandbox_id or sandbox_runtime is None:
             return 0.0
         sandbox_client = sandbox_runtime.client
-        if task is not None:
+        if task is not None and resources is not None:
             await self._upload_verifier_assets(resources.harness, sandbox_id, task)
         test_script = "/tests/test.sh"
         try:
@@ -123,6 +124,7 @@ class HarborTaskset(Taskset):
         tasks: list[str] | None = None,
         name: str | None = None,
         rubric: Rubric | None = None,
+        tools: list[object] | None = None,
         agent_workdir: str = "/app",
         mcp_launch_commands: dict[str, str] | None = None,
         mcp_healthcheck_command: str | None = None,
@@ -140,6 +142,7 @@ class HarborTaskset(Taskset):
         self.mcp_healthcheck_start_period_sec = mcp_healthcheck_start_period_sec
         super().__init__(
             rubric=rubric or HarborRubric(),
+            tools=tools,
             name=name,
         )
 

@@ -17,19 +17,19 @@ def load_environment(
         response = parser.parse_answer(completion) or ""
         return SequenceMatcher(None, response, answer).ratio()
 
-    rubric = vf.Rubric(funcs=[lcs_reward_func], weights=[1.0], parser=parser)
+    def source():
+        dataset = load_dataset(dataset_name, split=dataset_split).map(
+            lambda x: {
+                "question": x["prompt"],
+                "answer": x["prompt"][::-1],
+                "info": {},
+            }
+        )
+        return dataset.remove_columns(["prompt"])
 
-    class ReverseTextTaskset(vf.Taskset):
-        def get_dataset(self):
-            dataset = load_dataset(dataset_name, split=dataset_split).map(
-                lambda x: {
-                    "question": x["prompt"],
-                    "answer": x["prompt"][::-1],
-                    "info": {},
-                }
-            )
-            return dataset.remove_columns(["prompt"])
-
-    taskset = ReverseTextTaskset(rubric=rubric)
+    taskset = vf.Taskset(
+        source=source,
+        rubric=vf.Rubric(funcs=[lcs_reward_func], weights=[1.0], parser=parser),
+    )
     harness = vf.Harness(system_prompt=system_prompt)
     return vf.Env(taskset=taskset, harness=harness)

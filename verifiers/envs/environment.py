@@ -560,7 +560,6 @@ class Environment(ABC):
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
-        state_input.pop("env_id", None)
         state = State(input=state_input)
 
         # Convert prompt to Pydantic messages

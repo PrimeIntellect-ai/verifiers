@@ -35,6 +35,7 @@ from verifiers.envs.experimental.channels.tools_channel import (
     CallableTool,
     MCPServerSpec,
     ToolArgumentError,
+    ToolMonitorRubric,
     ToolRegistry,
     tools_channel,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "SandboxResources",
     "SandboxTimeouts",
     "ToolArgumentError",
+    "ToolMonitorRubric",
     "ToolRegistry",
     "User",
     "attach_resources",

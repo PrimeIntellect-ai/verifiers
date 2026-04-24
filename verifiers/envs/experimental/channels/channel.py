@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.task import Task
 
 ChannelConfig = object
-ChannelMap = Mapping[str, ChannelConfig]
+ChannelMap = dict[str, ChannelConfig]
 CanonicalizeFn = Callable[[ChannelConfig], ChannelConfig]
 ResolvedObjects = dict[str, object]
 ResolveFn = Callable[[list[ChannelConfig], "ChannelContext"], ResolvedObjects]
@@ -125,7 +125,7 @@ def raw_channels(owner: object, task: Task | None = None) -> Mapping[str, object
     channels_fn = getattr(owner, "channels", None)
     if not callable(channels_fn):
         return {}
-    return channels_fn(task) or {}
+    return dict(channels_fn(task) or {})
 
 
 def raw_channel_objects(owner: object) -> dict[str, object]:
@@ -198,8 +198,14 @@ def lifecycle_handlers(handlers: object) -> list[Callable[..., object]]:
     if handlers is None:
         return []
     if isinstance(handlers, list | tuple | set):
-        return list(handlers)
-    return [handlers]
+        return [lifecycle_handler(handler) for handler in handlers]
+    return [lifecycle_handler(handlers)]
+
+
+def lifecycle_handler(handler: object) -> Callable[..., object]:
+    if not callable(handler):
+        raise TypeError("Lifecycle channel entries must be callable.")
+    return cast(Callable[..., object], handler)
 
 
 def merge_resource_value(name: str, existing: object, incoming: object) -> object:
@@ -257,4 +263,4 @@ def as_list(config: ChannelConfig) -> list[object]:
 def require_mapping(name: str, config: ChannelConfig) -> Mapping[str, object]:
     if not isinstance(config, Mapping):
         raise TypeError(f"Channel {name!r} expected a mapping config.")
-    return config
+    return cast(Mapping[str, object], config)

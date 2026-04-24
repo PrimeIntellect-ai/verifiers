@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import httpx
 import tenacity as tc
 from aiolimiter import AsyncLimiter
 from prime_sandboxes import (
+    AdvancedConfigs,
     APIError,
     CommandTimeoutError,
     DownloadTimeoutError,
@@ -48,7 +49,7 @@ class SandboxSpec:
     environment_vars: dict[str, str] = field(default_factory=dict)
     secrets: dict[str, str] | None = None
     team_id: str | None = None
-    advanced_configs: object | None = None
+    advanced_configs: AdvancedConfigs | None = None
     registry_credentials_id: str | None = None
     labels: list[str] = field(default_factory=list)
 
@@ -68,7 +69,7 @@ class SandboxSeed:
     environment_vars: dict[str, str] = field(default_factory=dict)
     secrets: dict[str, str] | None = None
     team_id: str | None = None
-    advanced_configs: object | None = None
+    advanced_configs: AdvancedConfigs | None = None
     registry_credentials_id: str | None = None
     files: dict[str, str] = field(default_factory=dict)
     mounts: dict[str, str] = field(default_factory=dict)
@@ -234,19 +235,20 @@ def materialize_sandbox(config: object, context: ChannelContext) -> dict[str, ob
         return {}
     if not isinstance(config, Mapping):
         raise TypeError("The sandbox runtime config must resolve to a mapping.")
+    config = cast(Mapping[str, object], config)
     sandbox_resources = SandboxResources(
-        max_retries=int(config.get("max_retries", 5)),
-        base_delay=float(config.get("base_delay", 0.5)),
-        backoff_factor=float(config.get("backoff_factor", 2.0)),
-        max_backoff_seconds=float(config.get("max_backoff_seconds", 30.0)),
-        jitter=float(config.get("jitter", 1e-3)),
-        client_max_workers=int(config.get("client_max_workers", 50)),
-        client_max_connections=int(config.get("client_max_connections", 1000)),
-        client_max_keepalive_connections=int(
+        max_retries=as_int(config.get("max_retries", 5)),
+        base_delay=as_float(config.get("base_delay", 0.5)),
+        backoff_factor=as_float(config.get("backoff_factor", 2.0)),
+        max_backoff_seconds=as_float(config.get("max_backoff_seconds", 30.0)),
+        jitter=as_float(config.get("jitter", 1e-3)),
+        client_max_workers=as_int(config.get("client_max_workers", 50)),
+        client_max_connections=as_int(config.get("client_max_connections", 1000)),
+        client_max_keepalive_connections=as_int(
             config.get("client_max_keepalive_connections", 200)
         ),
-        creations_per_minute=config.get("creations_per_minute", 128),
-        timeouts=config.get("timeouts") or SandboxTimeouts(),
+        creations_per_minute=optional_float(config.get("creations_per_minute", 128)),
+        timeouts=sandbox_timeouts(config.get("timeouts")),
         logger=channel_logger(context),
     )
     return {
@@ -282,3 +284,27 @@ def channel_logger(context: ChannelContext) -> logging.Logger:
         if isinstance(logger, logging.Logger):
             return logger
     return logging.getLogger(__name__)
+
+
+def optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return as_float(value)
+
+
+def as_int(value: object) -> int:
+    return int(cast(Any, value))
+
+
+def as_float(value: object) -> float:
+    return float(cast(Any, value))
+
+
+def sandbox_timeouts(value: object) -> SandboxTimeouts:
+    if value is None:
+        return SandboxTimeouts()
+    if isinstance(value, SandboxTimeouts):
+        return value
+    if isinstance(value, Mapping):
+        return SandboxTimeouts(**dict(value))
+    raise TypeError("Sandbox runtime timeouts must be SandboxTimeouts or a mapping.")

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from verifiers.rubrics.rubric import Rubric
 from verifiers.rubrics.rubric_group import RubricGroup
+from verifiers.types import GroupRewardFunc, RewardFunc
 from verifiers.utils.async_utils import maybe_await
 
 from verifiers.envs.experimental.channels.channel import (
@@ -30,6 +31,7 @@ def canonicalize_rubric_config(
     if isinstance(config, Sequence) and not isinstance(config, str | bytes):
         return canonicalize_top_level_sequence(config)
     if isinstance(config, Mapping):
+        config = cast(Mapping[str, Any], config)
         if "fn" in config:
             return {
                 "rewards": [function_entry_from_mapping(config, 1.0)],
@@ -71,7 +73,10 @@ def canonicalize_top_level_sequence(
         }
     if all(isinstance(item, Mapping) and "fn" in item for item in config):
         return {
-            "rewards": [function_entry_from_mapping(item, 1.0) for item in config],
+            "rewards": [
+                function_entry_from_mapping(cast(Mapping[str, Any], item), 1.0)
+                for item in config
+            ],
             "metrics": [],
             "rubrics": [],
         }
@@ -79,7 +84,10 @@ def canonicalize_top_level_sequence(
         return {
             "rewards": [],
             "metrics": [],
-            "rubrics": [rubric_entry_from_mapping(item) for item in config],
+            "rubrics": [
+                rubric_entry_from_mapping(cast(Mapping[str, Any], item))
+                for item in config
+            ],
         }
     raise TypeError(
         "Top-level rubric lists must contain only strings, only reward-function "
@@ -104,9 +112,15 @@ def canonicalize_entry_list(
     if all(isinstance(entry, Mapping) for entry in entries):
         if kind == "fn":
             return [
-                function_entry_from_mapping(entry, default_weight) for entry in entries
+                function_entry_from_mapping(
+                    cast(Mapping[str, Any], entry), default_weight
+                )
+                for entry in entries
             ]
-        return [rubric_entry_from_mapping(entry) for entry in entries]
+        return [
+            rubric_entry_from_mapping(cast(Mapping[str, Any], entry))
+            for entry in entries
+        ]
     raise TypeError(
         "Rubric entry lists must contain either only names/objects or only dicts."
     )
@@ -153,7 +167,7 @@ def resolve_rubric_channel(
     rubric_entries = [
         entry for config in canonical_configs for entry in config["rubrics"]
     ]
-    funcs: list[Callable[..., object]] = []
+    funcs: list[RewardFunc | GroupRewardFunc] = []
     weights: list[float] = []
     seen_names: set[str] = set()
 
@@ -186,11 +200,13 @@ def resolve_rubric_channel(
     return {"rubric": RubricGroup(rubrics)}
 
 
-def resolve_function(ref: object, context: ChannelContext) -> Callable[..., object]:
+def resolve_function(
+    ref: object, context: ChannelContext
+) -> RewardFunc | GroupRewardFunc:
     obj = context.get_object(ref)
     if not callable(obj) or is_rubric_object(obj):
         raise TypeError(f"Rubric function {ref!r} did not resolve to a function.")
-    return obj
+    return cast(RewardFunc | GroupRewardFunc, obj)
 
 
 def resolve_rubric(entry: Mapping[str, Any], context: ChannelContext) -> Rubric:
@@ -208,8 +224,8 @@ def resolve_rubric(entry: Mapping[str, Any], context: ChannelContext) -> Rubric:
 
 
 def bind_entry_metadata(
-    fn: Callable[..., object], entry: Mapping[str, Any], name: str
-) -> Callable[..., object]:
+    fn: RewardFunc | GroupRewardFunc, entry: Mapping[str, Any], name: str
+) -> RewardFunc | GroupRewardFunc:
     metadata = {
         key: value for key, value in entry.items() if key not in RESERVED_FUNC_KEYS
     }
@@ -234,7 +250,7 @@ def bind_entry_metadata(
     wrapped.__name__ = name
     wrapped.__doc__ = getattr(fn, "__doc__", None)
     wrapped.__signature__ = signature  # type: ignore[attr-defined]
-    return wrapped
+    return cast(RewardFunc | GroupRewardFunc, wrapped)
 
 
 def entry_name(entry: Mapping[str, Any], fn: Callable[..., object]) -> str:
