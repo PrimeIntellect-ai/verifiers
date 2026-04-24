@@ -237,7 +237,9 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
     state["reward"] = 0.0
 
     output = state_to_output(state, state_columns=[])
-    assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
+    usage = output["token_usage"]
+    assert usage["input_tokens"] == 5.0
+    assert usage["output_tokens"] == 4.0
 
 
 @pytest.mark.asyncio

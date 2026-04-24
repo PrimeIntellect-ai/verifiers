@@ -4,6 +4,7 @@ import logging
 import os
 import tarfile
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
@@ -43,6 +44,27 @@ class SandboxNotReadyError(vf.SandboxError): ...
 
 
 class SandboxSetupError(vf.SandboxError): ...
+
+
+@dataclass(frozen=True)
+class SandboxTimeouts:
+    """Per-operation HTTP timeouts (seconds) for sandbox client calls.
+
+    Distinct from ``SandboxSpec.timeout_minutes`` (container lifetime)
+    and from ``MultiTurnEnv.timeout_seconds`` (wall-clock rollout cap).
+    These control individual httpx request-level timeouts against the
+    sandbox gateway; override when your sandbox is slow or far away.
+
+    Types are ``int``: the sandbox sidecar deserializes the ``exec``
+    request body's ``timeout`` field as ``u64``, so passing a Python
+    ``float`` (e.g. ``10.0``) JSON-serializes as ``10.0`` and is
+    rejected on the wire.
+    """
+
+    read_file: int = 10
+    extract: int = 60
+    poll: int = 60
+    mkdir: int = 10
 
 
 class SandboxMonitorRubric(vf.Rubric):
@@ -100,6 +122,7 @@ class SandboxMixin:
     sandbox_client: ThreadedAsyncSandboxClient
     sandbox_wait_for_creation_max_attempts: int
     sandbox_creation_rate_limiter: Optional[AsyncLimiter]
+    timeouts: SandboxTimeouts
     with_retry: Callable
 
     def register_sandbox(self, sandbox_id: str) -> None:
@@ -122,8 +145,18 @@ class SandboxMixin:
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
+        timeouts: SandboxTimeouts = SandboxTimeouts(),
     ):
-        """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
+        """Initialize sandbox client and retry wrapper. Call from subclass __init__.
+
+        ``timeouts`` controls per-operation HTTP request timeouts for sandbox
+        client calls (read_file, command execution for extracts, background
+        job polling, mkdir).  Pass a custom :class:`SandboxTimeouts` when the
+        sandbox gateway is slow or geographically distant.  These are
+        request-level (httpx) timeouts, distinct from container-lifetime
+        (``SandboxSpec.timeout_minutes``) and rollout-level
+        (``MultiTurnEnv.timeout_seconds``) limits.
+        """
         if not hasattr(self, "logger"):
             self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.active_sandboxes = set()
@@ -135,6 +168,7 @@ class SandboxMixin:
             if sandbox_creations_per_minute is not None
             else None
         )
+        self.timeouts = timeouts
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
             max_connections=sandbox_client_max_connections,
@@ -290,9 +324,10 @@ class SandboxMixin:
         self,
         sandbox_id: str,
         remote_path: str,
-        timeout: int = 10,
+        timeout: int | None = None,
     ) -> str | None:
         """Read a file from the sandbox, returning its contents or None on failure."""
+        timeout = self.timeouts.read_file if timeout is None else timeout
         try:
             result = await self.sandbox_client.read_file(
                 sandbox_id, remote_path, timeout=timeout
@@ -346,7 +381,7 @@ class SandboxMixin:
         result = await self.sandbox_client.execute_command(
             sandbox_id,
             extract_cmd,
-            timeout=60,
+            timeout=self.timeouts.extract,
         )
         if result.exit_code != 0:
             raise vf.SandboxError(

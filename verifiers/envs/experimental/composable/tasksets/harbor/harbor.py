@@ -4,9 +4,13 @@ import json
 import logging
 import tarfile
 import tempfile
-import tomllib
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
@@ -77,12 +81,14 @@ class HarborRubric(vf.Rubric):
 class HarborTaskSet(SandboxTaskSet):
     """Single Harbor task directory."""
 
-    def __init__(self, task_dir: str | Path):
+    def __init__(self, task_dir: str | Path, filter_fn: str | None = None):
         self.task_dir = Path(task_dir)
         if not self.task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {self.task_dir}")
         super().__init__(
-            dataset=self._build_dataset(), name=f"harbor/{self.task_dir.name}"
+            dataset=self._build_dataset(),
+            name=f"harbor/{self.task_dir.name}",
+            filter_fn=filter_fn,
         )
 
     def _build_dataset(self) -> Any:
@@ -233,19 +239,24 @@ class HarborTaskSet(SandboxTaskSet):
             )
 
     async def validate_instance(self, state) -> bool:
-        """Apply gold patch, run tests, and check if reward > 0."""
+        """Apply gold patch, run tests, and check if reward > 0.
+
+        Exceptions propagate to the caller (``TaskSet.validate``) so
+        ``CommandTimeoutError`` / ``vf.InfraError`` / gold-apply failures
+        can be classified by their type instead of being flattened into
+        ``test_failed``. Agent rollouts use the rubric (not this method),
+        which keeps its own try/except so a transient failure still scores
+        0 rather than crashing the rollout.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        try:
-            await self._apply_gold_patch(sandbox_client, sandbox_id, state)
-            test_output = await self._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
-            )
-            state["test_output"] = test_output
-            info = state.get("info") or {}
-            return float(self._calculate_reward(state.get("test_output", ""), info)) > 0
-        except Exception:
-            return False
+        await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        test_output = await self._run_tests(
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+        )
+        state["test_output"] = test_output
+        info = state.get("info") or {}
+        return float(self._calculate_reward(state.get("test_output", ""), info)) > 0
 
 
 class HarborDatasetRubric(vf.Rubric):
@@ -290,13 +301,20 @@ class HarborDatasetRubric(vf.Rubric):
 class HarborDatasetTaskSet(SandboxTaskSet):
     """Iterate subdirectories of a dataset path, returning a combined multi-row Dataset."""
 
-    def __init__(self, dataset_path: str | Path, task_names: list[str] | None = None):
+    def __init__(
+        self,
+        dataset_path: str | Path,
+        task_names: list[str] | None = None,
+        filter_fn: str | None = None,
+    ):
         self.dataset_path = Path(dataset_path)
         self.task_names = task_names
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.dataset_path}")
         super().__init__(
-            dataset=self._build_dataset(), name=f"harbor/{self.dataset_path.name}"
+            dataset=self._build_dataset(),
+            name=f"harbor/{self.dataset_path.name}",
+            filter_fn=filter_fn,
         )
 
     def _build_dataset(self) -> Any:

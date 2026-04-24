@@ -32,6 +32,7 @@ from verifiers.types import (
     RolloutInput,
     RolloutOutput,
     StartCallback,
+    TokenUsage,
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
@@ -330,8 +331,14 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"sweep.env_args — use one or the other"
             )
 
+    explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
+
     # Fixed fields: global defaults overridden by ablation-level fields
     fixed = {**global_defaults, **ablation}
+    if "endpoint_id" in explicit_keys and "model" not in explicit_keys:
+        fixed.pop("model", None)
+    if "model" in explicit_keys and "endpoint_id" not in explicit_keys:
+        fixed.pop("endpoint_id", None)
 
     # Expand cartesian product
     keys = [k for k, _ in dimensions]
@@ -351,7 +358,9 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     return expanded
 
 
-def load_toml_config(path: Path) -> list[dict]:
+def load_toml_config(
+    path: Path, extra_valid_fields: set[str] | None = None
+) -> list[dict]:
     """Loads and validates a TOML config file.
 
     Config format supports global defaults at the top level, with per-eval overrides
@@ -430,6 +439,8 @@ def load_toml_config(path: Path) -> list[dict]:
         "api_base_url",
         "header",
         "headers",
+        "header_from_state",
+        "headers_from_state",
         # sampling
         "sampling_args",
         "max_tokens",
@@ -444,7 +455,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "disable_env_server",
         # logging
         "verbose",
-        "debug",
+        "disable_tui",
         # saving
         "output_dir",
         "state_columns",
@@ -454,6 +465,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "save_to_hf_hub",
         "hf_hub_dataset_name",
     }
+    valid_fields |= extra_valid_fields or set()
 
     # validate global fields
     if global_defaults:
@@ -475,6 +487,10 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
+        if "endpoint_id" in eval_config and "model" not in eval_config:
+            merged.pop("model", None)
+        if "model" in eval_config and "endpoint_id" not in eval_config:
+            merged.pop("endpoint_id", None)
         merged_eval_list.append(merged)
 
     # expand [[ablation]] blocks into eval configs
@@ -643,22 +659,34 @@ def print_timing(results: GenerateOutputs):
 
 def print_usage(results: GenerateOutputs):
     usage_count = 0
-    input_tokens_total = 0.0
-    output_tokens_total = 0.0
+    input_total = 0.0
+    output_total = 0.0
+    final_input_total = 0.0
+    final_output_total = 0.0
+    context_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
             continue
         usage_count += 1
-        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
-        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+        input_total += float(token_usage.get("input_tokens", 0.0))
+        output_total += float(token_usage.get("output_tokens", 0.0))
+        inp = token_usage.get("final_input_tokens")
+        out = token_usage.get("final_output_tokens")
+        if inp is not None and out is not None:
+            context_count += 1
+            final_input_total += float(inp)
+            final_output_total += float(out)
 
-    usage = None
+    usage: TokenUsage | None = None
     if usage_count > 0:
-        usage = {
-            "input_tokens": input_tokens_total / usage_count,
-            "output_tokens": output_tokens_total / usage_count,
-        }
+        usage = TokenUsage(
+            input_tokens=input_total / usage_count,
+            output_tokens=output_total / usage_count,
+        )
+        if context_count > 0:
+            usage["final_input_tokens"] = final_input_total / context_count
+            usage["final_output_tokens"] = final_output_total / context_count
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
@@ -666,8 +694,14 @@ def print_usage(results: GenerateOutputs):
         return
 
     print("Usage:")
-    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
-    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+    print(f"input_tokens (avg): {float(usage.get('input_tokens', 0.0)):.3f}")
+    print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
+    inp = usage.get("final_input_tokens")
+    out = usage.get("final_output_tokens")
+    if inp is not None:
+        print(f"final_input_tokens (avg): {float(inp):.3f}")
+    if out is not None:
+        print(f"final_output_tokens (avg): {float(out):.3f}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
@@ -786,7 +820,7 @@ async def run_evaluation(
                 num_workers=num_workers,
                 log_level=get_log_level(config.verbose),
                 log_dir=log_dir,
-                console_logging=config.debug,
+                console_logging=config.disable_tui,
             )
             if on_log_file is not None:
                 from verifiers.serve import EnvServer
@@ -884,13 +918,14 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
 
 async def run_evaluations_tui(
-    config: EvalRunConfig, tui_mode: bool = True, compact: bool = False
+    config: EvalRunConfig, fullscreen: bool = False, compact: bool = False
 ) -> None:
     """Run multi-environment evaluation with a Rich display.
 
     Args:
         config: Evaluation run configuration.
-        tui_mode: If True, use alternate screen (--tui flag). If False, refresh in-place.
+        fullscreen: If True, use alternate screen buffer (--fullscreen flag).
+            If False, refresh in-place.
         compact: If True, show compact summary (settings + stats, skip example prompts).
     """
     from verifiers.utils.eval_display import EvalDisplay, is_tty
@@ -907,7 +942,7 @@ async def run_evaluations_tui(
 
         heart = Heartbeat(config.heartbeat_url)
 
-    display = EvalDisplay(config.evals, screen=tui_mode, compact=compact)
+    display = EvalDisplay(config.evals, screen=fullscreen, compact=compact)
 
     async def run_with_progress(
         env_config: EvalConfig, env_idx: int
@@ -1011,7 +1046,7 @@ async def run_evaluations_tui(
                 )
 
                 display.refresh()
-                if tui_mode:
+                if fullscreen:
                     await display.wait_for_exit()
             finally:
                 refresh_stop.set()

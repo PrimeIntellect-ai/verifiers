@@ -188,7 +188,7 @@ class BaseDisplay:
 
     def get_log_hint(self) -> Text | None:
         """Return an optional hint for viewing full logs."""
-        return Text("full logs: --debug", style="dim")
+        return Text("full logs: --disable-tui", style="dim")
 
     def _make_log_panel(self) -> Panel:
         """Create a panel showing recent log messages with placeholder lines."""

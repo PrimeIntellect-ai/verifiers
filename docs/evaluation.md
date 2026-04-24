@@ -105,6 +105,7 @@ env.set_concurrency(256)
 | `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `renderer`, or `anthropic_messages` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
+| `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
 
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
@@ -143,6 +144,8 @@ headers = { "X-Custom-Header" = "value" }
 ```
 
 In `[[eval]]` TOML configs you can set extra headers as `headers = { ... }` and/or as a list `header = ["Name: Value", ...]` (same form as repeated `--header`). Merge order is: registry row, then the `headers` table, then each `header` / `--header` line, with later entries overriding the same name.
+
+For per-request headers that need to vary per rollout (e.g. sticky DP-aware routing keyed off `example_id` or `trajectory_id`), use `headers_from_state = { "X-Name" = "state_key" }` and/or `header_from_state = ["X-Name: state_key", ...]` (same form as repeated `--header-from-state`). The value for each request is resolved at send time as `state[state_key]`. If unset, `X-Session-ID` defaults to `example_id`.
 
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
 
@@ -208,8 +211,8 @@ When evaluating multiple environments, the display shows an overview panel at th
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
-| `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
-| `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
+| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |

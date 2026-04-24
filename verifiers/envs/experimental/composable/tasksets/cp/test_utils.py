@@ -1,6 +1,7 @@
 # modifed from https://github.com/hendrycks/apps/blob/main/eval/testing_util.py
 # https://github.com/NovaSky-AI/SkyThought/blob/main/skythought/skythought_evals/tasks/taco/taco_util.py
 import asyncio
+import ast
 import io
 import json
 import logging
@@ -196,7 +197,9 @@ def compare_stdout_results(
 
 
 def generate_cb_wrapper_script(synthesized_code, method_name, inputs):
-    inputs_repr = list(map(eval, inputs.split("\n")))
+    inputs_repr = [
+        ast.literal_eval(line) for line in inputs.splitlines() if line.strip()
+    ]
     return f"""
 {synthesized_code}
 

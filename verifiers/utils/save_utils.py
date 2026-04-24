@@ -29,6 +29,8 @@ from verifiers.utils.message_utils import (
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
+    FinalInputTokensMetric,
+    FinalOutputTokensMetric,
     InputTokensMetric,
     OutputTokensMetric,
     PassAtKMetric,
@@ -97,8 +99,13 @@ def _coerce_token_usage(value: object) -> TokenUsage | None:
         return None
     mapping_value = cast(Mapping[str, Any], value)
     try:
+        # Accept current and legacy key names
         input_raw = mapping_value.get("input_tokens")
+        if input_raw is None:
+            input_raw = mapping_value.get("prefill_tokens")
         output_raw = mapping_value.get("output_tokens")
+        if output_raw is None:
+            output_raw = mapping_value.get("decode_tokens")
         input_tokens = float(0.0 if input_raw is None else input_raw)
         output_tokens = float(0.0 if output_raw is None else output_raw)
     except (TypeError, ValueError):
@@ -200,7 +207,17 @@ def state_to_output(
                 "output_tokens": float(output_tokens),
             }
     if usage is not None:
-        output["token_usage"] = usage
+        token_usage: dict[str, float] = {
+            "input_tokens": usage.get("input_tokens", 0.0),
+            "output_tokens": usage.get("output_tokens", 0.0),
+        }
+        # Add context token metrics from trajectory
+        trajectory = state.get("trajectory", [])
+        if trajectory:
+            from verifiers.utils.usage_utils import compute_context_token_metrics
+
+            token_usage.update(compute_context_token_metrics(trajectory))
+        output["token_usage"] = token_usage  # type: ignore[assignment]
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
@@ -291,6 +308,8 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.final_input_tokens = FinalInputTokensMetric()
+        self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
 
         # Tools tracking
@@ -339,6 +358,8 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.final_input_tokens.add_outputs(new_outputs)
+        self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
 
         for output in new_outputs:
@@ -357,10 +378,13 @@ class GenerateOutputsBuilder:
 
         usage: TokenUsage | None = None
         if self.input_tokens.count > 0:
-            usage = {
-                "input_tokens": self.input_tokens.compute(),
-                "output_tokens": self.output_tokens.compute(),
-            }
+            usage = TokenUsage(
+                input_tokens=self.input_tokens.compute(),
+                output_tokens=self.output_tokens.compute(),
+            )
+            if self.final_input_tokens.count > 0:
+                usage["final_input_tokens"] = self.final_input_tokens.compute()
+                usage["final_output_tokens"] = self.final_output_tokens.compute()
 
         return GenerateMetadata(
             env_id=self.env_id,

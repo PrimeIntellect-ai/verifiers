@@ -99,3 +99,55 @@ class StateUsageTracker:
             "input_tokens": self._usage_totals["input_tokens"],
             "output_tokens": self._usage_totals["output_tokens"],
         }
+
+
+def compute_context_token_metrics(
+    trajectory: list,
+) -> dict[str, float]:
+    """Compute context token metrics from the trajectory.
+
+    Assumes a linear rollout: uses the last trajectory step with a
+    response as the reference point, and sums completion_tokens across
+    all steps as the model-generated tokens in context.
+
+    Returns a dict with:
+        final_output_tokens: Model-generated tokens (sum of completion_tokens
+            across all steps).
+        final_input_tokens: Non-model tokens in context (last step's total
+            context minus final_output_tokens).
+    """
+    _zero: dict[str, float] = {
+        "final_output_tokens": 0,
+        "final_input_tokens": 0,
+    }
+    if not trajectory:
+        return _zero
+
+    # Find the last step with usage data.
+    last_step_total = 0
+    found = False
+    for step in reversed(trajectory):
+        response = step.get("response")
+        if response is None or getattr(response, "usage", None) is None:
+            continue
+        prompt_tokens, completion_tokens = extract_usage_tokens(response)
+        last_step_total = prompt_tokens + completion_tokens
+        found = True
+        break
+
+    if not found:
+        return _zero
+
+    # Sum completion tokens across all steps with usage data.
+    total_completion = 0
+    for step in trajectory:
+        response = step.get("response")
+        if response is None or getattr(response, "usage", None) is None:
+            continue
+        _, completion_tokens = extract_usage_tokens(response)
+        total_completion += completion_tokens
+
+    return {
+        "final_output_tokens": total_completion,
+        "final_input_tokens": max(0, last_step_total - total_completion),
+    }

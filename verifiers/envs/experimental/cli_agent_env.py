@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import os
 import time
 import uuid
 from collections import Counter
@@ -16,7 +17,11 @@ from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin, SandboxMonitorRubric
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    SandboxMonitorRubric,
+    SandboxTimeouts,
+)
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -41,6 +46,20 @@ logger = logging.getLogger(__name__)
 
 class AgentError(vf.InfraError):
     """Raised when the agent process fails or exits unexpectedly."""
+
+
+def make_agent_error(state: State, message: str) -> AgentError:
+    """Create an AgentError with rollout-specific sandbox context when available."""
+    context_parts = [
+        f"sandbox_id={state['sandbox_id']}",
+        f"rollout_id={state['rollout_id']}",
+        f"example_id={state['example_id']}",
+    ]
+    state_info = state["input"].get("info", {})
+    instance_id = state_info.get("instance_id")
+    if instance_id:
+        context_parts.append(f"instance_id={instance_id}")
+    return AgentError(f"{message} ({', '.join(context_parts)})")
 
 
 class CliAgentMonitorRubric(vf.Rubric):
@@ -99,6 +118,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_keepalive_connections: int = 200,
         sandbox_wait_for_creation_max_attempts: int = 120,
         sandbox_creations_per_minute: float | None = 128,
+        timeouts: SandboxTimeouts = SandboxTimeouts(),
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
@@ -114,6 +134,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
             sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
             sandbox_creations_per_minute=sandbox_creations_per_minute,
+            timeouts=timeouts,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
@@ -150,7 +171,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked: float = 0.0
-        self._interception_server = InterceptionServer(port=interception_port)
+        self._interception_server = InterceptionServer(
+            port=interception_port, secret=os.environ.get("INTERCEPTION_SECRET")
+        )
 
     def _require_interception_server(self) -> InterceptionServer:
         if self._interception_server is None:
@@ -248,8 +271,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         await self.create_sandbox(state, sandbox_request)
 
-        # Register rollout for interception
-        request_id_queue = interception_server.register_rollout(rollout_id)
+        # Register rollout for interception. Pass state so the server can
+        # surface stream-interruption errors (e.g. tunnel dies mid-SSE) back
+        # onto the rollout; without this the agent sees a truncated stream
+        # and often exits with code 0 and an empty trajectory.
+        request_id_queue = interception_server.register_rollout(rollout_id, state=state)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
@@ -287,6 +313,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "OPENAI_REQUEST_TIMEOUT",
             "HTTPX_TIMEOUT",
             "OPENAI_MODEL",
+            "OPENAI_API_KEY",
         }
     )
 
@@ -297,6 +324,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         env_vars.setdefault("OPENAI_TIMEOUT", "3600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
         env_vars.setdefault("HTTPX_TIMEOUT", "3600")
+        secret = os.environ.get("INTERCEPTION_SECRET")
+        if secret:
+            env_vars["OPENAI_API_KEY"] = secret
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
@@ -344,13 +374,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         except asyncio.TimeoutError:
             self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
             state["agent_timed_out"] = True
+            state["error"] = make_agent_error(
+                state, f"Agent timed out after {self.timeout_seconds}s"
+            )
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            error = AgentError(f"Agent polling failed: {e}")
+            error = make_agent_error(state, f"Agent polling failed: {e}")
             state["error"] = error
-            self.logger.error(f"Agent polling failed: {e}")
+            self.logger.error(str(error))
         finally:
             state["agent_completed"] = True
 
@@ -360,7 +393,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Poll until background job completes, capturing output."""
         while True:
             status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job
+                sandbox_id, background_job, timeout=self.timeouts.poll
             )
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
@@ -371,17 +404,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                         f"Agent completed successfully (exit_code={status.exit_code})"
                     )
                 else:
-                    self.logger.warning(
-                        f"Agent failed (exit_code={status.exit_code}) stdout={status.stdout}, stderr={status.stderr}"
-                    )
-                    if len(state.get("trajectory", [])) == 0:
-                        stderr_snippet = (status.stderr or "")[:500]
-                        raise AgentError(
+                    stderr_full = status.stderr or ""
+                    num_turns = len(state.get("trajectory", []))
+                    if num_turns == 0:
+                        error = make_agent_error(
+                            state,
                             f"Agent crashed before any LLM call "
-                            f"(exit_code={status.exit_code}): {stderr_snippet}"
+                            f"(exit_code={status.exit_code}): {stderr_full}",
                         )
+                    else:
+                        error = make_agent_error(
+                            state,
+                            f"Agent crashed after {num_turns} turn(s) "
+                            f"(exit_code={status.exit_code}): {stderr_full}",
+                        )
+                    state["error"] = error
+                    self.logger.error(str(error))
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.poll_interval)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""

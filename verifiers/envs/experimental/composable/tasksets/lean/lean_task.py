@@ -237,6 +237,7 @@ class LeanTaskSet(SandboxTaskSet):
         preset: str = "deepseek-prover-v1",
         dataset_name: str | None = None,
         dataset_split: str | None = None,
+        filter_fn: str | None = None,
         docker_image: str = DEFAULT_DOCKER_IMAGE,
         lean_project_path: str = LEAN_PROJECT_PATH,
         proof_file_path: str = PROOF_FILE_PATH,
@@ -251,7 +252,7 @@ class LeanTaskSet(SandboxTaskSet):
         self.proof_file_path = proof_file_path
         self.compile_timeout = compile_timeout
         dataset = self._build_dataset(preset, dataset_name, dataset_split)
-        super().__init__(dataset=dataset, name=f"lean/{preset}")
+        super().__init__(dataset=dataset, name=f"lean/{preset}", filter_fn=filter_fn)
 
     def _build_dataset(
         self, preset: str, dataset_name: str | None, dataset_split: str | None

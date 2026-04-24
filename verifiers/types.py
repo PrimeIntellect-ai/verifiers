@@ -36,6 +36,7 @@ ClientType = Literal[
     "openai_chat_completions",
     "renderer",
     "anthropic_messages",
+    "nemorl_chat_completions",
 ]
 MessageType = Literal["chat", "completion"]  # deprecated
 
@@ -206,6 +207,8 @@ class TrajectoryStepTokens(TypedDict):
 class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
+    final_input_tokens: NotRequired[float]
+    final_output_tokens: NotRequired[float]
 
 
 class VersionInfo(TypedDict):
@@ -536,7 +539,7 @@ class EvalConfig(BaseModel):
     disable_env_server: bool = False
     # logging
     verbose: bool = False
-    debug: bool = False
+    disable_tui: bool = False
     # saving
     output_dir: str | None = None
     state_columns: list[str] | None = None

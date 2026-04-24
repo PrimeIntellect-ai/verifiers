@@ -41,6 +41,8 @@ def run_cli(make_metadata, make_state, make_input):
             "api_base_url": "https://api.openai.com/v1",
             "header": None,
             "headers": None,
+            "header_from_state": None,
+            "headers_from_state": None,
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
@@ -58,8 +60,8 @@ def run_cli(make_metadata, make_state, make_input):
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
             "max_retries": 0,
-            "tui": False,
-            "debug": False,
+            "fullscreen": False,
+            "disable_tui": False,
             "abbreviated_summary": False,
             "heartbeat_url": None,
         }
@@ -1059,6 +1061,38 @@ def test_ablation_global_defaults_apply():
 
     assert len(configs) == 2
     assert all(c["num_examples"] == 100 for c in configs)
+
+
+def test_ablation_endpoint_id_override_removes_global_model():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'model = "gpt-4.1-mini"\n\n'
+            '[[ablation]]\nenv_id = "my-env"\nendpoint_id = "proxy"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 1
+    assert configs[0]["endpoint_id"] == "proxy"
+    assert "model" not in configs[0]
+
+
+def test_ablation_swept_model_override_removes_global_endpoint_id():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'endpoint_id = "proxy"\n\n'
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            'model = ["gpt-4.1-mini"]\n'
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 1
+    assert configs[0]["model"] == "gpt-4.1-mini"
+    assert "endpoint_id" not in configs[0]
 
 
 def test_ablation_with_eval_blocks():
