@@ -102,6 +102,8 @@ def rlm_harness(
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
     summarize_at_tokens: int | None = None,
+    max_context_tokens: int | None = None,
+    max_seq_len: int | None = None,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -123,6 +125,15 @@ def rlm_harness(
       a positive int, rlm auto-compacts the current branch once the
       prompt_tokens of a turn reach the threshold. ``None`` disables
       auto-compaction.
+    - ``max_context_tokens`` / ``max_seq_len`` → ``RLM_MAX_CONTEXT_TOKENS``:
+      hard context ceiling. When a turn's prompt_tokens exceeds this,
+      rlm rolls back the most recent tool result to a short stub and
+      fires compaction; per-call ``max_completion_tokens`` is also
+      derived from the remaining budget. ``max_context_tokens`` wins
+      when both are provided; otherwise ``max_seq_len`` is the fallback
+      and matches what prime-rl injects via
+      ``extra_env_kwargs["max_seq_len"]``. ``None`` on both disables
+      the ceiling.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -172,6 +183,13 @@ def rlm_harness(
     summarize_env = _format_summarize_at_tokens(summarize_at_tokens)
     if summarize_env is not None:
         environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
+    # max_context_tokens (explicit) wins over max_seq_len (prime-rl default).
+    effective_max_context = (
+        max_context_tokens if max_context_tokens is not None else max_seq_len
+    )
+    max_context_env = _format_max_context_tokens(effective_max_context)
+    if max_context_env is not None:
+        environment_vars["RLM_MAX_CONTEXT_TOKENS"] = max_context_env
 
     return Harness(
         install_script=build_install_script(),
@@ -192,20 +210,29 @@ def rlm_harness(
     )
 
 
-def _format_summarize_at_tokens(value: int | None) -> str | None:
-    """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string.
+def _format_positive_int(name: str, value: int | None) -> str | None:
+    """Format a positive-int harness kwarg as the env-var string.
 
-    Returns ``None`` when auto-compaction should be disabled (matches what
-    the engine expects when the env var is absent). Rejects bad shapes
-    here so configuration errors surface at harness-build time rather
+    Returns ``None`` when the feature should be disabled. Rejects bad
+    shapes so configuration errors surface at harness-build time rather
     than deep inside the sandbox.
     """
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(
-            f"summarize_at_tokens must be an int or None (got {type(value).__name__})"
+            f"{name} must be an int or None (got {type(value).__name__})"
         )
     if value <= 0:
-        raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+        raise ValueError(f"{name} must be positive (got {value})")
     return str(value)
+
+
+def _format_summarize_at_tokens(value: int | None) -> str | None:
+    """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string."""
+    return _format_positive_int("summarize_at_tokens", value)
+
+
+def _format_max_context_tokens(value: int | None) -> str | None:
+    """Format ``max_context_tokens`` as the ``RLM_MAX_CONTEXT_TOKENS`` string."""
+    return _format_positive_int("max_context_tokens", value)
