@@ -87,6 +87,16 @@ def parse_qwen3(
                 i = end + 1
             else:
                 i += 1
+        # Match vLLM hermes_tool_parser: when no tool calls parse successfully,
+        # preserve the raw tokens as content instead of returning an empty
+        # response. vLLM/hermes_tool_parser.py::extract_tool_calls catches
+        # json.JSONDecodeError and falls through with content=model_output.
+        # Without this, clients raise EmptyModelResponseError on any
+        # <tool_call>...</tool_call> block with malformed JSON, which
+        # wastes inference compute on retries and diverges from main's
+        # behavior on hermes tool envs.
+        if not tool_calls:
+            content_ids = ids
     else:
         content_ids = ids
         tool_calls = None

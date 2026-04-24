@@ -67,3 +67,31 @@ def test_qwen3_vl_parse_json_tool_call():
     assert parsed.tool_calls == [
         {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
     ]
+
+
+def test_qwen3_vl_malformed_tool_call_falls_back_to_content():
+    """When <tool_call>...</tool_call> contains malformed JSON, match
+    vLLM's hermes_tool_parser behavior: preserve the raw tokens as
+    content rather than returning empty content + empty tool_calls.
+    Without this, the orchestrator raises EmptyModelResponseError and
+    wastes inference compute on retries — diverging from main's
+    behavior on hermes tool envs (Qwen3, etc.).
+    """
+    tokenizer, renderer = _qwen3_vl()
+    # Note the trailing comma — malformed JSON
+    text = (
+        '<tool_call>\n{"name": "get_weather", '
+        '"arguments": {"city": "Paris",}}\n</tool_call>'
+    )
+    parsed = renderer.parse_response(tokenizer.encode(text, add_special_tokens=False))
+
+    # Parser must not collapse response: either content has the raw
+    # tokens OR there's at least a tool_call attempt. Concretely, we
+    # want content to be non-empty so the caller doesn't raise
+    # EmptyModelResponseError.
+    assert parsed.tool_calls is None, "Malformed JSON should not parse as a tool call"
+    assert parsed.content, (
+        "Malformed tool_call should fall back to raw content, not empty "
+        "(else caller raises EmptyModelResponseError)"
+    )
+    assert "get_weather" in parsed.content
