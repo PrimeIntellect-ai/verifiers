@@ -12,12 +12,16 @@ from urllib.parse import urlparse
 
 from datasets import Dataset
 
-from verifiers.envs.experimental.channels import ChannelMap, SandboxSeed
-from verifiers.envs.experimental.harness import serialized_error_type
+from verifiers.envs.experimental.channels import (
+    ChannelMap,
+    SandboxResources,
+    SandboxSeed,
+)
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.taskset import Taskset
 from verifiers.errors import InfraError
 from verifiers.rubrics.rubric import Rubric
+from verifiers.utils.error_utils import error_type_name
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.resources import Resources
@@ -36,16 +40,16 @@ class HarborRubric(Rubric):
         self, state, task: Task | None = None, resources: Resources | None = None
     ) -> float:
         error = state.get("error")
-        if (
-            isinstance(error, InfraError)
-            or serialized_error_type(error) == "InfraError"
-        ):
+        if isinstance(error, InfraError) or error_type_name(error) == "InfraError":
             state["harbor_reward"] = 0.0
             return 0.0
         sandbox_id = state.get("sandbox_id")
-        sandbox_runtime = resources.sandbox_runtime if resources is not None else None
-        if not sandbox_id or sandbox_runtime is None:
+        sandbox_runtime_obj = (
+            resources.get("sandbox_runtime") if resources is not None else None
+        )
+        if not sandbox_id or not isinstance(sandbox_runtime_obj, SandboxResources):
             return 0.0
+        sandbox_runtime = sandbox_runtime_obj
         sandbox_client = sandbox_runtime.client
         if task is not None and resources is not None:
             await self._upload_verifier_assets(resources.harness, sandbox_id, task)
@@ -141,13 +145,11 @@ class HarborTaskset(Taskset):
         self.mcp_healthcheck_interval_sec = mcp_healthcheck_interval_sec
         self.mcp_healthcheck_start_period_sec = mcp_healthcheck_start_period_sec
         super().__init__(
+            source=self._discover,
             rubric=rubric or HarborRubric(),
             tools=tools,
             name=name,
         )
-
-    def get_dataset(self) -> Dataset:
-        return self._discover()
 
     def channels(self, task: Task | None = None) -> ChannelMap:
         channels = dict(super().channels(task))

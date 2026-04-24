@@ -5,11 +5,20 @@ import time
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
+from openai import AsyncOpenAI
+
 from verifiers.decorators import cleanup, stop
 from verifiers.envs.experimental.channels import ChannelMap, Endpoint
 from verifiers.errors import Error
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import ClientType, Messages, Response, State, Tool
+from verifiers.types import (
+    AssistantMessage,
+    Messages,
+    Response,
+    State,
+    Tool,
+)
+from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
 
 from verifiers.envs.experimental.harness import Harness, ModelRequest
@@ -29,7 +38,7 @@ class EndpointHarness(Harness):
         endpoint_port: int | None = None,
         endpoint_url: str | None = None,
         endpoint_secret: str | None = None,
-        api_client_type: ClientType = "openai_chat_completions",
+        api_client_type: str = "openai_chat_completions",
         max_turns: int = -1,
         poll_interval: float = 1.0,
         rubric: Rubric | None = None,
@@ -65,32 +74,82 @@ class EndpointHarness(Harness):
         }
         return channels
 
-    def require_endpoint(self, resources: Resources) -> Endpoint:
-        endpoint = resources.endpoint
-        if isinstance(endpoint, Endpoint):
-            return endpoint
-        raise RuntimeError("EndpointHarness requires the endpoint channel.")
-
     async def setup_state(self, task: Task, resources: Resources) -> State:
         state = await super().setup_state(task, resources)
-        state["endpoint_driver_completed"] = False
+        state["execute_completed"] = False
         await self.start_endpoint(state, resources)
-        resources.runtime["endpoint_driver_task"] = asyncio.create_task(
-            self.run_endpoint_driver(task, state, resources)
+        client = self.create_endpoint_client(state, resources)
+        resources.runtime["execution"] = asyncio.create_task(
+            self.execute(task, state, resources, client)
         )
         return state
 
     async def start_endpoint(self, state: State, resources: Resources) -> str:
-        endpoint = self.require_endpoint(resources)
+        endpoint = cast(Endpoint, resources.require("endpoint"))
         return await endpoint.register_rollout(state)
 
-    async def run_endpoint_driver(
-        self, task: Task, state: State, resources: Resources
+    def create_endpoint_client(self, state: State, resources: Resources) -> AsyncOpenAI:
+        endpoint = cast(Endpoint, resources.require("endpoint"))
+        return AsyncOpenAI(
+            api_key=endpoint.secret or "intercepted",
+            base_url=state["endpoint_base_url"],
+        )
+
+    async def execute(
+        self,
+        task: Task,
+        state: State,
+        resources: Resources,
+        client: AsyncOpenAI,
     ) -> object:
-        request = ModelRequest(prompt=state["prompt"])
-        model_task = self.schedule_model_request(task, request, state, resources)
-        await self.wait_for_model_request(model_task, state, resources)
-        return None
+        """Run endpoint-facing user code.
+
+        Subclasses can override this method to run DSPy, LangChain, direct
+        OpenAI-compatible calls, or other Python logic against the supplied
+        endpoint client.
+        """
+        return await client.chat.completions.create(
+            model=resources.model,
+            messages=self.endpoint_message_payload(state["prompt"]),
+            tools=self.endpoint_tool_payload(state["tool_defs"]),
+            **resources.sampling_args,
+        )
+
+    def endpoint_message_payload(self, messages: Messages) -> list[dict[str, object]]:
+        payload: list[dict[str, object]] = []
+        for message in messages:
+            raw = message.model_dump(exclude_none=True)
+            if isinstance(message, AssistantMessage) and message.tool_calls:
+                raw["tool_calls"] = [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": tool_call.arguments,
+                        },
+                    }
+                    for tool_call in message.tool_calls or []
+                ]
+            payload.append(raw)
+        return payload
+
+    def endpoint_tool_payload(
+        self, tools: list[Tool]
+    ) -> list[dict[str, object]] | None:
+        if not tools:
+            return None
+        payload: list[dict[str, object]] = []
+        for tool in tools:
+            function: dict[str, object] = {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            if tool.strict is not None:
+                function["strict"] = tool.strict
+            payload.append({"type": "function", "function": function})
+        return payload
 
     async def normalize_endpoint_messages(self, messages: object) -> Messages:
         if isinstance(messages, str):
@@ -151,24 +210,22 @@ class EndpointHarness(Harness):
     async def get_model_request(
         self, task: Task, state: State, resources: Resources
     ) -> ModelRequest | None:
-        driver_task = self.endpoint_driver_task(resources)
-        request_id = await self.next_endpoint_request(
-            driver_task, task, state, resources
-        )
+        execution = self.execution(resources)
+        request_id = await self.next_endpoint_request(execution, task, state, resources)
         if request_id is None:
             return None
         return await self.prepare_endpoint_request(request_id, state, resources)
 
-    def endpoint_driver_task(self, resources: Resources) -> asyncio.Task:
-        driver_task = resources.runtime.get("endpoint_driver_task")
-        if not isinstance(driver_task, asyncio.Task):
-            raise RuntimeError("EndpointHarness driver task was not initialized.")
-        return driver_task
+    def execution(self, resources: Resources) -> asyncio.Task:
+        execution = resources.runtime.get("execution")
+        if not isinstance(execution, asyncio.Task):
+            raise RuntimeError("EndpointHarness execution was not initialized.")
+        return execution
 
     async def prepare_endpoint_request(
         self, request_id: str, state: State, resources: Resources
     ) -> ModelRequest:
-        endpoint = self.require_endpoint(resources)
+        endpoint = cast(Endpoint, resources.require("endpoint"))
         request = endpoint.get_request(request_id)
         prompt = await self.normalize_endpoint_messages(request["messages"])
         if not state["trajectory"]:
@@ -220,7 +277,7 @@ class EndpointHarness(Harness):
             synthesize_stream,
         )
 
-        endpoint = self.require_endpoint(resources)
+        endpoint = cast(Endpoint, resources.require("endpoint"))
         request = endpoint.get_request(request_id)
         response: Response | None = None
         error: BaseException | None = None
@@ -245,30 +302,30 @@ class EndpointHarness(Harness):
 
     async def next_endpoint_request(
         self,
-        driver_task: asyncio.Task,
+        execution: asyncio.Task,
         task: Task,
         state: State,
         resources: Resources,
     ) -> str | None:
-        endpoint = self.require_endpoint(resources)
+        endpoint = cast(Endpoint, resources.require("endpoint"))
         queue = endpoint.request_queue(state["endpoint_request_key"])
         while True:
-            if driver_task.done():
-                await self.finish_endpoint_driver_task(driver_task, state)
+            if execution.done():
+                await self.finish_execution(execution, state)
                 if queue.empty():
                     return None
                 return queue.get_nowait()
             queue_task = asyncio.create_task(queue.get())
             try:
                 done, _ = await asyncio.wait(
-                    {queue_task, driver_task},
+                    {queue_task, execution},
                     timeout=self.poll_interval,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if queue_task in done:
                     return queue_task.result()
-                if driver_task in done:
-                    await self.finish_endpoint_driver_task(driver_task, state)
+                if execution in done:
+                    await self.finish_execution(execution, state)
                     if queue.empty():
                         return None
                     return queue.get_nowait()
@@ -280,23 +337,21 @@ class EndpointHarness(Harness):
                     queue_task.cancel()
                     await asyncio.gather(queue_task, return_exceptions=True)
 
-    async def finish_endpoint_driver_task(
-        self, driver_task: asyncio.Task, state: State
-    ) -> None:
-        if state.get("endpoint_driver_completed") or state.get("error") is not None:
+    async def finish_execution(self, execution: asyncio.Task, state: State) -> None:
+        if state.get("execute_completed") or state.get("error") is not None:
             return
         try:
-            await driver_task
-            state["endpoint_driver_completed"] = True
+            await execution
+            state["execute_completed"] = True
         except Error as e:
-            state["error"] = e
+            state["error"] = error_info(e)
         except Exception as e:
-            state["error"] = e
+            state["error"] = error_info(e)
 
     async def on_endpoint_poll_timeout(
         self, state: State, resources: Resources
     ) -> None:
-        await self.require_endpoint(resources).check_tunnel()
+        await cast(Endpoint, resources.require("endpoint")).check_tunnel()
 
     async def finalize_state(
         self, task: Task, state: State, resources: Resources
@@ -306,36 +361,38 @@ class EndpointHarness(Harness):
         state["timing"]["generation_ms"] = (time.time() - start) * 1000
         state["timing"]["total_ms"] = state["timing"]["generation_ms"]
         state["is_completed"] = True
-        state["stop_condition"] = (
-            state.get("stop_condition") or "endpoint_driver_completed"
-        )
+        state["stop_condition"] = state.get("stop_condition") or "execute_completed"
         return state
 
     @cleanup
-    async def cleanup_endpoint(self, state: State, resources: Resources) -> None:
-        driver_task = resources.runtime.get("endpoint_driver_task")
-        if isinstance(driver_task, asyncio.Task):
-            await self.cancel_endpoint_driver_task(driver_task)
+    async def cleanup_endpoint(
+        self, task: Task, state: State, resources: Resources
+    ) -> None:
+        execution = resources.runtime.get("execution")
+        if isinstance(execution, asyncio.Task):
+            await self.cancel_execution(execution)
         key = state.get("endpoint_request_key")
         if key:
-            self.require_endpoint(resources).unregister_rollout(key)
+            cast(Endpoint, resources.require("endpoint")).unregister_rollout(key)
 
     @stop
-    async def max_turns_reached(self, state: State, resources: Resources) -> bool:
+    async def max_turns_reached(
+        self, task: Task, state: State, resources: Resources
+    ) -> bool:
         requests = state.get("num_model_requests", len(state.get("trajectory", [])))
         return requests >= self.max_turns and self.max_turns > 0
 
     @stop
-    async def endpoint_driver_completed(
-        self, state: State, resources: Resources
+    async def execute_completed(
+        self, task: Task, state: State, resources: Resources
     ) -> bool:
-        return bool(state.get("endpoint_driver_completed"))
+        return bool(state.get("execute_completed"))
 
-    async def cancel_endpoint_driver_task(self, driver_task: asyncio.Task) -> None:
-        if driver_task.done():
+    async def cancel_execution(self, execution: asyncio.Task) -> None:
+        if execution.done():
             return
-        driver_task.cancel()
+        execution.cancel()
         try:
-            await driver_task
+            await execution
         except asyncio.CancelledError:
             pass

@@ -22,6 +22,7 @@ from prime_sandboxes import (
 from verifiers.decorators import cleanup, stop
 from verifiers.envs.experimental.channels import (
     ChannelMap,
+    Endpoint,
     SandboxResources,
     SandboxSeed,
     SandboxSpec,
@@ -35,9 +36,12 @@ from verifiers.envs.experimental.task import Task
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.errors import InfraError, SandboxError
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import ClientType, State
+from verifiers.types import State
+from verifiers.utils.error_utils import error_info
 
 if TYPE_CHECKING:
+    from openai import AsyncOpenAI
+
     from verifiers.envs.experimental.resources import Resources
 
 
@@ -128,8 +132,8 @@ class CliHarness(EndpointHarness):
         post_install_uploads: dict[str, str] | None = None,
         post_install_command: str | None = None,
         skills_path: str | None = None,
-        upload_dir_mapping: dict[str, str] | None = None,
-        get_upload_dirs: Callable[[], dict[str, object] | None] | None = None,
+        uploads: dict[str, object] | None = None,
+        upload_mapping: dict[str, str] | None = None,
         metrics_path: str | None = None,
         metrics_prefix: str = "",
         metrics_key: str | None = None,
@@ -153,7 +157,7 @@ class CliHarness(EndpointHarness):
         endpoint_port: int | None = None,
         endpoint_url: str | None = None,
         endpoint_secret: str | None = None,
-        api_client_type: ClientType = "openai_chat_completions",
+        api_client_type: str = "openai_chat_completions",
         rubric: Rubric | None = None,
         tools: Iterable[object] | None = None,
         max_turns: int = -1,
@@ -196,8 +200,8 @@ class CliHarness(EndpointHarness):
         self.post_install_uploads = dict(post_install_uploads or {})
         self.post_install_command = post_install_command
         self.skills_path = skills_path
-        self.upload_dir_mapping = dict(upload_dir_mapping or {})
-        self.get_upload_dirs = get_upload_dirs
+        self.uploads = dict(uploads or {})
+        self.upload_mapping = dict(upload_mapping or {})
         self.metrics_path = metrics_path
         self.metrics_prefix = metrics_prefix
         self.metrics_key = metrics_key
@@ -227,6 +231,7 @@ class CliHarness(EndpointHarness):
         channels = dict(super().channels(task))
         channels["sandbox"] = {
             "spec": self.sandbox_spec,
+            "uploads": self.uploads,
             "runtime": {
                 "max_retries": self.max_retries,
                 "base_delay": self.base_delay,
@@ -245,12 +250,9 @@ class CliHarness(EndpointHarness):
         return channels
 
     def require_sandbox_runtime(self) -> SandboxResources:
-        sandbox_runtime = None
         if self.resources is not None:
-            sandbox_runtime = self.resources.sandbox_runtime
-        if sandbox_runtime is None:
-            raise RuntimeError("CliHarness requires sandbox resources.")
-        return sandbox_runtime
+            return cast(SandboxResources, self.resources.require("sandbox_runtime"))
+        raise RuntimeError("CliHarness requires sandbox resources.")
 
     async def build_env_vars(
         self, task: Task, state: State, resources: Resources
@@ -265,7 +267,7 @@ class CliHarness(EndpointHarness):
         env_vars.setdefault("OPENAI_TIMEOUT", str(int(self.timeout_seconds)))
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", str(int(self.timeout_seconds)))
         env_vars.setdefault("HTTPX_TIMEOUT", str(int(self.timeout_seconds)))
-        endpoint = self.require_endpoint(resources)
+        endpoint = cast(Endpoint, resources.require("endpoint"))
         if endpoint.secret:
             env_vars["OPENAI_API_KEY"] = endpoint.secret
         env_vars["OPENAI_MODEL"] = resources.model
@@ -278,10 +280,8 @@ class CliHarness(EndpointHarness):
         return env_vars
 
     def resolve_sandbox_spec(self, task: Task, resources: Resources) -> SandboxSpec:
-        seed = resources.sandbox_request
-        spec = resources.get_global("sandbox_request")
-        if not isinstance(spec, SandboxSpec):
-            spec = self.sandbox_spec
+        seed = resources.get("sandbox_request")
+        spec = self.sandbox_spec
         if isinstance(seed, SandboxSpec):
             return seed
         if not isinstance(seed, SandboxSeed):
@@ -358,7 +358,7 @@ class CliHarness(EndpointHarness):
     async def setup_task_sandbox_contents(
         self, task: Task, state: State, resources: Resources
     ) -> None:
-        sandbox_seed = resources.sandbox_request
+        sandbox_seed = resources.get("sandbox_request")
         if isinstance(sandbox_seed, SandboxSeed):
             for host_path, sandbox_path in sandbox_seed.files.items():
                 await self.upload_path(
@@ -411,30 +411,23 @@ class CliHarness(EndpointHarness):
         await self.install_agent(sandbox_id)
         await self.run_post_install(sandbox_id)
 
-    def effective_upload_dir_mapping(self) -> dict[str, str]:
-        mapping = dict(self.upload_dir_mapping)
+    def effective_upload_mapping(self) -> dict[str, str]:
+        mapping = dict(self.upload_mapping)
         if self.skills_path:
             mapping.setdefault("skills", self.skills_path)
         return mapping
 
-    def task_upload_dirs(self, task: Task, resources: Resources) -> dict[str, object]:
-        upload_dirs = dict(resources.upload_dirs)
-        harness_upload_dirs = self.get_upload_dirs() if self.get_upload_dirs else None
-        duplicates = sorted(set(upload_dirs) & set(harness_upload_dirs or {}))
-        if duplicates:
-            names = ", ".join(repr(name) for name in duplicates)
-            raise ValueError(f"Duplicate upload directory names: {names}")
-        upload_dirs.update(harness_upload_dirs or {})
-        return upload_dirs
+    def task_uploads(self, task: Task, resources: Resources) -> dict[str, object]:
+        return dict(cast(dict[str, object], resources.require("sandbox_uploads")))
 
     async def upload_mapped_directories(
         self, task: Task, state: State, resources: Resources
     ) -> None:
-        mapping = self.effective_upload_dir_mapping()
+        mapping = self.effective_upload_mapping()
         if not mapping:
             return
         sandbox_id = state["sandbox_id"]
-        for name, local_source in self.task_upload_dirs(task, resources).items():
+        for name, local_source in self.task_uploads(task, resources).items():
             sandbox_path = mapping.get(name)
             if sandbox_path is None:
                 continue
@@ -548,8 +541,12 @@ class CliHarness(EndpointHarness):
         finally:
             await asyncio.to_thread(Path(archive).unlink, missing_ok=True)
 
-    async def run_endpoint_driver(
-        self, task: Task, state: State, resources: Resources
+    async def execute(
+        self,
+        task: Task,
+        state: State,
+        resources: Resources,
+        client: AsyncOpenAI,
     ) -> object:
         await self.setup_sandbox(task, state, resources)
         try:
@@ -636,12 +633,15 @@ class CliHarness(EndpointHarness):
             self.logger.warning(f"Failed to collect harness metrics: {e}")
 
     @cleanup
-    async def cleanup_sandbox(self, state: State, resources: Resources) -> None:
+    async def cleanup_sandbox(
+        self, task: Task, state: State, resources: Resources
+    ) -> None:
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
             return
         sandbox_runtime = self.require_sandbox_runtime()
-        if (self.keep_sandbox_for_scoring or resources.sandbox_scoring) and state.get(
+        sandbox_scoring = bool(resources.require("sandbox_scoring"))
+        if (self.keep_sandbox_for_scoring or sandbox_scoring) and state.get(
             "is_completed"
         ):
             state["sandbox_retained_for_scoring"] = True
@@ -653,14 +653,16 @@ class CliHarness(EndpointHarness):
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     @stop
-    async def timeout_reached(self, state: State, resources: Resources) -> bool:
+    async def timeout_reached(
+        self, task: Task, state: State, resources: Resources
+    ) -> bool:
         elapsed = time.time() - state["timing"]["start_time"]
         if elapsed <= self.timeout_seconds:
             return False
         state["agent_timed_out"] = True
         if state.get("error") is None:
-            state["error"] = InfraError(
-                f"Sandbox agent timed out after {self.timeout_seconds}s"
+            state["error"] = error_info(
+                InfraError(f"Sandbox agent timed out after {self.timeout_seconds}s")
             )
         return True
 

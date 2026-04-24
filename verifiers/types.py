@@ -307,7 +307,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: Error | ErrorInfo | None
     usage: TokenUsage | None
     usage_tracker: object
 

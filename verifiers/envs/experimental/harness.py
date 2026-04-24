@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast, final
 
@@ -14,6 +13,7 @@ from verifiers.errors import Error, OverlongPromptError, ToolCallError, ToolPars
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     Message,
+    MessageContent,
     Messages,
     Response,
     State,
@@ -24,17 +24,17 @@ from verifiers.types import (
     TrajectoryStep,
 )
 from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import concat_messages, normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 from verifiers.utils.usage_utils import extract_usage_tokens
 
 from .channels import (
-    CallableTool,
     Channel,
     ChannelMap,
-    MCPServerSpec,
     ToolArgumentError,
+    User,
 )
 from .task import Task
 
@@ -48,32 +48,6 @@ class ModelRequest:
     tool_defs: list[Tool] | None = None
     extras: dict[str, object] | None = None
     context: dict[str, object] = field(default_factory=dict)
-
-
-def serialized_error_type(error: object) -> str | None:
-    if isinstance(error, BaseException):
-        return type(error).__name__
-    return None
-
-
-async def call_state_hook(
-    handler,
-    task: Task,
-    state: State,
-    resources: Resources,
-) -> object:
-    parameters = inspect.signature(handler).parameters
-    if any(param.kind == param.VAR_KEYWORD for param in parameters.values()):
-        result = handler(task=task, state=state, resources=resources)
-    elif len(parameters) <= 1:
-        result = handler(state)
-    elif len(parameters) == 2:
-        result = handler(state, resources)
-    else:
-        result = handler(task, state, resources)
-    if inspect.isawaitable(result):
-        return await result
-    return result
 
 
 class Harness:
@@ -115,37 +89,6 @@ class Harness:
             channels["rubric"] = rubrics[0] if len(rubrics) == 1 else rubrics
         return channels
 
-    def tool_names(self) -> list[str]:
-        names = []
-        for tool in self.tools:
-            name = self.tool_name(tool)
-            if name is not None:
-                names.append(name)
-        return names
-
-    def tool_name(self, tool: object) -> str | None:
-        if isinstance(tool, CallableTool):
-            return tool.name or getattr(
-                tool.func, "__name__", tool.func.__class__.__name__
-            )
-        if isinstance(tool, MCPServerSpec):
-            return None
-        raw_name = getattr(tool, "name", None)
-        if isinstance(raw_name, str) and raw_name:
-            return raw_name
-        if isinstance(tool, Mapping):
-            tool = cast(Mapping[str, object], tool)
-            if "name" in tool:
-                return str(tool["name"])
-            function_payload = tool.get("function")
-            if isinstance(function_payload, Mapping) and "name" in function_payload:
-                function_payload = cast(Mapping[str, object], function_payload)
-                return str(function_payload["name"])
-        function_name = getattr(tool, "__name__", None)
-        if isinstance(function_name, str) and function_name:
-            return function_name
-        return None
-
     def channel_objects(self) -> dict[str, object]:
         return {}
 
@@ -166,19 +109,25 @@ class Harness:
         return handlers
 
     @stop(priority=100)
-    async def has_error(self, state: State, resources: Resources) -> bool:
+    async def has_error(self, task: Task, state: State, resources: Resources) -> bool:
         return state.get("error") is not None
 
     @stop(priority=90)
-    async def prompt_too_long(self, state: State, resources: Resources) -> bool:
+    async def prompt_too_long(
+        self, task: Task, state: State, resources: Resources
+    ) -> bool:
         return bool(state.get("prompt_too_long"))
 
     @stop(priority=80)
-    async def state_completed(self, state: State, resources: Resources) -> bool:
+    async def state_completed(
+        self, task: Task, state: State, resources: Resources
+    ) -> bool:
         return bool(state.get("is_completed"))
 
     @stop
-    async def max_turns_reached(self, state: State, resources: Resources) -> bool:
+    async def max_turns_reached(
+        self, task: Task, state: State, resources: Resources
+    ) -> bool:
         requests = state.get("num_model_requests", len(state["trajectory"]))
         return requests >= self.max_turns and self.max_turns > 0
 
@@ -191,7 +140,7 @@ class Harness:
             "cleanup",
         )
         for handler in handlers:
-            await call_state_hook(handler, task, state, resources)
+            await maybe_await(handler, task, state, resources)
 
     @final
     async def run_teardown_handlers(
@@ -213,7 +162,7 @@ class Harness:
             "stop",
         )
         for condition in conditions:
-            if await call_state_hook(condition, task, state, resources):
+            if await maybe_await(condition, task, state, resources):
                 state["is_completed"] = True
                 state["is_truncated"] = state.get("is_truncated", False) or any(
                     step.get("is_truncated", False)
@@ -289,10 +238,12 @@ class Harness:
     async def get_user_messages(
         self, task: Task, state: State, resources: Resources
     ) -> Messages:
-        user = resources.user
+        user = resources.get("user")
         if user is None:
             return []
-        messages = await call_state_hook(user.respond, task, state, resources)
+        if not isinstance(user, User):
+            raise TypeError("Resolved resource 'user' must implement User.")
+        messages = await maybe_await(user.respond, task, state, resources)
         if messages is None:
             return []
         assert isinstance(messages, list), "user.respond must return vf.Messages."
@@ -451,7 +402,11 @@ class Harness:
                 tool_call_id=tool_call.id,
                 content=self.error_formatter(e),
             )
-        content = result if is_valid_tool_content_parts(result) else str(result)
+        content = (
+            cast(MessageContent, result)
+            if is_valid_tool_content_parts(result)
+            else str(result)
+        )
         return ToolMessage(
             role="tool",
             tool_call_id=tool_call.id,
@@ -524,9 +479,9 @@ class Harness:
             state["prompt_too_long"] = True
             state["is_truncated"] = True
         except Error as e:
-            state["error"] = e
+            state["error"] = error_info(e)
         except Exception as e:
-            state["error"] = e
+            state["error"] = error_info(e)
         finally:
             current_task = asyncio.current_task()
             if current_task is not None:
@@ -566,6 +521,9 @@ class Harness:
                 try:
                     request = await self.get_model_request(task, state, resources)
                     if request is None:
+                        if not await self.is_completed(task, state, resources):
+                            state["is_completed"] = True
+                            state["stop_condition"] = "no_model_request"
                         continue
                     model_task = self.schedule_model_request(
                         task, request, state, resources
@@ -576,7 +534,7 @@ class Harness:
                     state["prompt_too_long"] = True
                     state["is_truncated"] = True
                 except Error as e:
-                    state["error"] = e
+                    state["error"] = error_info(e)
             await self.wait_for_pending_model_requests(state, resources)
             state = await self.finalize_state(task, state, resources)
             return state

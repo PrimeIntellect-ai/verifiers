@@ -7,7 +7,7 @@ import logging
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -22,6 +22,8 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    LifecycleHooks,
+    ResourcePatch,
     as_list,
 )
 
@@ -35,6 +37,47 @@ class CallableTool:
 
 
 @dataclass(frozen=True)
+class ToolContext:
+    resources: object
+    task: object
+    state: object
+
+
+@dataclass(frozen=True)
+class ToolInjector:
+    name: str
+    resolve: Callable[[ToolContext], object]
+
+
+def inject_resources(context: ToolContext) -> object:
+    return context.resources
+
+
+def inject_state(context: ToolContext) -> object:
+    return context.state
+
+
+def inject_task(context: ToolContext) -> object:
+    return context.task
+
+
+def inject_client(context: ToolContext) -> object:
+    return getattr(context.resources, "client")
+
+
+def inject_model(context: ToolContext) -> object:
+    return getattr(context.resources, "model")
+
+
+def inject_sampling_args(context: ToolContext) -> object:
+    return getattr(context.resources, "sampling_args")
+
+
+def inject_tools(context: ToolContext) -> object:
+    return getattr(context.resources, "tools")
+
+
+@dataclass(frozen=True)
 class MCPServerSpec:
     name: str
     command: str
@@ -43,17 +86,16 @@ class MCPServerSpec:
     description: str = ""
 
 
-INJECTABLE_TOOL_ARGS = frozenset(
-    {
-        "resources",
-        "state",
-        "task",
-        "client",
-        "model",
-        "sampling_args",
-        "tools",
+def default_tool_injectors() -> dict[str, ToolInjector]:
+    return {
+        "resources": ToolInjector("resources", inject_resources),
+        "state": ToolInjector("state", inject_state),
+        "task": ToolInjector("task", inject_task),
+        "client": ToolInjector("client", inject_client),
+        "model": ToolInjector("model", inject_model),
+        "sampling_args": ToolInjector("sampling_args", inject_sampling_args),
+        "tools": ToolInjector("tools", inject_tools),
     }
-)
 
 
 class ToolArgumentError(ValueError):
@@ -245,18 +287,50 @@ class MCPToolRuntime:
         self._thread.join(timeout=5)
 
 
-class ToolRegistry(Mapping[str, Any]):
+@dataclass(frozen=True)
+class ToolHandle:
+    registry: ToolRegistry
+    name: str
+
+    def defn(self) -> Tool:
+        return self.registry.defn(self.name)
+
+    async def __call__(
+        self,
+        resources: object,
+        arguments: str | Mapping[str, object] | None = None,
+        *,
+        task: object = None,
+        state: object = None,
+        **kwargs: object,
+    ) -> object:
+        if arguments is not None and kwargs:
+            raise ToolArgumentError("Pass either a tool argument mapping or kwargs.")
+        return await self.registry.call(
+            self.name,
+            resources,
+            kwargs if kwargs else arguments,
+            task=task,
+            state=state,
+        )
+
+
+class ToolRegistry(Mapping[str, ToolHandle]):
     """Name-indexed collection of callable, stateful, and MCP tools."""
 
     def __init__(self, tools: Iterable[Any] | None = None):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._tools: dict[str, Any] = {}
+        self._injectors = default_tool_injectors()
         self._mcp_specs: list[MCPServerSpec] = []
         self._mcp_runtime: MCPToolRuntime | None = None
         for tool in tools or []:
             self.add(tool)
 
     def add(self, tool: Any) -> None:
+        if isinstance(tool, ToolInjector):
+            self.add_injector(tool)
+            return
         if isinstance(tool, MCPServerSpec):
             self._mcp_specs.append(tool)
             return
@@ -270,13 +344,22 @@ class ToolRegistry(Mapping[str, Any]):
             for tool in tools._tools.values():
                 self.add(tool)
             self._mcp_specs.extend(tools._mcp_specs)
+            for injector in tools._injectors.values():
+                self.add_injector(injector)
             return
         for tool in tools:
             self.add(tool)
 
+    def add_injector(self, injector: ToolInjector) -> None:
+        existing = self._injectors.get(injector.name)
+        if existing is not None and existing != injector:
+            raise ValueError(f"Conflicting tool injector: {injector.name}")
+        self._injectors[injector.name] = injector
+
     def merged(self, tools: Iterable[Any]) -> ToolRegistry:
         registry = ToolRegistry()
         registry._tools = dict(self._tools)
+        registry._injectors = dict(self._injectors)
         registry.extend(tools)
         return registry
 
@@ -299,6 +382,10 @@ class ToolRegistry(Mapping[str, Any]):
             defs.append(self._tool_def(tool))
         return defs
 
+    def defn(self, name: str) -> Tool:
+        self.ensure_ready()
+        return self._tool_def(self._tools[name])
+
     def names(self) -> list[str]:
         self.ensure_ready()
         return list(self._tools)
@@ -306,12 +393,12 @@ class ToolRegistry(Mapping[str, Any]):
     async def call(
         self,
         name: str,
-        resources: Any,
-        arguments: str | Mapping[str, Any] | None = None,
+        resources: object,
+        arguments: str | Mapping[str, object] | None = None,
         *,
-        task: Any = None,
-        state: Any = None,
-    ) -> Any:
+        task: object = None,
+        state: object = None,
+    ) -> object:
         self.ensure_ready()
         tool = self._tools[name]
         args = self._parse_arguments(arguments)
@@ -365,7 +452,7 @@ class ToolRegistry(Mapping[str, Any]):
 
     def _callable_tool_def(self, tool: CallableTool) -> Tool:
         defn = convert_func_to_tool_def(
-            self._filtered_callable(tool.func, extra_hidden=set(tool.injected_args))
+            self._filtered_callable(tool.func, extra_hidden=tool.injected_args)
         )
         if tool.name is not None:
             defn.name = tool.name
@@ -377,12 +464,10 @@ class ToolRegistry(Mapping[str, Any]):
         self,
         func: Callable[..., Any],
         *,
-        extra_hidden: set[str] | None = None,
+        extra_hidden: Iterable[str] = (),
     ) -> Callable[..., Any]:
         sig = inspect.signature(func)
-        hidden_args = set(INJECTABLE_TOOL_ARGS)
-        if extra_hidden:
-            hidden_args.update(extra_hidden)
+        hidden_args = {*self._injectors, *extra_hidden}
         hidden_args = hidden_args & set(sig.parameters)
         if not hidden_args:
             return func
@@ -411,63 +496,56 @@ class ToolRegistry(Mapping[str, Any]):
     async def _call_callable_tool(
         self,
         tool: CallableTool,
-        resources: Any,
-        args: dict[str, Any],
-        task: Any,
-        state: Any,
-    ) -> Any:
+        resources: object,
+        args: dict[str, object],
+        task: object,
+        state: object,
+    ) -> object:
         call_args = self._inject_args(
             tool.func,
             resources,
             args,
             task,
             state,
-            extra_injected=set(tool.injected_args),
+            extra_injected=tool.injected_args,
         )
         return await maybe_await(tool.func, **call_args)
 
     def _inject_args(
         self,
         func: Callable[..., Any],
-        resources: Any,
-        args: dict[str, Any],
-        task: Any,
-        state: Any,
+        resources: object,
+        args: dict[str, object],
+        task: object,
+        state: object,
         *,
-        extra_injected: set[str] | None = None,
-    ) -> dict[str, Any]:
+        extra_injected: Iterable[str] = (),
+    ) -> dict[str, object]:
         call_args = dict(args)
-        injectable = set(INJECTABLE_TOOL_ARGS)
-        if extra_injected:
-            injectable.update(extra_injected)
-        params = set(inspect.signature(func).parameters)
-        for name in params & injectable:
+        signature = inspect.signature(func)
+        params = set(signature.parameters)
+        hidden = {*self._injectors, *extra_injected}
+        context = ToolContext(resources=resources, task=task, state=state)
+        for name in params & set(self._injectors):
             if name in call_args:
                 continue
-            value = self._injected_value(name, resources, task, state)
-            if value is not _NO_VALUE:
-                call_args[name] = value
+            call_args[name] = self._injectors[name].resolve(context)
+        missing = [
+            name
+            for name in params & hidden
+            if name not in call_args
+            and signature.parameters[name].default is inspect.Parameter.empty
+        ]
+        if missing:
+            raise ToolArgumentError(
+                f"Hidden tool arguments are not injectable: {', '.join(sorted(missing))}"
+            )
         return call_args
 
-    def _injected_value(self, name: str, resources: Any, task: Any, state: Any) -> Any:
-        if name == "resources":
-            return resources
-        if name == "state":
-            return state
-        if name == "task":
-            return task
-        if name == "client":
-            return resources.client
-        if name == "model":
-            return resources.model
-        if name == "sampling_args":
-            return resources.sampling_args
-        if name == "tools":
-            return resources.tools
-        return _NO_VALUE
-
     @staticmethod
-    def _parse_arguments(arguments: str | Mapping[str, Any] | None) -> dict[str, Any]:
+    def _parse_arguments(
+        arguments: str | Mapping[str, object] | None,
+    ) -> dict[str, object]:
         if arguments is None:
             return {}
         if isinstance(arguments, str):
@@ -505,9 +583,11 @@ class ToolRegistry(Mapping[str, Any]):
             return function_name
         raise ValueError(f"Tool has no name: {tool!r}")
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> ToolHandle:
         self.ensure_ready()
-        return self._tools[key]
+        if key not in self._tools:
+            raise KeyError(key)
+        return ToolHandle(self, key)
 
     def __iter__(self) -> Iterator[str]:
         self.ensure_ready()
@@ -518,23 +598,35 @@ class ToolRegistry(Mapping[str, Any]):
         return len(self._tools)
 
 
-class _NoValue:
-    pass
-
-
-_NO_VALUE = _NoValue()
-
-
 def resolve_tools(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     registry = ToolRegistry()
     for config in configs:
-        if isinstance(config, ToolRegistry):
+        if isinstance(config, Mapping) and ("tools" in config or "injectors" in config):
+            tool_config = cast(Mapping[str, object], config)
+            registry.extend(as_list(tool_config.get("tools")))
+            registry.extend(as_list(tool_config.get("injectors")))
+        elif isinstance(config, ToolRegistry):
             registry.extend(config)
         else:
             registry.extend(as_list(config))
-    return {"tools": registry}
+    rubric_contributions: tuple[object, ...] = ()
+    tool_names = registry.names()
+    if tool_names:
+        rubric_contributions = (ToolMonitorRubric(tool_names=tool_names),)
+    return ResourcePatch(
+        objects={"tools": registry},
+        hooks=LifecycleHooks(teardown=(registry.teardown,)),
+        contributions={"rubric": rubric_contributions},
+    )
 
 
-tools_channel = Channel(name="tools", outputs=("tools",), resolve_fn=resolve_tools)
+tools_channel = Channel(
+    name="tools",
+    outputs=("tools",),
+    output_types={"tools": ToolRegistry},
+    contributes_to=("rubric",),
+    always_resolve=True,
+    resolve_fn=resolve_tools,
+)

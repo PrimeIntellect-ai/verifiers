@@ -232,14 +232,25 @@ def state_to_output(
     # use repr for error
     error = state.get("error")
     if error is not None:
-        error_chain = ErrorChain(error)
-        output["error"] = ErrorInfo(
-            error=type(error).__name__,
-            error_chain_repr=repr(error_chain),
-            error_chain_str=str(error_chain),
-        )
-        output["error_chain"] = repr(error_chain)
-        output["long_error_chain"] = str(error_chain)
+        if isinstance(error, Mapping) and {
+            "error",
+            "error_chain_repr",
+            "error_chain_str",
+        } <= set(error):
+            output["error"] = ErrorInfo(
+                error=str(error["error"]),
+                error_chain_repr=str(error["error_chain_repr"]),
+                error_chain_str=str(error["error_chain_str"]),
+            )
+        else:
+            error_chain = ErrorChain(cast(BaseException, error))
+            output["error"] = ErrorInfo(
+                error=type(error).__name__,
+                error_chain_repr=repr(error_chain),
+                error_chain_str=str(error_chain),
+            )
+        output["error_chain"] = output["error"]["error_chain_repr"]
+        output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")

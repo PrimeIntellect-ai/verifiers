@@ -10,8 +10,10 @@ if TYPE_CHECKING:
 ChannelConfig = object
 ChannelMap = dict[str, ChannelConfig]
 CanonicalizeFn = Callable[[ChannelConfig], ChannelConfig]
-ResolvedObjects = dict[str, object]
-ResolveFn = Callable[[list[ChannelConfig], "ChannelContext"], ResolvedObjects]
+ResolveFn = Callable[[list[ChannelConfig], "ChannelContext"], "ResourcePatch"]
+ExtendFn = Callable[[object, list[ChannelConfig], "ChannelContext"], object]
+ResourceType = type[object]
+LifecycleHandler = Callable[..., object]
 
 
 @dataclass(frozen=True)
@@ -31,13 +33,65 @@ class ChannelContext:
 
 
 @dataclass(frozen=True)
+class LifecycleHooks:
+    stop: tuple[LifecycleHandler, ...] = ()
+    cleanup: tuple[LifecycleHandler, ...] = ()
+    teardown: tuple[LifecycleHandler, ...] = ()
+
+    def merged(self, other: "LifecycleHooks") -> "LifecycleHooks":
+        return LifecycleHooks(
+            stop=(*self.stop, *other.stop),
+            cleanup=(*self.cleanup, *other.cleanup),
+            teardown=(*self.teardown, *other.teardown),
+        )
+
+    def get(self, kind: str) -> tuple[LifecycleHandler, ...]:
+        if kind == "stop":
+            return self.stop
+        if kind == "cleanup":
+            return self.cleanup
+        if kind == "teardown":
+            return self.teardown
+        raise ValueError(f"Unknown lifecycle hook kind: {kind}")
+
+
+@dataclass(frozen=True)
+class ResourcePatch:
+    objects: Mapping[str, object] = field(default_factory=dict)
+    hooks: LifecycleHooks = field(default_factory=LifecycleHooks)
+    contributions: Mapping[str, tuple[ChannelConfig, ...]] = field(default_factory=dict)
+
+    def merged(self, incoming: "ResourcePatch") -> "ResourcePatch":
+        objects = dict(self.objects)
+        for name, value in incoming.objects.items():
+            if name not in objects:
+                objects[name] = value
+                continue
+            objects[name] = merge_resource_value(name, objects[name], value)
+        return ResourcePatch(
+            objects=objects,
+            hooks=self.hooks.merged(incoming.hooks),
+            contributions=merge_channel_contributions(
+                self.contributions,
+                incoming.contributions,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Channel:
     """Definition for one config-shaped channel."""
 
     name: str
     outputs: tuple[str, ...] = ()
+    output_types: Mapping[str, ResourceType] = field(default_factory=dict)
+    requires: tuple[str, ...] = ()
+    contributes_to: tuple[str, ...] = ()
+    extendable: bool = False
+    always_resolve: bool = False
     canonicalize_fn: CanonicalizeFn | None = None
     resolve_fn: ResolveFn | None = None
+    extend_fn: ExtendFn | None = None
 
     def canonicalize(self, config: ChannelConfig) -> ChannelConfig:
         if self.canonicalize_fn is None:
@@ -46,11 +100,9 @@ class Channel:
 
     def resolve(
         self, configs: list[ChannelConfig], context: ChannelContext
-    ) -> ResolvedObjects:
+    ) -> ResourcePatch:
         canonical = [
-            self.canonicalize(config)
-            for config in configs
-            if not is_empty_config(config)
+            self.canonicalize(config) for config in configs if not self.is_empty(config)
         ]
         if self.resolve_fn is not None:
             return self.resolve_fn(canonical, context)
@@ -60,54 +112,180 @@ class Channel:
                 "not define how to combine them."
             )
         if not canonical:
-            return {}
+            return ResourcePatch()
         output_name = self.outputs[0] if self.outputs else self.name
-        return {output_name: canonical[0]}
+        return ResourcePatch(objects={output_name: canonical[0]})
 
+    def is_empty(self, config: ChannelConfig) -> bool:
+        return config is None
 
-@dataclass(frozen=True)
-class ResourceResolution:
-    objects: dict[str, object]
-    stop_conditions: list[Callable[..., object]] = field(default_factory=list)
-    cleanup_handlers: list[Callable[..., object]] = field(default_factory=list)
-    teardown_handlers: list[Callable[..., object]] = field(default_factory=list)
+    def extend(
+        self,
+        current: object,
+        configs: list[ChannelConfig],
+        context: ChannelContext,
+    ) -> object:
+        if not self.extendable or self.extend_fn is None:
+            raise ValueError(f"Channel {self.name!r} cannot be extended.")
+        return self.extend_fn(current, configs, context)
 
 
 def resolve_channels(
     *channel_maps: Mapping[str, ChannelConfig],
     channels: Mapping[str, Channel],
     context: ChannelContext,
-) -> ResolvedObjects:
-    objects: dict[str, object] = {}
-    for name, configs in collect_channel_configs(*channel_maps).items():
-        channel = channels.get(name, Channel(name=name, outputs=(name,)))
-        for object_name, value in channel.resolve(configs, context).items():
-            objects[object_name] = merge_resource_value(
-                object_name,
-                objects.get(object_name),
-                value,
+) -> ResourcePatch:
+    patch = ResourcePatch()
+    configs_by_name = collect_channel_configs(*channel_maps)
+    pending = resolution_order(configs_by_name, channels)
+    resolved_channels: set[str] = set()
+    while pending:
+        progressed = False
+        for name in pending[:]:
+            channel = channels[name]
+            if not channel_requirements_met(
+                channel, context, patch.objects, resolved_channels
+            ):
+                continue
+            configs = configs_by_name.get(name, [])
+            channel_context = ChannelContext(
+                objects={**context.objects, **patch.objects},
+                owners=context.owners,
+                phase=context.phase,
             )
-    return objects
+            incoming = channel.resolve(configs, channel_context)
+            extensions = enqueue_channel_contributions(
+                incoming.contributions,
+                configs_by_name=configs_by_name,
+                channels=channels,
+                pending=pending,
+                resolved_channels=resolved_channels,
+                patch=patch,
+                context=ChannelContext(
+                    objects={**context.objects, **patch.objects, **incoming.objects},
+                    owners=context.owners,
+                    phase=context.phase,
+                ),
+            )
+            if extensions:
+                patch = ResourcePatch(
+                    objects={**patch.objects, **extensions},
+                    hooks=patch.hooks,
+                    contributions=patch.contributions,
+                )
+            patch = patch.merged(incoming)
+            pending.remove(name)
+            resolved_channels.add(name)
+            progressed = True
+        if not progressed:
+            missing = ", ".join(
+                f"{name}: {channels[name].requires}" for name in pending
+            )
+            raise ValueError(f"Could not resolve channel dependencies: {missing}")
+    return patch
+
+
+def resolution_order(
+    configs_by_name: Mapping[str, list[ChannelConfig]],
+    channels: Mapping[str, Channel],
+) -> list[str]:
+    names: set[str] = set()
+    for name, channel in channels.items():
+        if name in configs_by_name or channel.always_resolve:
+            names.add(name)
+    for name in configs_by_name:
+        if name not in channels:
+            raise ValueError(
+                f"Channel {name!r} is not registered. Add it to channel_definitions()."
+            )
+    names.update(configs_by_name)
+    expand_channel_dependencies(names, channels)
+    return ordered_channel_names(names, channels)
+
+
+def expand_channel_dependencies(
+    names: set[str], channels: Mapping[str, Channel]
+) -> None:
+    while True:
+        expanded = False
+        for name in tuple(names):
+            channel = channels[name]
+            for dependency in channel.requires:
+                if dependency in channels and dependency not in names:
+                    names.add(dependency)
+                    expanded = True
+            for target in channel.contributes_to:
+                if target not in channels:
+                    raise ValueError(
+                        f"Channel {name!r} contributes to unknown channel {target!r}."
+                    )
+                if target not in names:
+                    names.add(target)
+                    expanded = True
+        if not expanded:
+            return
+
+
+def ordered_channel_names(
+    names: set[str], channels: Mapping[str, Channel]
+) -> list[str]:
+    ordered: list[str] = []
+    permanent: set[str] = set()
+    temporary: set[str] = set()
+
+    def visit(name: str, stack: tuple[str, ...]) -> None:
+        if name in permanent:
+            return
+        if name in temporary:
+            cycle = " -> ".join((*stack, name))
+            raise ValueError(f"Circular channel dependency: {cycle}")
+        temporary.add(name)
+        channel = channels[name]
+        for dependency in channel.requires:
+            if dependency in names:
+                visit(dependency, (*stack, name))
+        for dependency in channels_contributing_to(name, names, channels):
+            visit(dependency, (*stack, name))
+        temporary.remove(name)
+        permanent.add(name)
+        ordered.append(name)
+
+    for name in channels:
+        if name in names:
+            visit(name, ())
+    return ordered
+
+
+def channels_contributing_to(
+    target: str, names: set[str], channels: Mapping[str, Channel]
+) -> list[str]:
+    return [
+        name
+        for name in channels
+        if name in names and target in channels[name].contributes_to
+    ]
+
+
+def channel_requirements_met(
+    channel: Channel,
+    context: ChannelContext,
+    objects: Mapping[str, object],
+    resolved_channels: set[str],
+) -> bool:
+    available = {*context.objects, *objects, *resolved_channels}
+    return all(requirement in available for requirement in channel.requires)
 
 
 def resolve_resource_objects(
     *owners: object,
     phase: str,
     task: Task | None = None,
-    normalize: bool = True,
-) -> ResourceResolution:
-    objects = resolve_channels(
+) -> ResourcePatch:
+    definitions = channel_definitions(*owners)
+    return resolve_channels(
         *[raw_channels(owner, task) for owner in owners],
-        channels=channel_definitions(*owners),
+        channels=definitions,
         context=channel_context(*owners, phase=phase),
-    )
-    if normalize:
-        normalize_resource_objects(objects)
-    return ResourceResolution(
-        objects=objects,
-        stop_conditions=pop_handlers(objects, "stop_conditions"),
-        cleanup_handlers=pop_handlers(objects, "cleanup_handlers"),
-        teardown_handlers=pop_handlers(objects, "teardown_handlers"),
     )
 
 
@@ -119,6 +297,55 @@ def collect_channel_configs(
         for name, config in channel_map.items():
             grouped.setdefault(name, []).append(config)
     return grouped
+
+
+def enqueue_channel_contributions(
+    contributions: Mapping[str, tuple[ChannelConfig, ...]],
+    *,
+    configs_by_name: dict[str, list[ChannelConfig]],
+    channels: Mapping[str, Channel],
+    pending: list[str],
+    resolved_channels: set[str],
+    patch: ResourcePatch,
+    context: ChannelContext,
+) -> dict[str, object]:
+    extensions: dict[str, object] = {}
+    for name, configs in contributions.items():
+        if name not in channels:
+            raise ValueError(
+                f"Channel {name!r} is not registered. Add it to channel_definitions()."
+            )
+        if name in resolved_channels:
+            if not channels[name].extendable:
+                raise ValueError(
+                    f"Channel {name!r} received a contribution after it was resolved."
+                )
+            output_name, value = extend_resolved_channel(
+                name, configs, channels[name], patch, context
+            )
+            extensions[output_name] = value
+            continue
+        configs_by_name.setdefault(name, []).extend(configs)
+        if name not in pending:
+            pending.append(name)
+    return extensions
+
+
+def extend_resolved_channel(
+    name: str,
+    configs: tuple[ChannelConfig, ...],
+    channel: Channel,
+    patch: ResourcePatch,
+    context: ChannelContext,
+) -> tuple[str, object]:
+    if not channel.outputs:
+        raise ValueError(f"Extendable channel {name!r} must declare an output.")
+    output_name = channel.outputs[0]
+    if output_name not in patch.objects:
+        raise ValueError(f"Resolved resource {output_name!r} is not available.")
+    current = patch.objects[output_name]
+    extended = channel.extend(current, list(configs), context)
+    return output_name, extended
 
 
 def raw_channels(owner: object, task: Task | None = None) -> Mapping[str, object]:
@@ -157,6 +384,17 @@ def channel_definitions(*owners: object) -> dict[str, Channel]:
     return definitions
 
 
+def channel_resource_types(channels: Mapping[str, Channel]) -> dict[str, ResourceType]:
+    resource_types: dict[str, ResourceType] = {}
+    for channel in channels.values():
+        for name, resource_type in channel.output_types.items():
+            existing = resource_types.get(name)
+            if existing is not None and existing != resource_type:
+                raise ValueError(f"Conflicting resource type for {name!r}.")
+            resource_types[name] = resource_type
+    return resource_types
+
+
 def channel_context(*owners: object, phase: str = "env") -> ChannelContext:
     objects: dict[str, object] = {}
     for owner in owners:
@@ -171,30 +409,7 @@ def channel_context(*owners: object, phase: str = "env") -> ChannelContext:
     return ChannelContext(objects=objects, owners=owners, phase=phase)
 
 
-def normalize_resource_objects(objects: dict[str, object]) -> None:
-    from verifiers.envs.experimental.channels import NoOpRubric, ToolRegistry
-
-    system_prompt = objects.get("system_prompt")
-    if system_prompt is None:
-        objects["system_prompt"] = ""
-    elif not isinstance(system_prompt, str):
-        raise TypeError("The system_prompt channel must resolve to a string.")
-    if not isinstance(objects.get("tools"), ToolRegistry):
-        objects["tools"] = ToolRegistry()
-    if objects.get("rubric") is None:
-        objects["rubric"] = NoOpRubric()
-    objects.setdefault("skills", [])
-    objects.setdefault("sandbox_request", None)
-    objects.setdefault("sandbox_scoring", False)
-    objects.setdefault("user", None)
-    objects.setdefault("upload_dirs", {})
-
-
-def pop_handlers(objects: dict[str, object], name: str) -> list[Callable[..., object]]:
-    return lifecycle_handlers(objects.pop(name, None))
-
-
-def lifecycle_handlers(handlers: object) -> list[Callable[..., object]]:
+def lifecycle_handlers(handlers: object) -> list[LifecycleHandler]:
     if handlers is None:
         return []
     if isinstance(handlers, list | tuple | set):
@@ -202,48 +417,34 @@ def lifecycle_handlers(handlers: object) -> list[Callable[..., object]]:
     return [lifecycle_handler(handlers)]
 
 
-def lifecycle_handler(handler: object) -> Callable[..., object]:
+def lifecycle_handler(handler: object) -> LifecycleHandler:
     if not callable(handler):
         raise TypeError("Lifecycle channel entries must be callable.")
-    return cast(Callable[..., object], handler)
+    return cast(LifecycleHandler, handler)
 
 
 def merge_resource_value(name: str, existing: object, incoming: object) -> object:
-    if existing is None:
-        return incoming
-    if incoming is None:
-        return existing
-    if existing == "":
-        return incoming
-    if incoming == "":
-        return existing
     if existing == incoming:
         return existing
     if isinstance(existing, list) and isinstance(incoming, list):
         return [*existing, *incoming]
-    if (
-        name == "sandbox_scoring"
-        and isinstance(existing, bool | int)
-        and isinstance(incoming, bool | int)
-    ):
-        return bool(existing or incoming)
-    if (
-        name == "upload_dirs"
-        and isinstance(existing, Mapping)
-        and isinstance(incoming, Mapping)
-    ):
-        return {**existing, **incoming}
-    from verifiers.envs.experimental.channels import ToolRegistry
-
-    if isinstance(existing, ToolRegistry) and isinstance(incoming, ToolRegistry):
-        return existing.merged(incoming)
     raise ValueError(
         f"Channel resolution produced conflicting values for resource object {name!r}."
     )
 
 
+def merge_channel_contributions(
+    existing: Mapping[str, tuple[ChannelConfig, ...]],
+    incoming: Mapping[str, tuple[ChannelConfig, ...]],
+) -> dict[str, tuple[ChannelConfig, ...]]:
+    merged = dict(existing)
+    for name, configs in incoming.items():
+        merged[name] = (*merged.get(name, ()), *configs)
+    return merged
+
+
 def is_empty_config(config: ChannelConfig) -> bool:
-    return config is None or config == "" or config == [] or config == {}
+    return config is None
 
 
 def single_config(name: str, configs: list[ChannelConfig]) -> ChannelConfig | None:

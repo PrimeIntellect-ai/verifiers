@@ -3,28 +3,25 @@ from __future__ import annotations
 from asyncio import Lock
 from collections.abc import AsyncIterator
 from collections.abc import Callable
-from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast, overload
 
 from verifiers.clients import Client
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import DatasetBuilder, SamplingArgs
 
 from verifiers.envs.experimental.channels.channel import (
-    lifecycle_handlers,
+    LifecycleHooks,
+    ResourceType,
+    channel_definitions,
+    channel_resource_types,
     resolve_resource_objects,
 )
 from verifiers.envs.experimental.channels import (
-    Endpoint,
-    SandboxResources,
-    ToolMonitorRubric,
     ToolRegistry,
-    User,
     attach_resources,
-    compose_rubrics,
 )
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.taskset import Taskset
@@ -38,6 +35,16 @@ LifecycleHandler = Callable[..., object]
 T = TypeVar("T")
 
 
+@dataclass(frozen=True)
+class _RolloutState:
+    objects: dict[str, object]
+    client: Client
+    model: str
+    sampling_args: SamplingArgs
+    hooks: LifecycleHooks
+    runtime: dict[str, object]
+
+
 @dataclass
 class Resources:
     """Environment-scope resolved objects shared across rollouts."""
@@ -45,42 +52,20 @@ class Resources:
     taskset: Taskset
     harness: Harness
     objects: dict[str, object] = field(default_factory=dict)
-    stop_conditions: list[LifecycleHandler] = field(default_factory=list)
-    cleanup_handlers: list[LifecycleHandler] = field(default_factory=list)
-    teardown_handlers: list[LifecycleHandler] = field(default_factory=list)
+    resource_types: dict[str, ResourceType] = field(default_factory=dict)
+    hooks: LifecycleHooks = field(default_factory=LifecycleHooks)
     dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
     eval_dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
     env_id: str | None = field(default=None, init=False)
-    rubric: Rubric = field(init=False)
-    tools: ToolRegistry = field(init=False)
     _teardown_complete: bool = False
-    _rollout_objects: ContextVar[dict[str, object] | None] = field(
-        default_factory=lambda: ContextVar("vf_rollout_objects", default=None),
-        init=False,
-        repr=False,
-    )
-    _client: ContextVar[Client | None] = field(
-        default_factory=lambda: ContextVar("vf_rollout_client", default=None),
-        init=False,
-        repr=False,
-    )
-    _model: ContextVar[str | None] = field(
-        default_factory=lambda: ContextVar("vf_rollout_model", default=None),
-        init=False,
-        repr=False,
-    )
-    _sampling_args: ContextVar[SamplingArgs | None] = field(
-        default_factory=lambda: ContextVar("vf_rollout_sampling_args", default=None),
-        init=False,
-        repr=False,
-    )
-    _runtime: ContextVar[dict[str, object] | None] = field(
-        default_factory=lambda: ContextVar("vf_rollout_runtime", default=None),
+    _rollout: ContextVar[_RolloutState | None] = field(
+        default_factory=lambda: ContextVar("vf_rollout", default=None),
         init=False,
         repr=False,
     )
 
     def __post_init__(self) -> None:
+        definitions = channel_definitions(self.taskset, self.harness)
         resolution = resolve_resource_objects(self.taskset, self.harness, phase="env")
         self.dataset = (
             cast(DatasetBuilder, self.taskset.get_dataset)
@@ -94,19 +79,11 @@ class Resources:
         )
         self.env_id = self.taskset.name
         self.objects.update(resolution.objects)
-        self.tools = self.require("tools", ToolRegistry)
-        tool_names = self.tools.names()
-        self.rubric = compose_rubrics(
-            self.require("rubric", Rubric),
-            ToolMonitorRubric(tool_names=tool_names) if tool_names else None,
-        )
-        self.objects["rubric"] = self.rubric
-        self._extend_handlers("teardown", [self.tools.teardown])
-        self._extend_handlers("stop", resolution.stop_conditions)
-        self._extend_handlers("cleanup", resolution.cleanup_handlers)
-        self._extend_handlers("teardown", resolution.teardown_handlers)
+        self.resource_types.update(channel_resource_types(definitions))
+        rubric = self.require("rubric", Rubric)
+        self.hooks = resolution.hooks
         self.harness.resources = self
-        attach_resources(self.rubric, self)
+        attach_resources(rubric, self)
 
     def __getattr__(self, name: str) -> object:
         rollout_objects = self.rollout_objects()
@@ -117,131 +94,79 @@ class Resources:
         except KeyError as e:
             raise AttributeError(name) from e
 
-    def __setattr__(self, name: str, value: object) -> None:
-        if name in self.__dataclass_fields__ or "objects" not in self.__dict__:
-            super().__setattr__(name, value)
-            return
-        self.objects[name] = value
-
     def get(self, name: str, default: object = None) -> object:
         rollout_objects = self.rollout_objects()
         if name in rollout_objects:
             return rollout_objects[name]
         return self.objects.get(name, default)
 
-    def get_global(self, name: str, default: object = None) -> object:
-        return self.objects.get(name, default)
+    @property
+    def rubric(self) -> Rubric:
+        return self.require("rubric", Rubric)
 
-    def require(self, name: str, expected_type: type[T]) -> T:
+    @property
+    def tools(self) -> ToolRegistry:
+        return self.require("tools", ToolRegistry)
+
+    @overload
+    def require(self, name: str, expected_type: type[T]) -> T: ...
+
+    @overload
+    def require(self, name: str) -> object: ...
+
+    def require(self, name: str, expected_type: type[T] | None = None) -> T | object:
+        if name not in self.rollout_objects() and name not in self.objects:
+            raise KeyError(f"Resolved resource {name!r} is not available.")
         value = self.get(name)
-        if not isinstance(value, expected_type):
+        resource_type = expected_type or self.resource_types.get(name)
+        if (
+            resource_type is not None
+            and resource_type is not object
+            and not isinstance(value, resource_type)
+        ):
             raise TypeError(
-                f"Resolved resource {name!r} must be {expected_type.__name__}."
+                f"Resolved resource {name!r} must be {resource_type.__name__}."
             )
         return value
-
-    @property
-    def system_prompt(self) -> str:
-        return cast(str, self.require("system_prompt", str))
-
-    @property
-    def user(self) -> User | None:
-        value = self.get("user")
-        if value is None:
-            return None
-        if not isinstance(value, User):
-            raise TypeError("Resolved resource 'user' must implement User.")
-        return value
-
-    @property
-    def endpoint(self) -> Endpoint | None:
-        value = self.get("endpoint")
-        if value is None:
-            return None
-        if not isinstance(value, Endpoint):
-            raise TypeError("Resolved resource 'endpoint' must be Endpoint.")
-        return value
-
-    @property
-    def sandbox_runtime(self) -> SandboxResources | None:
-        value = self.get("sandbox_runtime")
-        if value is None:
-            return None
-        if not isinstance(value, SandboxResources):
-            raise TypeError(
-                "Resolved resource 'sandbox_runtime' must be SandboxResources."
-            )
-        return value
-
-    @property
-    def sandbox_request(self) -> object:
-        return self.get("sandbox_request")
-
-    @property
-    def sandbox_scoring(self) -> bool:
-        return bool(self.get("sandbox_scoring"))
-
-    @property
-    def upload_dirs(self) -> Mapping[str, object]:
-        value = self.get("upload_dirs")
-        if not isinstance(value, Mapping):
-            raise TypeError("Resolved resource 'upload_dirs' must be a mapping.")
-        return cast(Mapping[str, object], value)
 
     def rollout_objects(self) -> dict[str, object]:
-        return self._rollout_objects.get() or {}
+        rollout = self._rollout.get()
+        if rollout is None:
+            return {}
+        return rollout.objects
 
     @property
     def client(self) -> Client:
-        client = self._client.get()
-        if client is None:
+        rollout = self._rollout.get()
+        if rollout is None:
             raise RuntimeError("No model client is active for this rollout.")
-        return client
+        return rollout.client
 
     @property
     def model(self) -> str:
-        model = self._model.get()
-        if model is None:
+        rollout = self._rollout.get()
+        if rollout is None:
             raise RuntimeError("No model is active for this rollout.")
-        return model
+        return rollout.model
 
     @property
     def sampling_args(self) -> SamplingArgs:
-        return self._sampling_args.get() or {}
+        rollout = self._rollout.get()
+        if rollout is None:
+            return {}
+        return rollout.sampling_args
 
     @property
     def runtime(self) -> dict[str, object]:
-        runtime = self._runtime.get()
-        if runtime is None:
+        rollout = self._rollout.get()
+        if rollout is None:
             raise RuntimeError("No rollout runtime is active.")
-        return runtime
-
-    def _extend_handlers(self, kind: str, handlers: object) -> None:
-        resolved = lifecycle_handlers(handlers)
-        if kind == "stop":
-            self.stop_conditions.extend(resolved)
-        elif kind == "cleanup":
-            self.cleanup_handlers.extend(resolved)
-        elif kind == "teardown":
-            self.teardown_handlers.extend(resolved)
-        else:
-            raise ValueError(f"Unknown lifecycle handler kind: {kind}")
+        return rollout.runtime
 
     def current_handlers(self, kind: str) -> list[LifecycleHandler]:
-        if kind == "stop":
-            base = self.stop_conditions
-            runtime_key = "stop_conditions"
-        elif kind == "cleanup":
-            base = self.cleanup_handlers
-            runtime_key = "cleanup_handlers"
-        elif kind == "teardown":
-            base = self.teardown_handlers
-            runtime_key = "teardown_handlers"
-        else:
-            raise ValueError(f"Unknown lifecycle handler kind: {kind}")
-        runtime = self._runtime.get() or {}
-        local = lifecycle_handlers(runtime.get(runtime_key))
-        return unique_handlers([*base, *local])
+        rollout = self._rollout.get()
+        rollout_hooks = LifecycleHooks() if rollout is None else rollout.hooks
+        return unique_handlers([*self.hooks.get(kind), *rollout_hooks.get(kind)])
 
     @asynccontextmanager
     async def rollout(
@@ -256,27 +181,21 @@ class Resources:
             self.harness,
             phase="rollout",
             task=task,
-            normalize=False,
         )
-        stop_token = self._rollout_objects.set(resolution.objects)
-        client_token = self._client.set(client)
-        model_token = self._model.set(model)
-        sampling_token = self._sampling_args.set(sampling_args or {})
-        runtime_token = self._runtime.set(
-            {
-                "stop_conditions": resolution.stop_conditions,
-                "cleanup_handlers": resolution.cleanup_handlers,
-                "teardown_handlers": resolution.teardown_handlers,
-            }
+        rollout_token = self._rollout.set(
+            _RolloutState(
+                objects=dict(resolution.objects),
+                client=client,
+                model=model,
+                sampling_args=sampling_args or {},
+                hooks=resolution.hooks,
+                runtime={},
+            )
         )
         try:
             yield
         finally:
-            self._runtime.reset(runtime_token)
-            self._sampling_args.reset(sampling_token)
-            self._model.reset(model_token)
-            self._client.reset(client_token)
-            self._rollout_objects.reset(stop_token)
+            self._rollout.reset(rollout_token)
 
     def trajectory_lock(self) -> Lock:
         lock = self.runtime.setdefault("trajectory_lock", Lock())
@@ -286,7 +205,7 @@ class Resources:
         if self._teardown_complete:
             return
         self._teardown_complete = True
-        await self.harness.run_teardown_handlers(self.teardown_handlers)
+        await self.harness.run_teardown_handlers(self.hooks.teardown)
 
 
 def unique_handlers(handlers: list[LifecycleHandler]) -> list[LifecycleHandler]:

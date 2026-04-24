@@ -9,6 +9,7 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    ResourcePatch,
     single_config,
 )
 
@@ -28,15 +29,16 @@ class User(Protocol):
 
 def resolve_user(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     config = single_config("user", configs)
     if config is None:
-        return {}
-    return {"user": config}
+        return ResourcePatch()
+    return ResourcePatch(objects={"user": config})
 
 
 user_channel = Channel(
     name="user",
     outputs=("user",),
+    output_types={"user": User},
     resolve_fn=resolve_user,
 )

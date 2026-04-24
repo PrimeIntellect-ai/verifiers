@@ -196,8 +196,8 @@ channels under named objects; harnesses and tasksets only contribute
 declarations. The rollout loop does not inspect channel maps. Environment-scope
 and per-task channel asks are resolved before `harness.run(...)`, and harness
 code consumes resolved objects such as
-`resources.tools`, `resources.sandbox_runtime`, `resources.sandbox_request`,
-and `resources.upload_dirs`.
+`resources.tools`, `resources.require("sandbox_runtime")`,
+`resources.get("sandbox_request")`, and `resources.require("sandbox_uploads")`.
 Default resource names are conventions of the built-in channels, while custom
 channels can materialize their own names without changing the resource classes.
 
@@ -206,13 +206,26 @@ one-to-one resource attributes. A single channel can materialize several
 resource fields.
 
 Channel configs are dict-shaped user-facing declarations. A `Channel` defines
-`outputs`, `canonicalize(config)`, and `resolve(configs, context)`. The
+`outputs`, optional `output_types`, optional `requires`, optional
+`contributes_to`, `canonicalize(config)`, and `resolve(configs, context)`. The
 canonicalize step accepts ergonomic shorthand and normalizes it into one strict
-internal shape; resolution turns that canonical shape into named resource
-objects. Lifecycle additions are ordinary `stop`, `cleanup`, and `teardown`
-channels, so tasksets and harnesses can add decorator handlers without
-subclassing. Unknown channel names are allowed, but only accept zero or one
-contribution unless a custom `Channel` is registered.
+internal shape; resolution turns that canonical shape into a `ResourcePatch`
+containing named resource objects, lifecycle hooks, and optional follow-on
+channel contributions. `output_types` is the single touchpoint for automatic
+`Resources.require(...)` validation; adding a channel should not require adding
+a matching property to `Resources`.
+
+Channels can declare ordering through `requires` and `contributes_to`; resolution
+orders channels accordingly and only hard-fails on circular dependencies. Some
+channels can also opt into `extendable=True`, allowing later contributions after
+the channel has resolved. Rubric is extendable, so the tools channel can
+contribute tool-monitor rubric entries without the rubric channel knowing about
+tools. Scalar channels such as `system_prompt` remain non-extendable. Unknown
+channel names hard-fail unless a custom `Channel` is registered by the taskset
+or harness.
+
+Lifecycle additions are ordinary `stop`, `cleanup`, and `teardown` channels, so
+tasksets and harnesses can add decorator handlers without subclassing.
 
 Resource assembly starts from `DEFAULT_CHANNELS`, assembled in
 `verifiers.envs.experimental.channels.__init__` from the per-channel modules,
@@ -365,13 +378,15 @@ Tool support should cover:
 - plain Python callables
 - `CallableTool` declarations for explicit names/descriptions/injected args
 - MCP stdio servers via `MCPServerSpec`
-- stateful tools whose hidden arguments are injected from the explicit
-  task/state/resources call path
-  (`resources`, `state`, `task`, `client`, `model`, `sampling_args`, `tools`)
+- stateful tools whose hidden arguments are injected by registered
+  `ToolInjector` entries. Built-in injectors cover `resources`, `state`,
+  `task`, `client`, `model`, `sampling_args`, and `tools`; custom injectors
+  can be contributed through the tools channel.
 
-Tool schemas hide injected routing args from the model. Tool calls are executed
-through `resources.tools.call(...)`, so harness subclasses do not need their own
-tool maps.
+Tool schemas hide injected routing args from the model. Harnesses see light
+tool handles through `resources.tools[...]` and use `resources.tools.call(...)`
+for dispatch, while the registry owns actual calls, hidden argument injection,
+MCP runtime state, and teardown.
 
 ### 3. Endpoint Harness Pattern
 
@@ -381,29 +396,32 @@ server:
 - Start a managed endpoint for external rollout code that speaks a standard
   LLM API.
 - Register one internal request key per harness run.
+- Launch `execute(task, state, resources, client)` as the overridable endpoint
+  hook. This is where DSPy, LangChain, direct OpenAI-compatible calls, or other
+  endpoint-facing Python code lives.
 - Convert endpoint request messages/tools into vf messages/tools.
 - Forward each request through `Harness.submit_model_request`.
 - Deliver normal and streaming responses back to the endpoint caller.
 - Append forwarded model calls as trajectory steps via the shared harness path.
 
 The first pass implements `api_client_type="openai_chat_completions"` because
-that matches current CLI-agent usage. Endpoint runtime setup is channel-owned:
+that matches current CLI usage. Endpoint runtime setup is channel-owned:
 `EndpointHarness` contributes an `endpoint` channel ask, and resolution must
 materialize a valid endpoint before the harness can run.
 
 ### 4. CLI Harness Pattern
 
-Implement `CliHarness` as the sandboxed CLI-agent pattern on top of
+Implement `CliHarness` as the sandboxed CLI pattern on top of
 `EndpointHarness`:
 
 - Create a sandbox from harness defaults plus taskset per-task sandbox seeds.
 - Upload task-provided files/directories.
 - Wire `OPENAI_BASE_URL`, model, timeout, and auth env vars.
-- Run the CLI agent as a background job.
+- Run the CLI command as a background job.
 - Capture stdout/stderr/logs into serializable state.
 - Keep the sandbox alive for scoring only when the taskset requests it.
-- Publish the endpoint server through Prime Tunnel by default so sandboxed
-  agents can reach it without an explicit `endpoint_url`.
+- Publish the endpoint server through Prime Tunnel by default so sandboxed CLI
+  processes can reach it without an explicit `endpoint_url`.
 - Keep endpoint server/tunnel handles on `Resources`, prepared by endpoint
   channel resolution, so state stays serializable.
 
@@ -422,7 +440,7 @@ Add package-shaped taskset adapters under
 `task.toml`, read `instruction.md`, declare per-task sandbox seeds, start
 declared network MCP servers when possible, health-check them before the agent
 runs, and provide same-sandbox verifier scoring.
-The agent sandbox should receive only agent-visible task assets before rollout;
+The CLI sandbox should receive only rollout-visible task assets before rollout;
 verifier assets such as `tests/` are uploaded by the rubric immediately before
 scoring.
 

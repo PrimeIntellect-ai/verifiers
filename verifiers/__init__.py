@@ -69,6 +69,8 @@ __all__ = [
     "Resources",
     "CallableTool",
     "MCPServerSpec",
+    "ToolHandle",
+    "ToolInjector",
     "ToolRegistry",
     "User",
     "Environment",
@@ -162,6 +164,8 @@ _LAZY_IMPORTS = {
     "Resources": "verifiers.envs.experimental.resources:Resources",
     "CallableTool": "verifiers.envs.experimental.channels:CallableTool",
     "MCPServerSpec": "verifiers.envs.experimental.channels:MCPServerSpec",
+    "ToolHandle": "verifiers.envs.experimental.channels:ToolHandle",
+    "ToolInjector": "verifiers.envs.experimental.channels:ToolInjector",
     "ToolRegistry": "verifiers.envs.experimental.channels:ToolRegistry",
     "User": "verifiers.envs.experimental.channels:User",
 }
@@ -230,6 +234,8 @@ if TYPE_CHECKING:
     from .envs.experimental.channels import (
         CallableTool,
         MCPServerSpec,
+        ToolHandle,
+        ToolInjector,
         ToolRegistry,
         User,
     )  # noqa: F401

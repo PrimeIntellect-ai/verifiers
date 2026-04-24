@@ -4,21 +4,23 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    LifecycleHooks,
+    ResourcePatch,
     as_list,
+    lifecycle_handlers,
 )
 
 
 def resolve_stop(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     handlers: list[object] = []
     for config in configs:
         handlers.extend(as_list(config))
-    return {"stop_conditions": handlers}
+    return ResourcePatch(hooks=LifecycleHooks(stop=tuple(lifecycle_handlers(handlers))))
 
 
 stop_channel = Channel(
     name="stop",
-    outputs=("stop_conditions",),
     resolve_fn=resolve_stop,
 )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Mapping
-from functools import wraps
 from typing import Any, cast
 
 from datasets import Dataset
@@ -17,26 +16,10 @@ from .task import Task
 
 LoadedSource = Dataset | Iterable[Mapping[str, Any]] | None
 Source = LoadedSource | Callable[[], LoadedSource]
-DatasetGetter = Callable[["Taskset"], LoadedSource]
 
 
 class Taskset:
     """Dataset-shaped task collection with optional channel contributions."""
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if "get_dataset" in cls.__dict__:
-            cls.get_dataset = cached_dataset_getter(  # type: ignore[method-assign]
-                cls.__dict__["get_dataset"],
-                "_dataset",
-                "_dataset_loaded",
-            )
-        if "get_eval_dataset" in cls.__dict__:
-            cls.get_eval_dataset = cached_dataset_getter(  # type: ignore[method-assign]
-                cls.__dict__["get_eval_dataset"],
-                "_eval_dataset",
-                "_eval_dataset_loaded",
-            )
 
     def __init__(
         self,
@@ -46,17 +29,6 @@ class Taskset:
         tools: Iterable[object] | None = None,
         name: str | None = None,
     ):
-        if source is not None and type(self).get_dataset is not Taskset.get_dataset:
-            raise ValueError(
-                "Tasksets may define get_dataset() or pass source, not both."
-            )
-        if (
-            eval_source is not None
-            and type(self).get_eval_dataset is not Taskset.get_eval_dataset
-        ):
-            raise ValueError(
-                "Tasksets may define get_eval_dataset() or pass eval_source, not both."
-            )
         self._source = source
         self._eval_source = eval_source
         self._dataset: Dataset | None = None
@@ -102,16 +74,10 @@ class Taskset:
         return {}
 
     def has_dataset(self) -> bool:
-        return (
-            self._source is not None
-            or type(self).get_dataset is not Taskset.get_dataset
-        )
+        return self._source is not None
 
     def has_eval_dataset(self) -> bool:
-        return (
-            self._eval_source is not None
-            or type(self).get_eval_dataset is not Taskset.get_eval_dataset
-        )
+        return self._eval_source is not None
 
     def get_dataset(self) -> Dataset | None:
         if not self._dataset_loaded:
@@ -191,19 +157,3 @@ class Taskset:
     def __len__(self) -> int:
         dataset = self.get_dataset()
         return len(dataset) if dataset is not None else 0
-
-
-def cached_dataset_getter(
-    getter: DatasetGetter,
-    dataset_attr: str,
-    loaded_attr: str,
-) -> Callable[[Taskset], Dataset | None]:
-    @wraps(getter)
-    def wrapped(self: Taskset) -> Dataset | None:
-        if not getattr(self, loaded_attr):
-            dataset = self._format_dataset(self._coerce_dataset(getter(self)))
-            setattr(self, dataset_attr, dataset)
-            setattr(self, loaded_attr, True)
-        return getattr(self, dataset_attr)
-
-    return wrapped

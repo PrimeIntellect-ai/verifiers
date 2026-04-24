@@ -13,6 +13,7 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    ResourcePatch,
 )
 
 RESERVED_FUNC_KEYS = {"fn", "name", "enabled", "weight"}
@@ -156,7 +157,11 @@ def rubric_entry_from_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 def resolve_rubric_channel(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
+    return ResourcePatch(objects={"rubric": build_rubric(configs, context)})
+
+
+def build_rubric(configs: list[ChannelConfig], context: ChannelContext) -> Rubric:
     canonical_configs = [canonicalize_rubric_config(config) for config in configs]
     reward_entries = [
         entry for config in canonical_configs for entry in config["rewards"]
@@ -194,10 +199,23 @@ def resolve_rubric_channel(
         rubrics.append(resolve_rubric(entry, context))
 
     if not rubrics:
-        return {}
+        return NoOpRubric()
     if len(rubrics) == 1:
-        return {"rubric": rubrics[0]}
-    return {"rubric": RubricGroup(rubrics)}
+        return rubrics[0]
+    return RubricGroup(rubrics)
+
+
+def extend_rubric_channel(
+    current: object, configs: list[ChannelConfig], context: ChannelContext
+) -> Rubric:
+    if not isinstance(current, Rubric):
+        raise TypeError("Resolved rubric must be a Rubric.")
+    incoming = build_rubric(configs, context)
+    if isinstance(current, NoOpRubric):
+        return incoming
+    if isinstance(incoming, NoOpRubric):
+        return current
+    return compose_rubrics(current, incoming)
 
 
 def resolve_function(
@@ -292,6 +310,10 @@ def attach_resources(rubric: Rubric, resources: object) -> None:
 rubric_channel = Channel(
     name="rubric",
     outputs=("rubric",),
+    output_types={"rubric": Rubric},
+    extendable=True,
+    always_resolve=True,
     canonicalize_fn=canonicalize_rubric_config,
     resolve_fn=resolve_rubric_channel,
+    extend_fn=extend_rubric_channel,
 )

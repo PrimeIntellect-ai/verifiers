@@ -11,7 +11,6 @@ from typing import Any, cast
 from prime_tunnel import Tunnel
 
 from verifiers.errors import TunnelError
-from verifiers.types import ClientType
 from verifiers.types import State
 from verifiers.utils.serve_utils import get_free_port
 
@@ -19,6 +18,8 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    LifecycleHooks,
+    ResourcePatch,
     single_config,
 )
 
@@ -34,7 +35,7 @@ class Endpoint:
         port: int | None = None,
         url: str | None = None,
         secret: str | None = None,
-        api_client_type: ClientType = "openai_chat_completions",
+        api_client_type: str = "openai_chat_completions",
         use_tunnel: bool = False,
         logger: logging.Logger | None = None,
     ):
@@ -137,17 +138,17 @@ class Endpoint:
 
 def resolve_endpoint(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     config = single_config("endpoint", configs)
     if config is None:
-        return {}
+        return ResourcePatch()
     if config is True:
         config = {}
     if not isinstance(config, Mapping):
         raise TypeError("The endpoint channel expects a mapping config.")
     config = cast(Mapping[str, object], config)
     if context.phase != "env":
-        return {}
+        return ResourcePatch()
     endpoint = Endpoint(
         port=optional_int(config.get("port")),
         url=optional_str(config.get("url")),
@@ -156,10 +157,10 @@ def resolve_endpoint(
         use_tunnel=bool(config.get("use_tunnel", False)),
         logger=channel_logger(context),
     )
-    return {
-        "endpoint": endpoint,
-        "teardown_handlers": [endpoint.teardown],
-    }
+    return ResourcePatch(
+        objects={"endpoint": endpoint},
+        hooks=LifecycleHooks(teardown=(endpoint.teardown,)),
+    )
 
 
 def optional_int(value: object) -> int | None:
@@ -174,18 +175,12 @@ def optional_str(value: object) -> str | None:
     return str(value)
 
 
-def endpoint_api_client_type(value: object) -> ClientType:
+def endpoint_api_client_type(value: object) -> str:
     if value is None:
         return "openai_chat_completions"
-    if value not in {
-        "openai_chat_completions",
-        "anthropic_messages",
-        "openai_completions",
-        "openai_chat_completions_token",
-        "nemorl_chat_completions",
-    }:
-        raise ValueError(f"Unsupported endpoint API client type: {value!r}")
-    return cast(ClientType, value)
+    if value != "openai_chat_completions":
+        raise ValueError("Endpoint currently supports only openai_chat_completions.")
+    return "openai_chat_completions"
 
 
 def channel_logger(context: ChannelContext) -> logging.Logger:
@@ -199,5 +194,6 @@ def channel_logger(context: ChannelContext) -> logging.Logger:
 endpoint_channel = Channel(
     name="endpoint",
     outputs=("endpoint",),
+    output_types={"endpoint": Endpoint},
     resolve_fn=resolve_endpoint,
 )

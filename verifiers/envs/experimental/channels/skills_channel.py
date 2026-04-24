@@ -4,17 +4,24 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    ResourcePatch,
     as_list,
 )
 
 
 def resolve_skills(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     skills: list[object] = []
     for config in configs:
         skills.extend(as_list(config))
-    return {"skills": skills}
+    return ResourcePatch(objects={"skills": skills})
 
 
-skills_channel = Channel(name="skills", outputs=("skills",), resolve_fn=resolve_skills)
+skills_channel = Channel(
+    name="skills",
+    outputs=("skills",),
+    output_types={"skills": list},
+    always_resolve=True,
+    resolve_fn=resolve_skills,
+)

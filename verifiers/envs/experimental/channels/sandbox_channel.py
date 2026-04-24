@@ -22,6 +22,8 @@ from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
     ChannelContext,
+    LifecycleHooks,
+    ResourcePatch,
 )
 
 
@@ -201,7 +203,7 @@ SANDBOX_FAILURES = (SandboxOOMError, SandboxTimeoutError)
 
 def resolve_sandbox(
     configs: list[ChannelConfig], context: ChannelContext
-) -> dict[str, object]:
+) -> ResourcePatch:
     merged: dict[str, object] = {}
     for config in configs:
         if config is None:
@@ -213,26 +215,34 @@ def resolve_sandbox(
             if key == "spec" and key in merged:
                 merged[key] = merge_sandbox_spec(merged[key], value)
                 continue
+            if key == "uploads" and key in merged:
+                merged[key] = merge_sandbox_uploads(merged[key], value)
+                continue
             if key in merged and merged[key] != value:
                 raise ValueError(
                     f"Sandbox channel key {key!r} received multiple values."
                 )
             merged[key] = value
-    objects: dict[str, object] = {}
+    objects: dict[str, object] = {"sandbox_scoring": False, "sandbox_uploads": {}}
+    hooks = LifecycleHooks()
     if "spec" in merged:
         objects["sandbox_request"] = merged["spec"]
     if "scoring" in merged:
         objects["sandbox_scoring"] = bool(merged["scoring"])
+    if "uploads" in merged:
+        objects["sandbox_uploads"] = sandbox_uploads(merged["uploads"])
     if "runtime" in merged:
         if context.phase != "env":
-            return objects
-        objects.update(materialize_sandbox(merged["runtime"], context))
-    return objects
+            return ResourcePatch(objects=objects)
+        runtime_patch = materialize_sandbox(merged["runtime"], context)
+        objects.update(runtime_patch.objects)
+        hooks = hooks.merged(runtime_patch.hooks)
+    return ResourcePatch(objects=objects, hooks=hooks)
 
 
-def materialize_sandbox(config: object, context: ChannelContext) -> dict[str, object]:
+def materialize_sandbox(config: object, context: ChannelContext) -> ResourcePatch:
     if config is None:
-        return {}
+        return ResourcePatch()
     if not isinstance(config, Mapping):
         raise TypeError("The sandbox runtime config must resolve to a mapping.")
     config = cast(Mapping[str, object], config)
@@ -251,15 +261,25 @@ def materialize_sandbox(config: object, context: ChannelContext) -> dict[str, ob
         timeouts=sandbox_timeouts(config.get("timeouts")),
         logger=channel_logger(context),
     )
-    return {
-        "sandbox_runtime": sandbox_resources,
-        "teardown_handlers": [sandbox_resources.teardown],
-    }
+    return ResourcePatch(
+        objects={"sandbox_runtime": sandbox_resources},
+        hooks=LifecycleHooks(teardown=(sandbox_resources.teardown,)),
+    )
 
 
 sandbox_channel = Channel(
     name="sandbox",
-    outputs=("sandbox_request", "sandbox_runtime", "sandbox_scoring"),
+    outputs=(
+        "sandbox_request",
+        "sandbox_runtime",
+        "sandbox_scoring",
+        "sandbox_uploads",
+    ),
+    output_types={
+        "sandbox_runtime": SandboxResources,
+        "sandbox_scoring": bool,
+        "sandbox_uploads": dict,
+    },
     resolve_fn=resolve_sandbox,
 )
 
@@ -276,6 +296,21 @@ def merge_sandbox_spec(existing: object, incoming: object) -> object:
     if existing != incoming:
         raise ValueError("Sandbox channel received multiple sandbox specs.")
     return existing
+
+
+def merge_sandbox_uploads(existing: object, incoming: object) -> dict[str, object]:
+    uploads = sandbox_uploads(existing)
+    for name, source in sandbox_uploads(incoming).items():
+        if name in uploads and uploads[name] != source:
+            raise ValueError(f"Duplicate sandbox upload name: {name!r}")
+        uploads[name] = source
+    return uploads
+
+
+def sandbox_uploads(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Sandbox uploads must be a mapping.")
+    return {str(name): source for name, source in value.items()}
 
 
 def channel_logger(context: ChannelContext) -> logging.Logger:
