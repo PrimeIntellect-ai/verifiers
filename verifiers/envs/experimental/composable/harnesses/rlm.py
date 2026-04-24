@@ -75,20 +75,6 @@ export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 
-# If the sandbox has a .venv, run the ipython kernel inside it so the
-# agent can inline-import project packages (numpy, pandas, etc.).
-if [ -x .venv/bin/python3 ]; then
-    PYVER=$(.venv/bin/python3 -c "import sys; print(sys.version_info[:2] >= (3,10))" 2>/dev/null || true)
-    if [ "$PYVER" = "True" ]; then
-        IPYKERNEL="ipykernel"
-    else
-        IPYKERNEL="ipykernel<7"
-    fi
-    if .venv/bin/python3 -m pip install -q "$IPYKERNEL" nest_asyncio 2>/dev/null; then
-        export RLM_KERNEL_PYTHON="$(pwd)/.venv/bin/python3"
-    fi
-fi
-
 rlm "$(cat {instruction_path})"
 """
     return f"bash -lc {shlex.quote(script)}"
