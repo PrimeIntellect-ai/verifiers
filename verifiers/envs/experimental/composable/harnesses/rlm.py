@@ -184,10 +184,16 @@ def rlm_harness(
     if summarize_env is not None:
         environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
     # max_context_tokens (explicit) wins over max_seq_len (prime-rl default).
-    effective_max_context = (
-        max_context_tokens if max_context_tokens is not None else max_seq_len
-    )
-    max_context_env = _format_max_context_tokens(effective_max_context)
+    # Validate via whichever kwarg actually carried the value so a bad
+    # fallback gets reported against its real source name.
+    if max_context_tokens is not None:
+        max_context_env = _format_positive_int(
+            "max_context_tokens", max_context_tokens
+        )
+    elif max_seq_len is not None:
+        max_context_env = _format_positive_int("max_seq_len", max_seq_len)
+    else:
+        max_context_env = None
     if max_context_env is not None:
         environment_vars["RLM_MAX_CONTEXT_TOKENS"] = max_context_env
 
@@ -231,8 +237,3 @@ def _format_positive_int(name: str, value: int | None) -> str | None:
 def _format_summarize_at_tokens(value: int | None) -> str | None:
     """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string."""
     return _format_positive_int("summarize_at_tokens", value)
-
-
-def _format_max_context_tokens(value: int | None) -> str | None:
-    """Format ``max_context_tokens`` as the ``RLM_MAX_CONTEXT_TOKENS`` string."""
-    return _format_positive_int("max_context_tokens", value)
