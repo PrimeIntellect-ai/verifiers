@@ -411,7 +411,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         )
 
     def get_workdir(self, info: dict) -> str:
-        return "/root"
+        return "/testbed"
 
     def get_env_vars(self) -> dict[str, str]:
         return dict(ENV_VARS_SWEBENCH)
@@ -419,11 +419,14 @@ class SWEBenchTaskSet(SandboxTaskSet):
     async def setup(self, state) -> None:
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        results = await sandbox_client.execute_command(
-            sandbox_id, "ln -s /opt/miniconda3/envs/testbed /root/.venv"
-        )
-        if results.exit_code != 0:
-            raise RuntimeError(f"Setup failed: exit_code={results.exit_code}")
+        for target in ("/testbed/.venv", "/root/.venv"):
+            results = await sandbox_client.execute_command(
+                sandbox_id, f"ln -s /opt/miniconda3/envs/testbed {target}"
+            )
+            if results.exit_code != 0:
+                raise RuntimeError(
+                    f"Setup failed: exit_code={results.exit_code} target={target}"
+                )
 
     async def _run_tests(
         self,
