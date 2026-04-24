@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import itertools
+import json
 import logging
 import math
 import os
@@ -12,7 +13,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -562,9 +563,21 @@ def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[flo
     return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
 
 
-def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
-    """Get only the rollouts for a given task."""
-    outputs = [o for o in results["outputs"] if o["task"] == task]
+def output_env_id(output: Mapping[str, Any]) -> str:
+    info = output.get("info") or {}
+    if isinstance(info, str):
+        info = json.loads(info)
+    value = info.get("env_id") if isinstance(info, Mapping) else None
+    if isinstance(value, list | tuple):
+        return "/".join(str(part) for part in value)
+    if value is not None:
+        return str(value)
+    return str(output.get("env_id", "default"))
+
+
+def get_env_outputs(results: GenerateOutputs, env_id: str) -> GenerateOutputs:
+    """Get only the rollouts for a given env_id."""
+    outputs = [o for o in results["outputs"] if output_env_id(o) == env_id]
     return GenerateOutputs(
         outputs=outputs,
         metadata=results["metadata"],  # duplicate metadata
@@ -735,15 +748,15 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_timing(results)
     print_usage(results)
 
-    tasks = set([o["task"] for o in results["outputs"]])
-    if len(tasks) > 1:
-        for task in tasks:
-            task_results = get_task_outputs(results, task)
-            print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
-            print_usage(task_results)
+    env_ids = {output_env_id(o) for o in results["outputs"]}
+    if len(env_ids) > 1:
+        for env_id in env_ids:
+            env_results = get_env_outputs(results, env_id)
+            print(f"\n--- {env_id} ---")
+            print_rewards(env_results)
+            print_info(env_results)
+            print_timing(env_results)
+            print_usage(env_results)
 
 
 def get_log_level(verbose: bool) -> str:

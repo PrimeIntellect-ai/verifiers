@@ -2,7 +2,8 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, cast
+from collections.abc import Callable, Mapping
+from typing import Any, cast, get_origin
 
 import verifiers as vf
 from verifiers.decorators import discover_decorated
@@ -14,6 +15,9 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 
+ScoreObjectProvider = Callable[[State], Mapping[str, object]]
+GroupScoreObjectProvider = Callable[[list[State]], Mapping[str, object]]
+
 
 class Rubric:
     """
@@ -23,7 +27,7 @@ class Rubric:
     - prompt: list[dict[str, str]] | str
     - completion: list[dict[str, str]] | str
     - answer: Any (metadata for scoring)
-    - task (optional): str (type of task)
+    - task (optional): vf.Task for taskset-backed environments
     - **kwargs: additional kwargs
 
     Returns:
@@ -53,6 +57,8 @@ class Rubric:
         self.class_objects = {}
         if self.parser:
             self.class_objects["parser"] = self.parser
+        self.score_object_providers: list[ScoreObjectProvider] = []
+        self.group_score_object_providers: list[GroupScoreObjectProvider] = []
 
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
@@ -68,6 +74,12 @@ class Rubric:
 
     def add_class_object(self, name: str, obj: Any):
         self.class_objects[name] = obj
+
+    def add_score_object_provider(self, provider: ScoreObjectProvider):
+        self.score_object_providers.append(provider)
+
+    def add_group_score_object_provider(self, provider: GroupScoreObjectProvider):
+        self.group_score_object_providers.append(provider)
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:
@@ -92,8 +104,40 @@ class Rubric:
             "tasks",
             "infos",
         }
-        returns_list = inspect.signature(func).return_annotation is list
+        return_annotation = inspect.signature(func).return_annotation
+        returns_list = (
+            return_annotation is list or get_origin(return_annotation) is list
+        )
         return bool(param_names & group_indicators) or returns_list
+
+    def score_objects(self, state: State) -> dict[str, Any]:
+        objects = dict(
+            prompt=state["prompt"],
+            completion=state["completion"],
+            answer=state.get("answer", ""),
+            state=state,
+            task=state.get("task"),
+            info=state.get("info", {}),
+            **self.class_objects,
+        )
+        for provider in self.score_object_providers:
+            objects.update(provider(state))
+        return objects
+
+    def group_score_objects(self, states: list[State]) -> dict[str, Any]:
+        state_objects = [self.score_objects(state) for state in states]
+        objects = dict(
+            prompts=[state["prompt"] for state in states],
+            completions=[state["completion"] for state in states],
+            answers=[state.get("answer", "") for state in states],
+            states=states,
+            tasks=[state_object.get("task") for state_object in state_objects],
+            infos=[state_object.get("info", {}) for state_object in state_objects],
+            **self.class_objects,
+        )
+        for provider in self.group_score_object_providers:
+            objects.update(provider(states))
+        return objects
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
@@ -129,16 +173,7 @@ class Rubric:
         """
 
         sig = inspect.signature(func)
-
-        merged = dict(
-            prompt=state["prompt"],
-            completion=state["completion"],
-            answer=state.get("answer", ""),
-            state=state,
-            task=state["task"],
-            info=state.get("info", {}),
-        )
-        merged.update(self.class_objects)
+        merged = self.score_objects(state)
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
                 ans = float(await maybe_await(func, **merged))
@@ -189,15 +224,7 @@ class Rubric:
         """
 
         sig = inspect.signature(func)
-        merged = dict(
-            prompts=[state["prompt"] for state in states],
-            completions=[state["completion"] for state in states],
-            answers=[state.get("answer", "") for state in states],
-            states=states,
-            tasks=[state["task"] for state in states],
-            infos=[state.get("info", {}) for state in states],
-        )
-        merged.update(self.class_objects)
+        merged = self.group_score_objects(states)
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
                 ans = await maybe_await(func, **merged)

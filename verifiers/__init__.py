@@ -55,6 +55,22 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Env",
+    "Channel",
+    "ChannelConfig",
+    "ChannelContext",
+    "ChannelMap",
+    "Task",
+    "Taskset",
+    "Harness",
+    "SandboxSpec",
+    "SandboxSeed",
+    "SandboxTimeouts",
+    "Resources",
+    "CallableTool",
+    "MCPServerSpec",
+    "ToolRegistry",
+    "User",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -132,6 +148,22 @@ _LAZY_IMPORTS = {
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Env": "verifiers.envs.experimental.env:Env",
+    "Channel": "verifiers.envs.experimental.channels:Channel",
+    "ChannelConfig": "verifiers.envs.experimental.channels:ChannelConfig",
+    "ChannelContext": "verifiers.envs.experimental.channels:ChannelContext",
+    "ChannelMap": "verifiers.envs.experimental.channels:ChannelMap",
+    "Task": "verifiers.envs.experimental.task:Task",
+    "Taskset": "verifiers.envs.experimental.taskset:Taskset",
+    "Harness": "verifiers.envs.experimental.harness:Harness",
+    "SandboxSpec": "verifiers.envs.experimental.channels:SandboxSpec",
+    "SandboxSeed": "verifiers.envs.experimental.channels:SandboxSeed",
+    "SandboxTimeouts": "verifiers.envs.experimental.channels:SandboxTimeouts",
+    "Resources": "verifiers.envs.experimental.resources:Resources",
+    "CallableTool": "verifiers.envs.experimental.channels:CallableTool",
+    "MCPServerSpec": "verifiers.envs.experimental.channels:MCPServerSpec",
+    "ToolRegistry": "verifiers.envs.experimental.channels:ToolRegistry",
+    "User": "verifiers.envs.experimental.channels:User",
 }
 
 
@@ -183,6 +215,24 @@ if TYPE_CHECKING:
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.experimental.env import Env  # noqa: F401
+    from .envs.experimental.channels import (  # noqa: F401
+        Channel,
+        ChannelConfig,
+        ChannelContext,
+        ChannelMap,
+    )
+    from .envs.experimental.harness import Harness  # noqa: F401
+    from .envs.experimental.resources import Resources  # noqa: F401
+    from .envs.experimental.channels import SandboxSeed, SandboxSpec, SandboxTimeouts  # noqa: F401
+    from .envs.experimental.task import Task  # noqa: F401
+    from .envs.experimental.taskset import Taskset  # noqa: F401
+    from .envs.experimental.channels import (
+        CallableTool,
+        MCPServerSpec,
+        ToolRegistry,
+        User,
+    )  # noqa: F401
     from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401

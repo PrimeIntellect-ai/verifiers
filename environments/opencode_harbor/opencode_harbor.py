@@ -282,4 +282,5 @@ def load_environment(
         disk_size_gb=disk_size_gb,
         timeout_minutes=timeout_minutes,
         max_turns=max_turns,
+        env_id="opencode-harbor",
     )

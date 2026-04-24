@@ -344,18 +344,6 @@ class Environment(ABC):
                 )
         return dataset
 
-    def _ensure_task(self, dataset: Dataset, map_kwargs: dict = {}) -> Dataset:
-        """Ensure task column exists, set to env_id."""
-        if "task" not in dataset.column_names:
-            task_value = self.env_id or "default"
-
-            def add_task(example):
-                example["task"] = task_value
-                return example
-
-            dataset = dataset.map(add_task, **map_kwargs)
-        return dataset
-
     def _format_dataset(
         self,
         dataset: Dataset,
@@ -366,23 +354,25 @@ class Environment(ABC):
         map_kwargs: dict = {},
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id and prompt columns.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_dataset_source(self, dataset: Dataset) -> Dataset:
@@ -565,13 +555,12 @@ class Environment(ABC):
         Environment-agnostic - just stores the data.
 
         Creates State with input fields in "input" RolloutInput for structured access,
-        but State's forwarding behavior allows backward-compatible direct access.
+        while State's forwarding behavior keeps direct access ergonomic.
         """
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
-        if "task" not in state_input:
-            state_input["task"] = self.env_id or "default"
+        state_input.pop("env_id", None)
         state = State(input=state_input)
 
         # Convert prompt to Pydantic messages

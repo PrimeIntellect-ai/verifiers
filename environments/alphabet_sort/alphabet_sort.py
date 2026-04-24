@@ -165,7 +165,6 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                         "answer": json.dumps(
                             {"ground_truths": ground_truths, "turn_names": turn_names}
                         ),
-                        "task": "multi-turn-sorting",
                         "info": {
                             "follow_ups": follow_ups,
                             "turn_names": turn_names,

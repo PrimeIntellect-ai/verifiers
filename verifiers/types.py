@@ -233,11 +233,10 @@ class TrajectoryStep(TypedDict):
 class BaseRolloutInput(TypedDict):
     prompt: Messages
     example_id: int
-    task: str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
-    # required: prompt, example_id, task
+    # required: prompt, example_id
     # optional: answer, info
     answer: str
     info: Info | str
@@ -263,7 +262,7 @@ class RolloutOutput(dict):
     arbitrary additional fields from state_columns. All values must be
     JSON-serializable.
 
-    Required fields: example_id, task, prompt, completion, reward, timing,
+    Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage
@@ -272,7 +271,6 @@ class RolloutOutput(dict):
 
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -291,7 +289,7 @@ class RolloutOutput(dict):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
     client: Client
@@ -320,6 +318,12 @@ class State(dict):
                 return input_obj[key]
         return super().__getitem__(key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
         if key in self.INPUT_FIELDS and "input" in self:
@@ -328,12 +332,6 @@ class State(dict):
                 input_obj[key] = value
                 return
         super().__setitem__(key, value)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
 
 
 # oai tools

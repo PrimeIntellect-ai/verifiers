@@ -1,6 +1,10 @@
 from typing import Any
 
-from verifiers.rubrics.rubric import Rubric
+from verifiers.rubrics.rubric import (
+    GroupScoreObjectProvider,
+    Rubric,
+    ScoreObjectProvider,
+)
 from verifiers.types import (
     RewardFunc,
     State,
@@ -46,6 +50,16 @@ class RubricGroup(Rubric):
         assert len(self.rubrics) > 0, "RubricGroup must have at least one rubric"
         self.logger.warning("Adding metric to the first rubric in the group.")
         self.rubrics[0].add_metric(func, weight)
+
+    def add_score_object_provider(self, provider: ScoreObjectProvider):
+        super().add_score_object_provider(provider)
+        for rubric in self.rubrics:
+            rubric.add_score_object_provider(provider)
+
+    def add_group_score_object_provider(self, provider: GroupScoreObjectProvider):
+        super().add_group_score_object_provider(provider)
+        for rubric in self.rubrics:
+            rubric.add_group_score_object_provider(provider)
 
     def add_class_object(self, name: str, obj: Any):
         assert len(self.rubrics) > 0, "RubricGroup must have at least one rubric"
