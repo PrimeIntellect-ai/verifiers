@@ -18,8 +18,6 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 if TYPE_CHECKING:
     from verifiers.types import State
 
-DEFAULT_RANDOM_SEED = 1234567
-
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
@@ -96,7 +94,6 @@ def rlm_harness(
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
     summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
-    random_seed: int = DEFAULT_RANDOM_SEED,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -117,16 +114,10 @@ def rlm_harness(
     - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
       a positive int, rlm auto-compacts the current branch once the
       prompt_tokens of a turn reach the threshold. Pass ``(lo, hi)``
-      to draw a per-rollout threshold from a stable hash of
-      ``(prompt, random_seed)`` — every rollout in a GRPO-style group
-      sees the same draw because the prompt is identical, but
-      different prompts (and different runs with different
-      ``random_seed`` values) get different thresholds. ``None``
-      disables auto-compaction.
-    - ``random_seed`` (default ``1234567``): seed for the per-prompt
-      threshold draw. Vary across runs (e.g., per training sweep) to
-      get different threshold distributions; pin for reproducibility.
-      Ignored when ``summarize_at_tokens`` is an int or ``None``.
+      to draw a per-rollout threshold from ``sha256(prompt)`` — every
+      rollout in a GRPO-style group sees the same draw because the
+      prompt is identical, while different prompts get different
+      thresholds across the dataset. ``None`` disables auto-compaction.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -192,7 +183,7 @@ def rlm_harness(
 
     # Validate summarize_at_tokens shape eagerly so configuration errors
     # surface at harness-build time, not per-rollout inside the closure.
-    summarize_resolver = _build_summarize_resolver(summarize_at_tokens, random_seed)
+    summarize_resolver = _build_summarize_resolver(summarize_at_tokens)
 
     static_env_vars = {
         "RLM_TOOLS": ",".join(tool_names),
@@ -228,15 +219,14 @@ def rlm_harness(
 
 def _build_summarize_resolver(
     value: int | tuple[int, int] | list[int] | None,
-    random_seed: int,
 ) -> Callable[[State], str | None]:
     """Return a state→str-or-None resolver for the RLM_SUMMARIZE_AT_TOKENS env var.
 
     Validates ``value`` once at harness-build time. ``None`` → resolver
     always returns ``None`` (env var not set). ``int`` → resolver always
-    returns the same string. ``(lo, hi)`` → per-rollout sha256-seeded
-    draw over ``f"{prompt}|{random_seed}"``; rollouts of the same prompt
-    (and same seed) see byte-identical draws.
+    returns the same string. ``(lo, hi)`` → per-rollout uniform draw
+    seeded by ``sha256(prompt)``; rollouts of the same prompt see
+    byte-identical draws.
     """
     if value is None:
         return lambda _state: None
@@ -261,17 +251,17 @@ def _build_summarize_resolver(
             raise ValueError(
                 f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
             )
-        return lambda state: str(_draw_threshold(state, lo, hi, random_seed))
+        return lambda state: str(_draw_threshold(state, lo, hi))
     raise ValueError(
         f"summarize_at_tokens must be int, (lo, hi), or None "
         f"(got {type(value).__name__})"
     )
 
 
-def _draw_threshold(state: State, lo: int, hi: int, random_seed: int) -> int:
+def _draw_threshold(state: State, lo: int, hi: int) -> int:
     """Stable per-prompt uniform draw from ``[lo, hi]``."""
     prompt = _state_prompt_string(state)
-    digest = hashlib.sha256(f"{prompt}|{random_seed}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     return random.Random(int(digest[:16], 16)).randint(lo, hi)
 
 

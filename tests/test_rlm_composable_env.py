@@ -773,11 +773,10 @@ def test_rlm_harness_env_vars_static_int():
 def test_rlm_harness_env_vars_range_is_seeded_per_prompt():
     """``summarize_at_tokens`` as ``(lo, hi)`` → per-prompt seeded draw.
 
-    Same prompt → same int (group coherence). Different prompts and
-    different ``random_seed`` values → different ints (uses 10**9-wide
-    range so collision odds are ~10^-9).
+    Same prompt → same int (group coherence). Different prompts →
+    different ints (uses 10**9-wide range so collision odds are ~10^-9).
     """
-    harness = rlm_harness(summarize_at_tokens=(1, 10**9), random_seed=42)
+    harness = rlm_harness(summarize_at_tokens=(1, 10**9))
 
     state_a = {"input": {"prompt": "task A"}, "prompt": "task A"}
     state_b = {"input": {"prompt": "task B"}, "prompt": "task B"}
@@ -791,11 +790,6 @@ def test_rlm_harness_env_vars_range_is_seeded_per_prompt():
     # Cross-group variation: different prompts → different draws.
     b = int(harness.environment_vars(state_b)["RLM_SUMMARIZE_AT_TOKENS"])
     assert a1 != b
-
-    # Cross-run variation: different random_seed → different draws.
-    harness2 = rlm_harness(summarize_at_tokens=(1, 10**9), random_seed=999)
-    a_seed999 = int(harness2.environment_vars(state_a)["RLM_SUMMARIZE_AT_TOKENS"])
-    assert a1 != a_seed999
 
 
 def test_rlm_harness_rejects_bad_summarize_at_tokens():
