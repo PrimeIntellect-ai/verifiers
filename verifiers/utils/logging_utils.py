@@ -109,11 +109,6 @@ def setup_logging(
     # prevent the logger from propagating messages to the root logger
     logger.propagate = False
 
-    # when json_logging, attach a JSON handler at root so env code using
-    # logging.getLogger(__name__) gets JSON-formatted. Do NOT raise root level:
-    # third-party libs (httpx, httpcore, …) inherit their effective level from
-    # root, and lowering it floods logs with their DEBUG output. Per-env level
-    # is set in load_environment() instead.
     if json_logging:
         root = logging.getLogger()
         root.handlers = [
