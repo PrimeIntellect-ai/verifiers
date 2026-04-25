@@ -11,6 +11,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import SCORING_BUFFER_MINUTES
 
 # swebench's __init__.py calls logging.basicConfig() at import time (via
 # build_dataset), which hijacks the root logger with an INFO-level
@@ -407,7 +408,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         test_spec = _make_test_spec_with_retry(info, namespace="swebench")
         return SandboxSpec(
             image=f"{REGISTRY_PREFIX}/{test_spec.instance_image_key}",
-            timeout_minutes=self.timeout_minutes,
+            timeout_minutes=self.timeout_minutes + SCORING_BUFFER_MINUTES,
         )
 
     def get_workdir(self, info: dict) -> str:

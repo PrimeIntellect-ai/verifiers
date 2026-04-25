@@ -12,6 +12,14 @@ from typing import Any
 
 from verifiers.envs.experimental.composable import TaskSet
 
+# Extra minutes added to the sandbox container's TTL on top of the
+# rollout-level ``timeout_minutes``. The scoring rubric runs *after* the
+# rollout deadline fires (e.g. ``test_patch`` execution / log parsing),
+# and needs a live sandbox to do so. Without a buffer the rollout cap
+# and sandbox TTL fire simultaneously, which leaves the rubric polling
+# a dead container indefinitely.
+SCORING_BUFFER_MINUTES = 5
+
 
 def make_swe_taskset(
     backend: str = "r2e",

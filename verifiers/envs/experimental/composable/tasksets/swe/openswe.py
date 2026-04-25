@@ -9,6 +9,7 @@ from typing import Any
 import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import SCORING_BUFFER_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class OpenSWETaskSet(SandboxTaskSet):
     def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
         return SandboxSpec(
             image=info["image_name"],
-            timeout_minutes=self.timeout_minutes,
+            timeout_minutes=self.timeout_minutes + SCORING_BUFFER_MINUTES,
         )
 
     def get_workdir(self, info: dict) -> str:
