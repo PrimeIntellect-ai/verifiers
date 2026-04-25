@@ -153,7 +153,13 @@ prime eval samples <eval-id>
 1. Keep environment/model/config fixed while comparing variants.
 2. Record exact command lines and key flags in the report.
 3. Call out missing credentials, endpoint mismatches, and dependency errors directly.
-4. Do not overinterpret tiny sample runs.
+4. `prime eval run` prepares the evaluation dataset before starting the environment server. If an eval appears stuck before the first rollout, check this phase first rather than assuming model inference is hung.
+5. Use `VF_DATASET_BUILD_TIMEOUT` to control this pre-rollout dataset-preparation guard when troubleshooting stalled dataset loads:
+```bash
+VF_DATASET_BUILD_TIMEOUT=120 prime eval run my-env -m gpt-4.1-mini -n 5
+```
+Set it to `0` or a negative number only when you intentionally want to disable the timeout.
+6. Do not overinterpret tiny sample runs.
 
 ## Output Format
 Return:

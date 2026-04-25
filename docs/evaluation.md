@@ -79,6 +79,12 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 prime eval run my-env -x '{"max_turns": 20}'
 ```
 
+Before starting the environment server, `prime eval run` prepares the evaluation dataset once to surface dataset-access failures early. This step is guarded by a 5-minute timeout by default; override it with `VF_DATASET_BUILD_TIMEOUT`, or disable it by setting the value to `0` or a negative number:
+
+```bash
+VF_DATASET_BUILD_TIMEOUT=120 prime eval run my-env -m gpt-4.1-mini -n 10
+```
+
 #### Executor autoscaling
 
 Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `concurrency` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_concurrency()`, which resizes both the default event-loop executor and all registered executors.
