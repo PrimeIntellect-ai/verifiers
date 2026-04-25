@@ -758,10 +758,9 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
     assert state["metrics"]["rlm_completion_tokens"] == 25.0
 
 
-def test_rlm_harness_env_vars_static_int(tmp_path):
+def test_rlm_harness_env_vars_static_int():
     """``summarize_at_tokens`` as an int → constant ``RLM_SUMMARIZE_AT_TOKENS``."""
-    checkout = _make_git_checkout(tmp_path / "rlm")
-    harness = rlm_harness(local_checkout=checkout, summarize_at_tokens=4000)
+    harness = rlm_harness(summarize_at_tokens=4000)
 
     state_a = {"input": {"prompt": "task A"}, "prompt": "task A"}
     state_b = {"input": {"prompt": "task B"}, "prompt": "task B"}
@@ -771,19 +770,14 @@ def test_rlm_harness_env_vars_static_int(tmp_path):
     assert env_b["RLM_SUMMARIZE_AT_TOKENS"] == "4000"
 
 
-def test_rlm_harness_env_vars_range_is_seeded_per_prompt(tmp_path):
+def test_rlm_harness_env_vars_range_is_seeded_per_prompt():
     """``summarize_at_tokens`` as ``(lo, hi)`` → per-prompt seeded draw.
 
     Same prompt → same int (group coherence). Different prompts and
     different ``random_seed`` values → different ints (uses 10**9-wide
     range so collision odds are ~10^-9).
     """
-    checkout = _make_git_checkout(tmp_path / "rlm")
-    harness = rlm_harness(
-        local_checkout=checkout,
-        summarize_at_tokens=(1, 10**9),
-        random_seed=42,
-    )
+    harness = rlm_harness(summarize_at_tokens=(1, 10**9), random_seed=42)
 
     state_a = {"input": {"prompt": "task A"}, "prompt": "task A"}
     state_b = {"input": {"prompt": "task B"}, "prompt": "task B"}
@@ -799,18 +793,13 @@ def test_rlm_harness_env_vars_range_is_seeded_per_prompt(tmp_path):
     assert a1 != b
 
     # Cross-run variation: different random_seed → different draws.
-    harness2 = rlm_harness(
-        local_checkout=checkout,
-        summarize_at_tokens=(1, 10**9),
-        random_seed=999,
-    )
+    harness2 = rlm_harness(summarize_at_tokens=(1, 10**9), random_seed=999)
     a_seed999 = int(harness2.environment_vars(state_a)["RLM_SUMMARIZE_AT_TOKENS"])
     assert a1 != a_seed999
 
 
-def test_rlm_harness_rejects_bad_summarize_at_tokens(tmp_path):
+def test_rlm_harness_rejects_bad_summarize_at_tokens():
     """Bad shapes raise at harness-build time, not per-rollout."""
-    checkout = _make_git_checkout(tmp_path / "rlm")
     for bad in [0, -1, True, (1, 2, 3), (1000, 500), (-1, 100)]:
         with pytest.raises((ValueError, TypeError)):
-            rlm_harness(local_checkout=checkout, summarize_at_tokens=bad)
+            rlm_harness(summarize_at_tokens=bad)
