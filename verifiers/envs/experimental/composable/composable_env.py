@@ -214,6 +214,13 @@ class ComposableEnv(CliAgentEnv):
                 state["agent_logs"] = (result.stdout or "").strip()
             except Exception as e:
                 self.logger.warning(f"Failed to collect agent logs: {e}")
+            else:
+                rollout_id = state.get("rollout_id", "?")
+                self.logger.info(
+                    f"[agent_logs rollout={rollout_id} path={self.harness.log_path}]\n"
+                    f"{state['agent_logs']}\n"
+                    f"[/agent_logs rollout={rollout_id}]"
+                )
 
         if sandbox_id and self.harness.metrics_path:
             await self._collect_harness_metrics(sandbox_id, state)
