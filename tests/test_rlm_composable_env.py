@@ -170,21 +170,36 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
 
 
 def test_rlm_harness_blocks_git_by_default(tmp_path):
-    """By default RLM uploads a sh shim at /usr/local/bin/git that
-    refuses on any invocation and exits 1. post_install_script just
-    chmods it executable."""
+    """By default RLM uploads a sh shim that refuses on any invocation
+    and exits 1. The shim is staged at /tmp and moved to
+    $HOME/.local/bin/git by the post-install script — that dir is on
+    the agent's PATH (via the run_command's ``export PATH=...``) but
+    NOT on the container's default PATH, so scoring's
+    ``execute_command`` calls (e.g. ``git apply`` in eval scripts) keep
+    resolving to the real ``/usr/bin/git``."""
     checkout = _make_git_checkout(tmp_path / "rlm")
     harness = rlm_harness(local_checkout=checkout)
 
     assert harness.post_install_uploads is not None
-    assert set(harness.post_install_uploads.keys()) == {"/usr/local/bin/git"}
+    assert set(harness.post_install_uploads.keys()) == {"/tmp/__rlm_git_shim"}
 
-    shim = harness.post_install_uploads["/usr/local/bin/git"]
+    shim = harness.post_install_uploads["/tmp/__rlm_git_shim"]
     assert shim.startswith("#!/bin/sh\n")
     assert "Bash command 'git' is not allowed." in shim
     assert "exit 1" in shim
 
-    assert harness.post_install_script == "chmod +x /usr/local/bin/git"
+    script = harness.post_install_script
+    assert script is not None
+    # Shim must end up at $HOME/.local/bin/git, executable, with parent
+    # dir created if missing.
+    assert 'mkdir -p "$HOME/.local/bin"' in script
+    assert 'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"' in script
+    assert 'chmod +x "$HOME/.local/bin/git"' in script
+    # The shim must NOT live anywhere on the container's default PATH —
+    # /usr/local/bin/git would shadow the real git for scoring's
+    # execute_command shells (which don't get $HOME/.local/bin
+    # prepended) and break ``git apply`` of test_patches in eval.sh.
+    assert "/usr/local/bin/git" not in script
 
 
 def test_rlm_harness_allow_git_uploads_nothing(tmp_path):

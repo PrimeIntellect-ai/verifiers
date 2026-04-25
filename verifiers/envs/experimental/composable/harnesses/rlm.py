@@ -115,12 +115,18 @@ def rlm_harness(
     here and the harness owns the env var plumbing.
 
     ``allow_git`` defaults to False, mirroring opencode's bash tool. When
-    False, a ``/usr/local/bin/git`` shim is uploaded that refuses on any
-    invocation — this covers the RLM bash tool, the ipython tool's
-    ``!cmd`` / ``%%bash`` cells, and any ``subprocess.run(["git", ...])``
-    from inside ipython, since all three resolve via PATH and hit the
-    shim first. Set ``allow_git=True`` for environments that genuinely
-    need git.
+    False, a refusal shim is dropped at ``$HOME/.local/bin/git`` (the
+    same dir ``uv tool install rlm`` writes to, which RLM's ``run_command``
+    prepends to ``PATH``). This blocks git for the RLM bash tool, the
+    ipython tool's ``!cmd`` / ``%%bash`` cells, and any
+    ``subprocess.run(["git", ...])`` from inside ipython — all three
+    inherit the agent process's PATH and resolve through the shim first.
+    Crucially, the shim is NOT installed on a system PATH dir, so a
+    rubric / scoring step running ``git apply`` or ``git checkout`` via
+    ``sandbox_client.execute_command`` (which uses the container's
+    default PATH, *not* ``$HOME/.local/bin``) still resolves to the real
+    git in ``/usr/bin``. Set ``allow_git=True`` for environments that
+    genuinely need git inside the agent's tools.
     """
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
@@ -147,8 +153,24 @@ def rlm_harness(
     post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
     if not allow_git:
-        post_install_uploads = {"/usr/local/bin/git": _GIT_SHIM_BODY}
-        post_install_script = "chmod +x /usr/local/bin/git"
+        # Drop the shim into the same dir ``uv tool install rlm`` uses
+        # ($HOME/.local/bin), which the RLM run_command prepends to PATH
+        # for the agent. This dir is *not* on the container's default
+        # PATH, so the rubric's ``sandbox_client.execute_command`` calls
+        # (skip-install diff, eval.sh's ``git checkout`` / ``git apply``,
+        # gold-patch apply) keep resolving to the real ``/usr/bin/git``.
+        # Uploading directly into ``$HOME/.local/bin`` requires shell
+        # expansion, so stage the body in /tmp and let the post-install
+        # script move it; that script is just dispatched as a string to
+        # ``execute_command``, which runs under a shell that expands
+        # ``$HOME``.
+        post_install_uploads = {"/tmp/__rlm_git_shim": _GIT_SHIM_BODY}
+        post_install_script = (
+            "set -e; "
+            'mkdir -p "$HOME/.local/bin"; '
+            'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"; '
+            'chmod +x "$HOME/.local/bin/git"'
+        )
 
     environment_vars: dict[str, str] = {
         "RLM_TOOLS": ",".join(tool_names),

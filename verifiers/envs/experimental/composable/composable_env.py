@@ -315,8 +315,8 @@ class ComposableEnv(CliAgentEnv):
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
 
         Runs after ``_install_agent`` so harnesses can layer small assets
-        on top of a fully-installed agent (e.g. RLM uploads its
-        ``/usr/local/bin/git`` refusal shim and chmods it executable).
+        on top of a fully-installed agent (e.g. RLM stages its git refusal
+        shim into ``$HOME/.local/bin/git`` and chmods it executable).
         Uses the single-file upload path — not ``_upload_dir`` — because
         these are small, harness-computed blobs of content rather than
         local directories on disk.
