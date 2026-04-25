@@ -87,7 +87,8 @@ def rlm_harness(
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
-    summarize_at_tokens: int | None = None,
+    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
+    random_seed: int | None = None,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -107,8 +108,15 @@ def rlm_harness(
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
     - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
       a positive int, rlm auto-compacts the current branch once the
-      prompt_tokens of a turn reach the threshold. ``None`` disables
-      auto-compaction.
+      prompt_tokens of a turn reach the threshold. Pass ``(lo, hi)``
+      to draw a per-prompt threshold from a stable hash of
+      ``(prompt, random_seed)`` — every rollout in a GRPO-style group
+      sees the same draw because the prompt is identical, but
+      different prompts (and different runs with different seeds)
+      get different thresholds. ``None`` disables auto-compaction.
+    - ``random_seed`` → ``RLM_RANDOM_SEED``: seed component for the
+      per-prompt threshold draw. Only emitted when explicitly set;
+      otherwise rlm uses its own default.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -180,6 +188,12 @@ def rlm_harness(
     summarize_env = _format_summarize_at_tokens(summarize_at_tokens)
     if summarize_env is not None:
         environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
+    if random_seed is not None:
+        if isinstance(random_seed, bool) or not isinstance(random_seed, int):
+            raise ValueError(
+                f"random_seed must be an int or None (got {type(random_seed).__name__})"
+            )
+        environment_vars["RLM_RANDOM_SEED"] = str(random_seed)
 
     return Harness(
         install_script=build_install_script(),
@@ -200,20 +214,40 @@ def rlm_harness(
     )
 
 
-def _format_summarize_at_tokens(value: int | None) -> str | None:
+def _format_summarize_at_tokens(
+    value: int | tuple[int, int] | list[int] | None,
+) -> str | None:
     """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string.
 
-    Returns ``None`` when auto-compaction should be disabled (matches what
-    the engine expects when the env var is absent). Rejects bad shapes
-    here so configuration errors surface at harness-build time rather
-    than deep inside the sandbox.
+    Returns ``None`` (env var not emitted, auto-compaction disabled) for
+    ``None``. ``int`` → ``"N"``. ``(lo, hi)`` / ``[lo, hi]`` → ``"lo,hi"``.
+    Rejects bad shapes at harness-build time rather than deep inside the
+    sandbox.
     """
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(
-            f"summarize_at_tokens must be an int or None (got {type(value).__name__})"
-        )
-    if value <= 0:
-        raise ValueError(f"summarize_at_tokens must be positive (got {value})")
-    return str(value)
+    if isinstance(value, bool):
+        raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+        return str(value)
+    if isinstance(value, (tuple, list)):
+        if len(value) != 2:
+            raise ValueError(
+                f"summarize_at_tokens pair must have 2 elements (got {value!r})"
+            )
+        lo, hi = int(value[0]), int(value[1])
+        if lo <= 0 or hi <= 0:
+            raise ValueError(
+                f"summarize_at_tokens values must be positive (got lo={lo}, hi={hi})"
+            )
+        if lo > hi:
+            raise ValueError(
+                f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
+            )
+        return f"{lo},{hi}"
+    raise ValueError(
+        f"summarize_at_tokens must be int, (lo, hi), or None "
+        f"(got {type(value).__name__})"
+    )
