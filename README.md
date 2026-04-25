@@ -175,6 +175,60 @@ prime eval run primeintellect/math-python
 **[FAQs](docs/faqs.md)** - Other frequently asked questions.
 
 
+## Supported Patterns
+
+Verifiers supports a wide range of RL framework design patterns. Below is an overview of what's supported out of the box:
+
+### Context Management
+- **Context compaction** — Automatic message history management via `MultiTurnEnv` turn limits
+- **Token-aware truncation** — Configurable max tokens per rollout
+- **System prompt handling** — Persistent system prompts across turns
+
+### User Simulations
+- **Multi-turn agents** — `MultiTurnEnv` for interactive agent tasks
+- **Tool-augmented interactions** — `ToolEnv` and `StatefulToolEnv` for tool-using agents
+- **Browser automation** — `BrowserEnv` for web-based agent tasks
+
+### Native Tool Parsing
+- **XML-based parsing** — `XMLParser` for structured output extraction
+- **Tool call handling** — Native support for OpenAI-style tool calls
+- **Custom parsers** — Extensible parser system for any output format
+
+### Sandboxing
+- **Harness-in-sandbox** — `SandboxEnv` for isolated execution environments
+- **Harness-outside-of-sandbox** — Standard environments run locally
+- **No sandbox** — Lightweight mode for simple tasks
+- **Container management** — Automatic sandbox provisioning and cleanup
+
+### Reward Systems
+- **Groupwise rewards** — Batch-based reward computation for GRPO training
+- **Intermediate rewards** — Per-turn reward signals in multi-turn tasks
+- **Rubric composition** — Combine multiple reward functions with weighted scoring
+- **Monitor rubrics** — Automatic metric collection during rollouts
+
+### Multi-Environment Support
+- **Environment groups** — `EnvGroup` for running multiple environments in parallel
+- **Environment mixing** — Composite datasets from multiple sources
+- **A/B evaluation** — Compare models across different environments
+
+### Resource Management
+- **Async execution** — Non-blocking I/O for API calls and tool execution
+- **Parallel rollouts** — Configurable concurrency for batch evaluation
+- **Memory sharing** — Efficient memo-based object sharing across rollouts
+
+### Custom Metrics & Error Handling
+- **Custom reward functions** — Python callables for any scoring logic
+- **Error tracking** — Structured error reporting in rollout data
+- **Debug logging** — Detailed logging for development and troubleshooting
+
+### Offline Evals
+- **Local evaluation** — `prime eval run` for testing without training
+- **Evaluation TUI** — Terminal UI for browsing eval results
+- **Pass@k metrics** — Support for pass@k and ablation sweeps
+- **Result persistence** — Automatic saving of evaluation results
+
+For detailed documentation on each pattern, see the [Documentation](#documentation) section above.
+
 ## Citation
 
 Originally created by Will Brown ([@willccbb](https://github.com/willccbb)).
