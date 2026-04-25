@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec
+    from verifiers.types import State
 
 
 @dataclass
@@ -90,12 +91,15 @@ class Harness:
         assistant messages the harness emits into the trajectory.
         Example: ``["ipython"]`` for the RLM harness.
     environment_vars:
-        Harness-owned environment variables for the sandbox. Merged by
-        ``ComposableEnv`` between the caller-supplied ``environment_vars=``
-        and the taskset's ``get_env_vars()``: harness wins over caller,
-        taskset wins over harness. This is the right place to put env
-        vars that track other harness config (e.g. ``RLM_TOOLS`` paired
-        with ``tool_names``) so they can't silently desync.
+        Callable taking the per-rollout ``State`` and returning the
+        env-var dict for that rollout. Merged by ``ComposableEnv``
+        between the caller-supplied ``environment_vars=`` and the
+        taskset's ``get_env_vars()``: harness wins over caller, taskset
+        wins over harness. Always a function (even for static dicts:
+        return the same dict regardless of ``state``) so the merge
+        path is uniform; the per-rollout ``state`` is what enables
+        seeded draws / prompt-conditional config without touching env
+        infrastructure.
     post_install_uploads:
         Optional mapping from sandbox path → file content. Uploaded via
         the single-file upload path (same as instruction / system
@@ -126,7 +130,7 @@ class Harness:
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
     tool_names: list[str] | None = None
-    environment_vars: dict[str, str] | None = None
+    environment_vars: Callable[[State], dict[str, str]] | None = None
     post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
 

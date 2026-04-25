@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import random
+import shlex
 from importlib.abc import Traversable
 from pathlib import Path
-import shlex
+from typing import TYPE_CHECKING, Callable
 
 from verifiers.envs.experimental.composable import Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
+
+if TYPE_CHECKING:
+    from verifiers.types import State
+
+DEFAULT_RANDOM_SEED = 1234567
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
@@ -87,7 +95,8 @@ def rlm_harness(
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
-    summarize_at_tokens: int | None = None,
+    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
+    random_seed: int = DEFAULT_RANDOM_SEED,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -107,8 +116,17 @@ def rlm_harness(
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
     - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
       a positive int, rlm auto-compacts the current branch once the
-      prompt_tokens of a turn reach the threshold. ``None`` disables
-      auto-compaction.
+      prompt_tokens of a turn reach the threshold. Pass ``(lo, hi)``
+      to draw a per-rollout threshold from a stable hash of
+      ``(prompt, random_seed)`` — every rollout in a GRPO-style group
+      sees the same draw because the prompt is identical, but
+      different prompts (and different runs with different
+      ``random_seed`` values) get different thresholds. ``None``
+      disables auto-compaction.
+    - ``random_seed`` (default ``1234567``): seed for the per-prompt
+      threshold draw. Vary across runs (e.g., per training sweep) to
+      get different threshold distributions; pin for reproducibility.
+      Ignored when ``summarize_at_tokens`` is an int or ``None``.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -172,14 +190,22 @@ def rlm_harness(
             'chmod +x "$HOME/.local/bin/git"'
         )
 
-    environment_vars: dict[str, str] = {
+    # Validate summarize_at_tokens shape eagerly so configuration errors
+    # surface at harness-build time, not per-rollout inside the closure.
+    summarize_resolver = _build_summarize_resolver(summarize_at_tokens, random_seed)
+
+    static_env_vars = {
         "RLM_TOOLS": ",".join(tool_names),
         "RLM_MAX_TURNS": str(rlm_max_turns),
         "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
     }
-    summarize_env = _format_summarize_at_tokens(summarize_at_tokens)
-    if summarize_env is not None:
-        environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
+
+    def env_vars_for_rollout(state: State) -> dict[str, str]:
+        env_vars = dict(static_env_vars)
+        summarize_env = summarize_resolver(state)
+        if summarize_env is not None:
+            env_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
+        return env_vars
 
     return Harness(
         install_script=build_install_script(),
@@ -194,26 +220,71 @@ def rlm_harness(
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,
-        environment_vars=environment_vars,
+        environment_vars=env_vars_for_rollout,
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
     )
 
 
-def _format_summarize_at_tokens(value: int | None) -> str | None:
-    """Format ``summarize_at_tokens`` as the ``RLM_SUMMARIZE_AT_TOKENS`` string.
+def _build_summarize_resolver(
+    value: int | tuple[int, int] | list[int] | None,
+    random_seed: int,
+) -> Callable[[State], str | None]:
+    """Return a state→str-or-None resolver for the RLM_SUMMARIZE_AT_TOKENS env var.
 
-    Returns ``None`` when auto-compaction should be disabled (matches what
-    the engine expects when the env var is absent). Rejects bad shapes
-    here so configuration errors surface at harness-build time rather
-    than deep inside the sandbox.
+    Validates ``value`` once at harness-build time. ``None`` → resolver
+    always returns ``None`` (env var not set). ``int`` → resolver always
+    returns the same string. ``(lo, hi)`` → per-rollout sha256-seeded
+    draw over ``f"{prompt}|{random_seed}"``; rollouts of the same prompt
+    (and same seed) see byte-identical draws.
     """
     if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(
-            f"summarize_at_tokens must be an int or None (got {type(value).__name__})"
-        )
-    if value <= 0:
-        raise ValueError(f"summarize_at_tokens must be positive (got {value})")
-    return str(value)
+        return lambda _state: None
+    if isinstance(value, bool):
+        raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+        s = str(value)
+        return lambda _state: s
+    if isinstance(value, (tuple, list)):
+        if len(value) != 2:
+            raise ValueError(
+                f"summarize_at_tokens pair must have 2 elements (got {value!r})"
+            )
+        lo, hi = int(value[0]), int(value[1])
+        if lo <= 0 or hi <= 0:
+            raise ValueError(
+                f"summarize_at_tokens values must be positive (got lo={lo}, hi={hi})"
+            )
+        if lo > hi:
+            raise ValueError(
+                f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
+            )
+        return lambda state: str(_draw_threshold(state, lo, hi, random_seed))
+    raise ValueError(
+        f"summarize_at_tokens must be int, (lo, hi), or None "
+        f"(got {type(value).__name__})"
+    )
+
+
+def _draw_threshold(state: State, lo: int, hi: int, random_seed: int) -> int:
+    """Stable per-prompt uniform draw from ``[lo, hi]``."""
+    prompt = _state_prompt_string(state)
+    digest = hashlib.sha256(f"{prompt}|{random_seed}".encode("utf-8")).hexdigest()
+    return random.Random(int(digest[:16], 16)).randint(lo, hi)
+
+
+def _state_prompt_string(state: State) -> str:
+    """Extract a stable string representation of the rollout's prompt.
+
+    Prefers ``state["input"]["prompt"]`` (the raw dataset string when
+    available) and falls back to a JSON dump of ``state["prompt"]`` so
+    Messages-list prompts still produce a deterministic seed.
+    """
+    raw_input = state.get("input") or {}
+    raw_prompt = raw_input.get("prompt") if isinstance(raw_input, dict) else None
+    if isinstance(raw_prompt, str):
+        return raw_prompt
+    import json
+    return json.dumps(state.get("prompt"), sort_keys=True, default=str)
