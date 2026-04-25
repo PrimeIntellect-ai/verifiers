@@ -287,4 +287,5 @@ def _state_prompt_string(state: State) -> str:
     if isinstance(raw_prompt, str):
         return raw_prompt
     import json
+
     return json.dumps(state.get("prompt"), sort_keys=True, default=str)
