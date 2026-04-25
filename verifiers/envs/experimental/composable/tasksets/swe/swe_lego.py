@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -143,11 +144,21 @@ class SWELegoRubric(vf.Rubric):
         sandbox_id = state.get("sandbox_id")
         if not sandbox_client or not sandbox_id:
             return 0.0
+        timeout = state.get("test_timeout", 900)
         try:
-            test_output = await self.taskset._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            test_output = await asyncio.wait_for(
+                self.taskset._run_tests(
+                    sandbox_client, sandbox_id, state, timeout
+                ),
+                timeout=timeout + 60,
             )
             state["test_output"] = test_output
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Test execution wall-clock timeout after {timeout + 60}s"
+            )
+            state["test_output"] = "ERROR: wall-clock timeout"
+            return 0.0
         except Exception as e:
             logger.warning(f"Test execution failed: {e}")
             state["test_output"] = f"ERROR: {e}"
