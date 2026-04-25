@@ -100,9 +100,9 @@ class Harness:
         Optional mapping from sandbox path → file content. Uploaded via
         the single-file upload path (same as instruction / system
         prompt) AFTER ``install_script`` finishes. Use for small
-        harness-computed assets — e.g. RLM's ``/usr/local/bin/git``
-        refusal shim. For large directories use ``upload_dir_mapping``
-        instead.
+        harness-computed assets — e.g. RLM's git refusal shim staged
+        into ``$HOME/.local/bin/git``. For large directories use
+        ``upload_dir_mapping`` instead.
     post_install_script:
         Optional shell snippet run AFTER ``post_install_uploads`` land in
         the sandbox. Typical use: ``chmod +x`` on the uploaded files, or
