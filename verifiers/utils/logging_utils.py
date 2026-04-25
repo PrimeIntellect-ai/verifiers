@@ -109,14 +109,16 @@ def setup_logging(
     # prevent the logger from propagating messages to the root logger
     logger.propagate = False
 
-    # when json_logging, also configure the root logger so environment code
-    # using logging.getLogger(__name__) emits JSON too
+    # when json_logging, attach a JSON handler at root so env code using
+    # logging.getLogger(__name__) gets JSON-formatted. Do NOT raise root level:
+    # third-party libs (httpx, httpcore, …) inherit their effective level from
+    # root, and lowering it floods logs with their DEBUG output. Per-env level
+    # is set in load_environment() instead.
     if json_logging:
         root = logging.getLogger()
         root.handlers = [
             h for h in root.handlers if not isinstance(h.formatter, JsonFormatter)
         ]
-        root.setLevel(log_level)
         root_handler = logging.StreamHandler(sys.stderr)
         root_handler.setFormatter(formatter)
         root_handler.setLevel(log_level)
