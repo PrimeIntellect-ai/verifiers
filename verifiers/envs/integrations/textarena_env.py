@@ -136,6 +136,10 @@ class TextArenaEnv(vf.MultiTurnEnv):
         eval_dataset_rows = []
         _, user_prompt = self.ta_env.get_observation()
         words = self.ta_env.word_list
+        # Handle dict-based word lists (e.g. TwentyQuestions-v0 uses
+        # categorized words like {"animals": [...], "fruits": [...]})
+        if isinstance(words, dict):
+            words = [w for category in words.values() for w in category]
         # set seed
         random.seed(self.seed)
         for i in range(self.num_train_examples + self.num_eval_examples):

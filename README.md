@@ -174,6 +174,29 @@ prime eval run primeintellect/math-python
 
 **[FAQs](docs/faqs.md)** - Other frequently asked questions.
 
+## Supported Patterns
+
+Verifiers supports a wide range of RL environment design patterns. Here's a quick reference:
+
+| Pattern | Support | Documentation |
+|---------|---------|---------------|
+| **Single-turn Q&A** | `SingleTurnEnv` | [Environments](docs/environments.md) |
+| **Multi-turn interactions** | `MultiTurnEnv` | [Environments: Multi-Turn](docs/environments.md#custom-multi-turn-environments) |
+| **Native tool parsing** | `ToolEnv`, `StatefulToolEnv` | [Environments: Tools](docs/environments.md#tool-environments) |
+| **MCP tool integration** | `MCPEnv` | [Environments: MCP](docs/environments.md#mcp-tool-environments) |
+| **Harness-in-sandbox** | `SandboxEnv`, `PythonEnv` | [Environments](docs/environments.md) |
+| **Harness outside sandbox** | Any env with remote sandboxes | [Environments](docs/environments.md) |
+| **No sandbox** | `SingleTurnEnv`, `MultiTurnEnv` | [Environments](docs/environments.md) |
+| **Groupwise rewards** | Native support via `prime-rl` | [Training](docs/training.md) |
+| **Weighted reward functions** | `Rubric` with `weight` param | [Environments: Rubrics](docs/environments.md#multiple-reward-functions) |
+| **Intermediate reward tracking** | `Rubric.add_metric()` | [Environments: Metrics](docs/environments.md#metrics-and-monitor-rubrics) |
+| **Multiple environments** | `RubricGroup`, multi-env evals | [Environments: RubricGroup](docs/environments.md#rubric-groups) |
+| **Custom metrics/error handling** | Monitor rubrics, `add_metric()` | [Environments: Metrics](docs/environments.md#metrics-and-monitor-rubrics) |
+| **Offline evals** | `prime eval run`, `prime eval tui` | [Evaluation](docs/evaluation.md) |
+| **Resource management** | Sandbox lifecycle, `DatasetBuilder` | [Environments](docs/environments.md) |
+| **Stateful interactions** | `StatefulToolEnv`, `setup_state` | [Environments: Stateful](docs/environments.md#stateful-tool-environments) |
+| **Prompt optimization (GEPA)** | `prime gepa run` | [Training](docs/training.md) |
+
 
 ## Citation
 
