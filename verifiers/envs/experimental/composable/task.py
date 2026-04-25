@@ -35,7 +35,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
-from verifiers.types import Messages, State
+from verifiers.types import DatasetBuilder, Messages, State
 
 
 def _module_package_name(module: ModuleType) -> str | None:
@@ -142,13 +142,17 @@ class TaskSet:
 
     def __init__(
         self,
-        dataset: Any,
+        dataset: Any | DatasetBuilder,
         name: str = "",
         filter_fn: str | None = None,
     ):
         """
         Args:
-            dataset: The (already processed) dataset backing this taskset.
+            dataset: The dataset backing this taskset, or a ``DatasetBuilder``
+                (zero-arg callable returning the dataset). Passing a builder
+                defers the (often expensive) build until first access — so
+                an env worker that never reads the dataset doesn't pay the
+                cost. Mirrors the ``Environment`` ``dataset`` contract.
             name: Human-readable taskset name.
             filter_fn: Optional Python expression string (e.g. a lambda) that
                 evaluates to a ``Callable[[dict], bool]`` and is applied to
@@ -159,15 +163,33 @@ class TaskSet:
                 but it is still ``eval`` of user input — intended for local
                 ``vf-eval`` runs, not untrusted inputs.
         """
-        self._dataset = dataset
         self.name = name
         # Cache the raw expression (not the callable) for reproducibility /
-        # debugging; the resolved predicate isn't pickle-safe and
-        # ``self._dataset`` already carries the filtered state.
+        # debugging; the resolved predicate isn't pickle-safe and the
+        # realized dataset already carries the filtered state.
         self._filter_fn_src = filter_fn
-        if filter_fn is not None:
-            predicate = _resolve_filter_fn(filter_fn)
-            self._dataset = self._dataset.filter(predicate)
+        if callable(dataset):
+            self.dataset_source: DatasetBuilder | None = dataset
+            self._built_dataset: Any = None
+        else:
+            self.dataset_source = None
+            self._built_dataset = self._apply_filter(dataset)
+
+    def _apply_filter(self, dataset: Any) -> Any:
+        if self._filter_fn_src is None:
+            return dataset
+        predicate = _resolve_filter_fn(self._filter_fn_src)
+        return dataset.filter(predicate)
+
+    @property
+    def _dataset(self) -> Any:
+        if self._built_dataset is None and self.dataset_source is not None:
+            self._built_dataset = self._apply_filter(self.dataset_source())
+        return self._built_dataset
+
+    @_dataset.setter
+    def _dataset(self, value: Any) -> None:
+        self._built_dataset = value
 
     # -- Override these ------------------------------------------------------
 

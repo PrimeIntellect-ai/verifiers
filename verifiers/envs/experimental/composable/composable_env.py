@@ -96,7 +96,11 @@ class ComposableEnv(CliAgentEnv):
         install_env: dict[str, str] | None = None,
         **kwargs: Any,
     ):
-        kwargs["dataset"] = taskset.get_dataset()
+        # Forward the bound method as a DatasetBuilder so the underlying
+        # Environment defers the (often expensive) build until first
+        # access. Env worker processes that only run rollouts on inputs
+        # received over ZMQ never touch the dataset.
+        kwargs["dataset"] = taskset.get_dataset
         if "rubric" not in kwargs:
             kwargs["rubric"] = taskset.get_rubric()
         super().__init__(run_command=harness.run_command, **kwargs)

@@ -372,7 +372,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name="swe/swebench",
             filter_fn=filter_fn,
         )

@@ -212,7 +212,7 @@ class R2EGymTaskSet(SandboxTaskSet):
         self.timeout_minutes = timeout_minutes
         self.hide_tests_from_agent = hide_tests_from_agent
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name="swe/r2e",
             filter_fn=filter_fn,
         )
