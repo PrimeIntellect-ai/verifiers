@@ -9,7 +9,9 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
-from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import SCORING_BUFFER_MINUTES
+from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
+    SCORING_BUFFER_MINUTES,
+)
 
 from .log_parser import decolor_dict_keys, parse_log_fn
 
@@ -153,16 +155,12 @@ class R2ERubric(vf.Rubric):
         timeout = state.get("test_timeout", 900)
         try:
             test_output = await asyncio.wait_for(
-                self.taskset._run_tests(
-                    sandbox_client, sandbox_id, state, timeout
-                ),
+                self.taskset._run_tests(sandbox_client, sandbox_id, state, timeout),
                 timeout=timeout + 60,
             )
             state["test_output"] = test_output
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Test execution wall-clock timeout after {timeout + 60}s"
-            )
+            logger.warning(f"Test execution wall-clock timeout after {timeout + 60}s")
             state["test_output"] = "ERROR: wall-clock timeout"
             return 0.0
         except Exception as e:
@@ -177,7 +175,7 @@ class R2ERubric(vf.Rubric):
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
             try:
-                await sandbox_client.delete(sandbox_id)
+                await asyncio.wait_for(sandbox_client.delete(sandbox_id), timeout=300)
             except Exception:
                 pass
 
