@@ -153,7 +153,11 @@ class ComposableEnv(CliAgentEnv):
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
         info = state.get("info") or {}
-        harness_env_vars = self.harness.environment_vars
+        harness_env_vars = (
+            self.harness.environment_vars(state)
+            if self.harness.environment_vars
+            else None
+        )
         if harness_env_vars:
             conflicts = (
                 self.PROTECTED_ENV_VARS | {"AGENT_WORKDIR"}
