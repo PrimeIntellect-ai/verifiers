@@ -182,6 +182,12 @@ export ALLOW_GIT={"1" if allow_git else "0"}
 
 mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
 
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
+
 SCHEMA_DOLLAR='$'
 
 cat > ~/.config/opencode/opencode.json << EOFCONFIG

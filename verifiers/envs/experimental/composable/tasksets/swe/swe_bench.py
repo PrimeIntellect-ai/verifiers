@@ -353,7 +353,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         skip_install: bool = True,
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
-        ds_num_proc: int | None = 8,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
     ):
