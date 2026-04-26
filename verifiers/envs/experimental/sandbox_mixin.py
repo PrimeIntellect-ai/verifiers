@@ -4,6 +4,7 @@ import logging
 import os
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
@@ -25,6 +26,7 @@ from prime_sandboxes import (
 from prime_sandboxes.core import APIClient
 
 import verifiers as vf
+from verifiers.utils.logging_utils import print_time
 from verifiers.utils.path_utils import write_temp_file
 from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
@@ -214,9 +216,14 @@ class SandboxMixin:
 
         try:
             self.logger.debug(f"Waiting for sandbox {sandbox.id} to become ready")
+            wait_start = time.perf_counter()
             await self.sandbox_client.wait_for_creation(
                 sandbox.id,
                 max_attempts=self.sandbox_wait_for_creation_max_attempts,
+            )
+            self.logger.debug(
+                f"Waited {print_time(time.perf_counter() - wait_start)} "
+                f"for sandbox {sandbox.id} to become ready"
             )
         except Exception as e:
             raise SandboxNotReadyError(

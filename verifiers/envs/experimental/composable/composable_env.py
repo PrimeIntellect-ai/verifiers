@@ -222,7 +222,6 @@ class ComposableEnv(CliAgentEnv):
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
-        self.logger.debug(f"Running taskset setup in sandbox {sandbox_id}")
         await self.taskset.setup(state)
         await self._create_harness_input_dirs(sandbox_id)
         await self._upload_harness_inputs(sandbox_id, state)
