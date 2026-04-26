@@ -280,7 +280,6 @@ class ComposableEnv(CliAgentEnv):
         """Upload instruction and optional system prompt to harness-declared paths."""
         info = state.get("info") or {}
         instruction = self.taskset.get_instruction(info)
-        self.logger.debug(f"Uploading harness inputs to sandbox {sandbox_id}")
         if instruction.strip():
             await self.upload_content(
                 sandbox_id, instruction, self.harness.instruction_path
@@ -308,9 +307,6 @@ class ComposableEnv(CliAgentEnv):
             for name, src in upload_dirs.items()
             if (dest := mapping.get(name)) is not None
         ]
-        self.logger.debug(
-            f"Uploading {len(pending)} task/harness directories to sandbox {sandbox_id}"
-        )
         for _name, local_source, remote_dest in pending:
             await self._upload_dir(sandbox_id, local_source, remote_dest)
 
@@ -341,8 +337,8 @@ class ComposableEnv(CliAgentEnv):
     async def _install_agent(self, sandbox_id: str, state: State) -> None:
         """Install the agent inside the sandbox when an install script is present.
 
-        Records the install wall-clock as ``state["agent_install_seconds"]``;
-        :class:`CliAgentMonitorRubric` surfaces it as a per-rollout metric.
+        Records the install wall-clock as ``state["agent_install_seconds"]``
+        for downstream tooling and logs it for visibility.
         """
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")

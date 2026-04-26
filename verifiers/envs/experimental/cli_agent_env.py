@@ -69,7 +69,6 @@ class CliAgentMonitorRubric(vf.Rubric):
         super().__init__(**kwargs)
         self.add_metric(self.agent_timeout)
         self.add_metric(self.agent_error)
-        self.add_metric(self.agent_install_seconds)
 
     async def agent_timeout(self, state: vf.State) -> float:
         """Whether the agent timed out."""
@@ -81,13 +80,6 @@ class CliAgentMonitorRubric(vf.Rubric):
         if agent_exit_code is None:
             return 0.0
         return float(agent_exit_code != 0)
-
-    async def agent_install_seconds(self, state: vf.State) -> float:
-        """Wall-clock seconds spent installing the agent inside the sandbox.
-
-        Populated by ``ComposableEnv._install_agent``. Returns ``0.0``
-        when no install script ran (e.g. plain ``CliAgentEnv``)."""
-        return float(state.get("agent_install_seconds") or 0.0)
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
