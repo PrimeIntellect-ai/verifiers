@@ -385,7 +385,7 @@ class ComposableEnv(CliAgentEnv):
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
-                with shared_path_lock(local_source, suffix=".upload.lock"):
+                with shared_path_lock(local_source, suffix=".in-use.lock"):
                     tar.add(local_source, arcname=arcname)
             else:
                 with resources.as_file(local_source) as local_path:
