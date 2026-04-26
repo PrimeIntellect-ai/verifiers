@@ -660,7 +660,7 @@ def test_build_dir_archive_holds_shared_lock_for_local_path(tmp_path):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def add(self, path, arcname):
+        def add(self, path, arcname, filter=None):
             assert Path(path) == local_source
             with pytest.raises(BlockingIOError):
                 with exclusive_path_lock(
