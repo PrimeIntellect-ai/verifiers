@@ -24,12 +24,28 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
 )
 _REQUIRED_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 
-_GIT_SHIM_BODY = (
-    "#!/bin/sh\n"
-    "echo \"Bash command 'git' is not allowed. "
-    'Please use a different command or tool." >&2\n'
-    "exit 1\n"
-)
+_GIT_SHIM_INSTALL_SCRIPT = """set -eu
+git_path="$(command -v git 2>/dev/null || true)"
+[ -z "$git_path" ] && exit 0
+real_path="$(readlink -f "$git_path")"
+[ -z "$real_path" ] || [ ! -e "$real_path" ] && exit 0
+mv "$real_path" "$(dirname "$real_path")/twit"
+cat > "$real_path" <<'EOF'
+#!/bin/sh
+echo "Bash command 'git' is not allowed. Please use a different command or tool." >&2
+exit 1
+EOF
+chmod 0755 "$real_path"
+"""
+
+_GIT_SHIM_UNINSTALL_SCRIPT = """set -eu
+git_path="$(command -v git 2>/dev/null || true)"
+[ -z "$git_path" ] && exit 0
+real_path="$(readlink -f "$git_path")"
+twit_path="$(dirname "$real_path")/twit"
+[ -e "$twit_path" ] && mv -f "$twit_path" "$real_path"
+exit 0
+"""
 
 
 def resolve_local_checkout(
@@ -114,19 +130,10 @@ def rlm_harness(
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
     here and the harness owns the env var plumbing.
 
-    ``allow_git`` defaults to False, mirroring opencode's bash tool. When
-    False, a refusal shim is dropped at ``$HOME/.local/bin/git`` (the
-    same dir ``uv tool install rlm`` writes to, which RLM's ``run_command``
-    prepends to ``PATH``). This blocks git for the RLM bash tool, the
-    ipython tool's ``!cmd`` / ``%%bash`` cells, and any
-    ``subprocess.run(["git", ...])`` from inside ipython — all three
-    inherit the agent process's PATH and resolve through the shim first.
-    Crucially, the shim is NOT installed on a system PATH dir, so a
-    rubric / scoring step running ``git apply`` or ``git checkout`` via
-    ``sandbox_client.execute_command`` (which uses the container's
-    default PATH, *not* ``$HOME/.local/bin``) still resolves to the real
-    git in ``/usr/bin``. Set ``allow_git=True`` for environments that
-    genuinely need git inside the agent's tools.
+    With ``allow_git=False`` (default), the post-install step renames
+    the real ``git`` to ``twit`` in the same directory and drops a
+    refusal shim at git's resolved path. The pre-score hook reverses
+    the rename before scoring.
     """
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
@@ -150,27 +157,11 @@ def rlm_harness(
 
     tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
 
-    post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
+    pre_score_script: str | None = None
     if not allow_git:
-        # Drop the shim into the same dir ``uv tool install rlm`` uses
-        # ($HOME/.local/bin), which the RLM run_command prepends to PATH
-        # for the agent. This dir is *not* on the container's default
-        # PATH, so the rubric's ``sandbox_client.execute_command`` calls
-        # (skip-install diff, eval.sh's ``git checkout`` / ``git apply``,
-        # gold-patch apply) keep resolving to the real ``/usr/bin/git``.
-        # Uploading directly into ``$HOME/.local/bin`` requires shell
-        # expansion, so stage the body in /tmp and let the post-install
-        # script move it; that script is just dispatched as a string to
-        # ``execute_command``, which runs under a shell that expands
-        # ``$HOME``.
-        post_install_uploads = {"/tmp/__rlm_git_shim": _GIT_SHIM_BODY}
-        post_install_script = (
-            "set -e; "
-            'mkdir -p "$HOME/.local/bin"; '
-            'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"; '
-            'chmod +x "$HOME/.local/bin/git"'
-        )
+        post_install_script = _GIT_SHIM_INSTALL_SCRIPT
+        pre_score_script = _GIT_SHIM_UNINSTALL_SCRIPT
 
     environment_vars: dict[str, str] = {
         "RLM_TOOLS": ",".join(tool_names),
@@ -195,8 +186,8 @@ def rlm_harness(
         metrics_prefix="rlm_",
         tool_names=tool_names,
         environment_vars=environment_vars,
-        post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
+        pre_score_script=pre_score_script,
     )
 
 

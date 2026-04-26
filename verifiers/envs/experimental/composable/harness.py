@@ -100,14 +100,17 @@ class Harness:
         Optional mapping from sandbox path → file content. Uploaded via
         the single-file upload path (same as instruction / system
         prompt) AFTER ``install_script`` finishes. Use for small
-        harness-computed assets — e.g. RLM's git refusal shim staged
-        into ``$HOME/.local/bin/git``. For large directories use
-        ``upload_dir_mapping`` instead.
+        harness-computed assets — e.g. RLM's git refusal shim. For large
+        directories use ``upload_dir_mapping`` instead.
     post_install_script:
         Optional shell snippet run AFTER ``post_install_uploads`` land in
         the sandbox. Typical use: ``chmod +x`` on the uploaded files, or
         any other wiring that needs them in place first. Failure is
         fatal, same as ``install_script``.
+    pre_score_script:
+        Optional shell snippet run between rollout and scoring to undo
+        sandbox modifications made for the agent's sake. Failure is
+        logged but non-fatal.
     """
 
     install_script: str | None = None
@@ -129,6 +132,7 @@ class Harness:
     environment_vars: dict[str, str] | None = None
     post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
+    pre_score_script: str | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

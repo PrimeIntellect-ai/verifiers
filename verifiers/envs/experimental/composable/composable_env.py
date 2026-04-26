@@ -196,12 +196,8 @@ class ComposableEnv(CliAgentEnv):
         await self._run_post_install(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
-        """Collect agent logs and harness metrics after the agent finishes.
-
-        Scoring is handled entirely by the rubric (via ``score_rollout``),
-        not here.  Use ``keep_sandbox_for_scoring=True`` so the sandbox
-        stays alive for the rubric to run tests / read files.
-        """
+        """Collect agent logs / metrics, run ``Harness.pre_score_script``,
+        then defer to ``super().post_rollout``."""
         sandbox_id = state.get("sandbox_id")
         if sandbox_id and self.harness.log_path and "agent_logs" not in state:
             try:
@@ -217,6 +213,9 @@ class ComposableEnv(CliAgentEnv):
 
         if sandbox_id and self.harness.metrics_path:
             await self._collect_harness_metrics(sandbox_id, state)
+
+        if sandbox_id and self.harness.pre_score_script:
+            await self._run_pre_score(sandbox_id)
 
         await super().post_rollout(state)
 
@@ -338,6 +337,22 @@ class ComposableEnv(CliAgentEnv):
                 raise vf.SandboxError(
                     f"Post-install failed (exit={result.exit_code}): {output[:500]}"
                 )
+
+    async def _run_pre_score(self, sandbox_id: str) -> None:
+        script = self.harness.pre_score_script
+        if not script:
+            return
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id, script, timeout=self.harness.install_timeout
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                self.logger.warning(
+                    f"Pre-score script failed (exit={result.exit_code}): {output[:500]}"
+                )
+        except Exception as e:
+            self.logger.warning(f"Pre-score script raised: {e}")
 
     # -- Directory upload ------------------------------------------------------
 
