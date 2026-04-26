@@ -54,6 +54,7 @@ from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
+from verifiers.utils.logging_utils import print_size
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +402,7 @@ class ComposableEnv(CliAgentEnv):
         )
         try:
             self.logger.debug(
-                f"Uploading {tmp_path.stat().st_size / 1e6:.2f}MB archive "
+                f"Uploading {print_size(tmp_path.stat().st_size)} archive "
                 f"to sandbox {sandbox_id}:{remote_dest}"
             )
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))

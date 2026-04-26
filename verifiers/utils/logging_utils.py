@@ -226,6 +226,24 @@ def print_time(time_s: float) -> str:
         return f"{time_s:.0f}s"
 
 
+def print_size(num_bytes: float) -> str:
+    """
+    Format a byte count to a human-readable size:
+    - >=1 GB -> X.XGB
+    - >=1 MB -> X.XMB
+    - >=1 KB -> X.XKB
+    - Else  -> XB
+    """
+    if num_bytes >= 1024**3:
+        return f"{num_bytes / 1024**3:.1f}GB"
+    elif num_bytes >= 1024**2:
+        return f"{num_bytes / 1024**2:.1f}MB"
+    elif num_bytes >= 1024:
+        return f"{num_bytes / 1024:.1f}KB"
+    else:
+        return f"{num_bytes:.0f}B"
+
+
 def truncate(s: str, limit: int = 200) -> str:
     """Truncate a string to a given length."""
     return (s[:limit] + "...") if len(s) > limit else s
