@@ -227,7 +227,7 @@ class ComposableEnv(CliAgentEnv):
         await self._create_harness_input_dirs(sandbox_id)
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
-        await self._install_agent(sandbox_id, state)
+        await self._install_agent(sandbox_id)
         await self._run_post_install(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
@@ -334,12 +334,8 @@ class ComposableEnv(CliAgentEnv):
             kwargs["env"] = self.install_env
         return kwargs
 
-    async def _install_agent(self, sandbox_id: str, state: State) -> None:
-        """Install the agent inside the sandbox when an install script is present.
-
-        Records the install wall-clock as ``state["agent_install_seconds"]``
-        for downstream tooling and logs it for visibility.
-        """
+    async def _install_agent(self, sandbox_id: str) -> None:
+        """Install the agent inside the sandbox when an install script is present."""
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
             install_start = time.perf_counter()
@@ -349,7 +345,6 @@ class ComposableEnv(CliAgentEnv):
                 **self._get_install_execute_kwargs(),
             )
             elapsed = time.perf_counter() - install_start
-            state["agent_install_seconds"] = elapsed
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
                 raise vf.SandboxError(
