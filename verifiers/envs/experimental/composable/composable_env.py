@@ -43,6 +43,7 @@ import logging
 import shlex
 import tarfile
 import tempfile
+import time
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,7 @@ from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
-from verifiers.utils.logging_utils import print_size
+from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +227,7 @@ class ComposableEnv(CliAgentEnv):
         await self._create_harness_input_dirs(sandbox_id)
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
-        await self._install_agent(sandbox_id)
+        await self._install_agent(sandbox_id, state)
         await self._run_post_install(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
@@ -337,20 +338,30 @@ class ComposableEnv(CliAgentEnv):
             kwargs["env"] = self.install_env
         return kwargs
 
-    async def _install_agent(self, sandbox_id: str) -> None:
-        """Install the agent inside the sandbox when an install script is present."""
+    async def _install_agent(self, sandbox_id: str, state: State) -> None:
+        """Install the agent inside the sandbox when an install script is present.
+
+        Records the install wall-clock as ``state["agent_install_seconds"]``;
+        :class:`CliAgentMonitorRubric` surfaces it as a per-rollout metric.
+        """
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
+            install_start = time.perf_counter()
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
                 self.harness.install_script,
                 **self._get_install_execute_kwargs(),
             )
+            elapsed = time.perf_counter() - install_start
+            state["agent_install_seconds"] = elapsed
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
                 raise vf.SandboxError(
                     f"Agent install failed (exit={result.exit_code}): {output[:500]}"
                 )
+            self.logger.debug(
+                f"Installed agent in sandbox {sandbox_id} in {print_time(elapsed)}"
+            )
 
     async def _run_post_install(self, sandbox_id: str) -> None:
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
@@ -395,7 +406,6 @@ class ComposableEnv(CliAgentEnv):
         event loop stays responsive when many rollouts upload in parallel.
         """
         remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
-        self.logger.debug(f"Building upload archive for {remote_dest}")
         tmp_path = await asyncio.to_thread(
             self._build_dir_archive, local_source, remote_dest
         )
