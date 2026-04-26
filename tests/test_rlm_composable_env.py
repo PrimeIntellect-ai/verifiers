@@ -100,6 +100,20 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _release_in_use_locks_between_tests():
+    """Drop process-lifetime in-use locks so tests don't leak fds/state.
+
+    ``resolve_git_checkout`` keeps a shared lock on each resolved
+    checkout open for the resolving process's lifetime. Tests that
+    create checkouts in a shared cache root would otherwise see the
+    pruner skip them, masking real regressions; release everything on
+    teardown.
+    """
+    yield
+    git_checkout_cache_module._release_all_in_use_locks()
+
+
 def _make_git_checkout(target: Path) -> Path:
     checkout = target
     checkout.mkdir()
@@ -302,7 +316,14 @@ def test_rlm_harness_memoizes_resolved_checkout_per_instance(tmp_path, monkeypat
     assert second_upload_checkout == first_upload_checkout
 
 
-def test_rlm_harness_resolves_new_commit_for_new_instance(tmp_path, monkeypatch):
+def test_rlm_harness_preserves_prior_checkout_while_leased(tmp_path, monkeypatch):
+    """A second resolve in the same process must NOT prune the first
+    checkout. ``resolve_git_checkout`` holds a process-lifetime shared
+    lock on every checkout it materializes, and the pruner takes that
+    lock exclusive non-blocking — so as long as this process is still
+    holding the first lease, a concurrent resolve for a different ref
+    cannot nuke the active worktree out from under a long-running eval.
+    """
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
     first_commit = _git_head_commit(source_checkout)
     monkeypatch.setattr(
@@ -329,10 +350,42 @@ def test_rlm_harness_resolves_new_commit_for_new_instance(tmp_path, monkeypatch)
     assert isinstance(second_checkout, Path)
     assert second_checkout.name == second_commit
     assert second_checkout != first_checkout
+    assert first_checkout.exists()
+
+
+def test_rlm_harness_prunes_stale_checkout_after_lease_released(tmp_path, monkeypatch):
+    """Once the in-use lease is dropped (e.g. the prior process exited),
+    the next resolve's prune step removes the stale worktree."""
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    first_checkout = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    ).get_upload_dirs()["rlm_checkout"]
+    _commit_file(source_checkout, "README.md", "updated\n")
+    git_checkout_cache_module._release_all_in_use_locks()
+
+    second_checkout = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    ).get_upload_dirs()["rlm_checkout"]
+    assert second_checkout != first_checkout
     assert not first_checkout.exists()
 
 
-def test_rlm_harness_skips_pruning_locked_stale_checkout(tmp_path, monkeypatch):
+def test_rlm_harness_skips_pruning_externally_locked_stale_checkout(
+    tmp_path, monkeypatch
+):
+    """Another process holding the in-use lock blocks the pruner. We
+    simulate a peer process by releasing our own lease first, then
+    manually taking a shared ``.in-use.lock`` while a fresh resolve
+    runs — the pruner's exclusive non-blocking attempt fails and the
+    stale checkout survives."""
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
     first_commit = _git_head_commit(source_checkout)
     monkeypatch.setattr(
@@ -346,26 +399,24 @@ def test_rlm_harness_skips_pruning_locked_stale_checkout(tmp_path, monkeypatch):
         rlm_ref="main",
     )
     first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
-    assert isinstance(first_checkout, Path)
     assert first_checkout.name == first_commit
 
     second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+    git_checkout_cache_module._release_all_in_use_locks()
 
-    with shared_path_lock(first_checkout, suffix=".upload.lock"):
-        second_harness = rlm_harness(
+    with shared_path_lock(first_checkout, suffix=".in-use.lock"):
+        second_checkout = rlm_harness(
             rlm_repo_url=str(source_checkout),
             rlm_ref="main",
-        )
-        second_checkout = second_harness.get_upload_dirs()["rlm_checkout"]
-        assert isinstance(second_checkout, Path)
+        ).get_upload_dirs()["rlm_checkout"]
         assert second_checkout.name == second_commit
         assert first_checkout.exists()
 
-    third_harness = rlm_harness(
+    git_checkout_cache_module._release_all_in_use_locks()
+    third_checkout = rlm_harness(
         rlm_repo_url=str(source_checkout),
         rlm_ref="main",
-    )
-    third_checkout = third_harness.get_upload_dirs()["rlm_checkout"]
+    ).get_upload_dirs()["rlm_checkout"]
     assert third_checkout == second_checkout
     assert not first_checkout.exists()
 
@@ -614,7 +665,7 @@ def test_build_dir_archive_holds_shared_lock_for_local_path(tmp_path):
             with pytest.raises(BlockingIOError):
                 with exclusive_path_lock(
                     local_source,
-                    suffix=".upload.lock",
+                    suffix=".in-use.lock",
                     nonblocking=True,
                 ):
                     pass
