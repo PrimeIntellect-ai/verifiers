@@ -88,6 +88,7 @@ def rlm_harness(
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
     summarize_at_tokens: int | None = None,
+    include_sub_rlm_trajectories: bool = False,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -109,6 +110,14 @@ def rlm_harness(
       a positive int, rlm auto-compacts the current branch once the
       prompt_tokens of a turn reach the threshold. ``None`` disables
       auto-compaction.
+    - ``include_sub_rlm_trajectories`` (default ``False``): whether
+      sub-agent API calls (i.e. ``rlm("subtask")`` from inside ipython)
+      land in the rollout trajectory the trainer sees. Off by default
+      so the model treats sub-agents as black boxes — only the parent
+      turns drive policy gradients. rlm tags every outbound request
+      with ``X-RLM-Depth`` (parent ``"0"``, sub-agent ``"1"``, etc.);
+      the harness uses ``Harness.keep_trajectory_step`` to drop steps
+      whose request had depth > 0.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -181,6 +190,10 @@ def rlm_harness(
     if summarize_env is not None:
         environment_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
 
+    keep_trajectory_step = (
+        None if include_sub_rlm_trajectories else _keep_only_parent_rlm_steps
+    )
+
     return Harness(
         install_script=build_install_script(),
         run_command=build_run_command(instruction_path, workdir),
@@ -197,7 +210,19 @@ def rlm_harness(
         environment_vars=environment_vars,
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
+        keep_trajectory_step=keep_trajectory_step,
     )
+
+
+def _keep_only_parent_rlm_steps(step, state, headers) -> bool:
+    """Drop trajectory steps whose API request was tagged as a sub-agent call.
+
+    rlm sets ``X-RLM-Depth: 0`` on parent calls and increments for each
+    nested ``rlm()``. Anything > 0 is a sub-agent — its output isn't
+    what the policy gradient should see; the model should learn to use
+    sub-agents as black boxes returning a single answer string.
+    """
+    return headers.get("x-rlm-depth", "0") == "0"
 
 
 def _format_summarize_at_tokens(value: int | None) -> str | None:

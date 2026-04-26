@@ -53,7 +53,7 @@ from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
-from verifiers.types import State
+from verifiers.types import State, TrajectoryStep
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +175,30 @@ class ComposableEnv(CliAgentEnv):
             env_vars.update(task_env_vars)
         env_vars["AGENT_WORKDIR"] = self.taskset.get_workdir(info)
         return env_vars
+
+    async def add_trajectory_step(
+        self, state: State, trajectory_step: TrajectoryStep
+    ) -> None:
+        """Append the step unless the harness's filter says to drop it.
+
+        Looks up the originating request's headers via the
+        interception server (keyed by ``state["current_request_id"]``)
+        and passes them to ``harness.keep_trajectory_step`` along
+        with the step and state. ``True`` keeps; ``False`` drops.
+        ``None`` filter (default) keeps every step.
+        """
+        if self.harness.keep_trajectory_step is not None:
+            request_id = state.get("current_request_id")
+            headers: dict[str, str] = {}
+            if request_id is not None:
+                server = self._require_interception_server()
+                intercept = server.intercepts.get(request_id) or {}
+                raw_headers = intercept.get("headers")
+                if isinstance(raw_headers, dict):
+                    headers = raw_headers
+            if not self.harness.keep_trajectory_step(trajectory_step, state, headers):
+                return
+        await super().add_trajectory_step(state, trajectory_step)
 
     async def post_sandbox_setup(self, state: State) -> None:
         """Task setup → upload instruction/system prompt → upload dirs →

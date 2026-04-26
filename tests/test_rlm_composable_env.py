@@ -756,3 +756,26 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
     assert state["metrics"]["rlm_turns"] == 3.0
     assert state["metrics"]["rlm_prompt_tokens"] == 100.0
     assert state["metrics"]["rlm_completion_tokens"] == 25.0
+
+
+def test_rlm_harness_keep_trajectory_step_drops_sub_agent_by_default():
+    """Default config installs a filter that drops X-RLM-Depth > 0 steps."""
+    from verifiers.envs.experimental.composable.harnesses.rlm import (
+        _keep_only_parent_rlm_steps,
+    )
+
+    harness = rlm_harness()
+    assert harness.keep_trajectory_step is _keep_only_parent_rlm_steps
+
+    # Parent-agent calls (depth absent or "0") → keep.
+    assert harness.keep_trajectory_step(None, {}, {}) is True
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "0"}) is True
+    # Sub-agent calls → drop.
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "1"}) is False
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "5"}) is False
+
+
+def test_rlm_harness_include_sub_rlm_trajectories_disables_filter():
+    """``include_sub_rlm_trajectories=True`` removes the filter entirely."""
+    harness = rlm_harness(include_sub_rlm_trajectories=True)
+    assert harness.keep_trajectory_step is None
