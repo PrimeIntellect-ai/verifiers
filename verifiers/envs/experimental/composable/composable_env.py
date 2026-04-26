@@ -43,6 +43,7 @@ import logging
 import shlex
 import tarfile
 import tempfile
+import time
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
@@ -54,8 +55,38 @@ from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
+from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
+
+
+# Directory/file names that are never useful inside the sandbox: VCS metadata,
+# host-side virtualenvs, language tool caches. Skipping them shrinks the tar
+# the harness ships up (e.g. for an agent checkout, .venv alone can dominate
+# the archive) and saves CPU on the gzip pass.
+_UPLOAD_EXCLUDE_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".uv-cache",
+        ".tox",
+        "node_modules",
+    }
+)
+_UPLOAD_EXCLUDE_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
+
+
+def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """``tarfile.add`` filter that drops always-skip caches/VCS dirs."""
+    base = info.name.rsplit("/", 1)[-1]
+    if base in _UPLOAD_EXCLUDE_NAMES or base.endswith(_UPLOAD_EXCLUDE_SUFFIXES):
+        return None
+    return info
 
 
 class HarnessMetricsRubricGroup(vf.RubricGroup):
@@ -275,10 +306,13 @@ class ComposableEnv(CliAgentEnv):
         if not upload_dirs or not mapping:
             return
         sandbox_id = state["sandbox_id"]
-        for name, local_source in upload_dirs.items():
-            remote_dest = mapping.get(name)
-            if remote_dest is not None:
-                await self._upload_dir(sandbox_id, local_source, remote_dest)
+        pending = [
+            (name, src, dest)
+            for name, src in upload_dirs.items()
+            if (dest := mapping.get(name)) is not None
+        ]
+        for _name, local_source, remote_dest in pending:
+            await self._upload_dir(sandbox_id, local_source, remote_dest)
 
     def _get_upload_dirs(self) -> dict[str, Traversable | Path]:
         """Merge task-owned and harness-owned upload directories."""
@@ -308,16 +342,21 @@ class ComposableEnv(CliAgentEnv):
         """Install the agent inside the sandbox when an install script is present."""
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
+            install_start = time.perf_counter()
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
                 self.harness.install_script,
                 **self._get_install_execute_kwargs(),
             )
+            elapsed = time.perf_counter() - install_start
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
                 raise vf.SandboxError(
                     f"Agent install failed (exit={result.exit_code}): {output[:500]}"
                 )
+            self.logger.debug(
+                f"Installed agent in sandbox {sandbox_id} in {print_time(elapsed)}"
+            )
 
     async def _run_post_install(self, sandbox_id: str) -> None:
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
@@ -366,6 +405,10 @@ class ComposableEnv(CliAgentEnv):
             self._build_dir_archive, local_source, remote_dest
         )
         try:
+            self.logger.debug(
+                f"Uploading {print_size(tmp_path.stat().st_size)} archive "
+                f"to sandbox {sandbox_id}:{remote_dest}"
+            )
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
             dest_parent = shlex.quote(str(Path(remote_dest).parent))
             quoted_remote_tar = shlex.quote(remote_tar)
@@ -387,17 +430,22 @@ class ComposableEnv(CliAgentEnv):
     def _build_dir_archive(
         self, local_source: Traversable | Path, remote_dest: str
     ) -> Path:
-        """Build a tar.gz archive of a directory, rooted at *remote_dest*."""
+        """Build a tar.gz archive of a directory, rooted at *remote_dest*.
+
+        Skips VCS metadata, host-side virtualenvs, and language tool caches
+        (see ``_UPLOAD_EXCLUDE_NAMES``) — they're never useful in the sandbox
+        and can dominate archive size and gzip cost.
+        """
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
                 with shared_path_lock(local_source, suffix=".in-use.lock"):
-                    tar.add(local_source, arcname=arcname)
+                    tar.add(local_source, arcname=arcname, filter=_upload_tar_filter)
             else:
                 with resources.as_file(local_source) as local_path:
-                    tar.add(local_path, arcname=arcname)
+                    tar.add(local_path, arcname=arcname, filter=_upload_tar_filter)
         return tar_path
 
     # -- Harness metrics collection --------------------------------------------
