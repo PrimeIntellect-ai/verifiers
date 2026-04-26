@@ -1139,16 +1139,46 @@ Migration mapping:
 - `TaskSet.get_dataset()` → `Taskset(source=...)`
 - `TaskSet.get_sandbox_spec(...)` → `sandbox` channel / `SandboxSeed`
 - `TaskSet.get_upload_dirs(...)` → `sandbox` channel `uploads`
+- `TaskSet.get_skills_dir()` → `skills` channel or `sandbox` upload named
+  `"skills"`
+- `TaskSet.setup(...)` → sandbox seed files/uploads/setup commands, or a
+  taskset-contributed sandbox setup channel when arbitrary Python setup is
+  needed
+- `TaskSet.validate_instance(...)` → taskset validation helper using the same
+  sandbox channel objects and setup path as rollouts
 - task workdir/instruction/config → `task.info`
 - task-specific env vars → sandbox seed env vars
 - harness install/run command → `CliHarness` / concrete harness constructor
 - harness system prompt → harness `system_prompt`
 - harness metrics path → `CliConfig(metrics=CliMetrics(...))`
 - upload mapping → `SandboxConfig(setup=SandboxSetup(upload_mapping=...))`
+- harness-owned upload dirs → `SandboxSetup(uploads=...)`
+- harness post-install uploads/scripts → `SandboxSetup(post_install_uploads=...,
+  post_install_command=...)`
+- harness tool names → `CliMetrics(tool_names=...)` or automatic tool monitor
+  metrics from the `tools` channel
 - scoring rubric → taskset `rubric` / `rubric` channel
 
 `ComposableEnv` is a correctness reference for sandbox upload, install,
 metrics, and OpenCode flow behavior.
+
+Coverage status:
+
+- CLI install/run, instruction upload, system prompt upload, log collection,
+  metrics collection, upload mapping, skills upload, post-install files, and
+  same-sandbox scoring are represented in `CliHarness`, `SandboxConfig`,
+  `skills`, `sandbox`, and rubric cleanup.
+- Task-to-harness tool composition is materially stronger than in
+  `ComposableEnv`: tasksets and harnesses can both contribute tools and
+  toolsets through the `tools` channel.
+- Sandbox clients and other live handles move from state to resources. Existing
+  rubrics that read `state["sandbox_client"]` should accept `resources` and use
+  `resources.require("sandbox_runtime").client` while keeping only
+  `state["sandbox_id"]` in state.
+- The main parity gaps are taskset validation ergonomics, arbitrary Python
+  sandbox setup hooks, and explicit runtime override syntax for sandbox specs.
+  These should be added as taskset/channel APIs rather than as new `Env`
+  constructor options.
 
 RLM-style composable envs migrate to `RLMHarness`:
 
