@@ -1,10 +1,7 @@
 import asyncio
 import os
-from typing import cast
+from typing import Any, cast
 
-import chromadb
-from chromadb.api.types import Embeddable, EmbeddingFunction
-from chromadb.utils import embedding_functions
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
@@ -22,18 +19,14 @@ def _get_chroma_semaphore() -> asyncio.Semaphore:
     return _chroma_semaphore
 
 
-def load_environment(
-    max_turns: int = 10,
-    judge_model: str = "gpt-4.1-mini",
-    judge_base_url: str = "https://api.openai.com/v1",
-    judge_api_key_var: str = "OPENAI_API_KEY",
+def load_toolset(
     embed_model: str = "text-embedding-3-small",
     embed_base_url: str = "https://api.openai.com/v1",
     embed_api_key_var: str = "OPENAI_API_KEY",
     corpus_dataset: str = "willcb/rare-wiki-pages",
     corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
-) -> vf.Environment:
+) -> vf.Toolset:
     corpus_state: dict = {
         "loaded": False,
         "page_id_to_title": {},
@@ -51,9 +44,26 @@ def load_environment(
             corpus_state["page_id_to_content"][pid] = row["content"]
         corpus_state["loaded"] = True
 
-    chroma_state: dict = {"collection": None}
+    chroma_state: dict[str, Any] = {
+        "client": None,
+        "collection": None,
+    }
+
+    def get_chroma_client() -> Any:
+        import chromadb
+
+        if chroma_state["client"] is None:
+            chroma_state["client"] = chromadb.PersistentClient(path=chroma_db_dir)
+        return chroma_state["client"]
+
+    @vf.teardown(priority=10)
+    async def teardown_chroma() -> None:
+        chroma_state["client"] = None
+        chroma_state["collection"] = None
 
     def get_collection():
+        from chromadb.utils import embedding_functions
+
         load_corpus()
         if chroma_state["collection"] is None:
             openai_ef = embedding_functions.OpenAIEmbeddingFunction(
@@ -61,10 +71,10 @@ def load_environment(
                 api_base=embed_base_url,
                 api_key=os.getenv(embed_api_key_var, "EMPTY"),
             )
-            client = chromadb.PersistentClient(path=chroma_db_dir)
+            client = get_chroma_client()
             chroma_state["collection"] = client.get_or_create_collection(
                 name="wiki_titles",
-                embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
+                embedding_function=openai_ef,
             )
             init_chroma(chroma_state["collection"])
         return chroma_state["collection"]
@@ -99,9 +109,16 @@ def load_environment(
     def normalize_id(text: str) -> str:
         return text.strip().lower().replace(" ", "_")
 
-    async def search_pages(query: str) -> list[dict]:
+    wiki: dict[str, Any] = {
+        "load_corpus": load_corpus,
+        "get_collection": get_collection,
+        "normalize_id": normalize_id,
+        "corpus_state": corpus_state,
+    }
+
+    async def search_pages(query: str, wiki) -> list[dict]:
         """Search for top 10 relevant articles using title embedding similarity."""
-        collection = get_collection()
+        collection = wiki["get_collection"]()
         async with _get_chroma_semaphore():
             results = await asyncio.to_thread(
                 collection.query, query_texts=[query], n_results=10
@@ -120,8 +137,11 @@ def load_environment(
             )
         return output
 
-    async def view_sections(page_id: str) -> list[dict]:
+    async def view_sections(page_id: str, wiki) -> list[dict]:
         """View the sections of a page."""
+        load_corpus = wiki["load_corpus"]
+        normalize_id = wiki["normalize_id"]
+        corpus_state = wiki["corpus_state"]
         load_corpus()
         content = corpus_state["page_id_to_content"][page_id]
         sections = []
@@ -152,13 +172,16 @@ def load_environment(
             for section in sections
         ]
 
-    async def read_section(section_id: str) -> str:
+    async def read_section(section_id: str, wiki) -> str:
         """Read a section of a page."""
         if ":" not in section_id:
             raise ValueError(
                 "Invalid section_id format. Expected: page_id:section_name"
             )
         page_id, section_name_id = section_id.split(":", 1)
+        load_corpus = wiki["load_corpus"]
+        normalize_id = wiki["normalize_id"]
+        corpus_state = wiki["corpus_state"]
         load_corpus()
         content = corpus_state["page_id_to_content"][page_id]
         lines = content.split("\n")
@@ -181,6 +204,19 @@ def load_environment(
             section_end = len(lines)
         return "\n".join(lines[section_start:section_end])
 
+    return vf.Toolset(
+        bindings={"wiki": wiki},
+        channels={"teardown": teardown_chroma},
+        name="wiki_search",
+        tools=[search_pages, view_sections, read_section],
+    )
+
+
+def load_rubric(
+    judge_model: str = "gpt-4.1-mini",
+    judge_base_url: str = "https://api.openai.com/v1",
+    judge_api_key_var: str = "OPENAI_API_KEY",
+) -> vf.Rubric:
     parser = vf.Parser()
     judge_client = AsyncOpenAI(
         base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, "")
@@ -196,20 +232,72 @@ def load_environment(
         judge_response = await judge(prompt, completion, answer, state)
         return float("yes" in judge_response.lower())
 
-    def source():
-        return load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-
     judge_rubric.add_reward_func(judge_reward_func, weight=1.0)
-    taskset = vf.Taskset(
-        source=source,
-        rubric=judge_rubric,
-        tools=[search_pages, view_sections, read_section],
+    return judge_rubric
+
+
+def load_taskset(
+    judge_model: str = "gpt-4.1-mini",
+    judge_base_url: str = "https://api.openai.com/v1",
+    judge_api_key_var: str = "OPENAI_API_KEY",
+    embed_model: str = "text-embedding-3-small",
+    embed_base_url: str = "https://api.openai.com/v1",
+    embed_api_key_var: str = "OPENAI_API_KEY",
+    corpus_dataset: str = "willcb/rare-wiki-pages",
+    corpus_split: str = "train",
+    chroma_db_dir: str = CHROMA_DB_DIR,
+) -> vf.Taskset:
+    return vf.Taskset(
+        source=lambda: load_dataset("willcb/wiki-trivia-questions-v4", split="train"),
+        rubric=lambda: load_rubric(
+            judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_api_key_var=judge_api_key_var,
+        ),
+        tools=lambda: load_toolset(
+            embed_model=embed_model,
+            embed_base_url=embed_base_url,
+            embed_api_key_var=embed_api_key_var,
+            corpus_dataset=corpus_dataset,
+            corpus_split=corpus_split,
+            chroma_db_dir=chroma_db_dir,
+        ),
     )
-    harness = vf.Harness(
+
+
+def load_harness(max_turns: int = 10) -> vf.Harness:
+    return vf.Harness(
         system_prompt="Use the provided Wikipedia search tools to help answer questions.",
-        max_turns=max_turns,
+        run=vf.RunConfig(max_turns=max_turns),
     )
-    return vf.Env(taskset=taskset, harness=harness)
+
+
+def load_environment(
+    max_turns: int = 10,
+    judge_model: str = "gpt-4.1-mini",
+    judge_base_url: str = "https://api.openai.com/v1",
+    judge_api_key_var: str = "OPENAI_API_KEY",
+    embed_model: str = "text-embedding-3-small",
+    embed_base_url: str = "https://api.openai.com/v1",
+    embed_api_key_var: str = "OPENAI_API_KEY",
+    corpus_dataset: str = "willcb/rare-wiki-pages",
+    corpus_split: str = "train",
+    chroma_db_dir: str = CHROMA_DB_DIR,
+) -> vf.Environment:
+    return vf.Env(
+        taskset=load_taskset(
+            judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_api_key_var=judge_api_key_var,
+            embed_model=embed_model,
+            embed_base_url=embed_base_url,
+            embed_api_key_var=embed_api_key_var,
+            corpus_dataset=corpus_dataset,
+            corpus_split=corpus_split,
+            chroma_db_dir=chroma_db_dir,
+        ),
+        harness=load_harness(max_turns=max_turns),
+    )
 
 
 JUDGE_PROMPT = """Given a ground truth answer \

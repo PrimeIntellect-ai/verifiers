@@ -167,6 +167,14 @@ class EnvGroupRubric(vf.Rubric):
             state["timing"]["scoring_ms"] = scoring_ms
             state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
 
+    async def cleanup(self, state: vf.State) -> None:
+        route = _normalize_route((state.get("info") or {}).get(ENV_GROUP_INFO_KEY))
+        env_name = route[0] if route else None
+        env = self.env_map.get(env_name) if env_name is not None else None
+        if env is not None:
+            await env.rubric.cleanup(state)
+        await super().cleanup(state)
+
 
 class EnvGroup(vf.Environment):
     """

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from collections.abc import Callable, Iterable
+import json
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from openai import AsyncOpenAI
 
 from verifiers.decorators import cleanup, stop
 from verifiers.envs.experimental.channels import ChannelMap, Endpoint
+from verifiers.envs.experimental.configs import EndpointConfig, RunConfig
 from verifiers.errors import Error
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -35,42 +36,33 @@ class EndpointHarness(Harness):
 
     def __init__(
         self,
-        endpoint_port: int | None = None,
-        endpoint_url: str | None = None,
-        endpoint_secret: str | None = None,
-        api_client_type: str = "openai_chat_completions",
-        max_turns: int = -1,
-        poll_interval: float = 1.0,
+        endpoint: EndpointConfig | dict[str, object] | None = None,
+        run: RunConfig | dict[str, object] | None = None,
+        channels: ChannelMap | None = None,
         rubric: Rubric | None = None,
         system_prompt: str | None = None,
         tools: Iterable[object] | None = None,
-        parallel_model_requests: bool = True,
-        error_formatter: Callable[[Exception], str] = str,
-        stop_errors: list[type[Exception]] | None = None,
     ):
         super().__init__(
+            channels=channels,
+            run=run or RunConfig(max_turns=-1, parallel_model_requests=True),
             rubric=rubric,
             system_prompt=system_prompt,
             tools=tools,
-            max_turns=max_turns,
-            parallel_model_requests=parallel_model_requests,
-            error_formatter=error_formatter,
-            stop_errors=stop_errors,
         )
-        self.endpoint_port = endpoint_port
-        self.endpoint_url = endpoint_url
-        self.endpoint_secret = endpoint_secret
-        self.api_client_type = api_client_type
-        self.poll_interval = poll_interval
+        self.endpoint = EndpointConfig.model_validate(
+            endpoint or {"use_tunnel": self.use_tunnel_for_endpoint}
+        )
+        self.poll_interval = self.endpoint.poll_interval
 
     def channels(self, task: Task | None = None) -> ChannelMap:
         channels = dict(super().channels(task))
         channels["endpoint"] = {
-            "port": self.endpoint_port,
-            "url": self.endpoint_url,
-            "secret": self.endpoint_secret,
-            "api_client_type": self.api_client_type,
-            "use_tunnel": self.use_tunnel_for_endpoint,
+            "port": self.endpoint.port,
+            "url": self.endpoint.url,
+            "secret": self.endpoint.secret,
+            "api_client_type": self.endpoint.api_client_type,
+            "use_tunnel": self.endpoint.use_tunnel,
         }
         return channels
 
@@ -189,23 +181,14 @@ class EndpointHarness(Harness):
                 normalized.append(Tool.model_validate(raw_tool))
         return normalized
 
-    def endpoint_tool_cache_key(self, tools: object) -> tuple[str, ...] | None:
+    def endpoint_tool_cache_key(self, tools: object) -> str | None:
         if not isinstance(tools, list):
             return None
-        names: list[str] = []
-        for tool in tools:
-            if isinstance(tool, Tool):
-                names.append(tool.name)
-            elif isinstance(tool, dict):
-                tool = cast(dict[str, Any], tool)
-                function = tool.get("function")
-                if isinstance(function, dict):
-                    names.append(str(function.get("name", "")))
-                else:
-                    names.append(str(tool.get("name", "")))
-            else:
-                names.append("")
-        return tuple(sorted(names))
+        payload = [
+            tool.model_dump(exclude_none=True) if isinstance(tool, Tool) else tool
+            for tool in tools
+        ]
+        return json.dumps(payload, sort_keys=True, default=str)
 
     async def get_model_request(
         self, task: Task, state: State, resources: Resources
@@ -253,23 +236,25 @@ class EndpointHarness(Harness):
             context={"endpoint_request_id": request_id},
         )
 
-    async def get_model_response(
+    async def submit_model_request(
         self,
         prompt: Messages,
         task: Task,
         state: State,
         resources: Resources,
         tool_defs: list[Tool] | None = None,
+        extras: dict[str, object] | None = None,
         context: dict[str, object] | None = None,
     ) -> Response:
         request_id = context.get("endpoint_request_id") if context else None
         if not isinstance(request_id, str):
-            return await super().get_model_response(
+            return await super().submit_model_request(
                 prompt,
                 task,
                 state,
                 resources,
                 tool_defs=tool_defs,
+                extras=extras,
                 context=context,
             )
         from verifiers.utils.interception_utils import (
@@ -282,12 +267,13 @@ class EndpointHarness(Harness):
         response: Response | None = None
         error: BaseException | None = None
         try:
-            response = await super().get_model_response(
+            response = await super().submit_model_request(
                 prompt,
                 task,
                 state,
                 resources,
                 tool_defs=tool_defs,
+                extras=extras,
                 context=context,
             )
             return response
@@ -352,17 +338,6 @@ class EndpointHarness(Harness):
         self, state: State, resources: Resources
     ) -> None:
         await cast(Endpoint, resources.require("endpoint")).check_tunnel()
-
-    async def finalize_state(
-        self, task: Task, state: State, resources: Resources
-    ) -> State:
-        state = await super().finalize_state(task, state, resources)
-        start = state["timing"]["start_time"]
-        state["timing"]["generation_ms"] = (time.time() - start) * 1000
-        state["timing"]["total_ms"] = state["timing"]["generation_ms"]
-        state["is_completed"] = True
-        state["stop_condition"] = state.get("stop_condition") or "execute_completed"
-        return state
 
     @cleanup
     async def cleanup_endpoint(

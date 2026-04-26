@@ -32,7 +32,7 @@ def load_taskset() -> vf.Taskset:
         source=source,
         rubric=vf.Rubric(funcs=[contains_answer], weights=[1.0], parser=parser),
         tools=[
-            vf.MCPServerSpec(
+            vf.MCPTool(
                 name="documents",
                 command=sys.executable,
                 args=[str(server_path)],
@@ -50,7 +50,10 @@ def load_harness(
     ),
     max_turns: int = 4,
 ) -> vf.Harness:
-    return vf.Harness(system_prompt=system_prompt, max_turns=max_turns)
+    return vf.Harness(
+        system_prompt=system_prompt,
+        run=vf.RunConfig(max_turns=max_turns),
+    )
 
 
 def load_environment(

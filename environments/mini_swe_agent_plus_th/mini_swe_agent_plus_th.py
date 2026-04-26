@@ -42,6 +42,17 @@ ENV_VARS_R2E = (
 )
 R2E_TESTS_ARCHIVE = "/tmp/.vf_r2e_tests.tar.gz"
 FINAL_MARKER = "MINI_SWE_AGENT_FINAL_OUTPUT"
+RIPGREP_SETUP_COMMAND = (
+    "command -v rg >/dev/null 2>&1 || { "
+    "V=14.1.1; "
+    "curl -fsSL "
+    "https://github.com/BurntSushi/ripgrep/releases/download/"
+    "${V}/ripgrep-${V}-x86_64-unknown-linux-musl.tar.gz "
+    "| tar xz -C /tmp "
+    "&& install -m 755 /tmp/ripgrep-${V}-x86_64-unknown-linux-musl/rg "
+    "/usr/local/bin/rg; "
+    "} || true"
+)
 PATCH_BROKE_TESTS_EXIT_CODES = {
     2: "collection error",
     4: "usage error",
@@ -60,17 +71,131 @@ Consider the following PR description:
 
 # Task Instructions
 
+## Overview
+
 You're a software engineer interacting continuously with a computer by submitting tool calls.
 
-Make the minimal non-test source-code changes needed to fix the issue. Each assistant response must include exactly one tool call. When you are finished, call:
+You'll be helping implement necessary changes to meet requirements in the PR description.
+
+Your task is specifically to make changes to non-test files in the current directory in order to fix the issue described in the PR description in a way that is general and consistent with the codebase.
+
+IMPORTANT: This is an interactive process where you will think and issue ONE tool call, see its result, then think and issue your next tool call.
+
+For each response provide exactly ONE tool call to execute.
+
+## Important Boundaries
+
+- MODIFY: Regular source code files
+
+- DO NOT MODIFY: Tests, configuration files (pyproject.toml, setup.cfg, etc.)
+
+## Recommended Workflow
+
+1. Analyze the codebase by finding and reading relevant files
+
+2. Create a script to reproduce the issue
+
+3. Edit the source code to resolve the issue
+
+4. Verify your fix works by running your script again
+
+5. Test edge cases to ensure your fix is robust
+
+## Command Execution Rules
+
+You are operating in an environment where
+
+1. You issue a single tool call with the tool name and arguments
+
+2. The system executes that tool call in a subshell
+
+3. You see the result
+
+4. You issue your next tool call
+
+Each response should include a single tool call with the tool name and arguments.
+
+**CRITICAL REQUIREMENTS:**
+
+- Your response MUST include EXACTLY ONE tool call
+
+- If you include zero or multiple tool calls, or no tool call at all, YOUR RESPONSE WILL FAIL
+
+- Do NOT try to run multiple independent tool calls in one response
+
+- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
+
+- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files
+
+If you need to run multiple commands, either:
+
+1. Combine them in one block using && or || using your tool call
+
+
+command1 && command2 || echo "Error occurred"
+
+
+2. Wait for the first tool call to complete, see its output, then issue the next tool call in your following response.
+
+## Environment Details
+
+- You have a full Linux shell environment
+
+- Always use non-interactive flags (-y, -f) for commands
+
+- Avoid interactive tools like vi, nano, or any that require user input
+
+- If a command isn't available, you can install it
+
+## Useful Command Examples
+
+### Create a new file:
+
+
+cat <<'EOF' > newfile.py
+
+import numpy as np
+
+hello = "world"
+
+print(hello)
+
+EOF
+
+
+### View file content:
+
+
+# View specific lines with numbers
+
+nl -ba filename.py | sed -n '10,20p'
+
+
+### Any other command you want to run using your tool call
+
+
+anything
+
+
+## Submission
+
+When you've completed your changes or can't make further progress
+
+issue exactly the following command using your tool call:
 
 echo MINI_SWE_AGENT_FINAL_OUTPUT
+
+This command will submit your changes.
+
+You cannot continue working on this task after submitting.
 
 </instructions>"""
 
 SYSTEM_PROMPT = """You are a helpful assistant that can interact multiple times with tools to solve programming tasks.
 
-Your response must contain exactly ONE tool call with the tool name and arguments."""
+Your response must contain exactly ONE tool call with the tool name and arguments.
+
+Failure to follow these rules will cause your response to be rejected."""
 
 FORMAT_ERROR_MESSAGE = (
     "Please always provide exactly one tool call. Found {count} tool calls."
@@ -271,8 +396,12 @@ class MiniSweTaskset(vf.Taskset):
 
     def setup_commands(self) -> list[str]:
         if self.harness == "swebench":
-            return ["ln -s /opt/miniconda3/envs/testbed /root/.venv"]
+            return [
+                RIPGREP_SETUP_COMMAND,
+                "ln -s /opt/miniconda3/envs/testbed /root/.venv",
+            ]
         return [
+            RIPGREP_SETUP_COMMAND,
             f"ln -s {REPO_PATH}/.venv {ALT_PATH}/.venv",
             f"ln -s {REPO_PATH}/.venv/bin/python {ALT_PATH}/.local/bin/python",
             f"ln -s {REPO_PATH}/.venv/bin/python {ALT_PATH}/.local/bin/python3",
@@ -667,10 +796,12 @@ def load_harness(
     return vf.Harness(
         system_prompt=SYSTEM_PROMPT,
         tools=[bash, edit],
-        max_turns=max_turns,
-        stop_errors=[vf.SandboxError],
-        max_tool_calls_per_turn=1,
-        tool_call_limit_message=FORMAT_ERROR_MESSAGE,
+        run=vf.RunConfig(
+            max_turns=max_turns,
+            stop_errors=(vf.SandboxError,),
+            max_tool_calls_per_turn=1,
+            tool_call_limit_message=FORMAT_ERROR_MESSAGE,
+        ),
     )
 
 

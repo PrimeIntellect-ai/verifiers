@@ -194,9 +194,9 @@ class MCPEnv(vf.ToolEnv):
         # cleanup on exit
         atexit.register(
             lambda: (
-                asyncio.run_coroutine_threadsafe(self.cleanup(), self._bg_loop).result(
-                    timeout=5
-                ),
+                asyncio.run_coroutine_threadsafe(
+                    self.disconnect_servers(), self._bg_loop
+                ).result(timeout=5),
                 self._shutdown_loop(),
             )
         )
@@ -260,7 +260,7 @@ class MCPEnv(vf.ToolEnv):
                 },
             )
 
-    async def cleanup(self):
+    async def disconnect_servers(self):
         for connection in self.server_connections.values():
             await connection.disconnect()
 

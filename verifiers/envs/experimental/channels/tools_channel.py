@@ -6,18 +6,31 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent, Tool as MCPTool
+from mcp.types import TextContent, Tool as RawMCPTool
 
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import AssistantMessage, Messages, Tool
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
+from verifiers.envs.experimental.binding import BindingContext
+from verifiers.envs.experimental.toolset import (
+    CallableTool,
+    MCPTool,
+    ToolArgumentError,
+    ToolInjector,
+    Toolset,
+    default_tool_injectors,
+    is_context_binding,
+    is_zero_arg_callable,
+    load_tools_source,
+    resolve_tool_binding,
+)
 from verifiers.envs.experimental.channels.channel import (
     Channel,
     ChannelConfig,
@@ -27,80 +40,6 @@ from verifiers.envs.experimental.channels.channel import (
     ResourcePatch,
     as_list,
 )
-
-
-@dataclass(frozen=True)
-class CallableTool:
-    func: Callable[..., Any]
-    name: str | None = None
-    description: str | None = None
-    injected_args: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ToolContext:
-    resources: object
-    task: object
-    state: object
-
-
-@dataclass(frozen=True)
-class ToolInjector:
-    name: str
-    resolve: Callable[[ToolContext], object]
-
-
-def inject_resources(context: ToolContext) -> object:
-    return context.resources
-
-
-def inject_state(context: ToolContext) -> object:
-    return context.state
-
-
-def inject_task(context: ToolContext) -> object:
-    return context.task
-
-
-def inject_client(context: ToolContext) -> object:
-    return getattr(context.resources, "client")
-
-
-def inject_model(context: ToolContext) -> object:
-    return getattr(context.resources, "model")
-
-
-def inject_sampling_args(context: ToolContext) -> object:
-    return getattr(context.resources, "sampling_args")
-
-
-def inject_tools(context: ToolContext) -> object:
-    return getattr(context.resources, "tools")
-
-
-@dataclass(frozen=True)
-class MCPServerSpec:
-    name: str
-    command: str
-    args: list[str] = field(default_factory=list)
-    env: dict[str, str] | None = None
-    description: str = ""
-
-
-def default_tool_injectors() -> dict[str, ToolInjector]:
-    return {
-        "resources": ToolInjector("resources", inject_resources),
-        "state": ToolInjector("state", inject_state),
-        "task": ToolInjector("task", inject_task),
-        "client": ToolInjector("client", inject_client),
-        "model": ToolInjector("model", inject_model),
-        "sampling_args": ToolInjector("sampling_args", inject_sampling_args),
-        "tools": ToolInjector("tools", inject_tools),
-    }
-
-
-class ToolArgumentError(ValueError):
-    pass
 
 
 class ToolMonitorRubric(Rubric):
@@ -134,17 +73,17 @@ class ToolMonitorRubric(Rubric):
 
 
 class MCPServerConnection:
-    def __init__(self, spec: MCPServerSpec, logger: logging.Logger):
+    def __init__(self, spec: MCPTool, logger: logging.Logger):
         self.spec = spec
         self.logger = logger
         self.session: ClientSession | None = None
-        self.tools: dict[str, MCPTool] = {}
+        self.tools: dict[str, RawMCPTool] = {}
         self._connection_task: asyncio.Task | None = None
         self._ready = asyncio.Event()
         self._error: Exception | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
 
-    async def connect(self) -> dict[str, MCPTool]:
+    async def connect(self) -> dict[str, RawMCPTool]:
         self.loop = asyncio.get_running_loop()
         self._connection_task = asyncio.create_task(self._run_connection())
         await self._ready.wait()
@@ -214,7 +153,7 @@ class MCPToolWrapper:
         self,
         *,
         server_name: str,
-        tool: MCPTool,
+        tool: RawMCPTool,
         connection: MCPServerConnection,
     ):
         self.server_name = server_name
@@ -234,7 +173,7 @@ class MCPToolWrapper:
 
 
 class MCPToolRuntime:
-    def __init__(self, specs: list[MCPServerSpec], logger: logging.Logger):
+    def __init__(self, specs: list[MCPTool], logger: logging.Logger):
         self.specs = specs
         self.logger = logger
         self.connections: dict[str, MCPServerConnection] = {}
@@ -323,16 +262,22 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._tools: dict[str, Any] = {}
         self._injectors = default_tool_injectors()
-        self._mcp_specs: list[MCPServerSpec] = []
+        self._bindings: dict[str, object] = {}
+        self._binding_cache: dict[str, object] = {}
+        self._channel_contributions: dict[str, tuple[ChannelConfig, ...]] = {}
+        self._mcp_specs: list[MCPTool] = []
         self._mcp_runtime: MCPToolRuntime | None = None
         for tool in tools or []:
             self.add(tool)
 
     def add(self, tool: Any) -> None:
+        if isinstance(tool, Toolset):
+            self.add_toolset(tool)
+            return
         if isinstance(tool, ToolInjector):
             self.add_injector(tool)
             return
-        if isinstance(tool, MCPServerSpec):
+        if isinstance(tool, MCPTool):
             self._mcp_specs.append(tool)
             return
         name = self._tool_name(tool)
@@ -340,13 +285,65 @@ class ToolRegistry(Mapping[str, ToolHandle]):
             raise ValueError(f"Duplicate tool name: {name}")
         self._tools[name] = self._normalize_tool(tool)
 
-    def extend(self, tools: Iterable[Any]) -> None:
+    def add_toolset(self, toolset: Toolset) -> None:
+        self.add_channel_contributions(toolset.channels)
+        for name, value in toolset.bindings.items():
+            self.add_binding(name, value)
+        for tool in toolset.tools:
+            self.add(tool)
+
+    def add_channel_contributions(self, channels: Mapping[str, object]) -> None:
+        for name, config in channels.items():
+            if name == "tools":
+                raise ValueError("Toolsets cannot contribute to the tools channel.")
+            self._channel_contributions[name] = (
+                *self._channel_contributions.get(name, ()),
+                config,
+            )
+
+    def add_binding(self, name: str, value: object) -> None:
+        if name in self._bindings:
+            existing = self._bindings[name]
+            if existing != value:
+                raise ValueError(f"Conflicting tool binding: {name}")
+            return
+        self._bindings[name] = value
+        self.add_injector(
+            ToolInjector(
+                name,
+                lambda context, name=name: self.resolve_binding(name, context),
+            )
+        )
+
+    def resolve_binding(self, name: str, context: BindingContext) -> object:
+        value = self._bindings[name]
+        if is_context_binding(value):
+            return resolve_tool_binding(name, value, context)
+        if name in self._binding_cache:
+            return self._binding_cache[name]
+        if is_zero_arg_callable(value):
+            value = cast(Callable[[], object], value)()
+        self._binding_cache[name] = value
+        return value
+
+    def extend(self, tools: object) -> None:
+        tools = load_tools_source(tools)
         if isinstance(tools, ToolRegistry):
             for tool in tools._tools.values():
                 self.add(tool)
             self._mcp_specs.extend(tools._mcp_specs)
+            for name, value in tools._bindings.items():
+                self.add_binding(name, value)
             for injector in tools._injectors.values():
                 self.add_injector(injector)
+            for name, configs in tools._channel_contributions.items():
+                self._channel_contributions[name] = (
+                    *self._channel_contributions.get(name, ()),
+                    *configs,
+                )
+            return
+        if isinstance(tools, Toolset):
+            self.add_toolset(tools)
             return
         for tool in tools:
             self.add(tool)
@@ -361,6 +358,9 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         registry = ToolRegistry()
         registry._tools = dict(self._tools)
         registry._injectors = dict(self._injectors)
+        registry._bindings = dict(self._bindings)
+        registry._binding_cache = dict(self._binding_cache)
+        registry._channel_contributions = dict(self._channel_contributions)
         registry.extend(tools)
         return registry
 
@@ -418,7 +418,9 @@ class ToolRegistry(Mapping[str, ToolHandle]):
             await self._mcp_runtime.teardown()
 
     def channel_contributions(self) -> dict[str, tuple[ChannelConfig, ...]]:
-        contributions: dict[str, tuple[ChannelConfig, ...]] = {}
+        contributions: dict[str, tuple[ChannelConfig, ...]] = dict(
+            self._channel_contributions
+        )
         for tool in self._tools.values():
             channels_fn = getattr(tool, "channels", None)
             if not callable(channels_fn):
@@ -541,7 +543,7 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         signature = inspect.signature(func)
         params = set(signature.parameters)
         hidden = {*self._injectors, *extra_injected}
-        context = ToolContext(resources=resources, task=task, state=state)
+        context = BindingContext(resources=resources, task=task, state=state)
         for name in params & set(self._injectors):
             if name in call_args:
                 continue
@@ -619,14 +621,26 @@ def resolve_tools(
 ) -> ResourcePatch:
     registry = ToolRegistry()
     for config in configs:
-        if isinstance(config, Mapping) and ("tools" in config or "injectors" in config):
+        if isinstance(config, Mapping) and (
+            "tools" in config
+            or "bindings" in config
+            or "injectors" in config
+            or "channels" in config
+        ):
             tool_config = cast(Mapping[str, object], config)
-            registry.extend(as_list(tool_config.get("tools")))
+            channels = tool_config.get("channels")
+            if isinstance(channels, Mapping):
+                registry.add_channel_contributions(cast(Mapping[str, object], channels))
+            for name, value in cast(
+                Mapping[str, object], tool_config.get("bindings") or {}
+            ).items():
+                registry.add_binding(name, value)
+            registry.extend(tool_config.get("tools"))
             registry.extend(as_list(tool_config.get("injectors")))
         elif isinstance(config, ToolRegistry):
             registry.extend(config)
         else:
-            registry.extend(as_list(config))
+            registry.extend(config)
     rubric_contributions: tuple[object, ...] = ()
     tool_names = registry.names()
     if tool_names:

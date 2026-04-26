@@ -105,15 +105,30 @@ The core symbols are exported through `verifiers`:
 - `vf.Taskset`
 - `vf.Harness`
 - `vf.Resources`
+- `vf.Binding`
+- `vf.BindingContext`
 - `vf.Channel`
 - `vf.ChannelConfig`
 - `vf.ChannelContext`
 - `vf.ChannelMap`
+- `vf.RunConfig`
+- `vf.EndpointConfig`
+- `vf.CliConfig`
+- `vf.CliPaths`
+- `vf.CliMetrics`
+- `vf.SandboxConfig`
+- `vf.SandboxSetup`
+- `vf.SandboxRuntime`
+- `vf.SandboxScoring`
 - `vf.CallableTool`
 - `vf.ToolInjector`
 - `vf.ToolHandle`
 - `vf.ToolRegistry`
-- `vf.MCPServerSpec`
+- `vf.Toolset`
+- `vf.StateBinding`
+- `vf.TaskBinding`
+- `vf.ResourceBinding`
+- `vf.MCPTool`
 - `vf.SandboxSpec`
 - `vf.SandboxSeed`
 - `vf.SandboxTimeouts`
@@ -130,10 +145,14 @@ not top-level `vf.*` exports.
 taskset = vf.Taskset(
     source=lambda: load_dataset("my/dataset", split="train"),
     eval_source=lambda: load_dataset("my/dataset", split="test"),
-    rubric=my_rubric,
-    tools=[search, read],
+    rubric=lambda: load_rubric(...),
+    tools=lambda: load_toolset(...),
 )
 ```
+
+`source`, `eval_source`, `rubric`, and `tools` all support lazy loaders. Dataset
+sources cache after first load; rubric and tool loaders resolve through channel
+resolution inside the env worker.
 
 `source` and `eval_source` can be:
 
@@ -141,6 +160,15 @@ taskset = vf.Taskset(
 - already materialized dataset-like objects
 - iterable row mappings
 - `None`
+
+`tools` can be:
+
+- a `Toolset`
+- a list of tool objects/functions
+- a zero-arg callable returning either
+
+Bare single-tool callables are not accepted as the `tools` argument. Wrap one
+tool in a list.
 
 `Taskset.get_dataset()` and `Taskset.get_eval_dataset()` cache internally after
 first load. Lazy loading is explicit and direct through `source` /
@@ -223,6 +251,20 @@ resources.runtime
 resources.sandbox_runtime
 resources.sandbox_request
 ```
+
+`resources.scoring` controls whether scoring happens inside `Harness.run` or is
+left to the environment/runner:
+
+- `"run"` scores at the end of `Harness.run` after harness cleanup. This mode
+  rejects group reward functions.
+- `"group"` defers scoring to `Environment.run_rollout` /
+  `Environment.run_group`. `Env` uses this mode by default because it has a
+  taskset.
+- `"none"` skips scoring.
+
+`Resources(harness=...)` defaults to `"run"`. `Resources(taskset, harness)`
+defaults to `"group"`. Harness cleanup still always runs at the end of
+`Harness.run`; rubric cleanup runs after rubric scoring.
 
 `resources.get(...)` and `resources.require(...)` are lower-level helpers for
 generic code whose resource name is dynamic. The channel definition is the
@@ -387,11 +429,13 @@ Unknown channel names hard-fail unless a taskset or harness registers a custom
 
 `tools`
 
-- Accepts Python callables, `CallableTool`, schema-only `Tool` definitions,
-  `ToolRegistry`, `ToolInjector`, and `MCPServerSpec`.
+- Accepts `Toolset`, lists of Python callables, `CallableTool`, schema-only
+  `Tool` definitions, `ToolRegistry`, `ToolInjector`, and `MCPTool`.
 - Resolves to `ToolRegistry`.
 - Registers registry teardown through lifecycle hooks.
+- Recursively flattens nested `Toolset` objects.
 - Extends `rubric` with automatic tool-monitor metrics when tools exist.
+- Extends lifecycle/resource channels with tool and toolset contributions.
 
 `rubric`
 
@@ -451,11 +495,10 @@ Important hooks:
 - `get_prompt_messages(task, state, resources)`
 - `get_env_messages(task, state, resources)`
 - `get_model_request(task, state, resources)`
-- `get_model_response(prompt, task, state, resources, ...)`
-- `normalize_model_response(response, task, state, resources)`
 - `add_model_response(prompt, response, task, state, resources, ...)`
 - `submit_model_request(prompt, task, state, resources, ...)`
-- `finalize_state(task, state, resources)`
+- `render_timing(task, state, resources)`
+- `render_completion(task, state, resources)`
 
 The loop schedules model requests through a shared request path. Default
 turn-based harness behavior waits for a request before preparing the next turn.
@@ -469,7 +512,20 @@ The default interaction pattern is:
 3. Append a `TrajectoryStep`.
 4. If the assistant called tools, dispatch through `resources.tools`.
 5. If there are no tool calls and a `user` resource exists, request a user turn.
-6. If there are no tool calls and no user turn, mark the state completed.
+6. If there are no tool calls and no user turn, stop via the default stop
+   condition.
+7. On exit, run harness cleanup. The base `render_state` cleanup records timing
+   and completion before lower-priority cleanup handlers run.
+8. If `resources.scoring == "run"`, run single-rollout scoring and rubric
+   cleanup.
+
+Completion is still owned by stop handlers. `state["is_completed"]` and
+`state["stop_condition"]` are framework-rendered fields written by
+`is_completed`. Tools and users that want to end the rollout set
+`state["done"] = True`; the built-in `done` stop handler then exits through the
+normal decorator path and records `stop_condition = "done"`. Finish-tool
+patterns should write their domain output, such as a final answer, and set
+`done` rather than writing `is_completed` directly.
 
 Lifecycle decorators remain central:
 
@@ -483,18 +539,42 @@ channels without subclassing.
 There is no startup decorator. Rollout startup belongs in `setup_state`; global
 runtime setup belongs in channel/resource resolution.
 
+Lifecycle timing is localized to the owner:
+
+- Harness cleanup runs at the end of `Harness.run`. It finalizes serializable
+  rollout state and releases rollout-local resources that are unrelated to
+  scoring before the serialization boundary. The built-in `render_state`
+  cleanup records timing and completion in this phase.
+- Rubric cleanup is scoring cleanup. It deletes or finalizes resources that
+  scoring needed, and runs after `score_rollout` or `score_group`.
+- `Environment.cleanup` follows the same rollout-finalization semantics for
+  `MultiTurnEnv`-style stacks. In taskset/harness `Env`, this layer is mostly
+  a compatibility surface because `Harness.run` already owns rollout cleanup.
+- Channel `teardown` is environment-worker teardown. In `Env`, environment
+  teardown calls `rubric.teardown()` first, then `resources.teardown()`, which
+  dispatches channel teardown handlers.
+
+Injected cleanup handlers target either harness or rubric cleanup through
+channel config. Shorthand targets harness cleanup:
+
+```python
+channels={"cleanup": cleanup_state}
+channels={"cleanup": {"harness": cleanup_state, "rubric": cleanup_after_score}}
+```
+
 ## Tools
 
 Tools are resolved by the `tools` channel into a `ToolRegistry`.
 
 Supported forms:
 
+- `Toolset`
 - plain Python callables
 - `CallableTool`
 - `Tool` schema definitions
 - `ToolRegistry`
 - `ToolInjector`
-- `MCPServerSpec`
+- `MCPTool`
 
 Harnesses see light handles:
 
@@ -515,8 +595,76 @@ The registry owns:
 - tool channel contributions
 - teardown
 
-Hidden tool arguments are injected through `ToolInjector`, not hard-coded call
-branches. Built-in injectors cover:
+`Toolset` is the canonical way to package related tools with hidden bindings and
+setup requirements:
+
+```python
+def load_toolset():
+    wiki = {
+        "search_index": lambda: ...,
+        "read_page": lambda page_id: ...,
+    }
+
+    async def search_pages(query: str, wiki):
+        ...
+
+    @vf.cleanup(priority=50)
+    async def cleanup_wiki(task, state, resources):
+        ...
+
+    return vf.Toolset(
+        bindings={"wiki": wiki},
+        channels={"cleanup": {"harness": cleanup_wiki}},
+        name="wiki_search",
+        tools=[search_pages],
+    )
+```
+
+Toolsets can contain other toolsets. The tools channel flattens them into one
+`ToolRegistry`, merges bindings/injectors, and carries toolset-level channel
+contributions forward. This is the grouped tool pattern; there is no separate
+`ToolsetGroup`.
+
+The `wiki_search_th` reference uses this pattern for Chroma-backed retrieval.
+The toolset lazily creates a `chromadb.PersistentClient` binding and contributes
+decorated teardown that releases the client reference when the environment
+worker exits. Decorators are optional for channel-passed lifecycle functions,
+but priority metadata is honored by the same handler ordering path.
+
+Python-facing toolset APIs stay object-native: callers pass `Toolset`,
+callables, bindings, and channel contributions directly. TOML-facing toolset
+config should name a loader and provide plain args, then load into a normal
+`Toolset` before channel resolution.
+
+Bindings are plain `dict[str, object]` values. If a binding value is a zero-arg
+callable, it is evaluated lazily and cached by the resolved tool registry. A
+tool parameter whose name matches a binding is hidden from the model-visible
+schema and injected at call time.
+
+Bindings can also resolve values from call context:
+
+```python
+vf.Toolset(
+    bindings={
+        "sandbox_id": vf.StateBinding("sandbox_id"),
+        "answer": vf.TaskBinding("answer"),
+        "allow_web": vf.ResourceBinding("allow_web"),
+        "tenant": vf.TaskBinding(lambda task: task["tenant"]),
+        "api_key": vf.StateBinding(lambda state: state["credentials"]["api_key"]),
+        "custom": vf.Binding(lambda ctx: ctx.state["custom"]),
+    },
+    tools=[run_command],
+)
+```
+
+Contextual bindings are resolved each tool call. `StateBinding`, `TaskBinding`,
+and `ResourceBinding` accept either a direct key/name or a callable over their
+scope for nested access. String task bindings read a direct task key or
+attribute; nested task conventions should use a callable. If the referenced
+state, task, or resource key is missing, tool execution fails.
+
+Hidden tool arguments are injected through `Toolset` bindings or `ToolInjector`,
+not hard-coded call branches. Built-in injectors cover:
 
 - `resources`
 - `state`
@@ -565,7 +713,8 @@ Sandbox tool modes:
 
 Created sandbox IDs are serializable state fields. The sandbox runtime client
 stays in resources. Tool-owned sandboxes are cleaned up through lifecycle
-channels after taskset cleanup/scoring handlers run.
+channels. If scoring does not need them, cleanup targets the harness phase; if
+scoring does need them, cleanup targets the rubric phase.
 
 ## Endpoint Harness
 
@@ -592,9 +741,19 @@ async def execute(self, task, state, resources, client) -> object:
 This is where DSPy, LangChain, direct OpenAI-compatible calls, or Agents SDK
 logic belongs. The first pass supports `openai_chat_completions`.
 
+Endpoint configuration is grouped:
+
+```python
+EndpointHarness(
+    endpoint=vf.EndpointConfig(port=..., url=..., secret=...),
+    run=vf.RunConfig(max_turns=..., parallel_model_requests=True),
+    channels={"system_prompt": "..."},
+)
+```
+
 ## CLI Harness
 
-`CliHarness` builds on `EndpointHarness` for sandboxed CLI agents.
+`CliHarness` builds on `EndpointHarness` for sandboxed CLI processes.
 
 It:
 
@@ -606,14 +765,49 @@ It:
 - wires OpenAI-compatible env vars into the sandbox
 - runs the CLI command as a background job
 - captures stdout/stderr/logs/metrics into serializable state
-- keeps the sandbox alive for scoring when requested
-- cleans up sandbox resources through lifecycle hooks
+- keeps the sandbox alive when rubric scoring needs it
+- cleans up non-scoring sandbox resources during harness cleanup and
+  scoring-retained sandbox resources during rubric cleanup
 
-`OpenCode` is the reference concrete CLI harness for coding agents.
-`RLMHarness` is the concrete CLI harness for the RLM agent. It owns the
+`OpenCode` is the reference concrete CLI harness for coding workflows.
+`RLMHarness` is the concrete CLI harness for RLM. It owns the
 host-side RLM checkout cache, RLM install command, sandbox run command, RLM
 environment variables, disabled-git shim, tool metric names, session metrics
 collection, and `/task/rlm-skills` upload mapping.
+
+CLI configuration is intentionally grouped so the top-level constructor does
+not grow with every sandbox/runtime knob:
+
+```python
+CliHarness(
+    cli=vf.CliConfig(
+        command="agent run ...",
+        workdir="/workspace",
+        paths=vf.CliPaths(
+            instruction="/task/instruction.md",
+            system_prompt="/task/system_prompt.md",
+            log="/logs/cli.log",
+        ),
+        metrics=vf.CliMetrics(path="{workdir}/metrics.json"),
+    ),
+    sandbox=vf.SandboxConfig(
+        spec=vf.SandboxSpec(image="python:3.11-slim"),
+        setup=vf.SandboxSetup(
+            uploads={"checkout": lambda: "/tmp/checkout"},
+            upload_mapping={"checkout": "/workspace/checkout"},
+            install_command="pip install -e /workspace/checkout",
+        ),
+        runtime=vf.SandboxRuntime(client_max_workers=64),
+        scoring=vf.SandboxScoring(retain=True),
+    ),
+    endpoint=vf.EndpointConfig(),
+    run=vf.RunConfig(max_turns=-1, parallel_model_requests=True),
+)
+```
+
+These config objects are pydantic models. Python callers can pass model
+instances or plain nested dicts. TOML-facing paths should use plain values and
+loader references rather than embedding live Python callables directly.
 
 ## Harbor Taskset
 
@@ -649,13 +843,14 @@ OpenCode Harbor flows:
 
 ## Current Reference TH Environments
 
-Eight reference migrations exist:
+Nine reference migrations exist:
 
 - `environments/reverse_text_th`
 - `environments/wiki_search_th`
 - `environments/alphabet_sort_th`
 - `environments/mcp_search_th`
 - `environments/hello_endpoint_th`
+- `environments/math_python_th`
 - `environments/opencode_harbor_th`
 - `environments/deepdive_th`
 - `environments/mini_swe_agent_plus_th`
@@ -667,6 +862,7 @@ They cover:
 - multi-turn user-channel interaction + base harness
 - MCP server discovery/calls through the tools channel
 - endpoint-only rollout logic through `EndpointHarness`
+- sandbox-backed Python tools and cleanup-time state rendering
 - Harbor structured taskset + OpenCode CLI harness
 - web-research tools, hidden state injection, and judge rubric composition
 - sandbox-lifetime tools, per-task sandbox images, and cleanup-time scoring
@@ -704,7 +900,8 @@ this refactor:
 
 `math_python_th` uses the same tool pattern with `SandboxPythonTool`, showing
 how a normal `Harness` can gain sandbox-lifetime Python execution without
-becoming a CLI harness.
+becoming a CLI harness. Its toolset contributes cleanup that records Python REPL
+state before the sandbox tool deletes its owned sandbox.
 
 `rlm_swe` is the primary concrete reference for `RLMHarness`:
 
@@ -824,11 +1021,20 @@ Configuration belongs to tasksets, harnesses, and channels.
 - Harness constructor arguments should line up with channel-shaped config where
   possible. For example, sandbox runtime knobs should feed the `sandbox`
   channel; tools should feed the `tools` channel; endpoint settings should feed
-  the `endpoint` channel. Ordinary behavioral knobs such as `max_turns` remain
-  harness fields.
+  the `endpoint` channel. Ordinary behavioral knobs such as `max_turns` live
+  under `RunConfig`.
 - Logging is a candidate channel once multiple harnesses need shared log
   routing, log collection, or runtime log sinks. Today examples use normal
   Python loggers or harness-specific log paths.
+
+Typed config models are the TOML bridge, not a replacement for Python objects.
+
+- Runtime Python APIs can pass callables, `Toolset`, `Rubric`, and channel
+  objects directly.
+- TOML-friendly configs should refer to named loaders plus plain args, for
+  example a future `ToolsetConfig(loader="pkg.env:load_toolset", args={...})`.
+- Resolution is responsible for turning loader refs into objects before channel
+  resolution.
 
 Channels are config-shaped and functional.
 
@@ -880,7 +1086,7 @@ New shape:
 ```python
 vf.Env(
     taskset=vf.Taskset(source=lambda: dataset, tools=[...], rubric=rubric),
-    harness=vf.Harness(max_turns=...),
+    harness=vf.Harness(run=vf.RunConfig(max_turns=...)),
 )
 ```
 
@@ -937,8 +1143,8 @@ Migration mapping:
 - task-specific env vars → sandbox seed env vars
 - harness install/run command → `CliHarness` / concrete harness constructor
 - harness system prompt → harness `system_prompt`
-- harness metrics path → `CliHarness(metrics_path=...)`
-- upload mapping → `CliHarness(upload_mapping=...)`
+- harness metrics path → `CliConfig(metrics=CliMetrics(...))`
+- upload mapping → `SandboxConfig(setup=SandboxSetup(upload_mapping=...))`
 - scoring rubric → taskset `rubric` / `rubric` channel
 
 `ComposableEnv` is a correctness reference for sandbox upload, install,
@@ -1022,6 +1228,7 @@ Recently exercised:
 
 - targeted `ruff`
 - targeted `ty`
+- full pre-push hook pass: `ruff`, `ruff format`, AGENTS sync, and `ty`
 - basic `Env(Taskset, Harness)` rollout with fake client
 - hidden tool injection smoke
 - unknown channel hard-fail smoke
@@ -1033,6 +1240,10 @@ Recently exercised:
 - targeted `ruff`, `ty`, and syntax checks for `deepdive_th` and
   `mini_swe_agent_plus_th`
 - load-environment smoke checks for `deepdive_th` and `mini_swe_agent_plus_th`
+- load-environment smoke checks for `wiki_search_th`, `math_python_th`,
+  `mcp_search_th`, and `opencode_harbor_th`
+- focused tests for decorator ordering, environment stop rendering, and
+  OpenCode Harbor loading
 
 Still needed:
 
@@ -1049,6 +1260,105 @@ Still needed:
 - focused unit tests for `ToolRegistry` injection/schema hiding
 - regression checks for existing `MultiTurnEnv`, `ToolEnv`,
   `StatefulToolEnv`, `SandboxEnv`, and `EnvGroup`
+
+## PR Review Follow-Ups
+
+Standalone harness resources:
+
+- `Env` has a clean golden path: `Resources(taskset, harness)` then
+  `harness.run(task, resources)`.
+- Standalone harness use is not settled. The intended shape is still that a
+  harness can be tested independently with resolved resources, client/model,
+  and scoring mode without constructing a taskset or env.
+- The next hardening pass should decide whether this is
+  `Resources(harness=..., client=..., model=...)`, a harness helper, or a small
+  runner utility. Avoid adding extra `run(...)` arguments.
+
+Config loader references:
+
+- Pydantic config models now group harness/runtime settings and provide a TOML
+  bridge for plain values.
+- Loader-reference config is still conceptual. A future `ToolsetConfig` should
+  name a loader plus plain args, then materialize a normal `Toolset` before
+  channel resolution.
+- The same pattern may apply to rubric, taskset, and harness configs, but
+  Python object APIs should continue to accept live callables and objects.
+
+Tool transport resolution:
+
+- Callable tools, `CallableTool`, schema-only tools, `MCPTool`, injectors, and
+  `Toolset` groups all resolve through the tools channel.
+- Automatic transport conversion is not done yet. The main open case is a
+  callable tool that should be presented to a CLI or sandboxed process through
+  MCP, while preserving hidden args, sandbox routing, and cleanup behavior.
+- Practical boundaries to define: shared vs new sandbox use, task-scoped MCP
+  servers, auth/secrets, and which conversions are framework-owned versus
+  harness-owned.
+
+Tools channel density:
+
+- `tools_channel.py` is the largest and most complex new file.
+- It owns registry behavior, MCP runtime, handles, schema filtering, hidden
+  injection, monitor rubric contribution, and toolset channel propagation.
+- This is acceptable for the first pass because it keeps one golden path, but
+  it is the clearest candidate for a careful split after tests lock behavior.
+
+Lifecycle and scoring cleanup:
+
+- Harness cleanup, rubric cleanup, and teardown now have distinct timing.
+- The important behavior to harden is cleanup target selection:
+  harness cleanup prepares serializable state after `Harness.run`; rubric
+  cleanup runs after scoring; teardown is process lifetime.
+- Add tests for cleanup ordering, cleanup functions that ask for
+  `task/state/resources` by name, and sandbox deletion timing in both
+  `resources.scoring == "run"` and `"group"` modes.
+
+Sandbox and CLI parity:
+
+- `CliHarness` now uses grouped config, but it still maps config values back
+  into many legacy-shaped attributes.
+- Sandbox setup is split across the sandbox channel, `CliHarness`, and
+  sandbox-backed tools.
+- The next consolidation point is deciding which pieces of upload/setup/retain
+  behavior belong entirely to the sandbox channel versus concrete CLI
+  harnesses.
+
+Parallel request semantics:
+
+- The shared harness request path supports multiple in-flight model requests,
+  and endpoint harnesses forward intercepted requests into that path.
+- More RLM-style coverage is needed for sub-agent fanout, trajectory inclusion
+  policy, max-turn accounting, request cancellation, and metric propagation
+  across nested harness workflows.
+
+Task/state boundary:
+
+- The desired direction is that immutable row data lives on `Task` and mutable
+  rollout progress lives on `State`.
+- Current states still carry compatibility fields such as prompt/input/timing
+  and serialized task snapshots.
+- Centralize task-derived score/output views before deleting those state
+  copies.
+
+Verification gaps:
+
+- The PR has static/type/format coverage and targeted smoke tests, but still
+  needs real `prime eval run` coverage across all `*_th` examples.
+- Sandbox-heavy examples need more attention: `mini_swe_agent_plus_th`,
+  `opencode_harbor_th`, and RLM-style harness flows.
+- Existing stacks need regression coverage so `MultiTurnEnv`, `ToolEnv`,
+  `StatefulToolEnv`, `SandboxEnv`, `CliAgentEnv`, `ComposableEnv`, and
+  `EnvGroup` remain valid migration sources.
+
+Package boundary:
+
+- Core primitives that should stay in `verifiers` are now under experimental
+  root and channels/resources.
+- Package-shaped tasksets and harnesses live under
+  `experimental/modules/...`.
+- Before extraction, confirm names and exports for `Taskset`, `Harness`,
+  config models, `Toolset`, and channel primitives so eventual top-level
+  packages do not collide with core framework modules.
 
 ## Open Questions And TODOs
 

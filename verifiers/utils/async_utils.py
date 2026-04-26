@@ -38,6 +38,14 @@ async def maybe_await(func: Callable, *args, **kwargs):
     return result
 
 
+async def maybe_call_with_named_args(func: Callable, **objects):
+    sig = inspect.signature(func)
+    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+        return await maybe_await(func, **objects)
+    allowed = {key: value for key, value in objects.items() if key in sig.parameters}
+    return await maybe_await(func, **allowed)
+
+
 class NullContext:
     def __enter__(self):
         return None

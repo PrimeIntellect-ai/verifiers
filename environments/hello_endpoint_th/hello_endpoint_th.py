@@ -54,7 +54,10 @@ def load_harness(
     system_prompt: str | None = "You are a precise endpoint-backed assistant.",
     max_turns: int = 4,
 ) -> vf.Harness:
-    return HelloEndpointHarness(system_prompt=system_prompt, max_turns=max_turns)
+    return HelloEndpointHarness(
+        system_prompt=system_prompt,
+        run=vf.RunConfig(max_turns=max_turns),
+    )
 
 
 def load_environment(

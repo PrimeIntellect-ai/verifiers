@@ -24,76 +24,82 @@ def canonicalize_rubric_config(
     config: ChannelConfig,
 ) -> dict[str, list[dict[str, Any]]]:
     if config is None:
-        return {"rewards": [], "metrics": [], "rubrics": []}
+        return empty_rubric_config()
     if isinstance(config, str) or is_rubric_object(config):
-        return {"rewards": [], "metrics": [], "rubrics": [rubric_entry(config)]}
+        canonical = empty_rubric_config()
+        canonical["rubrics"] = [rubric_entry(config)]
+        return canonical
     if callable(config):
-        return {"rewards": [function_entry(config, 1.0)], "metrics": [], "rubrics": []}
+        canonical = empty_rubric_config()
+        canonical["rewards"] = [function_entry(config, 1.0)]
+        return canonical
     if isinstance(config, Sequence) and not isinstance(config, str | bytes):
         return canonicalize_top_level_sequence(config)
     if isinstance(config, Mapping):
         config = cast(Mapping[str, Any], config)
         if "fn" in config:
-            return {
-                "rewards": [function_entry_from_mapping(config, 1.0)],
-                "metrics": [],
-                "rubrics": [],
-            }
+            canonical = empty_rubric_config()
+            canonical["rewards"] = [function_entry_from_mapping(config, 1.0)]
+            return canonical
         if "rubric" in config:
-            return {
-                "rewards": [],
-                "metrics": [],
-                "rubrics": [rubric_entry_from_mapping(config)],
-            }
-        return {
+            canonical = empty_rubric_config()
+            canonical["rubrics"] = [rubric_entry_from_mapping(config)]
+            return canonical
+        canonical = {
             "rewards": canonicalize_entry_list(config.get("rewards", []), "fn", 1.0),
             "metrics": canonicalize_entry_list(config.get("metrics", []), "fn", 0.0),
             "rubrics": canonicalize_entry_list(
                 config.get("rubrics", []), "rubric", None
             ),
+            "cleanup": cleanup_entries(config.get("cleanup", [])),
         }
+        return canonical
     raise TypeError(f"Unsupported rubric channel config: {config!r}")
+
+
+def empty_rubric_config() -> dict[str, list[dict[str, Any]]]:
+    return {"rewards": [], "metrics": [], "rubrics": [], "cleanup": []}
 
 
 def canonicalize_top_level_sequence(
     config: Sequence[object],
 ) -> dict[str, list[dict[str, Any]]]:
     if not config:
-        return {"rewards": [], "metrics": [], "rubrics": []}
+        return empty_rubric_config()
     if all(isinstance(item, str) for item in config):
-        return {
-            "rewards": [function_entry(item, 1.0) for item in config],
-            "metrics": [],
-            "rubrics": [],
-        }
+        canonical = empty_rubric_config()
+        canonical["rewards"] = [function_entry(item, 1.0) for item in config]
+        return canonical
     if all(is_rubric_object(item) for item in config):
-        return {
-            "rewards": [],
-            "metrics": [],
-            "rubrics": [rubric_entry(item) for item in config],
-        }
+        canonical = empty_rubric_config()
+        canonical["rubrics"] = [rubric_entry(item) for item in config]
+        return canonical
     if all(isinstance(item, Mapping) and "fn" in item for item in config):
-        return {
-            "rewards": [
-                function_entry_from_mapping(cast(Mapping[str, Any], item), 1.0)
-                for item in config
-            ],
-            "metrics": [],
-            "rubrics": [],
-        }
+        canonical = empty_rubric_config()
+        canonical["rewards"] = [
+            function_entry_from_mapping(cast(Mapping[str, Any], item), 1.0)
+            for item in config
+        ]
+        return canonical
     if all(isinstance(item, Mapping) and "rubric" in item for item in config):
-        return {
-            "rewards": [],
-            "metrics": [],
-            "rubrics": [
-                rubric_entry_from_mapping(cast(Mapping[str, Any], item))
-                for item in config
-            ],
-        }
-    raise TypeError(
-        "Top-level rubric lists must contain only strings, only reward-function "
-        "dicts, or only rubric-object dicts."
+        canonical = empty_rubric_config()
+        canonical["rubrics"] = [
+            rubric_entry_from_mapping(cast(Mapping[str, Any], item)) for item in config
+        ]
+        return canonical
+    return merge_canonical_rubric_configs(
+        [canonicalize_rubric_config(item) for item in config]
     )
+
+
+def merge_canonical_rubric_configs(
+    configs: Sequence[dict[str, list[dict[str, Any]]]],
+) -> dict[str, list[dict[str, Any]]]:
+    canonical = empty_rubric_config()
+    for config in configs:
+        for key in canonical:
+            canonical[key].extend(config[key])
+    return canonical
 
 
 def canonicalize_entry_list(
@@ -155,6 +161,15 @@ def rubric_entry_from_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
     return dict(raw)
 
 
+def cleanup_entries(raw_entries: object) -> list[dict[str, Any]]:
+    if raw_entries is None:
+        return []
+    entries = raw_entries if isinstance(raw_entries, list | tuple) else [raw_entries]
+    if all(isinstance(entry, Mapping) and "cleanup" in entry for entry in entries):
+        return [dict(cast(Mapping[str, Any], entry)) for entry in entries]
+    return [{"cleanup": entry} for entry in entries]
+
+
 def resolve_rubric_channel(
     configs: list[ChannelConfig], context: ChannelContext
 ) -> ResourcePatch:
@@ -171,6 +186,9 @@ def build_rubric(configs: list[ChannelConfig], context: ChannelContext) -> Rubri
     ]
     rubric_entries = [
         entry for config in canonical_configs for entry in config["rubrics"]
+    ]
+    cleanup_entries_ = [
+        entry for config in canonical_configs for entry in config["cleanup"]
     ]
     funcs: list[RewardFunc | GroupRewardFunc] = []
     weights: list[float] = []
@@ -199,10 +217,17 @@ def build_rubric(configs: list[ChannelConfig], context: ChannelContext) -> Rubri
         rubrics.append(resolve_rubric(entry, context))
 
     if not rubrics:
-        return NoOpRubric()
-    if len(rubrics) == 1:
-        return rubrics[0]
-    return RubricGroup(rubrics)
+        rubric = NoOpRubric()
+    elif len(rubrics) == 1:
+        rubric = rubrics[0]
+    else:
+        rubric = RubricGroup(rubrics)
+    for entry in cleanup_entries_:
+        cleanup = entry["cleanup"]
+        if not callable(cleanup):
+            raise TypeError("Rubric cleanup entries must be callable.")
+        rubric.add_cleanup_handler(cleanup)
+    return rubric
 
 
 def extend_rubric_channel(

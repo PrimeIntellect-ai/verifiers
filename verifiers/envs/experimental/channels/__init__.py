@@ -34,14 +34,17 @@ from verifiers.envs.experimental.channels.system_prompt_channel import (
 )
 from verifiers.envs.experimental.channels.teardown_channel import teardown_channel
 from verifiers.envs.experimental.channels.tools_channel import (
-    CallableTool,
-    MCPServerSpec,
-    ToolArgumentError,
     ToolHandle,
-    ToolInjector,
     ToolMonitorRubric,
     ToolRegistry,
     tools_channel,
+)
+from verifiers.envs.experimental.toolset import (
+    CallableTool,
+    MCPTool,
+    ToolArgumentError,
+    ToolInjector,
+    Toolset,
 )
 from verifiers.envs.experimental.channels.user_channel import User, user_channel
 
@@ -69,7 +72,7 @@ __all__ = [
     "NoOpRubric",
     "ResourcePatch",
     "CallableTool",
-    "MCPServerSpec",
+    "MCPTool",
     "SandboxSeed",
     "SandboxSpec",
     "SandboxResources",
@@ -79,6 +82,7 @@ __all__ = [
     "ToolInjector",
     "ToolMonitorRubric",
     "ToolRegistry",
+    "Toolset",
     "User",
     "attach_resources",
     "canonicalize_rubric_config",

@@ -67,6 +67,7 @@ from verifiers.types import (
     Tool,
 )
 from verifiers.utils.async_utils import (
+    maybe_call_with_named_args,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -619,12 +620,23 @@ class Environment(ABC):
         """
         pass
 
-    async def _cleanup(self, state: State):
+    async def cleanup(
+        self,
+        state: State,
+        task: object | None = None,
+        resources: object | None = None,
+    ):
         """
-        Clean up rollout resources.
+        Finalize rollout state and clean up rollout-local resources.
         """
         for handler in self._cleanup_handlers:
-            await handler(state)
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                env=self,
+                resources=resources,
+            )
 
     async def _teardown(self):
         """
@@ -634,8 +646,13 @@ class Environment(ABC):
         for handler in self._teardown_handlers:
             await handler()
 
-    async def _render_stop(self, state: State, condition) -> bool:
-        if await condition(state):
+    async def _render_stop(self, state: State, condition, **kwargs) -> bool:
+        if await maybe_call_with_named_args(
+            condition,
+            state=state,
+            env=self,
+            **kwargs,
+        ):
             state["is_completed"] = True
             state["is_truncated"] = state.get("is_truncated", False) or any(
                 step.get("is_truncated", False) for step in state.get("trajectory", [])
@@ -656,11 +673,9 @@ class Environment(ABC):
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
-        """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
+        """Check stop conditions and render stop fields when one fires."""
         for condition in self._stop_conditions:
-            if await self._render_stop(state, condition):
-                await self._render_timing(state)
-                await self._cleanup(state)
+            if await self._render_stop(state, condition, **kwargs):
                 return True
         return False
 

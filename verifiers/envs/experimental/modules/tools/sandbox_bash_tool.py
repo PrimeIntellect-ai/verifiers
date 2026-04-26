@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 
+from verifiers.decorators import stop
 from verifiers.types import Tool
 
+from verifiers.envs.experimental.channels import ChannelMap
 from verifiers.envs.experimental.resources import Resources
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.modules.tools.sandbox_tool import SandboxTool
@@ -29,16 +31,22 @@ class SandboxBashTool(SandboxTool):
         self.output_limit = output_limit
         self.completion_marker = completion_marker
 
+    def channels(self) -> ChannelMap:
+        channels = dict(super().channels())
+        if self.completion_marker:
+            channels["stop"] = self.completion_marker_reached
+        return channels
+
     def schema(self) -> Tool:
         return Tool(
             name=self.name,
-            description="Execute a bash command in the task sandbox.",
+            description="Execute a bash command in the terminal.",
             parameters={
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Bash command to execute.",
+                        "description": "The command and optional arguments to execute. For example: python my_script.py",
                     }
                 },
                 "required": ["command"],
@@ -69,10 +77,15 @@ class SandboxBashTool(SandboxTool):
         )
         if self.completion_marker and self.completion_marker in output:
             state["agent_signaled_done"] = True
-            state["is_completed"] = True
         if exit_code == -1:
             return output
         return self.format_output(exit_code, output)
+
+    @stop
+    async def completion_marker_reached(
+        self, task: Task, state, resources: Resources
+    ) -> bool:
+        return bool(state.get("agent_signaled_done"))
 
     def blocked_command(self, command: str) -> str | None:
         for segment in re.split(r"&&|\|\||;|\|", command):

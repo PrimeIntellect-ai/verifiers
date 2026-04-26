@@ -19,7 +19,7 @@ def discover_decorated(obj: Any, attr: str) -> list:
 
 
 def stop(
-    func: Callable[..., Awaitable[bool]] | None = None, *, priority: int = 0
+    func: Callable[..., Awaitable[bool]] | None = None, priority: int = 0
 ) -> (
     Callable[..., Awaitable[bool]]
     | Callable[[Callable[..., Awaitable[bool]]], Callable[..., Awaitable[bool]]]
@@ -62,7 +62,7 @@ def stop(
 
 
 def cleanup(
-    func: Callable[..., Awaitable[None]] | None = None, *, priority: int = 0
+    func: Callable[..., Awaitable[None]] | None = None, priority: int = 0
 ) -> (
     Callable[..., Awaitable[None]]
     | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
@@ -78,7 +78,6 @@ def cleanup(
         priority: Optional priority to control execution order. Defaults to 0.
             Higher priorities run first. Use higher numbers to run earlier, lower numbers to run later.
             Ties are broken alphabetically by function name.
-
     Examples:
         @vf.cleanup
         async def my_cleanup(self, state: State):
@@ -105,7 +104,7 @@ def cleanup(
 
 
 def teardown(
-    func: Callable[..., Awaitable[None]] | None = None, *, priority: int = 0
+    func: Callable[..., Awaitable[None]] | None = None, priority: int = 0
 ) -> (
     Callable[..., Awaitable[None]]
     | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]

@@ -129,7 +129,7 @@ class HarborTaskset(Taskset):
         name: str | None = None,
         rubric: Rubric | None = None,
         tools: list[object] | None = None,
-        agent_workdir: str = "/app",
+        workdir: str = "/app",
         mcp_launch_commands: dict[str, str] | None = None,
         mcp_healthcheck_command: str | None = None,
         mcp_healthcheck_retries: int = 30,
@@ -138,7 +138,7 @@ class HarborTaskset(Taskset):
     ):
         self.path = Path(path)
         self.task_names = set(tasks) if tasks else None
-        self.agent_workdir = agent_workdir
+        self.workdir = workdir
         self.mcp_launch_commands = dict(mcp_launch_commands or {})
         self.mcp_healthcheck_command = mcp_healthcheck_command
         self.mcp_healthcheck_retries = mcp_healthcheck_retries
@@ -215,7 +215,7 @@ class HarborTaskset(Taskset):
                         "task_name": task_dir.name,
                         "task_dir": str(task_dir),
                         "instruction": instruction,
-                        "workdir": self.agent_workdir,
+                        "workdir": self.workdir,
                         "config": config,
                     },
                 }
@@ -236,8 +236,7 @@ class HarborTaskset(Taskset):
 
     def _setup_commands(self, environment: dict[str, Any]) -> list[str]:
         commands: list[str] = [
-            "mkdir -p /task /logs/verifier /oracle /tests "
-            f"{shlex.quote(self.agent_workdir)}"
+            f"mkdir -p /task /logs/verifier /oracle /tests {shlex.quote(self.workdir)}"
         ]
         for server in environment.get("mcp_servers", []) or []:
             if not isinstance(server, dict):

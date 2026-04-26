@@ -5,6 +5,16 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from verifiers.envs.experimental.channels import SandboxSpec
+from verifiers.envs.experimental.configs import (
+    CliConfig,
+    CliMetrics,
+    CliPaths,
+    EndpointConfig,
+    RunConfig,
+    SandboxConfig,
+    SandboxScoring,
+    SandboxSetup,
+)
 from verifiers.envs.experimental.modules.harnesses.cli_harness import CliHarness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
@@ -75,7 +85,7 @@ export PATH="$HOME/.local/bin:$PATH"
 export RLM_MODEL=$OPENAI_MODEL
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
-cd "${{AGENT_WORKDIR:-{workdir}}}"
+cd "${{CLI_WORKDIR:-{workdir}}}"
 
 if [ -x .venv/bin/python3 ]; then
     PYVER=$(.venv/bin/python3 -c "import sys; print(sys.version_info[:2] >= (3,10))" 2>/dev/null || true)
@@ -157,41 +167,55 @@ class RLMHarness(CliHarness):
             post_install_command = "chmod +x /usr/local/bin/git"
 
         super().__init__(
-            command=build_rlm_command(instruction_path, workdir),
-            instruction_path=instruction_path,
-            system_prompt_path=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
-            agent_workdir=workdir,
+            cli=CliConfig(
+                command=build_rlm_command(instruction_path, workdir),
+                workdir=workdir,
+                paths=CliPaths(
+                    instruction=instruction_path,
+                    system_prompt=DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
+                ),
+                env=rlm_environment_vars,
+                timeout_seconds=timeout_seconds,
+                metrics=CliMetrics(
+                    path="{workdir}/.rlm/sessions/*/meta.json",
+                    key="metrics",
+                    prefix="rlm_",
+                    tool_names=tuple(tool_names),
+                ),
+            ),
+            sandbox=SandboxConfig(
+                spec=sandbox or SandboxSpec(),
+                setup=SandboxSetup(
+                    install_command=build_rlm_install_command(),
+                    install_timeout=install_timeout,
+                    post_install_uploads=post_install_uploads or {},
+                    post_install_command=post_install_command,
+                    skills_path="/task/rlm-skills",
+                    uploads={
+                        DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: self.resolve_checkout,
+                    },
+                    upload_mapping={
+                        DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
+                    },
+                ),
+                scoring=SandboxScoring(retain=keep_sandbox_for_scoring),
+            ),
+            endpoint=EndpointConfig(
+                port=endpoint_port,
+                url=endpoint_url,
+                secret=endpoint_secret,
+                api_client_type=api_client_type,
+                poll_interval=poll_interval,
+            ),
+            run=RunConfig(
+                max_turns=max_turns,
+                parallel_model_requests=parallel_model_requests,
+                error_formatter=error_formatter,
+                stop_errors=tuple(stop_errors or ()),
+            ),
             system_prompt=append_to_system_prompt,
-            sandbox=sandbox,
-            install_command=build_rlm_install_command(),
-            install_timeout=install_timeout,
-            post_install_uploads=post_install_uploads,
-            post_install_command=post_install_command,
-            skills_path="/task/rlm-skills",
-            uploads={
-                DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: self.resolve_checkout,
-            },
-            upload_mapping={
-                DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
-            },
-            metrics_path="{workdir}/.rlm/sessions/*/meta.json",
-            metrics_key="metrics",
-            metrics_prefix="rlm_",
-            tool_names=tool_names,
-            timeout_seconds=timeout_seconds,
-            poll_interval=poll_interval,
-            environment_vars=rlm_environment_vars,
-            keep_sandbox_for_scoring=keep_sandbox_for_scoring,
-            endpoint_port=endpoint_port,
-            endpoint_url=endpoint_url,
-            endpoint_secret=endpoint_secret,
-            api_client_type=api_client_type,
             rubric=rubric,
             tools=tools,
-            max_turns=max_turns,
-            parallel_model_requests=parallel_model_requests,
-            error_formatter=error_formatter,
-            stop_errors=stop_errors,
         )
 
     def resolve_checkout(self) -> Path:

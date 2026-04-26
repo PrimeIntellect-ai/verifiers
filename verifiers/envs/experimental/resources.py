@@ -6,11 +6,12 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Literal, TypeVar, cast, overload
 
 from verifiers.clients import Client
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import DatasetBuilder, SamplingArgs
+from verifiers.utils.async_utils import maybe_await
 
 from verifiers.envs.experimental.channels.channel import (
     LifecycleHooks,
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from verifiers.envs.experimental.harness import Harness
 
 LifecycleHandler = Callable[..., object]
+ScoringMode = Literal["run", "group", "none"]
 T = TypeVar("T")
 
 
@@ -49,8 +51,9 @@ class _RolloutState:
 class Resources:
     """Environment-scope resolved objects shared across rollouts."""
 
-    taskset: Taskset
-    harness: Harness
+    taskset: Taskset | None = None
+    harness: Harness | None = None
+    scoring: ScoringMode | None = None
     objects: dict[str, object] = field(default_factory=dict)
     resource_types: dict[str, ResourceType] = field(default_factory=dict)
     hooks: LifecycleHooks = field(default_factory=LifecycleHooks)
@@ -65,25 +68,40 @@ class Resources:
     )
 
     def __post_init__(self) -> None:
-        definitions = channel_definitions(self.taskset, self.harness)
-        resolution = resolve_resource_objects(self.taskset, self.harness, phase="env")
+        if self.harness is None:
+            raise ValueError("Resources requires a harness.")
+        if self.scoring is None:
+            self.scoring = "group" if self.taskset is not None else "run"
+        if self.scoring not in {"run", "group", "none"}:
+            raise ValueError("resources.scoring must be 'run', 'group', or 'none'.")
+        owners = self.owners()
+        definitions = channel_definitions(*owners)
+        resolution = resolve_resource_objects(*owners, phase="env")
         self.dataset = (
             cast(DatasetBuilder, self.taskset.get_dataset)
-            if self.taskset.has_dataset()
+            if self.taskset is not None and self.taskset.has_dataset()
             else None
         )
         self.eval_dataset = (
             cast(DatasetBuilder, self.taskset.get_eval_dataset)
-            if self.taskset.has_eval_dataset()
+            if self.taskset is not None and self.taskset.has_eval_dataset()
             else None
         )
-        self.env_id = self.taskset.name
+        self.env_id = self.taskset.name if self.taskset is not None else None
         self.objects.update(resolution.objects)
         self.resource_types.update(channel_resource_types(definitions))
         rubric = self.require("rubric", Rubric)
+        attach_resources(rubric, self)
         self.hooks = resolution.hooks
         self.harness.resources = self
-        attach_resources(rubric, self)
+
+    def owners(self) -> tuple[object, ...]:
+        owners: list[object] = []
+        if self.taskset is not None:
+            owners.append(self.taskset)
+        if self.harness is not None:
+            owners.append(self.harness)
+        return tuple(owners)
 
     def __getattr__(self, name: str) -> object:
         rollout_objects = self.rollout_objects()
@@ -166,7 +184,14 @@ class Resources:
     def current_handlers(self, kind: str) -> list[LifecycleHandler]:
         rollout = self._rollout.get()
         rollout_hooks = LifecycleHooks() if rollout is None else rollout.hooks
-        return unique_handlers([*self.hooks.get(kind), *rollout_hooks.get(kind)])
+        return sorted_handlers(
+            kind,
+            unique_handlers([*self.hooks.get(kind), *rollout_hooks.get(kind)]),
+        )
+
+    async def run_handlers(self, kind: str, *args: object) -> None:
+        for handler in self.current_handlers(kind):
+            await maybe_await(handler, *args)
 
     @asynccontextmanager
     async def rollout(
@@ -177,10 +202,7 @@ class Resources:
         sampling_args: SamplingArgs | None = None,
     ) -> AsyncIterator[None]:
         resolution = resolve_resource_objects(
-            self.taskset,
-            self.harness,
-            phase="rollout",
-            task=task,
+            *self.owners(), phase="rollout", task=task
         )
         rollout_token = self._rollout.set(
             _RolloutState(
@@ -205,7 +227,7 @@ class Resources:
         if self._teardown_complete:
             return
         self._teardown_complete = True
-        await self.harness.run_teardown_handlers(self.hooks.teardown)
+        await self.run_handlers("teardown")
 
 
 def unique_handlers(handlers: list[LifecycleHandler]) -> list[LifecycleHandler]:
@@ -221,3 +243,16 @@ def unique_handlers(handlers: list[LifecycleHandler]) -> list[LifecycleHandler]:
         seen.add(key)
         unique.append(handler)
     return unique
+
+
+def sorted_handlers(
+    kind: str, handlers: list[LifecycleHandler]
+) -> list[LifecycleHandler]:
+    priority_attr = f"{kind}_priority"
+    return sorted(
+        handlers,
+        key=lambda handler: (
+            -getattr(handler, priority_attr, 0),
+            str(getattr(handler, "__name__", "")),
+        ),
+    )

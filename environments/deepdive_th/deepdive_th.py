@@ -359,7 +359,7 @@ def make_deepdive_tools(
         """Provide the final answer to the task. Stops execution."""
         record_tool_call(state, "finish")
         state["deepdive_final_answer"] = final_answer
-        state["is_completed"] = True
+        state["done"] = True
         return final_answer
 
     tools: list[object] = [search_web, scan_page, open_lines]
@@ -520,7 +520,9 @@ def load_taskset(
 
 
 def load_harness(max_turns: int = 32) -> vf.Harness:
-    return vf.Harness(max_turns=max_turns, stop_errors=[SerperAPIError])
+    return vf.Harness(
+        run=vf.RunConfig(max_turns=max_turns, stop_errors=(SerperAPIError,))
+    )
 
 
 def load_environment(

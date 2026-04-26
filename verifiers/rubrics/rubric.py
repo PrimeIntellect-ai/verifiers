@@ -14,6 +14,7 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.async_utils import maybe_call_with_named_args
 
 ScoreObjectProvider = Callable[[State], Mapping[str, object]]
 GroupScoreObjectProvider = Callable[[list[State]], Mapping[str, object]]
@@ -80,6 +81,15 @@ class Rubric:
 
     def add_group_score_object_provider(self, provider: GroupScoreObjectProvider):
         self.group_score_object_providers.append(provider)
+
+    def add_cleanup_handler(self, handler: Callable[..., Any]) -> None:
+        self._cleanup_handlers.append(handler)
+        self._cleanup_handlers.sort(
+            key=lambda h: (
+                -getattr(h, "cleanup_priority", 0),
+                str(getattr(h, "__name__", "")),
+            )
+        )
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:
@@ -256,7 +266,42 @@ class Rubric:
     async def cleanup(self, state: State):
         """Run all @vf.cleanup-decorated methods on this rubric."""
         for handler in self._cleanup_handlers:
-            await handler(state)
+            await self._call_cleanup_handler(handler, state)
+
+    async def _call_cleanup_handler(self, handler: Callable[..., Any], state: State):
+        objects = self.cleanup_objects(handler, state)
+        await maybe_call_with_named_args(handler, **objects)
+
+    def cleanup_objects(
+        self, handler: Callable[..., Any], state: State
+    ) -> dict[str, Any]:
+        sig = inspect.signature(handler)
+        parameters = sig.parameters.values()
+        wants_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters)
+        requested = {
+            name
+            for name, parameter in sig.parameters.items()
+            if parameter.kind
+            in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY)
+        }
+        objects: dict[str, Any] = {"state": state, **self.class_objects}
+        known = {"state", "prompt", "completion", "answer", "info", "task"} | set(
+            self.class_objects
+        )
+        if wants_kwargs or "prompt" in requested:
+            objects["prompt"] = state.get("prompt")
+        if wants_kwargs or "completion" in requested:
+            objects["completion"] = state.get("completion")
+        if wants_kwargs or "answer" in requested:
+            objects["answer"] = state.get("answer", "")
+        if wants_kwargs or "info" in requested:
+            objects["info"] = state.get("info", {})
+        if wants_kwargs or "task" in requested:
+            objects["task"] = self.task_for_state(state, objects.get("resources"))
+        if wants_kwargs or not requested <= known:
+            for provider in self.score_object_providers:
+                objects.update(provider(state))
+        return objects
 
     async def teardown(self):
         """Run all @vf.teardown-decorated methods on this rubric."""

@@ -5,7 +5,17 @@ import shlex
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
+from verifiers.decorators import cleanup
 from verifiers.envs.experimental.channels import SandboxSpec
+from verifiers.envs.experimental.configs import (
+    CliConfig,
+    CliPaths,
+    EndpointConfig,
+    RunConfig,
+    SandboxConfig,
+    SandboxScoring,
+    SandboxSetup,
+)
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.modules.harnesses.cli_harness import (
     CliHarness,
@@ -132,7 +142,7 @@ class OpenCode(CliHarness):
 
     def __init__(
         self,
-        agent_workdir: str = "/app",
+        workdir: str = "/app",
         instruction_path: str = "/opencode/prompt.txt",
         system_prompt_path: str = "/opencode/system.txt",
         log_path: str = "/opencode/logs.txt",
@@ -187,43 +197,55 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 SCHEMA_DOLLAR='$'
-mkdir -p ~/.config/opencode /opencode /logs/agent "$AGENT_WORKDIR"
+mkdir -p ~/.config/opencode /opencode /logs/cli "$CLI_WORKDIR"
 cat > ~/.config/opencode/opencode.json <<EOFCONFIG
 {config}
 EOFCONFIG
-cd "$AGENT_WORKDIR"
+cd "$CLI_WORKDIR"
 cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
         command = f"bash -lc {shlex.quote(script)}"
         super().__init__(
-            command=command,
-            instruction_path=instruction_path,
-            system_prompt_path=system_prompt_path,
-            agent_workdir=agent_workdir,
-            log_path=log_path,
-            system_prompt=system_prompt,
-            sandbox=sandbox,
-            install_command=install_command
-            or build_opencode_install_command(
-                release_repo=release_repo,
-                release_version=release_version,
-                release_sha256=release_sha256,
-                install_ripgrep=install_ripgrep,
+            cli=CliConfig(
+                command=command,
+                workdir=workdir,
+                paths=CliPaths(
+                    instruction=instruction_path,
+                    system_prompt=system_prompt_path,
+                    log=log_path,
+                ),
+                env=dict(environment_vars or {}),
+                timeout_seconds=timeout_seconds,
             ),
-            install_timeout=install_timeout,
-            timeout_seconds=timeout_seconds,
-            environment_vars=environment_vars,
-            keep_sandbox_for_scoring=keep_sandbox_for_scoring,
-            endpoint_port=endpoint_port,
-            endpoint_url=endpoint_url,
-            endpoint_secret=endpoint_secret,
-            api_client_type=api_client_type,
+            sandbox=SandboxConfig(
+                spec=sandbox or SandboxSpec(),
+                setup=SandboxSetup(
+                    install_command=install_command
+                    or build_opencode_install_command(
+                        release_repo=release_repo,
+                        release_version=release_version,
+                        release_sha256=release_sha256,
+                        install_ripgrep=install_ripgrep,
+                    ),
+                    install_timeout=install_timeout,
+                ),
+                scoring=SandboxScoring(retain=keep_sandbox_for_scoring),
+            ),
+            endpoint=EndpointConfig(
+                port=endpoint_port,
+                url=endpoint_url,
+                secret=endpoint_secret,
+                api_client_type=api_client_type,
+            ),
+            run=RunConfig(
+                max_turns=max_turns,
+                parallel_model_requests=parallel_model_requests,
+                error_formatter=error_formatter,
+                stop_errors=tuple(stop_errors or ()),
+            ),
+            system_prompt=system_prompt,
             rubric=rubric,
             tools=tools,
-            max_turns=max_turns,
-            parallel_model_requests=parallel_model_requests,
-            error_formatter=error_formatter,
-            stop_errors=stop_errors,
         )
 
     async def setup_sandbox_contents(
@@ -234,15 +256,15 @@ cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_p
             state["sandbox_id"], "mkdir -p /opencode"
         )
 
-    async def finalize_state(
+    @cleanup(priority=60)
+    async def collect_opencode_logs(
         self, task: Task, state: State, resources: Resources
-    ) -> State:
+    ) -> None:
         if state.get("sandbox_id") and self.log_path:
             try:
                 result = await self.with_retry(self.sandbox_client.read_file)(
                     state["sandbox_id"], self.log_path, timeout=10
                 )
-                state["agent_logs"] = getattr(result, "content", "")
+                state["cli_logs"] = getattr(result, "content", "")
             except Exception:
                 pass
-        return await super().finalize_state(task, state, resources)

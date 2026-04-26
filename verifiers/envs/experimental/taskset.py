@@ -16,6 +16,8 @@ from .task import Task
 
 LoadedSource = Dataset | Iterable[Mapping[str, Any]] | None
 Source = LoadedSource | Callable[[], LoadedSource]
+RubricSource = Rubric | Callable[[], Rubric] | None
+ToolsSource = object | Callable[[], object] | None
 
 
 class Taskset:
@@ -25,8 +27,8 @@ class Taskset:
         self,
         source: Source = None,
         eval_source: Source = None,
-        rubric: Rubric | None = None,
-        tools: Iterable[object] | None = None,
+        rubric: RubricSource = None,
+        tools: ToolsSource = None,
         name: str | None = None,
     ):
         self._source = source
@@ -35,8 +37,12 @@ class Taskset:
         self._eval_dataset: Dataset | None = None
         self._dataset_loaded = False
         self._eval_dataset_loaded = False
-        self.rubric = rubric
-        self.tools = list(tools or [])
+        self._rubric_source = rubric
+        self._rubric: Rubric | None = None
+        self._rubric_loaded = False
+        self._tools_source = tools
+        self._tools: object | None = None
+        self._tools_loaded = False
         self.name = name or ""
         self._stop_conditions = discover_decorated(self, "stop")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
@@ -51,12 +57,36 @@ class Taskset:
             return dataset
         return Dataset.from_list([dict(row) for row in dataset])
 
+    @property
+    def rubric(self) -> Rubric | None:
+        return self.get_rubric()
+
+    @property
+    def tools(self) -> object | None:
+        return self.get_tools()
+
+    def get_rubric(self) -> Rubric | None:
+        if not self._rubric_loaded:
+            source = self._rubric_source
+            self._rubric = source() if callable(source) else source
+            self._rubric_loaded = True
+        return self._rubric
+
+    def get_tools(self) -> object | None:
+        if not self._tools_loaded:
+            source = self._tools_source
+            self._tools = source() if callable(source) else source
+            self._tools_loaded = True
+        return self._tools
+
     def channels(self, task: Task | None = None) -> ChannelMap:
         channels: dict[str, object] = {}
-        if self.rubric is not None:
-            channels["rubric"] = self.rubric
-        if self.tools:
-            channels["tools"] = self.tools
+        rubric = self.get_rubric()
+        tools = self.get_tools()
+        if rubric is not None:
+            channels["rubric"] = rubric
+        if tools is not None:
+            channels["tools"] = tools
         if self._stop_conditions:
             channels["stop"] = self._stop_conditions
         if self._cleanup_handlers:

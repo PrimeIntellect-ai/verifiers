@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from importlib import resources as importlib_resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, cast
 
 from prime_sandboxes import (
     SandboxOOMError,
@@ -26,14 +26,19 @@ from verifiers.envs.experimental.channels import (
     SandboxResources,
     SandboxSeed,
     SandboxSpec,
-    SandboxTimeouts,
+    ToolMonitorRubric,
     compose_rubrics,
+)
+from verifiers.envs.experimental.configs import (
+    CliConfig,
+    EndpointConfig,
+    RunConfig,
+    SandboxConfig,
 )
 from verifiers.envs.experimental.modules.harnesses.endpoint_harness import (
     EndpointHarness,
 )
 from verifiers.envs.experimental.task import Task
-from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.errors import InfraError, SandboxError
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import State
@@ -61,17 +66,17 @@ class SandboxMonitorRubric(Rubric):
 class CliMonitorRubric(Rubric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_metric(self.agent_timeout)
-        self.add_metric(self.agent_error)
+        self.add_metric(self.cli_timeout)
+        self.add_metric(self.cli_error)
 
-    async def agent_timeout(self, state: State) -> float:
-        return float(bool(state.get("agent_timed_out")))
+    async def cli_timeout(self, state: State) -> float:
+        return float(bool(state.get("cli_timed_out")))
 
-    async def agent_error(self, state: State) -> float:
-        agent_exit_code = state.get("agent_exit_code")
-        if agent_exit_code is None:
+    async def cli_error(self, state: State) -> float:
+        cli_exit_code = state.get("cli_exit_code")
+        if cli_exit_code is None:
             return 0.0
-        return float(agent_exit_code != 0)
+        return float(cli_exit_code != 0)
 
 
 class HarnessMetricsRubric(Rubric):
@@ -111,7 +116,7 @@ class CliHarness(EndpointHarness):
             "HTTPX_TIMEOUT",
             "OPENAI_MODEL",
             "OPENAI_API_KEY",
-            "AGENT_WORKDIR",
+            "CLI_WORKDIR",
             "TASK_INSTRUCTION_PATH",
             "SYSTEM_PROMPT_PATH",
         }
@@ -119,111 +124,79 @@ class CliHarness(EndpointHarness):
 
     def __init__(
         self,
-        command: str,
-        instruction_path: str = "/task/instruction.md",
-        system_prompt_path: str = "/task/system_prompt.md",
-        agent_workdir: str = "/workspace",
-        log_path: str | None = None,
+        cli: CliConfig | dict[str, object],
+        sandbox: SandboxConfig | dict[str, object] | None = None,
+        endpoint: EndpointConfig | dict[str, object] | None = None,
+        run: RunConfig | dict[str, object] | None = None,
+        channels: ChannelMap | None = None,
         system_prompt: str | None = None,
-        sandbox: SandboxSpec | None = None,
-        install_command: str | None = None,
-        install_timeout: int = 300,
-        install_env: dict[str, str] | None = None,
-        post_install_uploads: dict[str, str] | None = None,
-        post_install_command: str | None = None,
-        skills_path: str | None = None,
-        uploads: dict[str, object] | None = None,
-        upload_mapping: dict[str, str] | None = None,
-        metrics_path: str | None = None,
-        metrics_prefix: str = "",
-        metrics_key: str | None = None,
-        metrics_keys: list[str] | None = None,
-        tool_names: list[str] | None = None,
-        timeout_seconds: float = 3600.0,
-        poll_interval: float = 1.0,
-        environment_vars: dict[str, str] | None = None,
-        keep_sandbox_for_scoring: bool = False,
-        sandbox_wait_for_creation_max_attempts: int = 120,
-        sandbox_creations_per_minute: float | None = 128,
-        sandbox_client_max_workers: int = 50,
-        sandbox_client_max_connections: int = 1000,
-        sandbox_client_max_keepalive_connections: int = 200,
-        max_retries: int = 5,
-        base_delay: float = 0.5,
-        backoff_factor: float = 2.0,
-        max_backoff_seconds: float = 30.0,
-        jitter: float = 1e-3,
-        timeouts: SandboxTimeouts = SandboxTimeouts(),
-        endpoint_port: int | None = None,
-        endpoint_url: str | None = None,
-        endpoint_secret: str | None = None,
-        api_client_type: str = "openai_chat_completions",
         rubric: Rubric | None = None,
         tools: Iterable[object] | None = None,
-        max_turns: int = -1,
-        parallel_model_requests: bool = True,
-        error_formatter: Callable[[Exception], str] = str,
-        stop_errors: list[type[Exception]] | None = None,
     ):
-        if tool_names:
-            rubric = compose_rubrics(rubric, ToolMonitorRubric(tool_names=tool_names))
-        if metrics_path:
+        self.cli = CliConfig.model_validate(cli)
+        self.sandbox_config = SandboxConfig.model_validate(sandbox or {})
+        endpoint = EndpointConfig.model_validate(endpoint or {})
+        metrics = self.cli.metrics
+        if metrics.tool_names:
+            rubric = compose_rubrics(
+                rubric, ToolMonitorRubric(tool_names=list(metrics.tool_names))
+            )
+        if metrics.path:
             rubric = compose_rubrics(rubric, HarnessMetricsRubric())
         rubric = compose_rubrics(
             rubric,
             SandboxMonitorRubric(),
             CliMonitorRubric(),
         )
+        if endpoint.url is None:
+            endpoint = endpoint.model_copy(update={"use_tunnel": True})
         super().__init__(
-            endpoint_port=endpoint_port,
-            endpoint_url=endpoint_url,
-            endpoint_secret=endpoint_secret,
-            api_client_type=api_client_type,
-            max_turns=max_turns,
-            poll_interval=poll_interval,
+            endpoint=endpoint,
+            run=run or RunConfig(max_turns=-1, parallel_model_requests=True),
+            channels=channels,
             rubric=rubric,
             system_prompt=system_prompt,
             tools=tools,
-            parallel_model_requests=parallel_model_requests,
-            error_formatter=error_formatter,
-            stop_errors=stop_errors,
         )
-        self.command = command
-        self.instruction_path = instruction_path
-        self.system_prompt_path = system_prompt_path
-        self.agent_workdir = agent_workdir
-        self.log_path = log_path
-        self.sandbox_spec = sandbox or SandboxSpec()
-        self.install_command = install_command
-        self.install_timeout = install_timeout
-        self.install_env = dict(install_env) if install_env else None
-        self.post_install_uploads = dict(post_install_uploads or {})
-        self.post_install_command = post_install_command
-        self.skills_path = skills_path
-        self.uploads = dict(uploads or {})
-        self.upload_mapping = dict(upload_mapping or {})
-        self.metrics_path = metrics_path
-        self.metrics_prefix = metrics_prefix
-        self.metrics_key = metrics_key
-        self.metrics_keys = metrics_keys
-        self.timeout_seconds = timeout_seconds
-        self.environment_vars = dict(environment_vars or {})
-        self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
+        setup = self.sandbox_config.setup
+        runtime = self.sandbox_config.runtime
+        self.command = self.cli.command
+        self.instruction_path = self.cli.paths.instruction
+        self.system_prompt_path = self.cli.paths.system_prompt
+        self.workdir = self.cli.workdir
+        self.log_path = self.cli.paths.log
+        self.sandbox_spec = self.sandbox_config.spec
+        self.install_command = setup.install_command
+        self.install_timeout = setup.install_timeout
+        self.install_env = dict(setup.install_env) if setup.install_env else None
+        self.post_install_uploads = dict(setup.post_install_uploads)
+        self.post_install_command = setup.post_install_command
+        self.skills_path = setup.skills_path
+        self.sandbox_setup_commands = list(setup.commands)
+        self.uploads = dict(setup.uploads)
+        self.upload_mapping = dict(setup.upload_mapping)
+        self.metrics_path = metrics.path
+        self.metrics_prefix = metrics.prefix
+        self.metrics_key = metrics.key
+        self.metrics_keys = list(metrics.keys) if metrics.keys is not None else None
+        self.timeout_seconds = self.cli.timeout_seconds
+        self.environment_vars = dict(self.cli.env)
+        self.keep_sandbox_for_scoring = self.sandbox_config.scoring.retain
         self.sandbox_wait_for_creation_max_attempts = (
-            sandbox_wait_for_creation_max_attempts
+            runtime.wait_for_creation_max_attempts
         )
-        self.sandbox_creations_per_minute = sandbox_creations_per_minute
-        self.sandbox_client_max_workers = sandbox_client_max_workers
-        self.sandbox_client_max_connections = sandbox_client_max_connections
+        self.sandbox_creations_per_minute = runtime.creations_per_minute
+        self.sandbox_client_max_workers = runtime.client_max_workers
+        self.sandbox_client_max_connections = runtime.client_max_connections
         self.sandbox_client_max_keepalive_connections = (
-            sandbox_client_max_keepalive_connections
+            runtime.client_max_keepalive_connections
         )
-        self.max_retries = max_retries
-        self.base_delay = base_delay
-        self.backoff_factor = backoff_factor
-        self.max_backoff_seconds = max_backoff_seconds
-        self.jitter = jitter
-        self.timeouts = timeouts
+        self.max_retries = runtime.max_retries
+        self.base_delay = runtime.base_delay
+        self.backoff_factor = runtime.backoff_factor
+        self.max_backoff_seconds = runtime.max_backoff_seconds
+        self.jitter = runtime.jitter
+        self.timeouts = runtime.timeouts
         self.sandbox_client = _CliSandboxClientProxy(self)
         self.with_retry = _CliSandboxRetryProxy(self)
 
@@ -272,8 +245,8 @@ class CliHarness(EndpointHarness):
             env_vars["OPENAI_API_KEY"] = endpoint.secret
         env_vars["OPENAI_MODEL"] = resources.model
         workdir = self.task_workdir(task)
-        state["agent_workdir"] = workdir
-        env_vars["AGENT_WORKDIR"] = workdir
+        state["cli_workdir"] = workdir
+        env_vars["CLI_WORKDIR"] = workdir
         env_vars["TASK_INSTRUCTION_PATH"] = self.instruction_path
         if getattr(resources, "system_prompt", ""):
             env_vars["SYSTEM_PROMPT_PATH"] = self.system_prompt_path
@@ -324,7 +297,8 @@ class CliHarness(EndpointHarness):
                 f"task sandbox environment vars must not override protected keys: {overlap}"
             )
         env_vars.update(spec.environment_vars)
-        task_name = str(task.info.get("task_name") or resources.taskset.name or "task")
+        taskset_name = resources.taskset.name if resources.taskset is not None else None
+        task_name = str(task.info.get("task_name") or taskset_name or "task")
         request = CreateSandboxRequest(
             name=f"{task_name}-{task.example_id}-{uuid.uuid4().hex[:8]}",
             docker_image=spec.image,
@@ -353,7 +327,7 @@ class CliHarness(EndpointHarness):
         await self.setup_sandbox_contents(task, state, resources)
 
     def task_workdir(self, task: Task) -> str:
-        return str(task.info.get("workdir") or self.agent_workdir)
+        return str(task.info.get("workdir") or self.workdir)
 
     async def setup_task_sandbox_contents(
         self, task: Task, state: State, resources: Resources
@@ -384,7 +358,7 @@ class CliHarness(EndpointHarness):
         await self.setup_task_sandbox_contents(task, state, resources)
         sandbox_id = state["sandbox_id"]
         workdir = self.task_workdir(task)
-        state["agent_workdir"] = workdir
+        state["cli_workdir"] = workdir
         dirs = {str(Path(self.instruction_path).parent), workdir}
         system_prompt = getattr(resources, "system_prompt", "")
         if system_prompt:
@@ -408,7 +382,16 @@ class CliHarness(EndpointHarness):
                 sandbox_id, system_prompt, self.system_prompt_path
             )
         await self.upload_mapped_directories(task, state, resources)
-        await self.install_agent(sandbox_id)
+        for command in self.sandbox_setup_commands:
+            result = await self.with_retry(self.sandbox_client.execute_command)(
+                sandbox_id, command, timeout=self.timeouts.extract
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise SandboxError(
+                    f"Sandbox setup command failed (exit={result.exit_code}): {output[:500]}"
+                )
+        await self.install_cli(sandbox_id)
         await self.run_post_install(sandbox_id)
 
     def effective_upload_mapping(self) -> dict[str, str]:
@@ -441,7 +424,7 @@ class CliHarness(EndpointHarness):
                 ) as path:
                     await self.upload_path(sandbox_id, path, sandbox_path)
 
-    async def install_agent(self, sandbox_id: str) -> None:
+    async def install_cli(self, sandbox_id: str) -> None:
         if not self.install_command:
             return
         kwargs: dict[str, object] = {"timeout": self.install_timeout}
@@ -455,7 +438,7 @@ class CliHarness(EndpointHarness):
         if result.exit_code != 0:
             output = (result.stdout or "") + (result.stderr or "")
             raise SandboxError(
-                f"Agent install failed (exit={result.exit_code}): {output[:500]}"
+                f"CLI install failed (exit={result.exit_code}): {output[:500]}"
             )
 
     async def run_post_install(self, sandbox_id: str) -> None:
@@ -556,9 +539,9 @@ class CliHarness(EndpointHarness):
                 state["sandbox_id"], self.command
             )
         except Exception as e:
-            raise SandboxError(f"Failed to start agent: {e}") from e
+            raise SandboxError(f"Failed to start CLI process: {e}") from e
         state["background_job"] = str(job)
-        state["agent_start_time"] = time.time()
+        state["cli_start_time"] = time.time()
         deadline = time.time() + self.timeout_seconds
         while time.time() < deadline:
             try:
@@ -567,30 +550,30 @@ class CliHarness(EndpointHarness):
                 )
             except SandboxOOMError as e:
                 state["sandbox_oom"] = True
-                raise SandboxError("Sandbox OOM while polling agent job.") from e
+                raise SandboxError("Sandbox OOM while polling CLI job.") from e
             except SandboxTimeoutError as e:
                 state["sandbox_timeout"] = True
-                raise SandboxError("Sandbox timed out while polling agent job.") from e
+                raise SandboxError("Sandbox timed out while polling CLI job.") from e
             if status.completed:
-                state["agent_exit_code"] = status.exit_code
-                state["agent_stdout"] = status.stdout
-                state["agent_stderr"] = status.stderr
+                state["cli_exit_code"] = status.exit_code
+                state["cli_stdout"] = status.stdout
+                state["cli_stderr"] = status.stderr
                 if status.exit_code:
                     raise InfraError(
-                        f"Sandbox agent exited with code {status.exit_code}: {status.stderr}"
+                        f"Sandbox CLI exited with code {status.exit_code}: {status.stderr}"
                     )
-                state["agent_completed"] = True
+                state["cli_completed"] = True
                 return status
             await asyncio.sleep(self.poll_interval)
-        state["agent_timed_out"] = True
-        state["stop_condition"] = "timeout_reached"
-        raise InfraError(f"Sandbox agent timed out after {self.timeout_seconds}s")
+        state["cli_timed_out"] = True
+        raise InfraError(f"Sandbox CLI timed out after {self.timeout_seconds}s")
 
-    async def finalize_state(
+    @cleanup(priority=50)
+    async def collect_cli_artifacts(
         self, task: Task, state: State, resources: Resources
-    ) -> State:
+    ) -> None:
         sandbox_id = state.get("sandbox_id")
-        if sandbox_id and self.log_path and "agent_logs" not in state:
+        if sandbox_id and self.log_path and "cli_logs" not in state:
             try:
                 log_path = shlex.quote(self.log_path)
                 result = await self.with_retry(self.sandbox_client.execute_command)(
@@ -598,18 +581,17 @@ class CliHarness(EndpointHarness):
                     f"cat {log_path} 2>/dev/null || echo '<no logs>'",
                     working_dir=None,
                 )
-                state["agent_logs"] = (result.stdout or "").strip()
+                state["cli_logs"] = (result.stdout or "").strip()
             except Exception as e:
-                self.logger.warning(f"Failed to collect agent logs: {e}")
+                self.logger.warning(f"Failed to collect CLI logs: {e}")
         if sandbox_id and self.metrics_path:
             await self.collect_harness_metrics(sandbox_id, state)
-        return await super().finalize_state(task, state, resources)
 
     async def collect_harness_metrics(self, sandbox_id: str, state: State) -> None:
         if not self.metrics_path:
             return
         metrics_glob = self.metrics_path.format(
-            workdir=state.get("agent_workdir") or self.agent_workdir
+            workdir=state.get("cli_workdir") or self.workdir
         )
         try:
             result = await self.with_retry(self.sandbox_client.execute_command)(
@@ -643,8 +625,10 @@ class CliHarness(EndpointHarness):
             return
         sandbox_runtime = self.require_sandbox_runtime()
         sandbox_scoring = bool(resources.require("sandbox_scoring"))
-        if (self.keep_sandbox_for_scoring or sandbox_scoring) and state.get(
-            "is_completed"
+        if (
+            resources.scoring != "none"
+            and (self.keep_sandbox_for_scoring or sandbox_scoring)
+            and state.get("is_completed")
         ):
             state["sandbox_retained_for_scoring"] = True
             sandbox_runtime.retain_for_scoring(sandbox_id)
@@ -661,10 +645,10 @@ class CliHarness(EndpointHarness):
         elapsed = time.time() - state["timing"]["start_time"]
         if elapsed <= self.timeout_seconds:
             return False
-        state["agent_timed_out"] = True
+        state["cli_timed_out"] = True
         if state.get("error") is None:
             state["error"] = error_info(
-                InfraError(f"Sandbox agent timed out after {self.timeout_seconds}s")
+                InfraError(f"Sandbox CLI timed out after {self.timeout_seconds}s")
             )
         return True
 

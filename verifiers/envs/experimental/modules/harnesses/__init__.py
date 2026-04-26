@@ -1,12 +1,25 @@
 __all__ = [
+    "CliConfig",
     "CliHarness",
+    "CliMetrics",
+    "CliPaths",
+    "EndpointConfig",
     "EndpointHarness",
     "OpenCode",
     "RLMHarness",
+    "RunConfig",
+    "SandboxConfig",
+    "SandboxRuntime",
+    "SandboxScoring",
+    "SandboxSetup",
 ]
 
 _LAZY_IMPORTS = {
+    "CliConfig": "verifiers.envs.experimental.configs:CliConfig",
     "CliHarness": "verifiers.envs.experimental.modules.harnesses.cli_harness:CliHarness",
+    "CliMetrics": "verifiers.envs.experimental.configs:CliMetrics",
+    "CliPaths": "verifiers.envs.experimental.configs:CliPaths",
+    "EndpointConfig": "verifiers.envs.experimental.configs:EndpointConfig",
     "EndpointHarness": (
         "verifiers.envs.experimental.modules.harnesses.endpoint_harness:EndpointHarness"
     ),
@@ -14,6 +27,11 @@ _LAZY_IMPORTS = {
     "RLMHarness": (
         "verifiers.envs.experimental.modules.harnesses.rlm_harness:RLMHarness"
     ),
+    "RunConfig": "verifiers.envs.experimental.configs:RunConfig",
+    "SandboxConfig": "verifiers.envs.experimental.configs:SandboxConfig",
+    "SandboxRuntime": "verifiers.envs.experimental.configs:SandboxRuntime",
+    "SandboxScoring": "verifiers.envs.experimental.configs:SandboxScoring",
+    "SandboxSetup": "verifiers.envs.experimental.configs:SandboxSetup",
 }
 
 

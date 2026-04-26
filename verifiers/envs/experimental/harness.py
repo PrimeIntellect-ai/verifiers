@@ -4,14 +4,16 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast, final
 
-from verifiers.decorators import discover_decorated, stop
+from verifiers.decorators import cleanup, discover_decorated, stop
 from verifiers.errors import Error, OverlongPromptError, ToolCallError, ToolParseError
 from verifiers.rubrics.rubric import Rubric
+from verifiers.rubrics.rubric_group import RubricGroup
 from verifiers.types import (
+    AssistantMessage,
     Message,
     MessageContent,
     Messages,
@@ -24,7 +26,7 @@ from verifiers.types import (
     TrajectoryStep,
     UserMessage,
 )
-from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.async_utils import maybe_await, maybe_call_with_named_args
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import concat_messages, normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
@@ -37,10 +39,14 @@ from .channels import (
     ToolArgumentError,
     User,
 )
+from .configs import RunConfig
 from .task import Task
 
 if TYPE_CHECKING:
     from .resources import Resources
+
+RubricSource = Rubric | Callable[[], Rubric] | None
+ToolsSource = object | Callable[[], object] | None
 
 
 @dataclass(frozen=True)
@@ -56,42 +62,76 @@ class Harness:
 
     def __init__(
         self,
-        rubric: Rubric | None = None,
+        channels: ChannelMap | None = None,
+        run: RunConfig | dict[str, object] | None = None,
+        rubric: RubricSource = None,
         system_prompt: str | None = None,
-        tools: Iterable[object] | None = None,
-        max_turns: int = 50,
-        parallel_model_requests: bool = False,
-        error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
-        stop_errors: list[type[Exception]] | None = None,
-        max_tool_calls_per_turn: int | None = None,
-        tool_call_limit_message: str = "Please provide at most {limit} tool call(s). Found {count}.",
+        tools: ToolsSource = None,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.resources: Resources | None = None
-        self.rubric = rubric
+        self._channels = dict(channels or {})
+        self._rubric_source = rubric
+        self._rubric: Rubric | None = None
+        self._rubric_loaded = False
         self.system_prompt = system_prompt
-        self.tools = list(tools or [])
-        self.max_turns = max_turns
-        self.parallel_model_requests = parallel_model_requests
-        self.error_formatter = error_formatter
-        self.stop_errors = stop_errors or []
-        self.max_tool_calls_per_turn = max_tool_calls_per_turn
-        self.tool_call_limit_message = tool_call_limit_message
+        self._tools_source = tools
+        self._tools: object | None = None
+        self._tools_loaded = False
+        self.run_config = RunConfig.model_validate(run or {})
+        self.max_turns = self.run_config.max_turns
+        self.parallel_model_requests = self.run_config.parallel_model_requests
+        self.error_formatter = self.run_config.error_formatter
+        self.stop_errors = list(self.run_config.stop_errors)
+        self.max_tool_calls_per_turn = self.run_config.max_tool_calls_per_turn
+        self.tool_call_limit_message = self.run_config.tool_call_limit_message
         self._stop_conditions = discover_decorated(self, "stop")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
 
+    @property
+    def rubric(self) -> Rubric | None:
+        return self.get_rubric()
+
+    @property
+    def tools(self) -> object | None:
+        return self.get_tools()
+
+    def get_rubric(self) -> Rubric | None:
+        if not self._rubric_loaded:
+            source = self._rubric_source
+            self._rubric = source() if callable(source) else source
+            self._rubric_loaded = True
+        return self._rubric
+
+    def get_tools(self) -> object | None:
+        if not self._tools_loaded:
+            source = self._tools_source
+            self._tools = source() if callable(source) else source
+            self._tools_loaded = True
+        return self._tools
+
     def channels(self, task: Task | None = None) -> ChannelMap:
-        channels: dict[str, object] = {}
+        channels: dict[str, object] = dict(self._channels)
         if self.system_prompt:
-            channels["system_prompt"] = self.system_prompt
-        if self.tools:
-            channels["tools"] = self.tools
+            add_channel_shorthand(channels, "system_prompt", self.system_prompt)
+        tools = self.get_tools()
+        if tools is not None:
+            add_channel_shorthand(channels, "tools", tools)
         rubrics = []
-        if self.rubric is not None:
-            rubrics.append(self.rubric)
+        rubric = self.get_rubric()
+        if rubric is not None:
+            rubrics.append(rubric)
         if rubrics:
-            channels["rubric"] = rubrics[0] if len(rubrics) == 1 else rubrics
+            add_channel_shorthand(
+                channels, "rubric", rubrics[0] if len(rubrics) == 1 else rubrics
+            )
+        if self._stop_conditions:
+            add_lifecycle_channel(channels, "stop", self._stop_conditions)
+        if self._cleanup_handlers:
+            add_lifecycle_channel(channels, "cleanup", self._cleanup_handlers)
+        if self._teardown_handlers:
+            add_lifecycle_channel(channels, "teardown", self._teardown_handlers)
         return channels
 
     def channel_objects(self) -> dict[str, object]:
@@ -99,19 +139,6 @@ class Harness:
 
     def channel_definitions(self) -> dict[str, Channel]:
         return {}
-
-    @final
-    def lifecycle_handlers(
-        self, own_handlers: Iterable[Callable[..., object]], attr: str
-    ) -> list[Callable[..., object]]:
-        handlers = list(own_handlers)
-        handlers.sort(
-            key=lambda fn: (
-                -getattr(fn, f"{attr}_priority", 0),
-                str(getattr(fn, "__name__", "")),
-            )
-        )
-        return handlers
 
     @stop(priority=100)
     async def has_error(self, task: Task, state: State, resources: Resources) -> bool:
@@ -124,50 +151,48 @@ class Harness:
         return bool(state.get("prompt_too_long"))
 
     @stop(priority=80)
-    async def state_completed(
-        self, task: Task, state: State, resources: Resources
-    ) -> bool:
-        return bool(state.get("is_completed"))
+    async def done(self, task: Task, state: State, resources: Resources) -> bool:
+        return bool(state["done"])
 
     @stop
     async def max_turns_reached(
         self, task: Task, state: State, resources: Resources
     ) -> bool:
         requests = state.get("num_model_requests", len(state["trajectory"]))
-        return requests >= self.max_turns and self.max_turns > 0
+        if self.max_turns <= 0 or requests < self.max_turns:
+            return False
+        if requests > len(state["trajectory"]):
+            return True
+        return state.get("final_env_response") is not None
 
-    @final
-    async def run_cleanup_handlers(
+    @stop(priority=-10)
+    async def no_tools_or_user(
         self, task: Task, state: State, resources: Resources
-    ) -> None:
-        handlers = self.lifecycle_handlers(
-            [*self._cleanup_handlers, *resources.current_handlers("cleanup")],
-            "cleanup",
-        )
-        for handler in handlers:
-            await maybe_await(handler, task, state, resources)
-
-    @final
-    async def run_teardown_handlers(
-        self, extra_handlers: Iterable[Callable[..., object]] = ()
-    ) -> None:
-        handlers = self.lifecycle_handlers(
-            [*self._teardown_handlers, *extra_handlers],
-            "teardown",
-        )
-        for handler in handlers:
-            await maybe_await(handler)
+    ) -> bool:
+        if not state["trajectory"]:
+            return False
+        completion = state["trajectory"][-1]["completion"]
+        if not completion or not isinstance(completion[-1], AssistantMessage):
+            return False
+        if completion[-1].tool_calls:
+            return False
+        if resources.get("user") is None:
+            return True
+        return bool(state.get("user_done"))
 
     @final
     async def is_completed(
         self, task: Task, state: State, resources: Resources
     ) -> bool:
-        conditions = self.lifecycle_handlers(
-            [*self._stop_conditions, *resources.current_handlers("stop")],
-            "stop",
-        )
+        conditions = resources.current_handlers("stop")
         for condition in conditions:
-            if await maybe_await(condition, task, state, resources):
+            if await maybe_call_with_named_args(
+                condition,
+                task=task,
+                state=state,
+                harness=self,
+                resources=resources,
+            ):
                 state["is_completed"] = True
                 state["is_truncated"] = state.get("is_truncated", False) or any(
                     step.get("is_truncated", False)
@@ -176,10 +201,6 @@ class Harness:
                 state["stop_condition"] = str(
                     getattr(condition, "__name__", condition.__class__.__name__)
                 )
-                start = state["timing"]["start_time"]
-                now = time.time()
-                state["timing"]["generation_ms"] = (now - start) * 1000
-                state["timing"]["total_ms"] = (now - start) * 1000
                 return True
         return False
 
@@ -188,6 +209,7 @@ class Harness:
         state["prompt"] = normalize_messages(task.prompt, field_name="task.prompt")
         state["model"] = resources.model
         state["sampling_args"] = resources.sampling_args
+        state["done"] = False
         state["is_completed"] = False
         state["is_truncated"] = False
         state["stop_condition"] = None
@@ -222,6 +244,10 @@ class Harness:
         last = state["trajectory"][-1]
         messages = concat_messages([last["prompt"], last["completion"]])
         env_messages = await self.get_env_messages(task, state, resources)
+        if env_messages:
+            state["final_env_response"] = env_messages
+        else:
+            state.pop("final_env_response", None)
         return concat_messages([messages, env_messages])
 
     async def get_env_messages(
@@ -245,11 +271,16 @@ class Harness:
             for tool_call in tool_calls:
                 outputs.append(await self.call_tool(tool_call, task, state, resources))
             return outputs
-        if self.new_message(state) is None:
+        if not state["trajectory"]:
+            return []
+        completion = state["trajectory"][-1]["completion"]
+        if not completion or not isinstance(completion[-1], AssistantMessage):
             return []
         messages = await self.get_user_messages(task, state, resources)
         if not messages:
-            state["is_completed"] = True
+            state["user_done"] = True
+            return []
+        state.pop("user_done", None)
         return messages
 
     async def get_user_messages(
@@ -270,21 +301,15 @@ class Harness:
         return cast(Messages, messages)
 
     def get_tool_calls(self, state: State) -> list[ToolCall]:
-        message = self.new_message(state)
-        if message is None:
-            return []
-        return list(getattr(message, "tool_calls", None) or [])
-
-    def new_message(self, state: State) -> object | None:
         if not state["trajectory"]:
-            return None
+            return []
         completion = state["trajectory"][-1]["completion"]
         if not completion:
-            return None
+            return []
         message = completion[-1]
-        if getattr(message, "role", None) != "assistant":
-            return None
-        return message
+        if not isinstance(message, AssistantMessage):
+            return []
+        return list(message.tool_calls or [])
 
     async def get_model_request(
         self, task: Task, state: State, resources: Resources
@@ -296,8 +321,10 @@ class Harness:
         )
         if await self.is_completed(task, state, resources):
             return None
+        state.pop("final_env_response", None)
         return ModelRequest(prompt=prompt)
 
+    @final
     async def get_model_response(
         self,
         prompt: Messages,
@@ -375,7 +402,6 @@ class Harness:
             tool_defs=tool_defs,
             context=context,
         )
-        response = await self.normalize_model_response(response, task, state, resources)
         await self.add_model_response(
             prompt,
             response,
@@ -384,11 +410,6 @@ class Harness:
             resources,
             extras=extras,
         )
-        return response
-
-    async def normalize_model_response(
-        self, response: Response, task: Task, state: State, resources: Resources
-    ) -> Response:
         return response
 
     def should_stop_for_tool_error(self, err: Exception) -> bool:
@@ -432,12 +453,20 @@ class Harness:
             content=content,
         )
 
-    async def finalize_state(
+    async def render_timing(
         self, task: Task, state: State, resources: Resources
-    ) -> State:
+    ) -> None:
+        start = state["timing"]["start_time"]
+        now = time.time()
+        state["timing"]["generation_ms"] = (now - start) * 1000
+        state["timing"]["total_ms"] = (now - start) * 1000
+
+    async def render_completion(
+        self, task: Task, state: State, resources: Resources
+    ) -> None:
         if not state["trajectory"]:
             state["completion"] = []
-            return state
+            return
         first_prompt = state["prompt"]
         last = state["trajectory"][-1]
         full = concat_messages([last["prompt"], last["completion"]])
@@ -451,7 +480,23 @@ class Harness:
             ), "final_env_response must be vf.Messages."
             full = concat_messages([full, cast(Messages, final_env_response)])
         state["completion"] = full[len(first_prompt) :]
-        return state
+
+    @cleanup(priority=100)
+    async def render_state(
+        self, task: Task, state: State, resources: Resources
+    ) -> None:
+        await self.render_timing(task, state, resources)
+        await self.render_completion(task, state, resources)
+
+    async def cleanup(self, task: Task, state: State, resources: Resources) -> None:
+        for handler in resources.current_handlers("cleanup"):
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                harness=self,
+                resources=resources,
+            )
 
     def pending_model_requests(
         self, resources: Resources
@@ -535,14 +580,17 @@ class Harness:
     @final
     async def run(self, task: Task, resources: Resources) -> State:
         state = await self.setup_state(task, resources)
+        cleanup_started = False
         try:
             while not await self.is_completed(task, state, resources):
                 try:
                     request = await self.get_model_request(task, state, resources)
                     if request is None:
                         if not await self.is_completed(task, state, resources):
-                            state["is_completed"] = True
-                            state["stop_condition"] = "no_model_request"
+                            raise RuntimeError(
+                                "get_model_request returned None without "
+                                "a stop condition."
+                            )
                         continue
                     model_task = self.schedule_model_request(
                         task, request, state, resources
@@ -555,10 +603,62 @@ class Harness:
                 except Error as e:
                     state["error"] = error_info(e)
             await self.wait_for_pending_model_requests(state, resources)
-            state = await self.finalize_state(task, state, resources)
+            cleanup_started = True
+            await self.cleanup(task, state, resources)
+            if resources.scoring == "run":
+                if has_group_reward_funcs(resources.rubric):
+                    raise ValueError(
+                        "resources.scoring='run' cannot run rubrics with "
+                        "group reward functions."
+                    )
+                await resources.rubric.score_rollout(state)
+                await resources.rubric.cleanup(state)
             return state
         except asyncio.CancelledError:
             await self.cancel_pending_model_requests(state, resources)
             raise
         finally:
-            await self.run_cleanup_handlers(task, state, resources)
+            if not cleanup_started:
+                await self.cleanup(task, state, resources)
+
+
+def has_group_reward_funcs(rubric: Rubric) -> bool:
+    if isinstance(rubric, RubricGroup):
+        return any(has_group_reward_funcs(child) for child in rubric.rubrics)
+    return bool(rubric._get_group_reward_funcs())
+
+
+def add_channel_shorthand(
+    channels: dict[str, object], name: str, config: object
+) -> None:
+    if name in channels:
+        if name == "rubric":
+            channels[name] = [*as_config_list(channels[name]), config]
+            return
+        raise ValueError(
+            f"Harness received {name!r} both in channels and as a shorthand arg."
+        )
+    channels[name] = config
+
+
+def add_lifecycle_channel(
+    channels: dict[str, object], name: str, handlers: list[object]
+) -> None:
+    existing = channels.get(name)
+    if existing is None:
+        channels[name] = list(handlers)
+        return
+    if name == "cleanup" and isinstance(existing, dict):
+        cleanup = dict(existing)
+        cleanup["harness"] = [*as_config_list(cleanup.get("harness")), *handlers]
+        channels[name] = cleanup
+        return
+    channels[name] = [*as_config_list(existing), *handlers]
+
+
+def as_config_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list | tuple):
+        return list(value)
+    return [value]

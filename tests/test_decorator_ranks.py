@@ -234,9 +234,10 @@ class TestCleanupPriorityOrdering:
             rubric=vf.Rubric(),
         )
 
-        assert len(env._cleanup_handlers) == 4
+        assert len(env._cleanup_handlers) == 5
         names = [method.__name__ for method in env._cleanup_handlers]
         assert names == [
+            "render_state",
             "early_cleanup",
             "another_default_cleanup",
             "default_cleanup",
@@ -284,7 +285,7 @@ class TestCleanupPriorityOrdering:
             client=mock_client,
             model="test-model",
         )
-        await env._cleanup(state)
+        await env.cleanup(state)
 
         assert len(env.cleanup_order) == 4
         assert env.cleanup_order[0] == "early_cleanup"
@@ -294,6 +295,46 @@ class TestCleanupPriorityOrdering:
         assert env.cleanup_order.index(
             "another_default_cleanup"
         ) < env.cleanup_order.index("default_cleanup")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handlers_receive_named_context(self, mock_client):
+        """Test that cleanup handler args are matched by name."""
+
+        class NamedCleanupEnv(vf.MultiTurnEnv):
+            def __init__(self, **kwargs):
+                super().__init__(max_turns=1, **kwargs)
+                self.seen_env = False
+                self.seen_state = False
+
+            @vf.cleanup
+            async def named_cleanup(self, env, state: State):
+                self.seen_env = env is self
+                self.seen_state = state.get("example_id") == 0
+
+            async def env_response(self, messages, state, **kwargs):
+                return []
+
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = NamedCleanupEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=dataset,
+            parser=vf.Parser(),
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+        await env.cleanup(state)
+
+        assert env.seen_env is True
+        assert env.seen_state is True
 
 
 class TestTeardownPriorityOrdering:

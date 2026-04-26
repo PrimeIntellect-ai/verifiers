@@ -9,6 +9,7 @@ dependencies = [
     "chromadb",
     "datasets",
     "openai",
+    "opentelemetry-api>=1.41.1",
 ]
 
 [build-system]

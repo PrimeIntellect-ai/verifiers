@@ -34,14 +34,18 @@ class Env(Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
-        task = self.resources.taskset.to_task(input)
+        taskset = self.resources.taskset
+        assert taskset is not None
+        task = taskset.to_task(input)
         async with self.resources.rollout(
             task,
             client=client,
             model=model,
             sampling_args=sampling_args,
         ):
-            return await self.resources.harness.run(task, self.resources)
+            harness = self.resources.harness
+            assert harness is not None
+            return await harness.run(task, self.resources)
 
     @teardown
     async def teardown_resources(self):

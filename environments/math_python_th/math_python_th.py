@@ -40,6 +40,17 @@ def load_harness(
         "\n\n"
         f"{pip_install_prompt}"
     )
+
+    @vf.cleanup(priority=50)
+    async def cleanup_python_state(
+        _task: vf.Task, state: vf.State, _resources: vf.Resources
+    ) -> None:
+        if "python_state" in state:
+            state["python_cleanup"] = {
+                "execution_count": state["python_state"]["execution_count"],
+                "ready": state["python_state"]["ready"],
+            }
+
     python = vf.SandboxPythonTool(
         sandbox=vf.SandboxSpec(
             image="python:3.11-slim",
@@ -57,9 +68,14 @@ def load_harness(
     )
     return vf.Harness(
         system_prompt=system_prompt,
-        tools=[python],
-        max_turns=max_turns,
-        stop_errors=[vf.SandboxError],
+        tools=[
+            vf.Toolset(
+                tools=[python],
+                channels={"cleanup": {"harness": cleanup_python_state}},
+                name="math_python_tools",
+            )
+        ],
+        run=vf.RunConfig(max_turns=max_turns, stop_errors=(vf.SandboxError,)),
     )
 
 

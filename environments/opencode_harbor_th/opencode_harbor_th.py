@@ -35,7 +35,7 @@ def load_environment(
     dataset_path: str | Path = Path(__file__).parents[1] / "opencode_harbor" / "tasks",
     dataset: str | None = None,
     tasks: list[str] | None = None,
-    agent_workdir: str = "/app",
+    workdir: str = "/app",
     docker_image: str = "python:3.11-slim",
     system_prompt_path: str | Path | None = Path(__file__).parents[1]
     / "opencode_harbor"
@@ -62,10 +62,10 @@ def load_environment(
     taskset = HarborTaskset(
         path=dataset_path,
         tasks=tasks,
-        agent_workdir=agent_workdir,
+        workdir=workdir,
     )
     harness = OpenCode(
-        agent_workdir=agent_workdir,
+        workdir=workdir,
         system_prompt=_read_system_prompt(system_prompt_path),
         disabled_tools=disabled_tools,
         sandbox=vf.SandboxSpec(

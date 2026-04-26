@@ -348,7 +348,7 @@ def load_taskset(
 
 
 def load_harness(max_turns: int = 3) -> vf.Harness:
-    return vf.Harness(max_turns=max_turns)
+    return vf.Harness(run=vf.RunConfig(max_turns=max_turns))
 
 
 def load_environment(
