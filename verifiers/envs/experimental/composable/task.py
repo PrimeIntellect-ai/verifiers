@@ -182,13 +182,13 @@ class TaskSet:
         return dataset.filter(predicate)
 
     @property
-    def _dataset(self) -> Any:
+    def dataset(self) -> Any:
         if self._built_dataset is None and self.dataset_source is not None:
             self._built_dataset = self._apply_filter(self.dataset_source())
         return self._built_dataset
 
-    @_dataset.setter
-    def _dataset(self, value: Any) -> None:
+    @dataset.setter
+    def dataset(self, value: Any) -> None:
         self._built_dataset = value
 
     # -- Override these ------------------------------------------------------
@@ -268,7 +268,7 @@ class TaskSet:
         This pre-builds the prompt so the base Environment doesn't need a
         ``question`` column.
         """
-        ds = self._dataset
+        ds = self.dataset
         if "prompt" not in ds.column_names:
 
             def add_prompt(row: dict) -> dict:
@@ -280,14 +280,14 @@ class TaskSet:
         return ds
 
     def __len__(self) -> int:
-        return len(self._dataset)
+        return len(self.dataset)
 
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
 
     def __getitem__(self, i: int) -> Task:
-        row = self._dataset[i]
+        row = self.dataset[i]
         info = row.get("info") or {}
         from verifiers.types import UserMessage
 
@@ -304,13 +304,13 @@ class TaskSet:
     def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
-        clone._dataset = self._dataset.filter(predicate)
+        clone.dataset = self.dataset.filter(predicate)
         return clone
 
     def take(self, n: int) -> TaskSet:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
-        clone._dataset = self._dataset.select(range(min(n, len(self._dataset))))
+        clone.dataset = self.dataset.select(range(min(n, len(self.dataset))))
         return clone
 
     # -- Validation ----------------------------------------------------------
