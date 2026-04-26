@@ -149,10 +149,7 @@ class TaskSet:
         """
         Args:
             dataset: The dataset backing this taskset, or a ``DatasetBuilder``
-                (zero-arg callable returning the dataset). Passing a builder
-                defers the (often expensive) build until first access — so
-                an env worker that never reads the dataset doesn't pay the
-                cost. Mirrors the ``Environment`` ``dataset`` contract.
+                (zero-arg callable returning the dataset).
             name: Human-readable taskset name.
             filter_fn: Optional Python expression string (e.g. a lambda) that
                 evaluates to a ``Callable[[dict], bool]`` and is applied to
@@ -168,23 +165,18 @@ class TaskSet:
         # debugging; the resolved predicate isn't pickle-safe and the
         # realized dataset already carries the filtered state.
         self._filter_fn_src = filter_fn
-        if callable(dataset):
-            self.dataset_source: DatasetBuilder | None = dataset
-            self._built_dataset: Any = None
-        else:
-            self.dataset_source = None
-            self._built_dataset = self._apply_filter(dataset)
-
-    def _apply_filter(self, dataset: Any) -> Any:
-        if self._filter_fn_src is None:
-            return dataset
-        predicate = _resolve_filter_fn(self._filter_fn_src)
-        return dataset.filter(predicate)
+        self.dataset_source: DatasetBuilder = (
+            dataset if callable(dataset) else (lambda ds=dataset: ds)
+        )
+        self._built_dataset: Any = None
 
     @property
     def dataset(self) -> Any:
-        if self._built_dataset is None and self.dataset_source is not None:
-            self._built_dataset = self._apply_filter(self.dataset_source())
+        if self._built_dataset is None:
+            ds = self.dataset_source()
+            if self._filter_fn_src is not None:
+                ds = ds.filter(_resolve_filter_fn(self._filter_fn_src))
+            self._built_dataset = ds
         return self._built_dataset
 
     @dataset.setter
