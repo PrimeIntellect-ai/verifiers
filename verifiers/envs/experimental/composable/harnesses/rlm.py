@@ -16,6 +16,7 @@ DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_RLM_EXEC_TIMEOUT = 300
+DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
@@ -87,6 +88,7 @@ def rlm_harness(
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
+    rlm_max_depth: int = DEFAULT_RLM_MAX_DEPTH,
     summarize_at_tokens: int | None = None,
     include_sub_rlm_trajectories: bool = False,
     append_to_system_prompt: str | None = None,
@@ -106,6 +108,10 @@ def rlm_harness(
       ``ToolMonitorRubric`` tracks exactly the active tools)
     - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+    - ``rlm_max_depth`` → ``RLM_MAX_DEPTH``: deepest sub-agent level
+      allowed. ``0`` (default) disables ``rlm()`` recursion from inside
+      ipython entirely; ``1`` lets the parent spawn sub-agents but
+      blocks them from spawning their own; etc.
     - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
       a positive int, rlm auto-compacts the current branch once the
       prompt_tokens of a turn reach the threshold. ``None`` disables
@@ -185,6 +191,7 @@ def rlm_harness(
         "RLM_TOOLS": ",".join(tool_names),
         "RLM_MAX_TURNS": str(rlm_max_turns),
         "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+        "RLM_MAX_DEPTH": str(rlm_max_depth),
     }
     summarize_env = _format_summarize_at_tokens(summarize_at_tokens)
     if summarize_env is not None:
