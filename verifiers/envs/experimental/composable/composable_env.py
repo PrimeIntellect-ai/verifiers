@@ -221,6 +221,7 @@ class ComposableEnv(CliAgentEnv):
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
+        self.logger.debug(f"Running taskset setup in sandbox {sandbox_id}")
         await self.taskset.setup(state)
         await self._create_harness_input_dirs(sandbox_id)
         await self._upload_harness_inputs(sandbox_id, state)
@@ -278,6 +279,7 @@ class ComposableEnv(CliAgentEnv):
         """Upload instruction and optional system prompt to harness-declared paths."""
         info = state.get("info") or {}
         instruction = self.taskset.get_instruction(info)
+        self.logger.debug(f"Uploading harness inputs to sandbox {sandbox_id}")
         if instruction.strip():
             await self.upload_content(
                 sandbox_id, instruction, self.harness.instruction_path
@@ -300,10 +302,16 @@ class ComposableEnv(CliAgentEnv):
         if not upload_dirs or not mapping:
             return
         sandbox_id = state["sandbox_id"]
-        for name, local_source in upload_dirs.items():
-            remote_dest = mapping.get(name)
-            if remote_dest is not None:
-                await self._upload_dir(sandbox_id, local_source, remote_dest)
+        pending = [
+            (name, src, dest)
+            for name, src in upload_dirs.items()
+            if (dest := mapping.get(name)) is not None
+        ]
+        self.logger.debug(
+            f"Uploading {len(pending)} task/harness directories to sandbox {sandbox_id}"
+        )
+        for _name, local_source, remote_dest in pending:
+            await self._upload_dir(sandbox_id, local_source, remote_dest)
 
     def _get_upload_dirs(self) -> dict[str, Traversable | Path]:
         """Merge task-owned and harness-owned upload directories."""
@@ -387,10 +395,15 @@ class ComposableEnv(CliAgentEnv):
         event loop stays responsive when many rollouts upload in parallel.
         """
         remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
+        self.logger.debug(f"Building upload archive for {remote_dest}")
         tmp_path = await asyncio.to_thread(
             self._build_dir_archive, local_source, remote_dest
         )
         try:
+            self.logger.debug(
+                f"Uploading {tmp_path.stat().st_size / 1e6:.2f}MB archive "
+                f"to sandbox {sandbox_id}:{remote_dest}"
+            )
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
             dest_parent = shlex.quote(str(Path(remote_dest).parent))
             quoted_remote_tar = shlex.quote(remote_tar)

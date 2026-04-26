@@ -213,6 +213,7 @@ class SandboxMixin:
         self.logger.debug(f"Created sandbox {sandbox.id}")
 
         try:
+            self.logger.debug(f"Waiting for sandbox {sandbox.id} to become ready")
             await self.sandbox_client.wait_for_creation(
                 sandbox.id,
                 max_attempts=self.sandbox_wait_for_creation_max_attempts,
@@ -223,6 +224,7 @@ class SandboxMixin:
             ) from e
 
         try:
+            self.logger.debug(f"Running post-sandbox setup in sandbox {sandbox.id}")
             await self.post_sandbox_setup(state)
         except vf.SandboxError:
             raise
