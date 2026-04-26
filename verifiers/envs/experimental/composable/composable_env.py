@@ -181,21 +181,16 @@ class ComposableEnv(CliAgentEnv):
     ) -> None:
         """Append the step unless the harness's filter says to drop it.
 
-        Looks up the originating request's headers via the
-        interception server (keyed by ``state["current_request_id"]``)
-        and passes them to ``harness.keep_trajectory_step`` along
-        with the step and state. ``True`` keeps; ``False`` drops.
-        ``None`` filter (default) keeps every step.
+        Reads the originating request's headers from
+        ``state["_last_request_headers"]`` — ``CliAgentEnv.get_model_response``
+        stashes them there before clearing ``current_request_id``, since
+        ``add_trajectory_step`` runs *after* that clear. Headers, step,
+        and state are passed to ``harness.keep_trajectory_step``;
+        ``True`` keeps, ``False`` drops. ``None`` filter (default) keeps
+        every step.
         """
         if self.harness.keep_trajectory_step is not None:
-            request_id = state.get("current_request_id")
-            headers: dict[str, str] = {}
-            if request_id is not None:
-                server = self._require_interception_server()
-                intercept = server.intercepts.get(request_id) or {}
-                raw_headers = intercept.get("headers")
-                if isinstance(raw_headers, dict):
-                    headers = raw_headers
+            headers = state.get("_last_request_headers") or {}
             if not self.harness.keep_trajectory_step(trajectory_step, state, headers):
                 return
         await super().add_trajectory_step(state, trajectory_step)

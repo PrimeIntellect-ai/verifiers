@@ -4,12 +4,13 @@ Validates that rlm_harness() produces a Harness with the correct metrics
 fields and that the install script is generated correctly.
 """
 
+import asyncio
 import importlib
 import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -779,3 +780,197 @@ def test_rlm_harness_include_sub_rlm_trajectories_disables_filter():
     """``include_sub_rlm_trajectories=True`` removes the filter entirely."""
     harness = rlm_harness(include_sub_rlm_trajectories=True)
     assert harness.keep_trajectory_step is None
+
+
+# ── keep_trajectory_step end-to-end (header-stash ordering) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_get_model_response_stashes_headers_before_clear():
+    """``CliAgentEnv.get_model_response`` must stash the intercept's headers
+    on ``state["_last_request_headers"]`` BEFORE clearing
+    ``state["current_request_id"]``.
+
+    Why this matters: the rollout loop calls ``add_model_response`` (which
+    invokes ``add_trajectory_step``) immediately after ``get_model_response``
+    returns. By that point ``current_request_id`` has been cleared, so any
+    consumer that wants the originating request's headers must read them
+    from the stash key — see ``ComposableEnv.add_trajectory_step``.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+        rubric=vf.Rubric(),
+    )
+
+    request_id = "req-test-stash"
+    headers_in = {"x-rlm-depth": "1", "user-agent": "rlm/0.1"}
+    intercept = {
+        "stream": False,
+        "headers": headers_in,
+        "response_future": asyncio.get_event_loop().create_future(),
+    }
+    env._interception_server.intercepts[request_id] = intercept
+
+    state: dict = {"current_request_id": request_id, "model": "test-model"}
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    with patch.object(
+        environment_module.Environment,
+        "get_model_response",
+        new=AsyncMock(return_value=fake_response),
+    ):
+        result = await env.get_model_response(
+            state=state,
+            prompt=[{"role": "user", "content": "go"}],
+        )
+
+    assert result is fake_response
+    # The whole point of the fix: headers must outlive the clear.
+    assert state["current_request_id"] is None
+    assert state["_last_request_headers"] == headers_in
+
+
+@pytest.mark.asyncio
+async def test_composable_env_add_trajectory_step_reads_stashed_headers(
+    tmp_path,
+):
+    """``ComposableEnv.add_trajectory_step`` must consult
+    ``state["_last_request_headers"]`` (NOT ``current_request_id``, which is
+    already None when this runs) when invoking the harness filter.
+
+    Drives the actual code path with the rlm harness's
+    ``_keep_only_parent_rlm_steps`` filter and asserts that depth=1 steps
+    are dropped while depth=0 steps are kept.
+    """
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+    )
+
+    parent_step = {"prompt": [], "completion": [{"role": "assistant", "content": "p"}]}
+    sub_step = {"prompt": [], "completion": [{"role": "assistant", "content": "s"}]}
+
+    state: dict = {
+        "trajectory": [],
+        # current_request_id is None at this point — get_model_response cleared it.
+        "current_request_id": None,
+        "_last_request_headers": {"x-rlm-depth": "1"},
+    }
+    await env.add_trajectory_step(state, sub_step)
+    assert state["trajectory"] == [], "sub-agent step (depth=1) must be dropped"
+
+    state["_last_request_headers"] = {"x-rlm-depth": "0"}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step], "parent step (depth=0) must be kept"
+
+    # Missing header (e.g. non-rlm caller) is treated as parent.
+    state["_last_request_headers"] = {}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step, parent_step]
+
+
+@pytest.mark.asyncio
+async def test_composable_env_keep_trajectory_step_end_to_end(tmp_path):
+    """Full ordering: ``get_model_response`` runs first (clearing
+    ``current_request_id`` and stashing headers), then
+    ``add_trajectory_step`` runs and reads the stash.
+
+    Mimics ``MultiTurnEnv.rollout`` calling the two methods back-to-back.
+    Without the stash, ``add_trajectory_step`` would see no headers and
+    keep every step — this test would fail by the sub-agent step landing
+    in the trajectory.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+    )
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    async def run_one_turn(depth: str) -> dict:
+        request_id = f"req-{depth}"
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "headers": {"x-rlm-depth": depth},
+            "response_future": asyncio.get_event_loop().create_future(),
+        }
+        state: dict = {
+            "current_request_id": request_id,
+            "model": "test-model",
+            "trajectory": [],
+        }
+        with patch.object(
+            environment_module.Environment,
+            "get_model_response",
+            new=AsyncMock(return_value=fake_response),
+        ):
+            await env.get_model_response(
+                state=state,
+                prompt=[{"role": "user", "content": "go"}],
+            )
+        # Mimic MultiTurnEnv.rollout's next call.
+        step = {
+            "prompt": [],
+            "completion": [{"role": "assistant", "content": "x"}],
+        }
+        await env.add_trajectory_step(state, step)
+        return state
+
+    sub_state = await run_one_turn("1")
+    assert sub_state["trajectory"] == [], (
+        "sub-agent (depth=1) step must NOT land in trajectory"
+    )
+
+    parent_state = await run_one_turn("0")
+    assert len(parent_state["trajectory"]) == 1, (
+        "parent (depth=0) step must land in trajectory"
+    )
