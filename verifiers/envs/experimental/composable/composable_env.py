@@ -58,6 +58,35 @@ from verifiers.types import State
 logger = logging.getLogger(__name__)
 
 
+# Directory/file names that are never useful inside the sandbox: VCS metadata,
+# host-side virtualenvs, language tool caches. Skipping them shrinks the tar
+# the harness ships up (e.g. for an agent checkout, .venv alone can dominate
+# the archive) and saves CPU on the gzip pass.
+_UPLOAD_EXCLUDE_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".uv-cache",
+        ".tox",
+        "node_modules",
+    }
+)
+_UPLOAD_EXCLUDE_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
+
+
+def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """``tarfile.add`` filter that drops always-skip caches/VCS dirs."""
+    base = info.name.rsplit("/", 1)[-1]
+    if base in _UPLOAD_EXCLUDE_NAMES or base.endswith(_UPLOAD_EXCLUDE_SUFFIXES):
+        return None
+    return info
+
+
 class HarnessMetricsRubricGroup(vf.RubricGroup):
     async def cleanup(self, state: State) -> None:
         for rubric in self.rubrics:
@@ -383,17 +412,22 @@ class ComposableEnv(CliAgentEnv):
     def _build_dir_archive(
         self, local_source: Traversable | Path, remote_dest: str
     ) -> Path:
-        """Build a tar.gz archive of a directory, rooted at *remote_dest*."""
+        """Build a tar.gz archive of a directory, rooted at *remote_dest*.
+
+        Skips VCS metadata, host-side virtualenvs, and language tool caches
+        (see ``_UPLOAD_EXCLUDE_NAMES``) — they're never useful in the sandbox
+        and can dominate archive size and gzip cost.
+        """
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
                 with shared_path_lock(local_source, suffix=".in-use.lock"):
-                    tar.add(local_source, arcname=arcname)
+                    tar.add(local_source, arcname=arcname, filter=_upload_tar_filter)
             else:
                 with resources.as_file(local_source) as local_path:
-                    tar.add(local_path, arcname=arcname)
+                    tar.add(local_path, arcname=arcname, filter=_upload_tar_filter)
         return tar_path
 
     # -- Harness metrics collection --------------------------------------------

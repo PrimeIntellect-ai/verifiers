@@ -667,3 +667,46 @@ async def test_composable_env_no_metrics_when_path_not_set():
 
     # No execute_command calls since no log_path and no metrics_path
     env.sandbox_client.execute_command.assert_not_awaited()
+
+
+# ── _build_dir_archive: cache/VCS exclusion ────────────────────────────
+
+
+def test_build_dir_archive_excludes_caches_and_vcs(tmp_path):
+    """Tarballing a directory with caches/.git/.venv must skip those entries."""
+    import tarfile
+
+    src = tmp_path / "checkout"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "main.py").write_text("print('hi')\n")
+    # Things that must be excluded
+    (src / ".git").mkdir()
+    (src / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (src / ".venv").mkdir()
+    (src / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (src / "src" / "__pycache__").mkdir()
+    (src / "src" / "__pycache__" / "main.cpython-312.pyc").write_bytes(b"\x00\x01")
+    (src / "src" / "main.pyc").write_bytes(b"\x00\x01")
+    (src / ".pytest_cache").mkdir()
+    (src / ".pytest_cache" / "v").write_text("x")
+
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+    )
+
+    archive = env._build_dir_archive(src, "/remote/dest")
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            names = tar.getnames()
+    finally:
+        archive.unlink(missing_ok=True)
+
+    joined = "\n".join(names)
+    assert "remote/dest/src/main.py" in names
+    assert ".git" not in joined
+    assert ".venv" not in joined
+    assert "__pycache__" not in joined
+    assert ".pytest_cache" not in joined
+    assert not any(n.endswith(".pyc") for n in names)
