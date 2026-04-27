@@ -118,11 +118,9 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
-            # could not stitch — every fallback past turn 1 throws away KV
-            # cache reuse, so surface it loudly for ops to catch regressions.
+            # could not stitch — surface it loudly so ops catches regressions.
             self.logger.warning(
-                "TITO fell back to MITO on turn %d (KV cache reuse skipped); "
-                "see prior TITO log line for sub-reason.",
+                "TITO fell back to MITO on turn %d; see prior TITO log line for sub-reason.",
                 len(state["trajectory"]) + 1,
             )
             return await super().get_native_response(
