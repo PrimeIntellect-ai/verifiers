@@ -243,7 +243,7 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         self.timeout_minutes = timeout_minutes
         suffix = f"-{language}" if language else ""
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name=f"swe/swerebench-v2{suffix}",
             filter_fn=filter_fn,
         )
