@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
@@ -35,6 +35,7 @@ from textual.widgets import (
     Input,
     Label,
     OptionList,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -123,6 +124,7 @@ class MetricSummary:
 class RunOverviewStats:
     rewards: List[float]
     metric_summaries: List[MetricSummary]
+    metric_values: Dict[str, List[float]] = field(default_factory=dict)
 
 
 class RunBrowserTree(Tree[BrowserNodeData]):
@@ -709,6 +711,7 @@ def _compute_run_overview_stats(run: RunInfo) -> RunOverviewStats:
             for name, values in sorted(metric_values.items())
             if values
         ],
+        metric_values=dict(metric_values),
     )
 
 
@@ -979,6 +982,51 @@ def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
         for label, count, style in bucket_counts
         if not (label in ("<0", ">1") and count == 0)
     ]
+
+
+# Gradient from red (low) through yellow (mid) to green (high).
+_METRIC_BUCKET_STYLES: Tuple[str, ...] = (
+    "bold red",
+    "red",
+    "yellow",
+    "yellow",
+    "green",
+    "bold green",
+)
+
+
+def _metric_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
+    """Adaptive bucketing for arbitrary numeric metrics.
+
+    Splits the value range into 6 equal-width buckets with a red→green gradient.
+    """
+    if not values:
+        return []
+    lo = min(values)
+    hi = max(values)
+    n_buckets = len(_METRIC_BUCKET_STYLES)
+    if lo == hi:
+        # All values identical — single bucket.
+        label = _format_compact_metric(lo)
+        return [(label, len(values), "bold green")]
+    step = (hi - lo) / n_buckets
+    buckets: List[Tuple[str, int, str]] = []
+    for i in range(n_buckets):
+        edge_lo = lo + i * step
+        edge_hi = lo + (i + 1) * step
+        if i == 0:
+            label = f"<{edge_hi:.2g}"
+        elif i == n_buckets - 1:
+            label = f"≥{edge_lo:.2g}"
+        else:
+            label = f"{edge_lo:.2g}-{edge_hi:.2g}"
+        buckets.append((label, 0, _METRIC_BUCKET_STYLES[i]))
+    for v in values:
+        idx = int((v - lo) / step)
+        idx = min(idx, n_buckets - 1)  # clamp hi value into last bucket
+        lbl, cnt, sty = buckets[idx]
+        buckets[idx] = (lbl, cnt + 1, sty)
+    return [(lbl, cnt, sty) for lbl, cnt, sty in buckets if cnt > 0]
 
 
 _COMPARE_ALIAS_PALETTE: Tuple[str, ...] = (
@@ -1745,17 +1793,17 @@ class MathMarkdown(BaseMarkdown):
 # ----------------------------
 # Screens
 # ----------------------------
+
+
 class CompareRunsScreen(Screen):
     """Dedicated comparison view for runs, optionally across models."""
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("b,backspace", "back", "Back"),
-        Binding("g", "enter_group_mode", "Group by"),
-        Binding("left", "group_cursor_left", show=False),
-        Binding("right", "group_cursor_right", show=False),
-        Binding("enter", "group_select", show=False),
-        Binding("escape", "exit_group_mode", show=False),
+        Binding("left", "cursor_left", "←"),
+        Binding("right", "cursor_right", "→"),
+        Binding("enter", "cursor_select", "Select"),
         Binding("c", "copy", "Copy"),
         Binding("ctrl+c", "copy", show=False),
     ]
@@ -1768,17 +1816,25 @@ class CompareRunsScreen(Screen):
         self._stats_by_path: Dict[Path, RunOverviewStats] = {}
         self._setting_keys: List[str] = []
         self._run_settings: List[Tuple[RunInfo, Dict[str, str]]] = []
-        self._group_mode: bool = False
-        self._group_cursor: int = 0
+        self._cursor: int = 0  # 0..len(setting_keys) — last pos is the metric col
         self._grouped_by_key: str | None = None
         self._distinct_prompts_by_group: Dict[Tuple[str, ...], int] = {}
         self._prompt_count_cache: Dict[str, int] = {}  # run-ID-set hash → count
+        self._selected_metric: str = "reward"
+        self._available_metrics: List[str] = ["reward"]
 
     def compose(self) -> ComposeResult:
         with Container():
             yield Panel(
                 Label(Text("Run Comparison", style="bold"), classes="title"),
                 Static("", id="compare-subtitle", classes="subtitle", markup=False),
+                Select[str](
+                    [("reward", "reward")],
+                    value="reward",
+                    prompt="metric",
+                    id="metric-select",
+                    allow_blank=False,
+                ),
                 VerticalScroll(
                     Static("", id="compare-header", markup=False),
                     Static("", id="compare-outcomes", markup=False),
@@ -1807,10 +1863,6 @@ class CompareRunsScreen(Screen):
             self._refresh_outcomes()
             self._load_distinct_prompt_counts()
             return
-        if self._group_mode:
-            self._group_mode = False
-            self._refresh_outcomes()
-            return
         self.app.pop_screen()
 
     @staticmethod
@@ -1821,6 +1873,15 @@ class CompareRunsScreen(Screen):
         )
         return buf.getvalue().rstrip()
 
+    @property
+    def _cursor_count(self) -> int:
+        """Number of cursor positions: setting keys + 1 for the metric column."""
+        return len(self._setting_keys) + 1
+
+    @property
+    def _cursor_on_metric(self) -> bool:
+        return self._cursor >= len(self._setting_keys)
+
     def action_copy(self) -> None:
         if not self._stats_by_path:
             return
@@ -1829,6 +1890,7 @@ class CompareRunsScreen(Screen):
             self._setting_keys,
             self._run_settings,
             group_by_key=self._grouped_by_key,
+            metric_key=self._selected_metric,
         )
         parts: List[str] = [
             self._renderable_to_text(outcomes_table),
@@ -1870,6 +1932,16 @@ class CompareRunsScreen(Screen):
                 settings["model"] = run.model
             if "model" not in self._setting_keys:
                 self._setting_keys.insert(0, "model")
+        # Collect available metrics across all runs.
+        metric_names: set[str] = set()
+        for stats in stats_by_path.values():
+            metric_names.update(stats.metric_values.keys())
+        metric_names.discard("reward")
+        self._available_metrics = ["reward"] + sorted(metric_names)
+        # Populate the metric selector dropdown.
+        sel = self.query_one("#metric-select", Select)
+        sel.set_options((name, name) for name in self._available_metrics)
+        sel.value = self._selected_metric
         self.query_one("#compare-header", Static).update(Text(""))
         self._refresh_outcomes()
         self._load_distinct_prompt_counts()
@@ -1958,41 +2030,50 @@ class CompareRunsScreen(Screen):
         self._distinct_prompts_by_group[group_key] = count
         self._refresh_outcomes()
 
-    def action_enter_group_mode(self) -> None:
-        if not self._setting_keys:
+    def action_cursor_left(self) -> None:
+        if self._cursor_count <= 1:
             return
-        self._group_mode = True
-        self._group_cursor = 0
-        self._grouped_by_key = None
+        self._cursor = (self._cursor - 1) % self._cursor_count
         self._refresh_outcomes()
 
-    def action_group_cursor_left(self) -> None:
-        if not self._group_mode or not self._setting_keys:
+    def action_cursor_right(self) -> None:
+        if self._cursor_count <= 1:
             return
-        self._group_cursor = (self._group_cursor - 1) % len(self._setting_keys)
+        self._cursor = (self._cursor + 1) % self._cursor_count
         self._refresh_outcomes()
 
-    def action_group_cursor_right(self) -> None:
-        if not self._group_mode or not self._setting_keys:
-            return
-        self._group_cursor = (self._group_cursor + 1) % len(self._setting_keys)
-        self._refresh_outcomes()
-
-    def action_group_select(self) -> None:
-        if not self._group_mode or not self._setting_keys:
-            return
-        self._grouped_by_key = self._setting_keys[self._group_cursor]
-        self._distinct_prompts_by_group = {}
-        self._refresh_outcomes()
-        self._load_distinct_prompt_counts()
-
-    def action_exit_group_mode(self) -> None:
-        if self._group_mode:
-            self._group_mode = False
-            self._grouped_by_key = None
+    def action_cursor_select(self) -> None:
+        if self._cursor_on_metric:
+            # Metric column selected — open the Select dropdown
+            if len(self._available_metrics) <= 1:
+                return
+            sel = self.query_one("#metric-select", Select)
+            sel.focus()
+            sel.action_show_overlay()
+        else:
+            # Setting column selected — toggle grouping
+            if not self._setting_keys:
+                return
+            key = self._setting_keys[self._cursor]
+            if self._grouped_by_key == key:
+                self._grouped_by_key = None
+            else:
+                self._grouped_by_key = key
             self._distinct_prompts_by_group = {}
             self._refresh_outcomes()
             self._load_distinct_prompt_counts()
+
+    @on(Select.Changed, "#metric-select")
+    def on_metric_changed(self, event: Select.Changed) -> None:
+        if event.value is None or event.value == Select.BLANK:
+            return
+        metric = str(event.value)
+        if metric == self._selected_metric:
+            self.set_focus(None)
+            return
+        self._selected_metric = metric
+        self.set_focus(None)
+        self._refresh_outcomes()
 
     def _short_setting_key(self, key: str) -> str:
         replacements = {
@@ -2019,22 +2100,18 @@ class CompareRunsScreen(Screen):
             return "bold green" if share >= 0.5 else "green"
         return "bold red" if share >= 0.5 else "red"
 
-    def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
-        if not values:
+    def _build_mix_bar_from_buckets(
+        self, buckets: List[Tuple[str, int, str]], total: int, width: int = 18
+    ) -> Text:
+        if not buckets or total == 0:
             return Text("—", style="dim")
-
-        counts = _reward_bucket_counts(values)
-        total = len(values)
-        raw_widths = [
-            (count / total) * width if total else 0.0 for _, count, _ in counts
-        ]
+        raw_widths = [(count / total) * width for _, count, _ in buckets]
         segment_widths = [int(raw) for raw in raw_widths]
         used = sum(segment_widths)
-
         remainders = sorted(
             [
                 (raw - int(raw), idx)
-                for idx, ((_, count, _), raw) in enumerate(zip(counts, raw_widths))
+                for idx, ((_, count, _), raw) in enumerate(zip(buckets, raw_widths))
                 if count > 0
             ],
             reverse=True,
@@ -2044,15 +2121,31 @@ class CompareRunsScreen(Screen):
                 break
             segment_widths[idx] += 1
             used += 1
-
         out = Text()
-        for (_, count, style), segment_width in zip(counts, segment_widths):
+        for (_, count, style), segment_width in zip(buckets, segment_widths):
             if count <= 0 or segment_width <= 0:
                 continue
             out.append("█" * segment_width, style=style)
         if used < width:
             out.append("░" * (width - used), style="dim")
         return out
+
+    def _build_reward_mix_bar(self, values: List[float], width: int = 18) -> Text:
+        if not values:
+            return Text("—", style="dim")
+        return self._build_mix_bar_from_buckets(
+            _reward_bucket_counts(values), len(values), width
+        )
+
+    def _build_metric_mix_bar(
+        self,
+        values: List[float],
+        buckets: List[Tuple[str, int, str]],
+        width: int = 18,
+    ) -> Text:
+        if not values:
+            return Text("—", style="dim")
+        return self._build_mix_bar_from_buckets(buckets, len(values), width)
 
     def _build_grouped_outcomes_table(
         self,
@@ -2061,6 +2154,8 @@ class CompareRunsScreen(Screen):
         run_settings: List[Tuple[RunInfo, Dict[str, str]]],
         group_by_key: str | None = None,
         highlight_col: int | None = None,
+        highlight_metric: bool = False,
+        metric_key: str = "reward",
     ) -> Tuple[Table, List[Tuple[str, str, str]], List[Tuple[str, str, str, str]]]:
         # Determine which keys to actually group by.
         group_keys = [group_by_key] if group_by_key else setting_keys
@@ -2073,31 +2168,36 @@ class CompareRunsScreen(Screen):
                 group_key_val,
                 {
                     "runs": [],
-                    "rewards": [],
-                    "avg_rewards": [],
+                    "values": [],
+                    "avg_fallback": [],
                     "run_settings": [],
                 },
             )
             cast(List[RunInfo], group["runs"]).append(run)
             group["run_settings"].append(settings)
             stats = stats_by_path.get(run.path, RunOverviewStats([], []))
-            if stats.rewards:
-                cast(List[float], group["rewards"]).extend(stats.rewards)
-            avg_reward = _numeric_reward(run.load_metadata().get("avg_reward"))
-            if avg_reward is not None:
-                cast(List[float], group["avg_rewards"]).append(avg_reward)
+            if metric_key == "reward":
+                if stats.rewards:
+                    cast(List[float], group["values"]).extend(stats.rewards)
+                avg_reward = _numeric_reward(run.load_metadata().get("avg_reward"))
+                if avg_reward is not None:
+                    cast(List[float], group["avg_fallback"]).append(avg_reward)
+            else:
+                metric_vals = stats.metric_values.get(metric_key, [])
+                if metric_vals:
+                    cast(List[float], group["values"]).extend(metric_vals)
 
         rows = list(grouped.items())
         rows.sort(
             key=lambda item: (
                 -(
-                    sum(cast(List[float], item[1]["rewards"]))
-                    / len(cast(List[float], item[1]["rewards"]))
-                    if cast(List[float], item[1]["rewards"])
+                    sum(cast(List[float], item[1]["values"]))
+                    / len(cast(List[float], item[1]["values"]))
+                    if cast(List[float], item[1]["values"])
                     else (
-                        sum(cast(List[float], item[1]["avg_rewards"]))
-                        / len(cast(List[float], item[1]["avg_rewards"]))
-                        if cast(List[float], item[1]["avg_rewards"])
+                        sum(cast(List[float], item[1]["avg_fallback"]))
+                        / len(cast(List[float], item[1]["avg_fallback"]))
+                        if cast(List[float], item[1]["avg_fallback"])
                         else float("-inf")
                     )
                 ),
@@ -2121,16 +2221,25 @@ class CompareRunsScreen(Screen):
         # 2. Drop optional columns until setting columns (with min_width) fit.
         terminal_width = self.size.width if self.is_mounted else 120
         n = len(setting_keys)
+        is_reward = metric_key == "reward"
+        # Width of the avg metric column: must fit "avg" and the metric name.
+        # avg_content_w is the column width; avg_col_w includes +2 for padding
+        # (matching the convention used by optional_cols).
+        avg_content_w = max(5, len(metric_key))
+        avg_col_w = avg_content_w + 2
+        # min/max columns need more room than =0/=1 (values like "12.000").
+        minmax_content_w = 5 if is_reward else 7
+        minmax_col_w = minmax_content_w + 2
         optional_cols = [
-            ("=0", 7),
-            ("=1", 7),
+            ("=0", minmax_col_w),
+            ("=1", minmax_col_w),
             ("mix", 22),
             ("rollouts", 11),
             ("unique prompts", 10),
             ("runs", 7),
         ]  # name, width (includes 2 for padding)
         all_opt_w = sum(w for _, w in optional_cols)
-        budget = (terminal_width - 9 - all_opt_w) // n - 2 if n > 0 else 999
+        budget = (terminal_width - avg_col_w - all_opt_w) // n - 2 if n > 0 else 999
 
         # -- Alias headers and values that exceed the budget --
         def _alias_settings(
@@ -2207,7 +2316,7 @@ class CompareRunsScreen(Screen):
         col_widths, settings_need = _compute_col_widths(col_headers, display_maps)
 
         # If it doesn't fit, force-alias everything
-        if terminal_width - 9 - all_opt_w < settings_need + n * 2:
+        if terminal_width - avg_col_w - all_opt_w < settings_need + n * 2:
             (
                 col_headers,
                 axis_legend_rows,
@@ -2227,22 +2336,18 @@ class CompareRunsScreen(Screen):
             {"runs"},
         ]:
             opt_w = sum(w for name, w in optional_cols if name in visible)
-            if terminal_width - 9 - opt_w >= settings_need + n * 2:
+            if terminal_width - avg_col_w - opt_w >= settings_need + n * 2:
                 break
             visible -= drop_group
         show = visible.__contains__
-
-        # Distribute leftover space evenly across setting columns.
-        opt_w = sum(w for name, w in optional_cols if name in visible)
-        leftover = max(terminal_width - 9 - opt_w - settings_need, 0)
-        extra = leftover // n if n > 0 else 0
 
         for idx, (header, cw) in enumerate(zip(col_headers, col_widths)):
             header_style = "bold reverse" if highlight_col == idx else "bold dim"
             table.add_column(
                 header,
                 header_style=header_style,
-                width=cw + extra,
+                min_width=cw,
+                ratio=1,
                 no_wrap=True,
             )
         if show("runs"):
@@ -2255,39 +2360,50 @@ class CompareRunsScreen(Screen):
             table.add_column(
                 "unique prompts", justify="right", width=8, header_style="bold dim"
             )
-        table.add_column("avg", justify="right", width=7, header_style="bold #e5c07b")
+        avg_label = f"avg\n{metric_key}"
+        avg_style = "bold reverse" if highlight_metric else "bold #e5c07b"
+        table.add_column(
+            avg_label,
+            justify="right",
+            width=avg_content_w,
+            header_style=avg_style,
+        )
         if show("=0"):
-            table.add_column("=0", justify="right", width=5, header_style="bold red")
+            col0_hdr = "=0" if is_reward else "min"
+            table.add_column(
+                col0_hdr,
+                justify="right",
+                width=minmax_content_w,
+                header_style="bold red",
+            )
         if show("=1"):
-            table.add_column("=1", justify="right", width=5, header_style="bold green")
+            col1_hdr = "=1" if is_reward else "max"
+            table.add_column(
+                col1_hdr,
+                justify="right",
+                width=minmax_content_w,
+                header_style="bold green",
+            )
         if show("mix"):
             table.add_column("mix", width=20, header_style="bold dim")
 
         for _group_key_val, group in rows:
-            rewards = cast(List[float], group["rewards"])
-            avg_rewards = cast(List[float], group["avg_rewards"])
-            avg_reward = (
-                (sum(rewards) / len(rewards))
-                if rewards
-                else ((sum(avg_rewards) / len(avg_rewards)) if avg_rewards else None)
+            values = cast(List[float], group["values"])
+            avg_fallback = cast(List[float], group["avg_fallback"])
+            avg_value = (
+                (sum(values) / len(values))
+                if values
+                else ((sum(avg_fallback) / len(avg_fallback)) if avg_fallback else None)
             )
-            total = len(rewards)
+            total = len(values)
+            if is_reward:
+                buckets = _reward_bucket_counts(values)
+            else:
+                buckets = _metric_bucket_counts(values)
             zero_count = next(
-                (
-                    count
-                    for label, count, _ in _reward_bucket_counts(rewards)
-                    if label == "=0"
-                ),
-                0,
+                (count for label, count, _ in buckets if label == "=0"), 0
             )
-            one_count = next(
-                (
-                    count
-                    for label, count, _ in _reward_bucket_counts(rewards)
-                    if label == "=1"
-                ),
-                0,
-            )
+            one_count = next((count for label, count, _ in buckets if label == "=1"), 0)
             # Build setting cells.
             setting_cells: List[Text] = []
             for key in setting_keys:
@@ -2321,7 +2437,7 @@ class CompareRunsScreen(Screen):
             if show("runs"):
                 row_cells.append(str(len(cast(List[RunInfo], group["runs"]))))
             if show("rollouts"):
-                row_cells.append(str(len(rewards)) if rewards else "—")
+                row_cells.append(str(len(values)) if values else "—")
             if show("unique prompts"):
                 row_cells.append(
                     Text(
@@ -2329,34 +2445,56 @@ class CompareRunsScreen(Screen):
                         style="dim",
                     )
                 )
+            fmt = _format_reward_value if is_reward else _format_compact_metric
+            avg_style = (
+                (_reward_style(avg_value) if is_reward else "bold")
+                if avg_value is not None
+                else "dim"
+            )
             row_cells.append(
-                Text(
-                    _format_reward_value(avg_reward) if avg_reward is not None else "—",
-                    style=_reward_style(avg_reward)
-                    if avg_reward is not None
-                    else "dim",
-                )
+                Text(fmt(avg_value) if avg_value is not None else "—", style=avg_style)
             )
             if show("=0"):
-                row_cells.append(
-                    Text(
-                        f"{(zero_count / total):.0%}" if total else "—",
-                        style=self._share_style(
-                            (zero_count / total) if total else 0.0, False
-                        ),
+                if is_reward:
+                    row_cells.append(
+                        Text(
+                            f"{(zero_count / total):.0%}" if total else "—",
+                            style=self._share_style(
+                                (zero_count / total) if total else 0.0, False
+                            ),
+                        )
                     )
-                )
+                else:
+                    v_min = min(values) if values else None
+                    row_cells.append(
+                        Text(
+                            _format_compact_metric(v_min) if v_min is not None else "—",
+                            style="red" if v_min is not None else "dim",
+                        )
+                    )
             if show("=1"):
-                row_cells.append(
-                    Text(
-                        f"{(one_count / total):.0%}" if total else "—",
-                        style=self._share_style(
-                            (one_count / total) if total else 0.0, True
-                        ),
+                if is_reward:
+                    row_cells.append(
+                        Text(
+                            f"{(one_count / total):.0%}" if total else "—",
+                            style=self._share_style(
+                                (one_count / total) if total else 0.0, True
+                            ),
+                        )
                     )
-                )
+                else:
+                    v_max = max(values) if values else None
+                    row_cells.append(
+                        Text(
+                            _format_compact_metric(v_max) if v_max is not None else "—",
+                            style="green" if v_max is not None else "dim",
+                        )
+                    )
             if show("mix"):
-                row_cells.append(self._build_reward_mix_bar(rewards))
+                if is_reward:
+                    row_cells.append(self._build_reward_mix_bar(values))
+                else:
+                    row_cells.append(self._build_metric_mix_bar(values, buckets))
             table.add_row(*row_cells)
 
         return table, axis_legend_rows, value_legend_rows
@@ -2420,13 +2558,18 @@ class CompareRunsScreen(Screen):
         return Group(*items)
 
     def _build_comparison_outcomes(self) -> Group:
-        highlight_col = self._group_cursor if self._group_mode else None
+        # Cursor on a setting column → highlight that setting header.
+        # Cursor on the metric column → highlight the avg header.
+        setting_highlight = self._cursor if not self._cursor_on_metric else None
+        metric_highlight = self._cursor_on_metric
         outcomes_table, axis_legend, value_legend = self._build_grouped_outcomes_table(
             self._stats_by_path,
             self._setting_keys,
             self._run_settings,
             group_by_key=self._grouped_by_key,
-            highlight_col=highlight_col,
+            highlight_col=setting_highlight,
+            highlight_metric=metric_highlight,
+            metric_key=self._selected_metric,
         )
         items: List[Any] = [
             Text(""),
@@ -3111,12 +3254,12 @@ class ViewRunScreen(Screen):
         sampling_args = meta.get("sampling_args", {})
         usage_items: List[Tuple[str, str]] = []
         if isinstance(usage, dict):
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            if input_tokens is not None:
-                usage_items.append(("Avg input tokens", format_numeric(input_tokens)))
-            if output_tokens is not None:
-                usage_items.append(("Avg output tokens", format_numeric(output_tokens)))
+            input_tok = usage.get("input_tokens")
+            output_tok = usage.get("output_tokens")
+            if input_tok is not None:
+                usage_items.append(("Avg input tokens", format_numeric(input_tok)))
+            if output_tok is not None:
+                usage_items.append(("Avg output tokens", format_numeric(output_tok)))
         max_tokens = sampling_args.get("max_tokens")
         if max_tokens not in (None, ""):
             usage_items.append(("Max tokens", str(max_tokens)))
@@ -4581,12 +4724,18 @@ class ViewRunScreen(Screen):
         token_usage = record.get("token_usage")
         if isinstance(token_usage, dict):
             usage_lines = []
-            input_tokens = token_usage.get("input_tokens")
-            output_tokens = token_usage.get("output_tokens")
-            if input_tokens is not None:
-                usage_lines.append(f"input_tokens: {format_numeric(input_tokens)}")
-            if output_tokens is not None:
-                usage_lines.append(f"output_tokens: {format_numeric(output_tokens)}")
+            input_tok = token_usage.get("input_tokens")
+            output_tok = token_usage.get("output_tokens")
+            final_inp = token_usage.get("final_input_tokens")
+            final_outp = token_usage.get("final_output_tokens")
+            if input_tok is not None:
+                usage_lines.append(f"input_tokens: {format_numeric(input_tok)}")
+            if output_tok is not None:
+                usage_lines.append(f"output_tokens: {format_numeric(output_tok)}")
+            if final_inp is not None:
+                usage_lines.append(f"final_input_tokens: {format_numeric(final_inp)}")
+            if final_outp is not None:
+                usage_lines.append(f"final_output_tokens: {format_numeric(final_outp)}")
             self._append_context_section(out, "Tokens", "\n".join(usage_lines))
 
         timing = record.get("timing")

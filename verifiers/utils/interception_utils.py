@@ -1,6 +1,7 @@
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -23,10 +24,24 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
+from verifiers.errors import InfraError
 from verifiers.types import Response
-from verifiers.utils.logging_utils import truncate
+from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
+
+
+KEEPALIVE_INTERVAL_SECONDS = 10.0
+
+
+class StreamInterrupted(InfraError):
+    """Raised when the intercepted streaming response to the agent is cut short.
+
+    Without this, a mid-stream transport failure would be swallowed here and
+    the agent would observe a truncated (but syntactically valid) SSE stream,
+    often exiting with code 0 and an empty trajectory — bypassing the
+    non-zero-exit error capture in `CliAgentEnv.poll_job_completion`.
+    """
 
 
 class InterceptionServer:
@@ -37,8 +52,9 @@ class InterceptionServer:
     to the agent once the actual model response is obtained.
     """
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, secret: str | None = None):
         self.port = port
+        self.secret = secret or None  # treat empty string as no secret
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -99,10 +115,26 @@ class InterceptionServer:
                     self._site = None
                     self._app = None
 
-    def register_rollout(self, rollout_id: str) -> asyncio.Queue:
+    def _set_rollout_error(self, rollout_id: str, error: BaseException) -> None:
+        """Attach `error` to the rollout's state if one is registered and
+        unset. First error wins — later failures (e.g. the downstream
+        `response_future` raising too) should not clobber the original cause.
+        """
+        context = self.active_rollouts.get(rollout_id)
+        if context is None:
+            return
+        state = context.get("state")
+        if state is None or state.get("error"):
+            return
+        state["error"] = error
+
+    def register_rollout(
+        self, rollout_id: str, state: dict[str, Any] | None = None
+    ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
+            "state": state,
         }
         return request_queue
 
@@ -128,6 +160,11 @@ class InterceptionServer:
             del self.active_rollouts[rollout_id]
 
     async def _handle_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -197,11 +234,56 @@ class InterceptionServer:
                 "Connection": "keep-alive",
             },
         )
-        await response.prepare(http_request)
 
+        start = time.monotonic()
+
+        # Half-open transport at accept raises here; surface it so the
+        # rollout reschedules instead of looking like a clean empty stream.
+        try:
+            await response.prepare(http_request)
+        except Exception as e:
+            logger.warning(
+                f"[{rollout_id}] Streaming response.prepare failed: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+            )
+            return response
+        # Reuse one get() task across keepalive cycles; asyncio.wait_for on
+        # Py 3.10/3.11 can silently drop an item when its timeout cancels.
+        get_task: asyncio.Task | None = None
         try:
             while True:
-                chunk_dict = await chunk_queue.get()
+                if get_task is None:
+                    get_task = asyncio.create_task(chunk_queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task}, timeout=KEEPALIVE_INTERVAL_SECONDS
+                )
+                if get_task not in done:
+                    # SSE comment keeps the TCP path warm across the vLLM wait
+                    # so idle-timeouts in any intermediary don't reap it.
+                    try:
+                        await response.write(b": keepalive\n\n")
+                    except Exception as e:
+                        waited_s = time.monotonic() - start
+                        logger.debug(
+                            f"[{rollout_id}] Streaming error during keepalive "
+                            f"after {print_time(waited_s)}: {e}"
+                        )
+                        self._set_rollout_error(
+                            rollout_id,
+                            StreamInterrupted(
+                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"{type(e).__name__}: {e}"
+                            ),
+                        )
+                        return response
+                    continue
+
+                chunk_dict = get_task.result()
+                get_task = None
 
                 if chunk_dict is None:
                     await response.write(b"data: [DONE]\n\n")
@@ -209,12 +291,28 @@ class InterceptionServer:
 
                 chunk_json = json.dumps(chunk_dict)
                 await response.write(f"data: {chunk_json}\n\n".encode())
+                # Force a loop yield so the transport flushes before close;
+                # otherwise burst contention can truncate the final chunk.
+                await asyncio.sleep(0)
 
         except asyncio.CancelledError:
             logger.debug(f"[{rollout_id}] Streaming cancelled")
         except Exception as e:
-            logger.error(f"[{rollout_id}] Streaming error: {e}")
+            waited_s = time.monotonic() - start
+            logger.debug(
+                f"[{rollout_id}] Streaming error after {print_time(waited_s)}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"stream write failed after {print_time(waited_s)}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
             return response
+        finally:
+            if get_task is not None and not get_task.done():
+                get_task.cancel()
 
         try:
             await response_future
@@ -223,10 +321,23 @@ class InterceptionServer:
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
 
+        # Surface any write_eof failure so a tail truncation becomes a
+        # reschedulable error instead of a silent zero-turn completion.
         try:
             await response.write_eof()
-        except ConnectionResetError:
-            logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
+        except Exception as e:
+            waited_s = time.monotonic() - start
+            logger.warning(
+                f"[{rollout_id}] write_eof failed after {print_time(waited_s)}: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
         return response
 
 

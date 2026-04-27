@@ -18,9 +18,9 @@ from pathlib import Path
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
-DEFAULT_RELEASE_VERSION = "1.1.63-rl1"
+DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
 DEFAULT_RELEASE_SHA256 = (
-    "17104d601b8bf6fd03dd46a6de055b422414b9ada524fe085b09683f455ccac1"
+    "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4"
 )
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
@@ -113,7 +113,7 @@ def build_opencode_config(
                 "name": provider_display_name or provider_key,
                 "options": {
                     "baseURL": "$OPENAI_BASE_URL",
-                    "apiKey": "intercepted",
+                    "apiKey": "${OPENAI_API_KEY:-intercepted}",
                     "timeout": provider_timeout_ms,
                 },
                 "models": {
@@ -181,6 +181,12 @@ export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
 mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
+
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
 
 SCHEMA_DOLLAR='$'
 

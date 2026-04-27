@@ -483,14 +483,12 @@ class Environment(ABC):
         usage = state.get("usage")
         if isinstance(usage, Mapping):
             try:
-                input_tokens = float(usage.get("input_tokens", 0.0))
-                output_tokens = float(usage.get("output_tokens", 0.0))
+                return {
+                    "input_tokens": float(usage.get("input_tokens", 0.0)),
+                    "output_tokens": float(usage.get("output_tokens", 0.0)),
+                }
             except (TypeError, ValueError):
                 return None
-            return {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            }
         return None
 
     async def get_model_response(

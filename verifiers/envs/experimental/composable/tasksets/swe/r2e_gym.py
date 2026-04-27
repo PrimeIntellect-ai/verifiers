@@ -116,9 +116,15 @@ def _extract_gold_patch(
 
 
 def _process_example(x):
+    info = {**x}
+    # Expose generic instance_id / repo aliases so TaskSet.validate() can
+    # surface them in JSONL output (R2E-Gym rows natively use commit_hash
+    # and repo_name).
+    info.setdefault("instance_id", x.get("commit_hash"))
+    info.setdefault("repo", x.get("repo_name"))
     return {
         "question": x["problem_statement"],
-        "info": {**x},
+        "info": info,
         "answer": "",
     }
 
@@ -174,16 +180,42 @@ class R2EGymTaskSet(SandboxTaskSet):
         repo_path: str = "/testbed",
         alt_path: str = "/root",
         filter_repos: list[str] | None = None,
-        ds_num_proc: int | None = 8,
+        filter_fn: str | None = None,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
+        timeout_minutes: int = 60,
+        hide_tests_from_agent: bool = True,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['repo_name'] == 'pandas-dev/pandas'"``).
+            hide_tests_from_agent: When True (default), ``setup()`` tars
+                ``/r2e_tests`` off to the host and removes it from the
+                sandbox so the running agent can't read the ground-truth
+                tests; ``_run_tests()`` uploads the archive back at scoring
+                time. Required for fair agent rollouts. Set False when no
+                agent is running (e.g., ``TaskSet.validate()``) to swap in
+                an in-sandbox ``mv /r2e_tests /testbed/r2e_tests`` instead —
+                eliminates the per-row tar/download/upload roundtrip and
+                cuts setup cost by an order of magnitude.
+        """
         self.dataset_name = dataset_name
         self.repo_path = repo_path
         self.alt_path = alt_path
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
-        super().__init__(dataset=self._build_dataset(), name="swe/r2e")
+        self.timeout_minutes = timeout_minutes
+        self.hide_tests_from_agent = hide_tests_from_agent
+        super().__init__(
+            dataset=self._build_dataset,
+            name="swe/r2e",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from datasets import load_dataset
@@ -210,7 +242,10 @@ class R2EGymTaskSet(SandboxTaskSet):
         return info["problem_statement"]
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec | None:
-        return SandboxSpec(image=f"{REGISTRY_PREFIX}/{info['docker_image']}")
+        return SandboxSpec(
+            image=f"{REGISTRY_PREFIX}/{info['docker_image']}",
+            timeout_minutes=self.timeout_minutes,
+        )
 
     def get_workdir(self, info: dict) -> str:
         return self.repo_path
@@ -230,7 +265,15 @@ class R2EGymTaskSet(SandboxTaskSet):
         }
 
     async def setup(self, state) -> None:
-        """Symlink venv, clean pycache, download r2e_tests to host and remove from sandbox."""
+        """Symlink venv, clean pycache, stage r2e_tests for scoring.
+
+        If ``hide_tests_from_agent`` (default), tars ``/r2e_tests`` off to
+        the host and removes it from the sandbox so the agent can't read
+        the tests while working; ``_run_tests()`` uploads the archive back
+        for scoring. If False (no-agent flows like validate), just
+        ``mv /r2e_tests /testbed/r2e_tests`` in-sandbox — no host I/O,
+        much faster setup.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
 
@@ -281,7 +324,13 @@ class R2EGymTaskSet(SandboxTaskSet):
         except Exception as e:
             logger.warning(f"Continuing without deleting pycache: {e!r}")
 
-        # Download r2e_tests to host, remove from sandbox
+        if not self.hide_tests_from_agent:
+            # Fast-path: no agent is running, so tests can live in
+            # /testbed/r2e_tests from the start. No host roundtrip.
+            await _exec(f"mv /r2e_tests {self.repo_path}/r2e_tests", timeout=60)
+            return
+
+        # Agent-safe path: stash tests on host, remove from sandbox.
         remote_archive = "/tmp/r2e_tests.tar.gz"
         local_archive_path = str(Path("/tmp") / f"r2e_tests_{sandbox_id}.tar.gz")
         await _exec(f"tar -C / -czf {remote_archive} r2e_tests", timeout=300)
@@ -302,29 +351,38 @@ class R2EGymTaskSet(SandboxTaskSet):
         state: dict,
         test_timeout: int,
     ) -> str:
-        """Upload cached r2e_tests, run run_tests.sh, return test output."""
-        # Upload cached r2e_tests archive back to sandbox
+        """Restore r2e_tests into /testbed if needed, run run_tests.sh, return output.
+
+        With ``hide_tests_from_agent=True`` (default), setup() parked the
+        tests on the host — upload + extract now. With False, setup()
+        already moved them into ``/testbed/r2e_tests`` in-sandbox, so
+        there's nothing to restore.
+        """
         local_archive_path = state.get("r2e_tests_archive_local_path")
-        if not local_archive_path or not Path(local_archive_path).exists():
+        if local_archive_path and Path(local_archive_path).exists():
+            remote_archive = "/tmp/r2e_tests_roundtrip.tar.gz"
+            await sandbox_client.upload_file(
+                sandbox_id=sandbox_id,
+                file_path=remote_archive,
+                local_file_path=local_archive_path,
+                timeout=300,
+            )
+            results = await sandbox_client.execute_command(
+                sandbox_id,
+                f"tar -C {self.repo_path} -xzf {remote_archive}",
+                timeout=300,
+            )
+            if results.exit_code != 0:
+                raise RuntimeError(
+                    f"Failed to extract r2e_tests: exit_code={results.exit_code}"
+                )
+            Path(local_archive_path).unlink(missing_ok=True)
+            del state["r2e_tests_archive_local_path"]
+        elif self.hide_tests_from_agent:
             raise RuntimeError(
                 f"Missing cached r2e_tests archive: {local_archive_path}"
             )
-        remote_archive = "/tmp/r2e_tests_roundtrip.tar.gz"
-        await sandbox_client.upload_file(
-            sandbox_id=sandbox_id,
-            file_path=remote_archive,
-            local_file_path=local_archive_path,
-            timeout=300,
-        )
-        results = await sandbox_client.execute_command(
-            sandbox_id, f"tar -C {self.repo_path} -xzf {remote_archive}", timeout=300
-        )
-        if results.exit_code != 0:
-            raise RuntimeError(
-                f"Failed to extract r2e_tests: exit_code={results.exit_code}"
-            )
-        Path(local_archive_path).unlink(missing_ok=True)
-        del state["r2e_tests_archive_local_path"]
+        # else: fast-path — setup() already placed tests at /testbed/r2e_tests.
 
         # Build env vars string
         env_str = " ".join(f"{k}={v}" for k, v in self.get_env_vars().items())
@@ -398,16 +456,21 @@ class R2EGymTaskSet(SandboxTaskSet):
         return R2ERubric(self)
 
     async def validate_instance(self, state) -> bool:
-        """Apply gold patch, run tests, and check if reward > 0."""
+        """Apply gold patch, run tests, and check if reward > 0.
+
+        Exceptions propagate to the caller (``TaskSet.validate``) so
+        ``CommandTimeoutError`` / ``vf.InfraError`` / gold-apply failures
+        can be classified by their type instead of being flattened into
+        ``test_failed``. Agent rollouts use the rubric (not this method),
+        which keeps its own try/except so a transient failure still scores
+        0 rather than crashing the rollout.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        try:
-            await self._apply_gold_patch(sandbox_client, sandbox_id, state)
-            test_output = await self._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
-            )
-            state["test_output"] = test_output
-            info = state.get("info") or {}
-            return float(self._calculate_reward(state.get("test_output", ""), info)) > 0
-        except Exception:
-            return False
+        await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        test_output = await self._run_tests(
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+        )
+        state["test_output"] = test_output
+        info = state.get("info") or {}
+        return float(self._calculate_reward(state.get("test_output", ""), info)) > 0

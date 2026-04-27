@@ -17,10 +17,13 @@ connects them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from importlib.abc import Traversable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec
+    from verifiers.types import State
 
 
 @dataclass
@@ -58,6 +61,12 @@ class Harness:
         ``skills_path`` is merged into this mapping automatically.
         Use for non-skills directories; for skills prefer
         ``skills_path``.
+    get_upload_dirs:
+        Optional callable returning harness-owned local directories to
+        upload into the sandbox before install. These are merged with
+        task-declared upload dirs by ``ComposableEnv`` and resolved via
+        the same ``upload_dir_mapping`` logical-name contract.
+        Example: ``lambda: {"agent_src": Path("/path/to/checkout")}``.
     metrics_path:
         Glob pattern for a JSON metrics file inside the sandbox,
         collected after the rollout.  May contain ``{workdir}`` which is
@@ -75,9 +84,38 @@ class Harness:
     metrics_keys:
         Optional whitelist of metric keys to surface.  ``None`` means
         surface all keys found.
+    tool_names:
+        Names of the tools the agent uses internally.  When non-empty,
+        ``ComposableEnv`` auto-registers a ``ToolMonitorRubric`` that
+        counts calls to each named tool (plus a total) from the
+        assistant messages the harness emits into the trajectory.
+        Example: ``["ipython"]`` for the RLM harness.
+    environment_vars:
+        Callable taking the per-rollout ``State`` and returning the
+        env-var dict for that rollout. Merged by ``ComposableEnv``
+        between the caller-supplied ``environment_vars=`` and the
+        taskset's ``get_env_vars()``: harness wins over caller, taskset
+        wins over harness. Always a function (even for static dicts:
+        return the same dict regardless of ``state``) so the merge
+        path is uniform; the per-rollout ``state`` is what enables
+        seeded draws / prompt-conditional config without touching env
+        infrastructure.
+    post_install_uploads:
+        Optional mapping from sandbox path → file content. Uploaded via
+        the single-file upload path (same as instruction / system
+        prompt) AFTER ``install_script`` finishes. Use for small
+        harness-computed assets — e.g. RLM's git refusal shim staged
+        into ``$HOME/.local/bin/git``. For large directories use
+        ``upload_dir_mapping`` instead.
+    post_install_script:
+        Optional shell snippet run AFTER ``post_install_uploads`` land in
+        the sandbox. Typical use: ``chmod +x`` on the uploaded files, or
+        any other wiring that needs them in place first. Failure is
+        fatal, same as ``install_script``.
     """
 
     install_script: str | None = None
+    install_timeout: int = 300
     run_command: str = ""
     system_prompt: str | None = None
     system_prompt_path: str = "/task/system_prompt.txt"
@@ -86,10 +124,15 @@ class Harness:
     sandbox_spec: SandboxSpec | None = None
     skills_path: str | None = None
     upload_dir_mapping: dict[str, str] | None = None
+    get_upload_dirs: Callable[[], dict[str, Traversable | Path] | None] | None = None
     metrics_path: str | None = None
     metrics_prefix: str = ""
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
+    tool_names: list[str] | None = None
+    environment_vars: Callable[[State], dict[str, str]] | None = None
+    post_install_uploads: dict[str, str] | None = None
+    post_install_script: str | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

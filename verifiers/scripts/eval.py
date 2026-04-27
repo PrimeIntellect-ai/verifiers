@@ -142,6 +142,47 @@ def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
     return {**eval_headers_table, **eval_headers_from_list}
 
 
+def build_extra_headers_from_state(raw: dict[str, Any]) -> dict[str, str]:
+    """Build the header-name → state-key map for `ClientConfig.extra_headers_from_state`.
+
+    Reads a TOML table (`headers_from_state = { "X-Session-ID" = "trajectory_id" }`)
+    and/or a repeatable list (`--header-from-state "X-Session-ID: trajectory_id"`).
+    The CLI list wins on key collisions with the table.
+    """
+    table: dict[str, str] = {}
+    raw_table = raw.get("headers_from_state")
+    if raw_table is not None:
+        table = _validate_extra_headers_value(raw_table)
+
+    raw_list = raw.get("header_from_state")
+    if raw_list is None:
+        raw_list = []
+    if not isinstance(raw_list, list):
+        raise ValueError(
+            "'header_from_state' must be a list of 'Name: state_key' strings"
+        )
+
+    from_list: dict[str, str] = {}
+    for entry in raw_list:
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"Each 'header_from_state' entry must be a string 'Name: state_key', got: {entry!r}"
+            )
+        if ":" not in entry:
+            raise ValueError(
+                f"--header-from-state must be 'Name: state_key', got: {entry!r}"
+            )
+        key, value = entry.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if not key:
+            raise ValueError("--header-from-state name cannot be empty")
+        if not value:
+            raise ValueError("--header-from-state state_key cannot be empty")
+        from_list[key] = value
+
+    return {**table, **from_list}
+
+
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
@@ -280,6 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
     )
     parser.add_argument(
+        "--header-from-state",
+        action="append",
+        default=None,
+        help=(
+            "Per-request HTTP header whose value is read from the rollout state. "
+            "'Name: state_key' (e.g. 'X-Session-ID: trajectory_id'). Repeatable. "
+            "Defaults to X-Session-ID=example_id if unset."
+        ),
+    )
+    parser.add_argument(
         "--num-examples",
         "-n",
         type=int,
@@ -392,14 +443,14 @@ def build_parser() -> argparse.ArgumentParser:
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
-        "--tui",
-        "-u",
+        "--fullscreen",
+        "-f",
         default=False,
         action="store_true",
-        help="Use TUI mode for live evaluation display",
+        help="Use fullscreen (alternate-screen) mode for the Rich live evaluation display",
     )
     parser.add_argument(
-        "--debug",
+        "--disable-tui",
         "-d",
         default=False,
         action="store_true",
@@ -449,7 +500,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
 
-    if args.debug:  # only set up console logging in debug mode
+    if args.disable_tui and args.fullscreen:
+        raise SystemExit(
+            "error: --disable-tui and --fullscreen are mutually exclusive "
+            "(--disable-tui turns off the Rich display entirely; --fullscreen only "
+            "controls whether the Rich display uses the alternate screen buffer)."
+        )
+
+    if args.disable_tui:  # only set up console logging when TUI is disabled
         setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
@@ -632,6 +690,12 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
+        # Default X-Session-ID → example_id for sticky DP-aware routing;
+        # user-supplied headers_from_state / --header-from-state override.
+        eval_headers_from_state = {
+            "X-Session-ID": "example_id",
+            **build_extra_headers_from_state(raw),
+        }
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
@@ -676,7 +740,7 @@ def main(argv: list[str] | None = None):
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
-            extra_headers_from_state={"X-Session-ID": "example_id"},
+            extra_headers_from_state=eval_headers_from_state,
         )
 
         # Backward-compatible TOML field: resume_path
@@ -731,7 +795,7 @@ def main(argv: list[str] | None = None):
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
-            debug=raw.get("debug", False),
+            disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,
@@ -760,13 +824,13 @@ def main(argv: list[str] | None = None):
     eval_run_config = EvalRunConfig(
         evals=eval_configs, heartbeat_url=args.heartbeat_url
     )
-    if args.debug:
+    if args.disable_tui:
         asyncio.run(run_evaluations(eval_run_config))
     else:
         asyncio.run(
             run_evaluations_tui(
                 eval_run_config,
-                tui_mode=args.tui,
+                fullscreen=args.fullscreen,
                 compact=args.abbreviated_summary,
             )
         )

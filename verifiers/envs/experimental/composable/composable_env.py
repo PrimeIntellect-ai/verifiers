@@ -36,12 +36,14 @@ harnesses that need a per-instance workdir while still using a static
 
 from __future__ import annotations
 
+import asyncio
 import importlib.resources as resources
 import json
 import logging
 import shlex
 import tarfile
 import tempfile
+import time
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
@@ -50,9 +52,57 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
+from verifiers.envs.experimental.utils.file_locks import shared_path_lock
+from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State
+from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
+
+
+# Directory/file names that are never useful inside the sandbox: VCS metadata,
+# host-side virtualenvs, language tool caches. Skipping them shrinks the tar
+# the harness ships up (e.g. for an agent checkout, .venv alone can dominate
+# the archive) and saves CPU on the gzip pass.
+_UPLOAD_EXCLUDE_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".uv-cache",
+        ".tox",
+        "node_modules",
+    }
+)
+_UPLOAD_EXCLUDE_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
+
+
+def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """``tarfile.add`` filter that drops always-skip caches/VCS dirs."""
+    base = info.name.rsplit("/", 1)[-1]
+    if base in _UPLOAD_EXCLUDE_NAMES or base.endswith(_UPLOAD_EXCLUDE_SUFFIXES):
+        return None
+    return info
+
+
+class HarnessMetricsRubricGroup(vf.RubricGroup):
+    async def cleanup(self, state: State) -> None:
+        for rubric in self.rubrics:
+            await rubric.cleanup(state)
+        harness_metrics = state.get("_harness_metrics")
+        if not isinstance(harness_metrics, dict):
+            return
+        state_metrics = state.get("metrics")
+        if not isinstance(state_metrics, dict):
+            state_metrics = {}
+            state["metrics"] = state_metrics
+        for key, value in harness_metrics.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                state_metrics[key] = float(value)
 
 
 class ComposableEnv(CliAgentEnv):
@@ -77,7 +127,11 @@ class ComposableEnv(CliAgentEnv):
         install_env: dict[str, str] | None = None,
         **kwargs: Any,
     ):
-        kwargs["dataset"] = taskset.get_dataset()
+        # Forward the bound method as a DatasetBuilder so the underlying
+        # Environment defers the (often expensive) build until first
+        # access. Env worker processes that only run rollouts on inputs
+        # received over ZMQ never touch the dataset.
+        kwargs["dataset"] = taskset.get_dataset
         if "rubric" not in kwargs:
             kwargs["rubric"] = taskset.get_rubric()
         super().__init__(run_command=harness.run_command, **kwargs)
@@ -85,6 +139,16 @@ class ComposableEnv(CliAgentEnv):
         self.taskset = taskset
         self.harness = harness
         self.install_env = dict(install_env) if install_env else None
+
+        if harness.tool_names:
+            self.add_rubric(ToolMonitorRubric(tool_names=list(harness.tool_names)))
+        if harness.metrics_path:
+            rubrics = (
+                list(self.rubric.rubrics)
+                if isinstance(self.rubric, vf.RubricGroup)
+                else [self.rubric]
+            )
+            self.rubric = HarnessMetricsRubricGroup(rubrics=rubrics)
 
     # -- CliAgentEnv hooks --------------------------------------------------
 
@@ -124,6 +188,20 @@ class ComposableEnv(CliAgentEnv):
     async def build_env_vars(self, state: State) -> dict[str, str]:
         env_vars = await super().build_env_vars(state)
         info = state.get("info") or {}
+        harness_env_vars = (
+            self.harness.environment_vars(state)
+            if self.harness.environment_vars
+            else None
+        )
+        if harness_env_vars:
+            conflicts = (
+                self.PROTECTED_ENV_VARS | {"AGENT_WORKDIR"}
+            ) & harness_env_vars.keys()
+            if conflicts:
+                raise ValueError(
+                    f"Harness.environment_vars must not override protected keys: {conflicts}."
+                )
+            env_vars.update(harness_env_vars)
         task_env_vars = self.taskset.get_env_vars()
         if task_env_vars:
             conflicts = (
@@ -138,7 +216,14 @@ class ComposableEnv(CliAgentEnv):
         return env_vars
 
     async def post_sandbox_setup(self, state: State) -> None:
-        """Task setup → upload instruction → upload system prompt → install agent."""
+        """Task setup → upload instruction/system prompt → upload dirs →
+        install agent → post-install (uploads + script).
+
+        The post-install step runs ``Harness.post_install_uploads`` and
+        ``Harness.post_install_script`` after the agent is fully
+        installed — harnesses use it to layer small assets onto the
+        installed agent (e.g. RLM's ``/usr/local/bin/git`` refusal
+        shim)."""
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
@@ -147,6 +232,7 @@ class ComposableEnv(CliAgentEnv):
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
+        await self._run_post_install(sandbox_id)
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.
@@ -191,7 +277,7 @@ class ComposableEnv(CliAgentEnv):
             dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
         mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
         await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=10
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
         )
 
     async def _upload_harness_inputs(self, sandbox_id: str, state: State) -> None:
@@ -211,23 +297,43 @@ class ComposableEnv(CliAgentEnv):
     async def _after_harness_inputs_uploaded(self, state: State) -> None:
         """Upload task-declared directories to harness-declared sandbox paths.
 
-        Joins ``TaskSet.get_upload_dirs()`` (logical name → local source)
-        with ``Harness.upload_dir_mapping`` (logical name → sandbox path).
+        Joins task-declared and harness-declared upload directories with
+        ``Harness.upload_dir_mapping`` (logical name → sandbox path).
         Only directories whose logical name appears in both are uploaded.
         """
-        upload_dirs = self.taskset.get_upload_dirs()
+        upload_dirs = self._get_upload_dirs()
         mapping = self.harness.get_effective_upload_dir_mapping()
         if not upload_dirs or not mapping:
             return
         sandbox_id = state["sandbox_id"]
-        for name, local_source in upload_dirs.items():
-            remote_dest = mapping.get(name)
-            if remote_dest is not None:
-                await self._upload_dir(sandbox_id, local_source, remote_dest)
+        pending = [
+            (name, src, dest)
+            for name, src in upload_dirs.items()
+            if (dest := mapping.get(name)) is not None
+        ]
+        for _name, local_source, remote_dest in pending:
+            await self._upload_dir(sandbox_id, local_source, remote_dest)
+
+    def _get_upload_dirs(self) -> dict[str, Traversable | Path]:
+        """Merge task-owned and harness-owned upload directories."""
+        task_upload_dirs = dict(self.taskset.get_upload_dirs() or {})
+        harness_upload_dirs_value = (
+            self.harness.get_upload_dirs() if self.harness.get_upload_dirs else None
+        )
+        harness_upload_dirs = dict(harness_upload_dirs_value or {})
+        duplicate_names = sorted(set(task_upload_dirs) & set(harness_upload_dirs))
+        if duplicate_names:
+            names = ", ".join(repr(name) for name in duplicate_names)
+            raise ValueError(
+                "Upload directory names must be unique across task and harness; "
+                f"duplicates: {names}."
+            )
+        task_upload_dirs.update(harness_upload_dirs)
+        return task_upload_dirs
 
     def _get_install_execute_kwargs(self) -> dict[str, Any]:
         """Keyword arguments passed to sandbox install command execution."""
-        kwargs: dict[str, Any] = {"timeout": 300}
+        kwargs: dict[str, Any] = {"timeout": self.harness.install_timeout}
         if self.install_env:
             kwargs["env"] = self.install_env
         return kwargs
@@ -236,15 +342,48 @@ class ComposableEnv(CliAgentEnv):
         """Install the agent inside the sandbox when an install script is present."""
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
+            install_start = time.perf_counter()
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
                 self.harness.install_script,
                 **self._get_install_execute_kwargs(),
             )
+            elapsed = time.perf_counter() - install_start
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
                 raise vf.SandboxError(
                     f"Agent install failed (exit={result.exit_code}): {output[:500]}"
+                )
+            self.logger.debug(
+                f"Installed agent in sandbox {sandbox_id} in {print_time(elapsed)}"
+            )
+
+    async def _run_post_install(self, sandbox_id: str) -> None:
+        """Upload harness ``post_install_uploads`` and run ``post_install_script``.
+
+        Runs after ``_install_agent`` so harnesses can layer small assets
+        on top of a fully-installed agent (e.g. RLM stages its git refusal
+        shim into ``$HOME/.local/bin/git`` and chmods it executable).
+        Uses the single-file upload path — not ``_upload_dir`` — because
+        these are small, harness-computed blobs of content rather than
+        local directories on disk.
+        """
+        uploads = self.harness.post_install_uploads
+        if uploads:
+            for remote_path, content in uploads.items():
+                await self.upload_content(sandbox_id, content, remote_path)
+
+        if self.harness.post_install_script:
+            self.logger.debug(f"Running post-install script in sandbox {sandbox_id}")
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                self.harness.post_install_script,
+                **self._get_install_execute_kwargs(),
+            )
+            if result.exit_code != 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                raise vf.SandboxError(
+                    f"Post-install failed (exit={result.exit_code}): {output[:500]}"
                 )
 
     # -- Directory upload ------------------------------------------------------
@@ -255,10 +394,21 @@ class ComposableEnv(CliAgentEnv):
         local_source: Traversable | Path,
         remote_dest: str,
     ) -> None:
-        """Tar, upload, and extract a directory into the sandbox."""
+        """Tar, upload, and extract a directory into the sandbox.
+
+        Building the gzipped tar is sync, CPU-bound, and for large sources can
+        take hundreds of milliseconds; offload it to a worker thread so the
+        event loop stays responsive when many rollouts upload in parallel.
+        """
         remote_tar = f"/tmp/_upload_{remote_dest.strip('/').replace('/', '_')}.tar.gz"
-        tmp_path = self._build_dir_archive(local_source, remote_dest)
+        tmp_path = await asyncio.to_thread(
+            self._build_dir_archive, local_source, remote_dest
+        )
         try:
+            self.logger.debug(
+                f"Uploading {print_size(tmp_path.stat().st_size)} archive "
+                f"to sandbox {sandbox_id}:{remote_dest}"
+            )
             await self.upload_file(sandbox_id, remote_tar, str(tmp_path))
             dest_parent = shlex.quote(str(Path(remote_dest).parent))
             quoted_remote_tar = shlex.quote(remote_tar)
@@ -267,7 +417,7 @@ class ComposableEnv(CliAgentEnv):
                 f"mkdir -p {dest_parent} && "
                 f"tar -xzf {quoted_remote_tar} -C / && "
                 f"rm -f {quoted_remote_tar}",
-                timeout=60,
+                timeout=self.timeouts.extract,
             )
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
@@ -280,16 +430,22 @@ class ComposableEnv(CliAgentEnv):
     def _build_dir_archive(
         self, local_source: Traversable | Path, remote_dest: str
     ) -> Path:
-        """Build a tar.gz archive of a directory, rooted at *remote_dest*."""
+        """Build a tar.gz archive of a directory, rooted at *remote_dest*.
+
+        Skips VCS metadata, host-side virtualenvs, and language tool caches
+        (see ``_UPLOAD_EXCLUDE_NAMES``) — they're never useful in the sandbox
+        and can dominate archive size and gzip cost.
+        """
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
         arcname = remote_dest.lstrip("/")
         with tarfile.open(tar_path, "w:gz") as tar:
             if isinstance(local_source, Path):
-                tar.add(local_source, arcname=arcname)
+                with shared_path_lock(local_source, suffix=".in-use.lock"):
+                    tar.add(local_source, arcname=arcname, filter=_upload_tar_filter)
             else:
                 with resources.as_file(local_source) as local_path:
-                    tar.add(local_path, arcname=arcname)
+                    tar.add(local_path, arcname=arcname, filter=_upload_tar_filter)
         return tar_path
 
     # -- Harness metrics collection --------------------------------------------
@@ -313,8 +469,15 @@ class ComposableEnv(CliAgentEnv):
                 data = data.get(self.harness.metrics_key, {})
             prefix = self.harness.metrics_prefix
             allowed = self.harness.metrics_keys
+            harness_metrics = state.get("_harness_metrics")
+            if not isinstance(harness_metrics, dict):
+                harness_metrics = {}
+                state["_harness_metrics"] = harness_metrics
             for key, value in data.items():
                 if allowed is None or key in allowed:
-                    state[f"{prefix}{key}"] = value
+                    prefixed_key = f"{prefix}{key}"
+                    state[prefixed_key] = value
+                    if isinstance(value, (int, float)):
+                        harness_metrics[prefixed_key] = float(value)
         except Exception as e:
             self.logger.warning(f"Failed to collect harness metrics: {e}")
