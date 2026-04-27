@@ -1,0 +1,17 @@
+[project]
+name = "alphabet-sort-th"
+version = "0.1.0"
+tags = ["sorting", "names", "multi-turn", "xml", "synthetic", "taskset-harness"]
+license = "Apache-2.0"
+description = "Taskset/harness migration of alphabet-sort using the user channel."
+dependencies = [
+    "verifiers>=0.1.9",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["alphabet_sort_th.py", "pyproject.toml"]

@@ -458,13 +458,15 @@ def make_input() -> Callable[..., RolloutInput]:
 
     def _make_input(
         example_id: int = 0,
-        task: str = "default",
         prompt: Messages = DEFAULT_PROMPT,
         info: Info = {},
         answer: str = "4",
     ) -> RolloutInput:
         return RolloutInput(
-            example_id=example_id, task=task, prompt=prompt, answer=answer, info=info
+            example_id=example_id,
+            prompt=prompt,
+            answer=answer,
+            info=info,
         )
 
     return _make_input
@@ -476,7 +478,6 @@ def make_state() -> Callable[..., State]:
 
     def _make_state(
         example_id: int = 0,
-        task: str = "default",
         prompt: Messages = DEFAULT_PROMPT,
         answer: str = "4",
         info: Info = {},
@@ -498,7 +499,6 @@ def make_state() -> Callable[..., State]:
     ) -> State:
         return State(
             example_id=example_id,
-            task=task,
             prompt=prompt,
             answer=answer,
             info=info,

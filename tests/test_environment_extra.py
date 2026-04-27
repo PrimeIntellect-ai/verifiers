@@ -337,7 +337,6 @@ async def test_generate_grouped_scoring_distributes_per_group(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",
@@ -432,7 +431,6 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",

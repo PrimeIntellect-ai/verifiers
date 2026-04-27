@@ -113,6 +113,12 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
 
+    @vf.cleanup(priority=100)
+    async def render_state(self, state: State) -> None:
+        """Render core rollout fields before user cleanup handlers run."""
+        await self._render_timing(state)
+        await self.render_completion(state)
+
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
@@ -151,12 +157,12 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
+        cleanup_started = False
         try:
             try:
                 state = await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
-            # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
                     prompt_messages = await self.get_prompt_messages(state)
@@ -173,8 +179,10 @@ class MultiTurnEnv(vf.Environment):
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
-            await self.render_completion(state)
+            cleanup_started = True
+            await self.cleanup(state)
             return state
         except asyncio.CancelledError:
-            await self._cleanup(state)
+            if not cleanup_started:
+                await self.cleanup(state)
             raise

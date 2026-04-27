@@ -1153,7 +1153,7 @@ _STANDARD_NUMERIC_FIELDS = {
     "prompt",
     "completion",
     "answer",
-    "task",
+    "env_id",
     "info",
     "reward",
     "error",
@@ -4712,7 +4712,7 @@ class ViewRunScreen(Screen):
 
     def _build_task_text(self, record: Dict[str, Any]) -> Text:
         out = Text()
-        self._append_context_section(out, "Task", record.get("task"))
+        self._append_context_section(out, "Environment", record.get("env_id"))
         self._append_context_section(out, "Answer", record.get("answer"))
         self._append_context_section(
             out, "Stop condition", record.get("stop_condition")

@@ -44,7 +44,6 @@ class TestMathRubric:
             input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
-                task="test_task",
             )
         )
         state["completion"] = test_case["completion"]
@@ -78,7 +77,6 @@ class TestMathRubric:
             input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
-                task="test_task",
             )
         )
         state["completion"] = test_case["completion"]
@@ -111,7 +109,6 @@ class TestMathRubric:
             input=make_input(
                 prompt="test prompt",
                 answer=answer,
-                task="test_task",
             )
         )
         state["completion"] = completion

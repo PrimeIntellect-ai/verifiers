@@ -55,7 +55,7 @@ class TestStatefulToolEnv:
         )
 
         state = await mock_stateful_tool_env.rollout(
-            input=make_input(prompt=[user_message], task="", answer=""),
+            input=make_input(prompt=[user_message], answer=""),
             client=mock_client,
             model="test-model",
         )
@@ -187,7 +187,7 @@ class TestStatefulToolEnv:
 
         state = await env.rollout(
             input=make_input(
-                prompt=[{"role": "user", "content": "Square 4"}], answer="", task=""
+                prompt=[{"role": "user", "content": "Square 4"}], answer=""
             ),
             client=mock_client,
             model="test-model",
@@ -235,9 +235,7 @@ class TestStatefulToolEnv:
         )
 
         state = await env.rollout(
-            input=make_input(
-                prompt=[{"role": "user", "content": "Invoke"}], answer="", task=""
-            ),
+            input=make_input(prompt=[{"role": "user", "content": "Invoke"}], answer=""),
             client=mock_client,
             model="test-model",
         )

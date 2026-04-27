@@ -65,8 +65,10 @@ from verifiers.types import (
     State,
     TokenUsage,
     Tool,
+    flatten_task_input,
 )
 from verifiers.utils.async_utils import (
+    maybe_call_with_named_args,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -344,18 +346,6 @@ class Environment(ABC):
                 )
         return dataset
 
-    def _ensure_task(self, dataset: Dataset, map_kwargs: dict = {}) -> Dataset:
-        """Ensure task column exists, set to env_id."""
-        if "task" not in dataset.column_names:
-            task_value = self.env_id or "default"
-
-            def add_task(example):
-                example["task"] = task_value
-                return example
-
-            dataset = dataset.map(add_task, **map_kwargs)
-        return dataset
-
     def _format_dataset(
         self,
         dataset: Dataset,
@@ -366,23 +356,25 @@ class Environment(ABC):
         map_kwargs: dict = {},
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id and prompt columns.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_dataset_source(self, dataset: Dataset) -> Dataset:
@@ -565,17 +557,18 @@ class Environment(ABC):
         Environment-agnostic - just stores the data.
 
         Creates State with input fields in "input" RolloutInput for structured access,
-        but State's forwarding behavior allows backward-compatible direct access.
+        while State's forwarding behavior keeps direct access ergonomic.
         """
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
-        if "task" not in state_input:
-            state_input["task"] = self.env_id or "default"
+        state_task = flatten_task_input(state_input)
+        state_input = cast(RolloutInput, state_task)
         state = State(input=state_input)
+        state["task"] = state_task
 
         # Convert prompt to Pydantic messages
-        raw_prompt = input.get("prompt")
+        raw_prompt = state_input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
             state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
 
@@ -631,12 +624,23 @@ class Environment(ABC):
         """
         pass
 
-    async def _cleanup(self, state: State):
+    async def cleanup(
+        self,
+        state: State,
+        task: object | None = None,
+        resources: object | None = None,
+    ):
         """
-        Clean up rollout resources.
+        Finalize rollout state and clean up rollout-local resources.
         """
         for handler in self._cleanup_handlers:
-            await handler(state)
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                env=self,
+                resources=resources,
+            )
 
     async def _teardown(self):
         """
@@ -646,8 +650,13 @@ class Environment(ABC):
         for handler in self._teardown_handlers:
             await handler()
 
-    async def _render_stop(self, state: State, condition) -> bool:
-        if await condition(state):
+    async def _render_stop(self, state: State, condition, **kwargs) -> bool:
+        if await maybe_call_with_named_args(
+            condition,
+            state=state,
+            env=self,
+            **kwargs,
+        ):
             state["is_completed"] = True
             state["is_truncated"] = state.get("is_truncated", False) or any(
                 step.get("is_truncated", False) for step in state.get("trajectory", [])
@@ -668,11 +677,9 @@ class Environment(ABC):
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
-        """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
+        """Check stop conditions and render stop fields when one fires."""
         for condition in self._stop_conditions:
-            if await self._render_stop(state, condition):
-                await self._render_timing(state)
-                await self._cleanup(state)
+            if await self._render_stop(state, condition, **kwargs):
                 return True
         return False
 

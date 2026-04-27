@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import (
     Callable,
     Literal,
     TypeAlias,
+    cast,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -233,14 +235,14 @@ class TrajectoryStep(TypedDict):
 class BaseRolloutInput(TypedDict):
     prompt: Messages
     example_id: int
-    task: str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
-    # required: prompt, example_id, task
-    # optional: answer, info
+    # required: prompt, example_id
+    # optional: answer, info, channels
     answer: str
     info: Info | str
+    channels: dict[str, Any] | str
 
 
 class RolloutTiming(TypedDict, total=False):
@@ -263,7 +265,7 @@ class RolloutOutput(dict):
     arbitrary additional fields from state_columns. All values must be
     JSON-serializable.
 
-    Required fields: example_id, task, prompt, completion, reward, timing,
+    Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage
@@ -272,7 +274,6 @@ class RolloutOutput(dict):
 
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -291,9 +292,10 @@ class RolloutOutput(dict):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
+    task: dict[str, Any]
     client: Client
     model: str
     sampling_args: SamplingArgs | None
@@ -308,7 +310,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: Error | ErrorInfo | None
     usage: TokenUsage | None
     usage_tracker: object
 
@@ -320,6 +322,12 @@ class State(dict):
                 return input_obj[key]
         return super().__getitem__(key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
         if key in self.INPUT_FIELDS and "input" in self:
@@ -329,11 +337,25 @@ class State(dict):
                 return
         super().__setitem__(key, value)
 
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
+
+TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id", "channels", "task"}
+
+
+def normalize_task_payload(value: object) -> dict[str, Any]:
+    """Normalize the optional serialized task payload attached to a rollout."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, Mapping):
+        raise TypeError("input.task must be a mapping.")
+    return dict(cast(Mapping[str, Any], value))
+
+
+def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a row-shaped task dict with legacy nested task payload flattened."""
+    flattened = {key: value for key, value in input_data.items() if key != "task"}
+    if "task" in input_data and input_data["task"] is not None:
+        flattened.update(normalize_task_payload(input_data["task"]))
+    return flattened
 
 
 # oai tools

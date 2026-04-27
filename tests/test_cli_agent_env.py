@@ -231,7 +231,7 @@ class TestHarborEnv:
             dataset_path=harbor_task_dir,
         )
         assert len(env.dataset) == 1
-        assert env.dataset[0]["task"] == "test_task"
+        assert env.dataset[0]["info"]["task_name"] == "test_task"
 
     def test_init_filters_tasks(self, harbor_task_dir):
         """Test that HarborEnv can filter tasks by name."""
@@ -247,7 +247,7 @@ class TestHarborEnv:
             tasks=["test_task"],
         )
         assert len(env.dataset) == 1
-        assert env.dataset[0]["task"] == "test_task"
+        assert env.dataset[0]["info"]["task_name"] == "test_task"
 
     def test_init_raises_on_empty_dataset(self):
         """Test that HarborEnv raises when no valid tasks found."""
@@ -301,7 +301,7 @@ class TestHarborEnv:
         )
         state = {
             "interception_base_url": "https://test.trycloudflare.com/v1",
-            "task": "my_task",
+            "info": {"task_name": "my_task"},
         }
         env_vars = await env.build_env_vars(state)
 

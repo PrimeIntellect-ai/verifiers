@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
-from typing import TYPE_CHECKING, Mapping, final
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast, final
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -15,6 +17,48 @@ from verifiers.serve import EnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset
+
+
+ENV_GROUP_INFO_KEY = "env_id"
+
+
+def _info_dict(info: object) -> dict[str, Any]:
+    if info is None:
+        return {}
+    if isinstance(info, str):
+        parsed = json.loads(info)
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("RolloutInput info must decode to a dict for EnvGroup.")
+    if isinstance(info, Mapping):
+        return dict(cast(Mapping[str, Any], info))
+    raise ValueError("RolloutInput info must be a dict for EnvGroup.")
+
+
+def _normalize_route(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(str(item) for item in value)
+    if value is None:
+        return ()
+    raise ValueError("EnvGroup info['env_id'] must be a string or list of strings.")
+
+
+def _route_value(route: tuple[str, ...]) -> str | list[str] | None:
+    if not route:
+        return None
+    if len(route) == 1:
+        return route[0]
+    return list(route)
+
+
+def _set_info_route(row: Mapping[str, Any], route: tuple[str, ...]) -> dict[str, Any]:
+    routed = dict(row)
+    info = _info_dict(routed.get("info"))
+    info[ENV_GROUP_INFO_KEY] = _route_value(route)
+    routed["info"] = info
+    return routed
 
 
 class EnvGroupRubric(vf.Rubric):
@@ -47,16 +91,17 @@ class EnvGroupRubric(vf.Rubric):
         """
         Evaluate all reward functions in-place for a single rollout.
 
-        Routes scoring to the appropriate environment's rubric based on task.
+        Routes scoring to the appropriate environment's rubric based on info["env_id"].
         """
-        task = state.get("task", "default")
+        route = _normalize_route((state.get("info") or {}).get(ENV_GROUP_INFO_KEY))
+        env_name = route[0] if route else None
         metrics = {name: 0.0 for name in self.all_reward_names}
         reward = 0.0
 
         # get the appropriate environment
-        env = self.env_map.get(task)
+        env = self.env_map.get(env_name) if env_name is not None else None
         if env is None:
-            self.logger.warning(f"No environment found for task '{task}'")
+            self.logger.warning(f"No environment found for EnvGroup route '{env_name}'")
             state["reward"] = reward
             state["metrics"] = metrics
             return
@@ -78,19 +123,19 @@ class EnvGroupRubric(vf.Rubric):
         states: list[vf.State],
     ) -> None:
         """
-        Score a group of rollouts, routing to appropriate environment rubrics based on task.
+        Score a group of rollouts, routing to appropriate environment rubrics based on info["env_id"].
 
-        All states in a group have the same task, so we route once to the appropriate
+        All states in a group have the same environment route, so we route once to the appropriate
         environment's rubric. Ensures all states have metrics for all reward function names
         across all environments.
         """
         start_time = time.time()
         num_states = len(states)
-        # get task from first state (all states in a group have the same task)
-        task = states[0].get("task", "default")
-        env = self.env_map.get(task)
+        route = _normalize_route((states[0].get("info") or {}).get(ENV_GROUP_INFO_KEY))
+        env_name = route[0] if route else None
+        env = self.env_map.get(env_name) if env_name is not None else None
         if env is None:
-            self.logger.warning(f"No environment found for task '{task}'")
+            self.logger.warning(f"No environment found for EnvGroup route '{env_name}'")
             for state in states:
                 state["reward"] = 0.0
                 state["metrics"] = {name: 0.0 for name in self.all_reward_names}
@@ -122,12 +167,20 @@ class EnvGroupRubric(vf.Rubric):
             state["timing"]["scoring_ms"] = scoring_ms
             state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
 
+    async def cleanup(self, state: vf.State) -> None:
+        route = _normalize_route((state.get("info") or {}).get(ENV_GROUP_INFO_KEY))
+        env_name = route[0] if route else None
+        env = self.env_map.get(env_name) if env_name is not None else None
+        if env is not None:
+            await env.rubric.cleanup(state)
+        await super().cleanup(state)
+
 
 class EnvGroup(vf.Environment):
     """
     Environment group that acts as a mixture of multiple environments.
 
-    Routes operations to appropriate sub-environments based on the 'task' column.
+    Routes operations to sub-environments based on ``info["env_id"]``.
     """
 
     def __init__(
@@ -160,37 +213,43 @@ class EnvGroup(vf.Environment):
         # create mapping for quick lookup
         self.env_map = {name: env for name, env in zip(self.env_names, self.envs)}
 
-        # concatenate datasets - override task column to use env_names for routing
+        # concatenate datasets and add EnvGroup routing metadata under info["env_id"]
         datasets = []
         eval_datasets = []
 
-        def make_add_task_fn(task_name: str):
-            """Factory function to avoid closure capturing loop variable by reference."""
-
-            def add_task(example):
-                example["task"] = task_name
+        def make_add_env_route_fn(env_name: str):
+            def add_env_route(example):
+                info = _info_dict(example.get("info"))
+                child_route = _normalize_route(info.get(ENV_GROUP_INFO_KEY))
+                route = (env_name, *child_route)
+                info[ENV_GROUP_INFO_KEY] = _route_value(route)
+                example["info"] = info
                 return example
 
-            return add_task
+            return add_env_route
 
         for env, name in zip(self.envs, self.env_names):
-            add_task = make_add_task_fn(name)
+            add_env_route = make_add_env_route_fn(name)
 
             # Build dataset if using DatasetBuilder, returns None if not available
             env_dataset = env.build_dataset()
             if env_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_dataset.column_names:
-                    env_dataset = env_dataset.remove_columns(["task"])
-                env_dataset = env_dataset.map(add_task, **map_kwargs)
+                remove_cols = [
+                    col for col in ("env_id",) if col in env_dataset.column_names
+                ]
+                if remove_cols:
+                    env_dataset = env_dataset.remove_columns(remove_cols)
+                env_dataset = env_dataset.map(add_env_route, **map_kwargs)
                 datasets.append(env_dataset)
             # Build eval_dataset if using DatasetBuilder, returns None if not available
             env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_eval_dataset.column_names:
-                    env_eval_dataset = env_eval_dataset.remove_columns(["task"])
-                env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
+                remove_cols = [
+                    col for col in ("env_id",) if col in env_eval_dataset.column_names
+                ]
+                if remove_cols:
+                    env_eval_dataset = env_eval_dataset.remove_columns(remove_cols)
+                env_eval_dataset = env_eval_dataset.map(add_env_route, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
@@ -221,14 +280,11 @@ class EnvGroup(vf.Environment):
         answer_key: str = "answer",
         map_kwargs: dict = {},
     ) -> Dataset:
-        """
-        Ensure unique example_ids and mapped tasks across concatenated datasets.
-        """
+        """Ensure unique example_ids across concatenated datasets."""
         # use parent's prompt handling
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
-        # task is already set during concatenation, so skip _ensure_task
 
         # ensure unique example_ids across concatenated datasets
         if "example_id" in dataset.column_names:
@@ -242,17 +298,12 @@ class EnvGroup(vf.Environment):
 
         assert "example_id" in dataset.column_names
         assert "prompt" in dataset.column_names
-        assert "task" in dataset.column_names, (
-            "Task column should be set during concatenation in __init__"
-        )
         return dataset
 
     def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
-        """
-        Ensure unique example_ids and mapped tasks across concatenated datasets.
-        """
+        """Ensure unique example_ids across concatenated datasets."""
         # ensure unique example_ids across concatenated datasets
         if "example_id" in dataset.column_names:
             dataset = dataset.remove_columns(["example_id"])
@@ -263,9 +314,6 @@ class EnvGroup(vf.Environment):
 
         dataset = dataset.map(add_example_id, with_indices=True, **map_kwargs)
         assert "example_id" in dataset.column_names
-        assert "task" in dataset.column_names, (
-            "Task column should be set during concatenation in __init__"
-        )
         return dataset
 
     @final
@@ -279,11 +327,19 @@ class EnvGroup(vf.Environment):
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
-        env = self.get_env_for_task(input["task"])
+        env_name, child_input, route = self._route_child_input(input)
+        env = self.get_env_for_name(env_name)
         env_client = env_client or env.env_client or self.env_client
-        return await env.run_rollout(
-            input, client, model, sampling_args, max_retries, state_columns, env_client
+        output = await env.run_rollout(
+            child_input,
+            client,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+            env_client,
         )
+        return _set_info_route(output, route)  # type: ignore[return-value]
 
     @final
     async def run_group(  # type: ignore[override]
@@ -296,10 +352,25 @@ class EnvGroup(vf.Environment):
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
-        env = self.get_env_for_task(group_inputs[0]["task"])
+        env_name, first_child_input, route = self._route_child_input(group_inputs[0])
+        child_inputs = [first_child_input]
+        for group_input in group_inputs[1:]:
+            input_env_name, child_input, input_route = self._route_child_input(
+                group_input
+            )
+            if input_env_name != env_name:
+                raise ValueError(
+                    "All EnvGroup inputs in a group must route to the same environment."
+                )
+            if input_route != route:
+                raise ValueError(
+                    "All EnvGroup inputs in a group must have the same route."
+                )
+            child_inputs.append(child_input)
+        env = self.get_env_for_name(env_name)
         env_client = env_client or env.env_client or self.env_client
-        return await env.run_group(
-            group_inputs,
+        outputs = await env.run_group(
+            child_inputs,
             client,
             model,
             sampling_args,
@@ -307,6 +378,7 @@ class EnvGroup(vf.Environment):
             state_columns,
             env_client,
         )
+        return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]
 
     @final
     async def rollout(
@@ -316,11 +388,48 @@ class EnvGroup(vf.Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
-        env = self.get_env_for_task(input["task"])
-        return await env.rollout(input, client, model, sampling_args)
+        env_name, child_input, route = self._route_child_input(input)
+        env = self.get_env_for_name(env_name)
+        state = await env.rollout(child_input, client, model, sampling_args)
+        info = _info_dict(state.get("info"))
+        info[ENV_GROUP_INFO_KEY] = _route_value(route)
+        state["info"] = info
+        return state
 
-    def get_env_for_task(self, task: str) -> vf.Environment:
-        return self.env_map.get(task, self.envs[0])
+    def _route_child_input(
+        self, input: RolloutInput
+    ) -> tuple[str, RolloutInput, tuple[str, ...]]:
+        route = self._input_env_route(input)
+        env_name = route[0]
+        remaining = route[1:]
+        child_input = dict(input)
+        info = _info_dict(child_input.get("info"))
+        if remaining:
+            info[ENV_GROUP_INFO_KEY] = _route_value(remaining)
+        else:
+            info.pop(ENV_GROUP_INFO_KEY, None)
+        if info:
+            child_input["info"] = info
+        else:
+            child_input.pop("info", None)
+        return env_name, child_input, route  # type: ignore[return-value]
+
+    def _input_env_route(self, input: RolloutInput) -> tuple[str, ...]:
+        info = _info_dict(input.get("info"))
+        route = _normalize_route(info.get(ENV_GROUP_INFO_KEY))
+        if route:
+            return route
+        if len(self.envs) == 1:
+            return (self.env_names[0],)
+        raise ValueError(
+            "EnvGroup input is missing info['env_id']; use rows from "
+            "EnvGroup.get_dataset()/get_eval_dataset() or provide that routing value."
+        )
+
+    def get_env_for_name(self, name: str) -> vf.Environment:
+        if name not in self.env_map:
+            raise ValueError(f"No environment found for info['env_id']={name!r}")
+        return self.env_map[name]
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the max_seq_len value for this environment group and all sub-environments."""

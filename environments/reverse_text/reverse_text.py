@@ -15,7 +15,6 @@ def load_environment(
                 "question": x["prompt"],
                 "answer": x["prompt"][::-1],
                 "info": {},
-                "task": "reverse-text",
             }
         )
         train_dataset = train_dataset.remove_columns(["prompt"])

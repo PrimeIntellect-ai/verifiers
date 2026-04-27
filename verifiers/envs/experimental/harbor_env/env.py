@@ -40,7 +40,6 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         self.mcp_healthcheck = (
             mcp_healthcheck if mcp_healthcheck is not None else HarborMCPHealthcheck()
         )
-
         kwargs["docker_image"] = docker_image
 
         dataset = self.load_harbor_dataset()
@@ -81,9 +80,9 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
 
             task_entry = {
                 "example_id": len(tasks),
-                "task": task_dir.name,
                 "prompt": messages,
                 "info": {
+                    "task_name": task_dir.name,
                     "task_dir": str(task_dir),
                     "docker_image": config.get("environment", {}).get("docker_image"),
                     "config": config,
@@ -106,7 +105,8 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build env vars with Harbor-specific additions."""
         env_vars = await super().build_env_vars(state)
-        env_vars.setdefault("HARBOR_TASK_NAME", state.get("task", ""))
+        info: dict[str, Any] = state.get("info") or {}
+        env_vars.setdefault("HARBOR_TASK_NAME", info.get("task_name", ""))
         env_vars.setdefault("HARBOR_TASK_DIR", "/task")
         env_vars.setdefault("HARBOR_INSTRUCTION_PATH", "/task/instruction.md")
         if self.agent_workdir:
@@ -233,7 +233,8 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         try:
             await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
 
-            logger.info(f"Running Harbor tests for task {state.get('task')}")
+            task_name = (state.get("info") or {}).get("task_name")
+            logger.info(f"Running Harbor tests for task {task_name}")
             results = await self.run_background_job(
                 state,
                 "bash test.sh",

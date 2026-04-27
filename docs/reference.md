@@ -81,7 +81,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -118,7 +118,6 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
     example_id: int         # Required
-    task: str               # Required
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -129,7 +128,6 @@ class RolloutInput(TypedDict):
 class RolloutOutput(dict):
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -471,11 +469,13 @@ OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebui
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"]  # optional
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Combined datasets use
+`info["env_id"]` as internal routing metadata; it is not a top-level input,
+state, or output field.
 
 ---
 
@@ -575,7 +575,6 @@ def my_reward(
     prompt: Messages | None = None,
     state: State | None = None,
     parser: Parser | None = None,  # if rubric has parser
-    task: str = "",
     info: Info | None = None,
     **kwargs
 ) -> float:

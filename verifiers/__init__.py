@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
+    advantage,
     cleanup,
+    metric,
+    render,
+    reward,
     stop,
     teardown,
 )
@@ -55,6 +59,40 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Env",
+    "Binding",
+    "BindingContext",
+    "Channel",
+    "ChannelConfig",
+    "ChannelContext",
+    "ChannelMap",
+    "CliConfig",
+    "CliMetrics",
+    "CliPaths",
+    "Task",
+    "Taskset",
+    "Harness",
+    "EndpointConfig",
+    "SandboxBashTool",
+    "SandboxEditTool",
+    "SandboxPythonTool",
+    "RunConfig",
+    "SandboxConfig",
+    "SandboxSpec",
+    "SandboxSeed",
+    "SandboxTool",
+    "SandboxRuntime",
+    "SandboxScoring",
+    "SandboxSetup",
+    "SandboxTimeouts",
+    "Resources",
+    "CallableTool",
+    "MCPTool",
+    "ResourceBinding",
+    "Toolset",
+    "StateBinding",
+    "TaskBinding",
+    "User",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -77,6 +115,10 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "cleanup",
+    "render",
+    "metric",
+    "reward",
+    "advantage",
     "stop",
     "teardown",
     "ensure_keys",
@@ -132,6 +174,40 @@ _LAZY_IMPORTS = {
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Env": "verifiers.envs.experimental.env:Env",
+    "Binding": "verifiers.envs.experimental.binding:Binding",
+    "BindingContext": "verifiers.envs.experimental.binding:BindingContext",
+    "Channel": "verifiers.envs.experimental.channels:Channel",
+    "ChannelConfig": "verifiers.envs.experimental.channels:ChannelConfig",
+    "ChannelContext": "verifiers.envs.experimental.channels:ChannelContext",
+    "ChannelMap": "verifiers.envs.experimental.channels:ChannelMap",
+    "CliConfig": "verifiers.envs.experimental.configs:CliConfig",
+    "CliMetrics": "verifiers.envs.experimental.configs:CliMetrics",
+    "CliPaths": "verifiers.envs.experimental.configs:CliPaths",
+    "Task": "verifiers.envs.experimental.task:Task",
+    "Taskset": "verifiers.envs.experimental.taskset:Taskset",
+    "Harness": "verifiers.envs.experimental.harness:Harness",
+    "EndpointConfig": "verifiers.envs.experimental.configs:EndpointConfig",
+    "SandboxBashTool": "verifiers.envs.experimental.modules.tools:SandboxBashTool",
+    "SandboxEditTool": "verifiers.envs.experimental.modules.tools:SandboxEditTool",
+    "SandboxPythonTool": "verifiers.envs.experimental.modules.tools:SandboxPythonTool",
+    "RunConfig": "verifiers.envs.experimental.configs:RunConfig",
+    "SandboxConfig": "verifiers.envs.experimental.configs:SandboxConfig",
+    "SandboxSpec": "verifiers.envs.experimental.channels:SandboxSpec",
+    "SandboxSeed": "verifiers.envs.experimental.channels:SandboxSeed",
+    "SandboxTool": "verifiers.envs.experimental.modules.tools:SandboxTool",
+    "SandboxRuntime": "verifiers.envs.experimental.configs:SandboxRuntime",
+    "SandboxScoring": "verifiers.envs.experimental.configs:SandboxScoring",
+    "SandboxSetup": "verifiers.envs.experimental.configs:SandboxSetup",
+    "SandboxTimeouts": "verifiers.envs.experimental.channels:SandboxTimeouts",
+    "Resources": "verifiers.envs.experimental.resources:Resources",
+    "CallableTool": "verifiers.envs.experimental.toolset:CallableTool",
+    "MCPTool": "verifiers.envs.experimental.toolset:MCPTool",
+    "ResourceBinding": "verifiers.envs.experimental.binding:ResourceBinding",
+    "StateBinding": "verifiers.envs.experimental.binding:StateBinding",
+    "TaskBinding": "verifiers.envs.experimental.binding:TaskBinding",
+    "Toolset": "verifiers.envs.experimental.toolset:Toolset",
+    "User": "verifiers.envs.experimental.channels:User",
 }
 
 
@@ -183,6 +259,44 @@ if TYPE_CHECKING:
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.experimental.env import Env  # noqa: F401
+    from .envs.experimental.binding import (  # noqa: F401
+        Binding,
+        BindingContext,
+        ResourceBinding,
+        StateBinding,
+        TaskBinding,
+    )
+    from .envs.experimental.channels import (  # noqa: F401
+        Channel,
+        ChannelConfig,
+        ChannelContext,
+        ChannelMap,
+    )
+    from .envs.experimental.configs import (  # noqa: F401
+        CliConfig,
+        CliMetrics,
+        CliPaths,
+        EndpointConfig,
+        RunConfig,
+        SandboxConfig,
+        SandboxRuntime,
+        SandboxScoring,
+        SandboxSetup,
+    )
+    from .envs.experimental.harness import Harness  # noqa: F401
+    from .envs.experimental.modules.tools import (
+        SandboxBashTool,
+        SandboxEditTool,
+        SandboxPythonTool,
+        SandboxTool,
+    )  # noqa: F401
+    from .envs.experimental.resources import Resources  # noqa: F401
+    from .envs.experimental.channels import SandboxSeed, SandboxSpec, SandboxTimeouts  # noqa: F401
+    from .envs.experimental.task import Task  # noqa: F401
+    from .envs.experimental.taskset import Taskset  # noqa: F401
+    from .envs.experimental.channels import User  # noqa: F401
+    from .envs.experimental.toolset import CallableTool, MCPTool, Toolset  # noqa: F401
     from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401

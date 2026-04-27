@@ -1,0 +1,18 @@
+[project]
+name = "mcp-search-th"
+version = "0.1.0"
+tags = ["mcp", "tools", "search", "taskset-harness"]
+license = "Apache-2.0"
+description = "Taskset/harness example for MCP tools resolved through the tools channel."
+dependencies = [
+    "verifiers>=0.1.9",
+    "datasets",
+    "mcp",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mcp_search_th.py", "mcp_server.py", "pyproject.toml"]

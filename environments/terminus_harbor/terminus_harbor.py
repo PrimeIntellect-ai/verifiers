@@ -43,7 +43,7 @@ class TerminusHarborEnv(HarborEnv):
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Add terminus-specific env vars."""
         env_vars = await super().build_env_vars(state)
-        env_vars["HARBOR_TASK_NAME"] = state.get("task", "")
+        env_vars["HARBOR_TASK_NAME"] = (state.get("info") or {}).get("task_name", "")
         env_vars["AGENT_NAME"] = self.agent_name
         env_vars["MODEL_NAME"] = self.model_name
         env_vars["LOGS_DIR"] = "/logs"
@@ -279,4 +279,5 @@ def load_environment(
         disk_size_gb=disk_size_gb,
         timeout_minutes=timeout_minutes,
         max_turns=max_turns,
+        env_id="terminus-harbor",
     )

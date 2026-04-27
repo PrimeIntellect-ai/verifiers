@@ -149,7 +149,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
@@ -188,7 +187,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
@@ -227,7 +225,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
                 info={"custom_param": "test"},
             )
@@ -265,7 +262,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
@@ -339,7 +335,6 @@ class TestRubricGroup:
                 input=RolloutInput(
                     prompt=[{"role": "user", "content": "What is 1+1?"}],
                     answer="2",
-                    task="default",
                     example_id=0,
                 )
             ),
@@ -347,7 +342,6 @@ class TestRubricGroup:
                 input=RolloutInput(
                     prompt=[{"role": "user", "content": "What is 2+2?"}],
                     answer="4",
-                    task="default",
                     example_id=1,
                 )
             ),
@@ -482,7 +476,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 6 * 7?"}],
                 answer="42",
-                task="default",
                 example_id=0,
             )
         )

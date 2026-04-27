@@ -170,12 +170,11 @@ class TestSingleTurnEnv:
         assert call_kwargs["sampling_args"]["max_tokens"] == 100
 
     @pytest.mark.asyncio
-    async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
-        """Test rollout with task and info parameters."""
+    async def test_rollout_with_info(self, mock_singleturn_env, make_input):
+        """Test rollout with input info parameters."""
         input = make_input(
             prompt=[{"role": "user", "content": "Test question"}],
             answer="Test answer",
-            task="math",
             info={"difficulty": "easy"},
         )
         state = await mock_singleturn_env.rollout(
@@ -190,7 +189,6 @@ class TestSingleTurnEnv:
         assert state["example_id"] == input["example_id"]
         assert state["prompt"] == input["prompt"]
         assert state["answer"] == input["answer"]
-        assert state["task"] == input["task"]
         assert state["info"] == input["info"]
 
     @pytest.mark.asyncio
@@ -223,7 +221,6 @@ class TestSingleTurnEnv:
         # Check all expected state fields
         assert state["prompt"] == input["prompt"]
         assert state["answer"] == input["answer"]
-        assert state["task"] == input["task"]
         assert state["info"] == input["info"]
         assert state["example_id"] == input["example_id"]
         assert state["completion"] == completion

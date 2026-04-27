@@ -12,8 +12,10 @@ import json
 import logging
 import random
 from copy import deepcopy
+from typing import cast
 
 import verifiers as vf
+from datasets import Dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
@@ -195,22 +197,22 @@ class CPTaskSet(SandboxTaskSet):
     ):
         from datasets import load_dataset
 
-        _kw = dict(
-            num_proc=self.ds_num_proc,
-            keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
-        )
-        raw = load_dataset(
-            dataset_name,
-            dataset_subset,
-            split=dataset_split,
-            keep_in_memory=self.ds_keep_in_memory,
-            num_proc=self.ds_num_proc,
+        raw = cast(
+            Dataset,
+            load_dataset(
+                dataset_name,
+                dataset_subset,
+                split=dataset_split,
+                keep_in_memory=self.ds_keep_in_memory,
+                num_proc=self.ds_num_proc,
+            ),
         )
         if difficulty_key and difficulty_key in (raw.column_names or []):
             raw = raw.filter(
                 lambda x: min_solve_rate <= x.get(difficulty_key, 0) <= max_solve_rate,
-                **_kw,
+                num_proc=self.ds_num_proc,
+                keep_in_memory=self.ds_keep_in_memory,
+                load_from_cache_file=False,
             )
         return raw.map(
             lambda ex, idx: _process_example(
@@ -223,7 +225,9 @@ class CPTaskSet(SandboxTaskSet):
             ),
             with_indices=True,
             writer_batch_size=16,
-            **_kw,
+            num_proc=self.ds_num_proc,
+            keep_in_memory=self.ds_keep_in_memory,
+            load_from_cache_file=False,
         ).select_columns(["info", "answer"])
 
     def get_instruction(self, info: dict) -> str:
