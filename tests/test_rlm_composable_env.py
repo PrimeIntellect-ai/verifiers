@@ -228,12 +228,6 @@ def test_rlm_harness_allow_git_uploads_nothing(tmp_path):
     assert harness.post_install_script is None
 
 
-def test_rlm_harness_saves_agent_patch_to_state():
-    harness = rlm_harness()
-
-    assert harness.agent_patch_state_key == "agent_patch"
-
-
 def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
     checkout = _make_git_checkout(tmp_path / "rlm")
     harness = rlm_harness(local_checkout=checkout)

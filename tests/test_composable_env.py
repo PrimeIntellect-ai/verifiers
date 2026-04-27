@@ -294,7 +294,7 @@ index 1111111..2222222 100644
         "info": {"id": 0},
         "timing": {"total_ms": 0},
         "trajectory": [],
-        "_agent_patch_base_tree": "abc123",
+        "_agent_patch_base_ref": "abc123",
         "_agent_patch_workdir": "/testbed",
     }
 
@@ -303,8 +303,11 @@ index 1111111..2222222 100644
     assert state["agent_patch"] == diff
     patch_call = env.sandbox_client.execute_command.await_args
     assert patch_call.args[0] == "sbx"
-    assert 'git_bin="/usr/bin/git"' in patch_call.args[1]
-    assert 'diff --binary abc123 "$current_tree"' in patch_call.args[1]
+    assert "git=/usr/bin/git" in patch_call.args[1]
+    assert (
+        '"$git" diff --cached --binary --full-index --text abc123' in patch_call.args[1]
+    )
+    assert '"$git" reset -q || true' in patch_call.args[1]
     assert patch_call.kwargs["working_dir"] == "/testbed"
     assert patch_call.kwargs["timeout"] == 120
 
@@ -334,7 +337,7 @@ async def test_composable_env_agent_patch_defaults_empty_without_baseline():
     env.sandbox_client.execute_command.assert_not_awaited()
 
 
-def test_agent_patch_commands_diff_against_post_setup_tree(tmp_path):
+def test_agent_patch_commands_diff_against_post_setup_baseline(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pkg.py").write_text("VALUE = 'base'\n")
@@ -359,13 +362,13 @@ def test_agent_patch_commands_diff_against_post_setup_tree(tmp_path):
     )
 
     # Task setup may apply benchmark tests before the agent starts. The
-    # baseline tree must include these so they do not appear as agent edits.
+    # baseline commit must include these so they do not appear as agent edits.
     (repo / "tests" / "test_pkg.py").write_text(
         "def test_base():\n    assert True\n\n"
         "def test_setup_patch():\n    assert True\n"
     )
-    base_tree = subprocess.run(
-        composable_env_module._agent_patch_tree_command(),
+    base_ref = subprocess.run(
+        composable_env_module._agent_patch_baseline_command(),
         cwd=repo,
         shell=True,
         check=True,
@@ -374,7 +377,7 @@ def test_agent_patch_commands_diff_against_post_setup_tree(tmp_path):
     ).stdout.strip()
 
     # Capture a committed source change, an unstaged test edit, and a new
-    # untracked test file. All are agent edits relative to the setup tree.
+    # untracked test file. All are agent edits relative to the setup baseline.
     (repo / "pkg.py").write_text("VALUE = 'agent'\n")
     subprocess.run(["git", "add", "pkg.py"], cwd=repo, check=True)
     subprocess.run(
@@ -401,7 +404,7 @@ def test_agent_patch_commands_diff_against_post_setup_tree(tmp_path):
     )
 
     patch = subprocess.run(
-        composable_env_module._agent_patch_diff_command(base_tree),
+        composable_env_module._agent_patch_diff_command(base_ref),
         cwd=repo,
         shell=True,
         check=True,
@@ -416,6 +419,8 @@ def test_agent_patch_commands_diff_against_post_setup_tree(tmp_path):
     assert "diff --git a/tests/test_new.py b/tests/test_new.py" in patch
     assert "+def test_new_agent_file():" in patch
     assert "+def test_setup_patch():" not in patch
+
+    subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=True)
 
 
 # ── install_env ──────────────────────────────────────────────────────────

@@ -122,9 +122,10 @@ class Harness:
         parent agent's turns contribute to the policy gradient.
     agent_patch_state_key:
         Optional state key that receives a git patch of the agent's
-        repository edits. When set, ``ComposableEnv`` snapshots the
-        task workdir after task setup and harness install, then stores
-        the post-rollout diff relative to that snapshot under this key.
+        repository edits. When set, ``ComposableEnv`` creates a local
+        baseline commit after task setup and harness install, then
+        stores the post-rollout diff relative to that baseline under
+        this key.
         Intended for git-backed coding agents; ignored for non-git
         workdirs.
     """
