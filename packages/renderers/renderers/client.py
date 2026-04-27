@@ -14,12 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from typing import Any, cast
 
 import numpy as np
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from renderers.base import Message, Renderer, RendererPool, ToolSpec
+
+# Logs the (per-message length, total prompt length) on every vLLM /generate
+# call at DEBUG, and the same plus the response text on a 4xx at WARNING.
+# Lets us post-mortem overlong-prompt rejections without re-running.
+_request_logger = logging.getLogger("verifiers.renderer_client.completions_request")
 
 
 async def _run_pooled(pool: RendererPool, fn):
@@ -96,7 +102,24 @@ async def completions_request(
             body[key] = extra_body[key]
 
     # -- Send to vLLM --
-    data = await client.post("/generate", cast_to=cast(Any, dict[str, Any]), body=body)
+    _request_logger.debug(
+        "vllm /generate: prompt_len=%d messages=%d max_tokens=%s",
+        len(prompt_ids),
+        len(messages),
+        max_tokens,
+    )
+    try:
+        data = await client.post(
+            "/generate", cast_to=cast(Any, dict[str, Any]), body=body
+        )
+    except BadRequestError as exc:
+        _log_overlong_prompt_diagnostic(
+            prompt_ids=prompt_ids,
+            messages=messages,
+            max_tokens=max_tokens,
+            exc=exc,
+        )
+        raise
     choice = data.get("choices", [{}])[0]
 
     # -- Parse completion tokens --
@@ -142,3 +165,46 @@ async def completions_request(
         "usage": data.get("usage"),
         "routed_experts": routed_experts,
     }
+
+
+def _log_overlong_prompt_diagnostic(
+    *,
+    prompt_ids: list[int],
+    messages: list[Message],
+    max_tokens: int | None,
+    exc: BadRequestError,
+) -> None:
+    """Log a structured snapshot when vLLM rejects with 4xx — usually overlong.
+
+    Captures total prompt length, per-message role + character count, and
+    the first chunk of the response body. Lets us post-mortem WHICH rollout
+    blew the context window without rerunning.
+    """
+    body_text = ""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        body_text = (response.text or "")[:500].replace("\n", " ")
+    msg_summary = []
+    for i, m in enumerate(messages):
+        role = m.get("role", "?")
+        content = m.get("content")
+        if isinstance(content, str):
+            content_len = len(content)
+        elif isinstance(content, list):
+            content_len = sum(
+                len(p.get("text", "")) if isinstance(p, dict) else 0 for p in content
+            )
+        else:
+            content_len = 0
+        tool_calls = m.get("tool_calls")
+        tc_count = len(tool_calls) if tool_calls else 0
+        msg_summary.append(f"[{i}]{role}(c={content_len},tc={tc_count})")
+    _request_logger.warning(
+        "vllm 4xx prompt_len=%d messages=%d max_tokens=%s "
+        "per_msg=%s response_body=%s",
+        len(prompt_ids),
+        len(messages),
+        max_tokens,
+        " ".join(msg_summary),
+        body_text,
+    )

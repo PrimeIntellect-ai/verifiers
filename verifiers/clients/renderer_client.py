@@ -36,6 +36,9 @@ from renderers import ToolCallFunction
 from renderers.client import completions_request
 
 from verifiers.clients.client import Client
+from verifiers.clients.openai_chat_completions_client import (
+    handle_openai_overlong_prompt,
+)
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
@@ -167,6 +170,7 @@ class RendererClient(
 
     # ── Core request cycle ──────────────────────────────────────────
 
+    @handle_openai_overlong_prompt
     async def get_native_response(
         self,
         prompt: list[RendererMessage],
