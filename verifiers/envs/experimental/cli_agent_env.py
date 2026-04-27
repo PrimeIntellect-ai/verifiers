@@ -72,7 +72,7 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        poll_interval: float = 1.0,
+        poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
         cpu_cores: int = 1,

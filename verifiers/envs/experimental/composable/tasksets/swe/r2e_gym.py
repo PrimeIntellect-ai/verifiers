@@ -181,7 +181,7 @@ class R2EGymTaskSet(SandboxTaskSet):
         alt_path: str = "/root",
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
-        ds_num_proc: int | None = 8,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
         hide_tests_from_agent: bool = True,
@@ -212,7 +212,7 @@ class R2EGymTaskSet(SandboxTaskSet):
         self.timeout_minutes = timeout_minutes
         self.hide_tests_from_agent = hide_tests_from_agent
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name="swe/r2e",
             filter_fn=filter_fn,
         )

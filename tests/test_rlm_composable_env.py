@@ -4,12 +4,13 @@ Validates that rlm_harness() produces a Harness with the correct metrics
 fields and that the install script is generated correctly.
 """
 
+import asyncio
 import importlib
 import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -100,6 +101,20 @@ def _make_temp_taskset_package(tmp_path, monkeypatch, *, with_skills: bool):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _release_in_use_locks_between_tests():
+    """Drop process-lifetime in-use locks so tests don't leak fds/state.
+
+    ``resolve_git_checkout`` keeps a shared lock on each resolved
+    checkout open for the resolving process's lifetime. Tests that
+    create checkouts in a shared cache root would otherwise see the
+    pruner skip them, masking real regressions; release everything on
+    teardown.
+    """
+    yield
+    git_checkout_cache_module._release_all_in_use_locks()
+
+
 def _make_git_checkout(target: Path) -> Path:
     checkout = target
     checkout.mkdir()
@@ -170,21 +185,36 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
 
 
 def test_rlm_harness_blocks_git_by_default(tmp_path):
-    """By default RLM uploads a sh shim at /usr/local/bin/git that
-    refuses on any invocation and exits 1. post_install_script just
-    chmods it executable."""
+    """By default RLM uploads a sh shim that refuses on any invocation
+    and exits 1. The shim is staged at /tmp and moved to
+    $HOME/.local/bin/git by the post-install script — that dir is on
+    the agent's PATH (via the run_command's ``export PATH=...``) but
+    NOT on the container's default PATH, so scoring's
+    ``execute_command`` calls (e.g. ``git apply`` in eval scripts) keep
+    resolving to the real ``/usr/bin/git``."""
     checkout = _make_git_checkout(tmp_path / "rlm")
     harness = rlm_harness(local_checkout=checkout)
 
     assert harness.post_install_uploads is not None
-    assert set(harness.post_install_uploads.keys()) == {"/usr/local/bin/git"}
+    assert set(harness.post_install_uploads.keys()) == {"/tmp/__rlm_git_shim"}
 
-    shim = harness.post_install_uploads["/usr/local/bin/git"]
+    shim = harness.post_install_uploads["/tmp/__rlm_git_shim"]
     assert shim.startswith("#!/bin/sh\n")
     assert "Bash command 'git' is not allowed." in shim
     assert "exit 1" in shim
 
-    assert harness.post_install_script == "chmod +x /usr/local/bin/git"
+    script = harness.post_install_script
+    assert script is not None
+    # Shim must end up at $HOME/.local/bin/git, executable, with parent
+    # dir created if missing.
+    assert 'mkdir -p "$HOME/.local/bin"' in script
+    assert 'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"' in script
+    assert 'chmod +x "$HOME/.local/bin/git"' in script
+    # The shim must NOT live anywhere on the container's default PATH —
+    # /usr/local/bin/git would shadow the real git for scoring's
+    # execute_command shells (which don't get $HOME/.local/bin
+    # prepended) and break ``git apply`` of test_patches in eval.sh.
+    assert "/usr/local/bin/git" not in script
 
 
 def test_rlm_harness_allow_git_uploads_nothing(tmp_path):
@@ -287,7 +317,14 @@ def test_rlm_harness_memoizes_resolved_checkout_per_instance(tmp_path, monkeypat
     assert second_upload_checkout == first_upload_checkout
 
 
-def test_rlm_harness_resolves_new_commit_for_new_instance(tmp_path, monkeypatch):
+def test_rlm_harness_preserves_prior_checkout_while_leased(tmp_path, monkeypatch):
+    """A second resolve in the same process must NOT prune the first
+    checkout. ``resolve_git_checkout`` holds a process-lifetime shared
+    lock on every checkout it materializes, and the pruner takes that
+    lock exclusive non-blocking — so as long as this process is still
+    holding the first lease, a concurrent resolve for a different ref
+    cannot nuke the active worktree out from under a long-running eval.
+    """
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
     first_commit = _git_head_commit(source_checkout)
     monkeypatch.setattr(
@@ -314,10 +351,42 @@ def test_rlm_harness_resolves_new_commit_for_new_instance(tmp_path, monkeypatch)
     assert isinstance(second_checkout, Path)
     assert second_checkout.name == second_commit
     assert second_checkout != first_checkout
+    assert first_checkout.exists()
+
+
+def test_rlm_harness_prunes_stale_checkout_after_lease_released(tmp_path, monkeypatch):
+    """Once the in-use lease is dropped (e.g. the prior process exited),
+    the next resolve's prune step removes the stale worktree."""
+    source_checkout = _make_git_checkout(tmp_path / "rlm-source")
+    monkeypatch.setattr(
+        rlm_module,
+        "DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT",
+        tmp_path / "cache-root",
+    )
+
+    first_checkout = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    ).get_upload_dirs()["rlm_checkout"]
+    _commit_file(source_checkout, "README.md", "updated\n")
+    git_checkout_cache_module._release_all_in_use_locks()
+
+    second_checkout = rlm_harness(
+        rlm_repo_url=str(source_checkout),
+        rlm_ref="main",
+    ).get_upload_dirs()["rlm_checkout"]
+    assert second_checkout != first_checkout
     assert not first_checkout.exists()
 
 
-def test_rlm_harness_skips_pruning_locked_stale_checkout(tmp_path, monkeypatch):
+def test_rlm_harness_skips_pruning_externally_locked_stale_checkout(
+    tmp_path, monkeypatch
+):
+    """Another process holding the in-use lock blocks the pruner. We
+    simulate a peer process by releasing our own lease first, then
+    manually taking a shared ``.in-use.lock`` while a fresh resolve
+    runs — the pruner's exclusive non-blocking attempt fails and the
+    stale checkout survives."""
     source_checkout = _make_git_checkout(tmp_path / "rlm-source")
     first_commit = _git_head_commit(source_checkout)
     monkeypatch.setattr(
@@ -331,26 +400,24 @@ def test_rlm_harness_skips_pruning_locked_stale_checkout(tmp_path, monkeypatch):
         rlm_ref="main",
     )
     first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
-    assert isinstance(first_checkout, Path)
     assert first_checkout.name == first_commit
 
     second_commit = _commit_file(source_checkout, "README.md", "updated\n")
+    git_checkout_cache_module._release_all_in_use_locks()
 
-    with shared_path_lock(first_checkout, suffix=".upload.lock"):
-        second_harness = rlm_harness(
+    with shared_path_lock(first_checkout, suffix=".in-use.lock"):
+        second_checkout = rlm_harness(
             rlm_repo_url=str(source_checkout),
             rlm_ref="main",
-        )
-        second_checkout = second_harness.get_upload_dirs()["rlm_checkout"]
-        assert isinstance(second_checkout, Path)
+        ).get_upload_dirs()["rlm_checkout"]
         assert second_checkout.name == second_commit
         assert first_checkout.exists()
 
-    third_harness = rlm_harness(
+    git_checkout_cache_module._release_all_in_use_locks()
+    third_checkout = rlm_harness(
         rlm_repo_url=str(source_checkout),
         rlm_ref="main",
-    )
-    third_checkout = third_harness.get_upload_dirs()["rlm_checkout"]
+    ).get_upload_dirs()["rlm_checkout"]
     assert third_checkout == second_checkout
     assert not first_checkout.exists()
 
@@ -594,12 +661,12 @@ def test_build_dir_archive_holds_shared_lock_for_local_path(tmp_path):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def add(self, path, arcname):
+        def add(self, path, arcname, filter=None):
             assert Path(path) == local_source
             with pytest.raises(BlockingIOError):
                 with exclusive_path_lock(
                     local_source,
-                    suffix=".upload.lock",
+                    suffix=".in-use.lock",
                     nonblocking=True,
                 ):
                     pass
@@ -741,3 +808,261 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
     assert state["metrics"]["rlm_turns"] == 3.0
     assert state["metrics"]["rlm_prompt_tokens"] == 100.0
     assert state["metrics"]["rlm_completion_tokens"] == 25.0
+
+
+def test_rlm_harness_keep_trajectory_step_drops_sub_agent_by_default():
+    """Default config installs a filter that drops X-RLM-Depth > 0 steps."""
+    from verifiers.envs.experimental.composable.harnesses.rlm import (
+        _keep_only_parent_rlm_steps,
+    )
+
+    harness = rlm_harness()
+    assert harness.keep_trajectory_step is _keep_only_parent_rlm_steps
+
+    # Parent-agent calls (depth absent or "0") → keep.
+    assert harness.keep_trajectory_step(None, {}, {}) is True
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "0"}) is True
+    # Sub-agent calls → drop.
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "1"}) is False
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "5"}) is False
+
+
+def test_rlm_harness_include_sub_rlm_trajectories_disables_filter():
+    """``include_sub_rlm_trajectories=True`` removes the filter entirely."""
+    harness = rlm_harness(include_sub_rlm_trajectories=True)
+    assert harness.keep_trajectory_step is None
+
+
+# ── keep_trajectory_step end-to-end (header-stash ordering) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_get_model_response_stashes_headers_before_clear():
+    """``CliAgentEnv.get_model_response`` must stash the intercept's headers
+    on ``state["_last_request_headers"]`` BEFORE clearing
+    ``state["current_request_id"]``.
+
+    Why this matters: the rollout loop calls ``add_model_response`` (which
+    invokes ``add_trajectory_step``) immediately after ``get_model_response``
+    returns. By that point ``current_request_id`` has been cleared, so any
+    consumer that wants the originating request's headers must read them
+    from the stash key — see ``ComposableEnv.add_trajectory_step``.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+        rubric=vf.Rubric(),
+    )
+
+    request_id = "req-test-stash"
+    headers_in = {"x-rlm-depth": "1", "user-agent": "rlm/0.1"}
+    intercept = {
+        "stream": False,
+        "headers": headers_in,
+        "response_future": asyncio.get_event_loop().create_future(),
+    }
+    env._interception_server.intercepts[request_id] = intercept
+
+    state: dict = {"current_request_id": request_id, "model": "test-model"}
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    with patch.object(
+        environment_module.Environment,
+        "get_model_response",
+        new=AsyncMock(return_value=fake_response),
+    ):
+        result = await env.get_model_response(
+            state=state,
+            prompt=[{"role": "user", "content": "go"}],
+        )
+
+    assert result is fake_response
+    # The whole point of the fix: headers must outlive the clear.
+    assert state["current_request_id"] is None
+    assert state["_last_request_headers"] == headers_in
+
+
+@pytest.mark.asyncio
+async def test_composable_env_add_trajectory_step_reads_stashed_headers(
+    tmp_path,
+):
+    """``ComposableEnv.add_trajectory_step`` must consult
+    ``state["_last_request_headers"]`` (NOT ``current_request_id``, which is
+    already None when this runs) when invoking the harness filter.
+
+    Drives the actual code path with the rlm harness's
+    ``_keep_only_parent_rlm_steps`` filter and asserts that depth=1 steps
+    are dropped while depth=0 steps are kept.
+    """
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+    )
+
+    parent_step = {"prompt": [], "completion": [{"role": "assistant", "content": "p"}]}
+    sub_step = {"prompt": [], "completion": [{"role": "assistant", "content": "s"}]}
+
+    state: dict = {
+        "trajectory": [],
+        # current_request_id is None at this point — get_model_response cleared it.
+        "current_request_id": None,
+        "_last_request_headers": {"x-rlm-depth": "1"},
+    }
+    await env.add_trajectory_step(state, sub_step)
+    assert state["trajectory"] == [], "sub-agent step (depth=1) must be dropped"
+
+    state["_last_request_headers"] = {"x-rlm-depth": "0"}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step], "parent step (depth=0) must be kept"
+
+    # Missing header (e.g. non-rlm caller) is treated as parent.
+    state["_last_request_headers"] = {}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step, parent_step]
+
+
+@pytest.mark.asyncio
+async def test_composable_env_keep_trajectory_step_end_to_end(tmp_path):
+    """Full ordering: ``get_model_response`` runs first (clearing
+    ``current_request_id`` and stashing headers), then
+    ``add_trajectory_step`` runs and reads the stash.
+
+    Mimics ``MultiTurnEnv.rollout`` calling the two methods back-to-back.
+    Without the stash, ``add_trajectory_step`` would see no headers and
+    keep every step — this test would fail by the sub-agent step landing
+    in the trajectory.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+    )
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    async def run_one_turn(depth: str) -> dict:
+        request_id = f"req-{depth}"
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "headers": {"x-rlm-depth": depth},
+            "response_future": asyncio.get_event_loop().create_future(),
+        }
+        state: dict = {
+            "current_request_id": request_id,
+            "model": "test-model",
+            "trajectory": [],
+        }
+        with patch.object(
+            environment_module.Environment,
+            "get_model_response",
+            new=AsyncMock(return_value=fake_response),
+        ):
+            await env.get_model_response(
+                state=state,
+                prompt=[{"role": "user", "content": "go"}],
+            )
+        # Mimic MultiTurnEnv.rollout's next call.
+        step = {
+            "prompt": [],
+            "completion": [{"role": "assistant", "content": "x"}],
+        }
+        await env.add_trajectory_step(state, step)
+        return state
+
+    sub_state = await run_one_turn("1")
+    assert sub_state["trajectory"] == [], (
+        "sub-agent (depth=1) step must NOT land in trajectory"
+    )
+
+    parent_state = await run_one_turn("0")
+    assert len(parent_state["trajectory"]) == 1, (
+        "parent (depth=0) step must land in trajectory"
+    )
+
+
+def test_rlm_harness_env_vars_static_int():
+    """``summarize_at_tokens`` as an int → constant ``RLM_SUMMARIZE_AT_TOKENS``."""
+    harness = rlm_harness(summarize_at_tokens=4000)
+
+    state_a = {"input": {"prompt": "task A"}, "prompt": "task A"}
+    state_b = {"input": {"prompt": "task B"}, "prompt": "task B"}
+    env_a = harness.environment_vars(state_a)
+    env_b = harness.environment_vars(state_b)
+    assert env_a["RLM_SUMMARIZE_AT_TOKENS"] == "4000"
+    assert env_b["RLM_SUMMARIZE_AT_TOKENS"] == "4000"
+
+
+def test_rlm_harness_env_vars_range_is_seeded_per_prompt():
+    """``summarize_at_tokens`` as ``(lo, hi)`` → per-prompt seeded draw.
+
+    Same prompt → same int (group coherence). Different prompts →
+    different ints (uses 10**9-wide range so collision odds are ~10^-9).
+    """
+    harness = rlm_harness(summarize_at_tokens=(1, 10**9))
+
+    state_a = {"input": {"prompt": "task A"}, "prompt": "task A"}
+    state_b = {"input": {"prompt": "task B"}, "prompt": "task B"}
+
+    # Group coherence: same prompt → same draw, in range.
+    a1 = int(harness.environment_vars(state_a)["RLM_SUMMARIZE_AT_TOKENS"])
+    a2 = int(harness.environment_vars(state_a)["RLM_SUMMARIZE_AT_TOKENS"])
+    assert a1 == a2
+    assert 1 <= a1 <= 10**9
+
+    # Cross-group variation: different prompts → different draws.
+    b = int(harness.environment_vars(state_b)["RLM_SUMMARIZE_AT_TOKENS"])
+    assert a1 != b
+
+
+def test_rlm_harness_rejects_bad_summarize_at_tokens():
+    """Bad shapes raise at harness-build time, not per-rollout."""
+    for bad in [0, -1, True, (1, 2, 3), (1000, 500), (-1, 100)]:
+        with pytest.raises((ValueError, TypeError)):
+            rlm_harness(summarize_at_tokens=bad)

@@ -1,8 +1,11 @@
 """Tests for the MathRubric class."""
 
+import asyncio
+
 import pytest
 
 import verifiers as vf
+from verifiers.rubrics import math_rubric
 
 
 class TestMathRubric:
@@ -127,3 +130,85 @@ class TestMathRubric:
             assert state["metrics"]["correct_answer"] == 1.0
         else:
             assert state["metrics"]["correct_answer"] == 0.0
+
+
+class TestVerifyResponseExceptionHandling:
+    """Regression tests for the exception handling in verify_response.
+
+    See commit narrowing ``except BaseException`` to
+    ``except (Exception, MathVerifyTimeout)`` so that ``CancelledError``,
+    ``KeyboardInterrupt``, and ``SystemExit`` propagate instead of being
+    silently reported as a 0.0 score.
+    """
+
+    def test_cancellederror_propagates(self, monkeypatch):
+        """CancelledError raised during math_verify must propagate, not
+        get swallowed and reported as a score of 0.0."""
+
+        def raise_cancelled(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(math_rubric, "parse", raise_cancelled)
+
+        with pytest.raises(asyncio.CancelledError):
+            math_rubric.verify_response(
+                response="\\boxed{1}",
+                answer="1",
+                max_verify_chars=50_000,
+                timeout_seconds=5,
+            )
+
+    def test_keyboardinterrupt_propagates(self, monkeypatch):
+        """KeyboardInterrupt must propagate so Ctrl-C still works during
+        scoring."""
+
+        def raise_kbd(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(math_rubric, "parse", raise_kbd)
+
+        with pytest.raises(KeyboardInterrupt):
+            math_rubric.verify_response(
+                response="\\boxed{1}",
+                answer="1",
+                max_verify_chars=50_000,
+                timeout_seconds=5,
+            )
+
+    def test_math_verify_timeout_returns_zero(self, monkeypatch):
+        """A real math_verify.errors.TimeoutException (which inherits from
+        BaseException, not Exception) must still be caught and reported as
+        a 0.0 score — that's why the catch is wider than just Exception."""
+        from math_verify.errors import TimeoutException
+
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutException("simulated math_verify timeout")
+
+        monkeypatch.setattr(math_rubric, "parse", raise_timeout)
+
+        score, elapsed = math_rubric.verify_response(
+            response="\\boxed{1}",
+            answer="1",
+            max_verify_chars=50_000,
+            timeout_seconds=5,
+        )
+        assert score == 0.0
+        assert elapsed >= 0.0
+
+    def test_regular_exception_returns_zero(self, monkeypatch):
+        """A regular Exception from math_verify should continue to be
+        swallowed and reported as 0.0 (library-raised something weird)."""
+
+        def raise_exc(*args, **kwargs):
+            raise ValueError("simulated parse failure")
+
+        monkeypatch.setattr(math_rubric, "parse", raise_exc)
+
+        score, elapsed = math_rubric.verify_response(
+            response="\\boxed{1}",
+            answer="1",
+            max_verify_chars=50_000,
+            timeout_seconds=5,
+        )
+        assert score == 0.0
+        assert elapsed >= 0.0

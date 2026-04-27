@@ -204,7 +204,7 @@ class SWESmithTaskSet(SandboxTaskSet):
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name=f"swe/swesmith-{language}",
             filter_fn=filter_fn,
         )

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import random
+import shlex
 from importlib.abc import Traversable
 from pathlib import Path
-import shlex
+from typing import TYPE_CHECKING, Callable
 
 from verifiers.envs.experimental.composable import Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
@@ -12,9 +15,14 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     validate_git_checkout,
 )
 
+if TYPE_CHECKING:
+    from verifiers.types import State
+
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
+DEFAULT_RLM_EXEC_TIMEOUT = 300
+DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
@@ -74,20 +82,6 @@ export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 
-# If the sandbox has a .venv, run the ipython kernel inside it so the
-# agent can inline-import project packages (numpy, pandas, etc.).
-if [ -x .venv/bin/python3 ]; then
-    PYVER=$(.venv/bin/python3 -c "import sys; print(sys.version_info[:2] >= (3,10))" 2>/dev/null || true)
-    if [ "$PYVER" = "True" ]; then
-        IPYKERNEL="ipykernel"
-    else
-        IPYKERNEL="ipykernel<7"
-    fi
-    if .venv/bin/python3 -m pip install -q "$IPYKERNEL" nest_asyncio 2>/dev/null; then
-        export RLM_KERNEL_PYTHON="$(pwd)/.venv/bin/python3"
-    fi
-fi
-
 rlm "$(cat {instruction_path})"
 """
     return f"bash -lc {shlex.quote(script)}"
@@ -98,6 +92,11 @@ def rlm_harness(
     instruction_path: str = "/task/instruction.md",
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
     rlm_ref: str = DEFAULT_RLM_REF,
+    rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
+    rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
+    rlm_max_depth: int = DEFAULT_RLM_MAX_DEPTH,
+    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
+    include_sub_rlm_trajectories: bool = False,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -106,21 +105,52 @@ def rlm_harness(
 ) -> Harness:
     """Build an RLM harness.
 
-    ``rlm_tools`` is the single source of truth for which builtin tools are
-    active. The same list drives both ``Harness.tool_names`` (so
-    ``ToolMonitorRubric`` tracks exactly the active tools) and
-    ``Harness.environment_vars["RLM_TOOLS"]`` (so the RLM sandbox advertises
-    the same set to the model). Callers do not need to — and should not —
-    add ``RLM_TOOLS`` to ``ComposableEnv(environment_vars=...)`` themselves;
-    the harness owns it.
+    The harness is the single source of truth for every ``RLM_*`` sandbox
+    env var the RLM subprocess reads. Kwargs map 1:1 onto env vars written
+    to ``Harness.environment_vars`` and merged into the sandbox by
+    ``ComposableEnv`` (harness-wins):
+
+    - ``rlm_tools`` → ``RLM_TOOLS`` (also drives ``Harness.tool_names`` so
+      ``ToolMonitorRubric`` tracks exactly the active tools)
+    - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
+    - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+    - ``rlm_max_depth`` → ``RLM_MAX_DEPTH``: deepest sub-agent level
+      allowed. ``0`` (default) disables ``rlm()`` recursion from inside
+      ipython entirely; ``1`` lets the parent spawn sub-agents but
+      blocks them from spawning their own; etc.
+    - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
+      a positive int, rlm auto-compacts the current branch once the
+      prompt_tokens of a turn reach the threshold. Pass ``(lo, hi)``
+      to draw a per-rollout threshold from ``sha256(prompt)`` — every
+      rollout in a GRPO-style group sees the same draw because the
+      prompt is identical, while different prompts get different
+      thresholds across the dataset. ``None`` disables auto-compaction.
+    - ``include_sub_rlm_trajectories`` (default ``False``): whether
+      sub-agent API calls (i.e. ``rlm("subtask")`` from inside ipython)
+      land in the rollout trajectory the trainer sees. Off by default
+      so the model treats sub-agents as black boxes — only the parent
+      turns drive policy gradients. rlm tags every outbound request
+      with ``X-RLM-Depth`` (parent ``"0"``, sub-agent ``"1"``, etc.);
+      the harness uses ``Harness.keep_trajectory_step`` to drop steps
+      whose request had depth > 0.
+
+    Callers do not need to — and should not — add these keys to
+    ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
+    here and the harness owns the env var plumbing.
 
     ``allow_git`` defaults to False, mirroring opencode's bash tool. When
-    False, a ``/usr/local/bin/git`` shim is uploaded that refuses on any
-    invocation — this covers the RLM bash tool, the ipython tool's
-    ``!cmd`` / ``%%bash`` cells, and any ``subprocess.run(["git", ...])``
-    from inside ipython, since all three resolve via PATH and hit the
-    shim first. Set ``allow_git=True`` for environments that genuinely
-    need git.
+    False, a refusal shim is dropped at ``$HOME/.local/bin/git`` (the
+    same dir ``uv tool install rlm`` writes to, which RLM's ``run_command``
+    prepends to ``PATH``). This blocks git for the RLM bash tool, the
+    ipython tool's ``!cmd`` / ``%%bash`` cells, and any
+    ``subprocess.run(["git", ...])`` from inside ipython — all three
+    inherit the agent process's PATH and resolve through the shim first.
+    Crucially, the shim is NOT installed on a system PATH dir, so a
+    rubric / scoring step running ``git apply`` or ``git checkout`` via
+    ``sandbox_client.execute_command`` (which uses the container's
+    default PATH, *not* ``$HOME/.local/bin``) still resolves to the real
+    git in ``/usr/bin``. Set ``allow_git=True`` for environments that
+    genuinely need git inside the agent's tools.
     """
     upload_dir_mapping: dict[str, str] = {
         DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: DEFAULT_RLM_CHECKOUT_PATH,
@@ -142,13 +172,51 @@ def rlm_harness(
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
 
-    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython", "summarize"]
+    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
 
     post_install_uploads: dict[str, str] | None = None
     post_install_script: str | None = None
     if not allow_git:
-        post_install_uploads = {"/usr/local/bin/git": _GIT_SHIM_BODY}
-        post_install_script = "chmod +x /usr/local/bin/git"
+        # Drop the shim into the same dir ``uv tool install rlm`` uses
+        # ($HOME/.local/bin), which the RLM run_command prepends to PATH
+        # for the agent. This dir is *not* on the container's default
+        # PATH, so the rubric's ``sandbox_client.execute_command`` calls
+        # (skip-install diff, eval.sh's ``git checkout`` / ``git apply``,
+        # gold-patch apply) keep resolving to the real ``/usr/bin/git``.
+        # Uploading directly into ``$HOME/.local/bin`` requires shell
+        # expansion, so stage the body in /tmp and let the post-install
+        # script move it; that script is just dispatched as a string to
+        # ``execute_command``, which runs under a shell that expands
+        # ``$HOME``.
+        post_install_uploads = {"/tmp/__rlm_git_shim": _GIT_SHIM_BODY}
+        post_install_script = (
+            "set -e; "
+            'mkdir -p "$HOME/.local/bin"; '
+            'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"; '
+            'chmod +x "$HOME/.local/bin/git"'
+        )
+
+    # Validate summarize_at_tokens shape eagerly so configuration errors
+    # surface at harness-build time, not per-rollout inside the closure.
+    summarize_resolver = _build_summarize_resolver(summarize_at_tokens)
+
+    static_env_vars = {
+        "RLM_TOOLS": ",".join(tool_names),
+        "RLM_MAX_TURNS": str(rlm_max_turns),
+        "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+        "RLM_MAX_DEPTH": str(rlm_max_depth),
+    }
+
+    def env_vars_for_rollout(state: State) -> dict[str, str]:
+        env_vars = dict(static_env_vars)
+        summarize_env = summarize_resolver(state)
+        if summarize_env is not None:
+            env_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
+        return env_vars
+
+    keep_trajectory_step = (
+        None if include_sub_rlm_trajectories else _keep_only_parent_rlm_steps
+    )
 
     return Harness(
         install_script=build_install_script(),
@@ -163,7 +231,83 @@ def rlm_harness(
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,
-        environment_vars={"RLM_TOOLS": ",".join(tool_names)},
+        environment_vars=env_vars_for_rollout,
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
+        keep_trajectory_step=keep_trajectory_step,
     )
+
+
+def _keep_only_parent_rlm_steps(step, state, headers) -> bool:
+    """Drop trajectory steps whose API request was tagged as a sub-agent call.
+
+    rlm sets ``X-RLM-Depth: 0`` on parent calls and increments for each
+    nested ``rlm()``. Anything > 0 is a sub-agent — its output isn't
+    what the policy gradient should see; the model should learn to use
+    sub-agents as black boxes returning a single answer string.
+    """
+    return headers.get("x-rlm-depth", "0") == "0"
+
+
+def _build_summarize_resolver(
+    value: int | tuple[int, int] | list[int] | None,
+) -> Callable[[State], str | None]:
+    """Return a state→str-or-None resolver for the RLM_SUMMARIZE_AT_TOKENS env var.
+
+    Validates ``value`` once at harness-build time. ``None`` → resolver
+    always returns ``None`` (env var not set). ``int`` → resolver always
+    returns the same string. ``(lo, hi)`` → per-rollout uniform draw
+    seeded by ``sha256(prompt)``; rollouts of the same prompt see
+    byte-identical draws.
+    """
+    if value is None:
+        return lambda _state: None
+    if isinstance(value, bool):
+        raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"summarize_at_tokens must be positive (got {value})")
+        s = str(value)
+        return lambda _state: s
+    if isinstance(value, (tuple, list)):
+        if len(value) != 2:
+            raise ValueError(
+                f"summarize_at_tokens pair must have 2 elements (got {value!r})"
+            )
+        lo, hi = int(value[0]), int(value[1])
+        if lo <= 0 or hi <= 0:
+            raise ValueError(
+                f"summarize_at_tokens values must be positive (got lo={lo}, hi={hi})"
+            )
+        if lo > hi:
+            raise ValueError(
+                f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
+            )
+        return lambda state: str(_draw_threshold(state, lo, hi))
+    raise ValueError(
+        f"summarize_at_tokens must be int, (lo, hi), or None "
+        f"(got {type(value).__name__})"
+    )
+
+
+def _draw_threshold(state: State, lo: int, hi: int) -> int:
+    """Stable per-prompt uniform draw from ``[lo, hi]``."""
+    prompt = _state_prompt_string(state)
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return random.Random(int(digest[:16], 16)).randint(lo, hi)
+
+
+def _state_prompt_string(state: State) -> str:
+    """Extract a stable string representation of the rollout's prompt.
+
+    Prefers ``state["input"]["prompt"]`` (the raw dataset string when
+    available) and falls back to a JSON dump of ``state["prompt"]`` so
+    Messages-list prompts still produce a deterministic seed.
+    """
+    raw_input = state.get("input") or {}
+    raw_prompt = raw_input.get("prompt") if isinstance(raw_input, dict) else None
+    if isinstance(raw_prompt, str):
+        return raw_prompt
+    import json
+
+    return json.dumps(state.get("prompt"), sort_keys=True, default=str)

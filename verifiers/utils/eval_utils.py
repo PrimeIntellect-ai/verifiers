@@ -439,6 +439,8 @@ def load_toml_config(
         "api_base_url",
         "header",
         "headers",
+        "header_from_state",
+        "headers_from_state",
         # sampling
         "sampling_args",
         "max_tokens",

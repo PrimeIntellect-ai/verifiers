@@ -404,6 +404,15 @@ class ApiEnv(vf.MultiTurnEnv):
                     await synthesize_stream(intercept, response, error)
                 else:
                     deliver_response(intercept, response, error)
+                # Stash headers on state before clearing current_request_id —
+                # add_trajectory_step runs after this finally (via
+                # add_model_response) and needs to inspect the originating
+                # request's headers (e.g. ComposableEnv reads X-RLM-Depth
+                # to drop sub-agent steps from the trajectory).
+                raw_headers = intercept.get("headers")
+                state["_last_request_headers"] = (
+                    raw_headers if isinstance(raw_headers, dict) else {}
+                )
                 state["current_request_id"] = None
 
         assert response is not None

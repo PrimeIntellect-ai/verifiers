@@ -1,4 +1,5 @@
 from verifiers.envs.experimental.composable.harnesses.rlm import (
+    DEFAULT_RLM_EXEC_TIMEOUT,
     DEFAULT_RLM_MAX_TURNS,
     DEFAULT_RLM_REF,
     DEFAULT_RLM_REPO_URL,
@@ -31,6 +32,7 @@ __all__ = [
     "DEFAULT_RLM_REF",
     "DEFAULT_RLM_REPO_URL",
     "DEFAULT_RLM_MAX_TURNS",
+    "DEFAULT_RLM_EXEC_TIMEOUT",
     "opencode_harness",
     "build_opencode_install_script",
     "build_opencode_config",

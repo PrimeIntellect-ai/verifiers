@@ -353,7 +353,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         skip_install: bool = True,
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
-        ds_num_proc: int | None = 8,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int = 60,
     ):
@@ -372,7 +372,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name="swe/swebench",
             filter_fn=filter_fn,
         )
@@ -419,11 +419,14 @@ class SWEBenchTaskSet(SandboxTaskSet):
     async def setup(self, state) -> None:
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        results = await sandbox_client.execute_command(
-            sandbox_id, "ln -s /opt/miniconda3/envs/testbed /root/.venv"
-        )
-        if results.exit_code != 0:
-            raise RuntimeError(f"Setup failed: exit_code={results.exit_code}")
+        for target in ("/testbed/.venv", "/root/.venv"):
+            results = await sandbox_client.execute_command(
+                sandbox_id, f"ln -s /opt/miniconda3/envs/testbed {target}"
+            )
+            if results.exit_code != 0:
+                raise RuntimeError(
+                    f"Setup failed: exit_code={results.exit_code} target={target}"
+                )
 
     async def _run_tests(
         self,
