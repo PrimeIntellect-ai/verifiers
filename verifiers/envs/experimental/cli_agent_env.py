@@ -120,6 +120,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_creations_per_minute: float | None = 128,
         timeouts: SandboxTimeouts = SandboxTimeouts(),
         keep_sandbox_for_scoring: bool = False,
+        task_finished_signal: str | None = None,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -137,6 +138,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             timeouts=timeouts,
         )
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
+        self.task_finished_signal = task_finished_signal
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.timeout_seconds = timeout_seconds
@@ -676,6 +678,39 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Check rollout timeout"""
         elapsed = time.time() - state["timing"]["start_time"]
         return elapsed > self.timeout_seconds
+
+    @vf.stop
+    async def task_finished_signal_emitted(self, state: State) -> bool:
+        """Stop when the agent emits the configured task-finished signal.
+
+        The signal is expected to arrive inside a tool-role message (e.g. the
+        model issued `echo "TASK_FINISHED"` as a bash tool call, and the tool
+        response echoes it back). Scanning only the latest intercepted prompt's
+        trailing tool messages keeps the check cheap.
+        """
+        signal = self.task_finished_signal
+        if not signal:
+            return False
+        trajectory = state.get("trajectory", [])
+        if not trajectory:
+            return False
+        last_prompt = trajectory[-1].get("prompt") or []
+        for message in reversed(last_prompt):
+            role = (
+                message.get("role")
+                if isinstance(message, dict)
+                else getattr(message, "role", None)
+            )
+            if role != "tool":
+                break
+            content = (
+                message.get("content")
+                if isinstance(message, dict)
+                else getattr(message, "content", None)
+            )
+            if content and signal in str(content):
+                return True
+        return False
 
     async def post_rollout(self, state: State):
         """
