@@ -65,7 +65,6 @@ class TestCliAgentEnv:
         assert env.docker_image == "python:3.11-slim"
         assert env.interception_port == 8765
         assert env.timeout_seconds == 3600.0
-        assert env.timeout_reached.__func__ is vf.MultiTurnEnv.timeout_reached
 
     def test_init_custom_config(self, sample_dataset):
         """Test initialization with custom configuration."""
@@ -136,30 +135,6 @@ class TestCliAgentEnv:
         state = {"agent_completed": True, "timed_out": True}
         assert await env.agent_completed(state) is False
 
-    @pytest.mark.asyncio
-    async def test_timeout_reached_stop_condition(self, sample_dataset):
-        """Test the timeout_reached stop condition."""
-        env = vf.CliAgentEnv(
-            run_command="python agent.py",
-            dataset=sample_dataset,
-            rubric=vf.Rubric(),
-            timeout_seconds=10.0,
-        )
-
-        state = {
-            "timing": {"start_time": time.time()},
-            "_start_perf_counter": time.perf_counter(),
-        }
-        assert await env.timeout_reached(state) is False
-
-        state = {
-            "timing": {"start_time": time.time() - 20},
-            "_start_perf_counter": time.perf_counter() - 20,
-        }
-        assert await env.timeout_reached(state) is True
-        assert state["timed_out"] is True
-        assert state["is_truncated"] is True
-
     def test_disabled_timeout_omits_sandbox_timeout(self, sample_dataset):
         """Disabling rollout timeout should not send a zero-minute sandbox timeout."""
         env = vf.CliAgentEnv(
@@ -186,8 +161,7 @@ class TestCliAgentEnv:
         state = {
             "request_id_queue": asyncio.Queue(),
             "agent_completed": False,
-            "timing": {"start_time": time.time() - 1.0},
-            "_start_perf_counter": time.perf_counter() - 1.0,
+            "timing": {"start_time": time.perf_counter() - 1.0},
         }
 
         request_id = await env._poll_next_request(state)

@@ -517,7 +517,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     return None
                 if (
                     self.timeout_seconds is not None
-                    and time.perf_counter() - state["_start_perf_counter"]
+                    and time.perf_counter() - state["timing"]["start_time"]
                     > self.timeout_seconds
                 ):
                     self.mark_timed_out(state)

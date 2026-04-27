@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from abc import abstractmethod
 from typing import final
 
@@ -74,19 +73,11 @@ class MultiTurnEnv(vf.Environment):
     async def max_turns_reached(self, state: State) -> bool:
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
 
-    @vf.stop
-    async def timeout_reached(self, state: State) -> bool:
-        if self.timeout_seconds is None:
-            return False
-        start_time = state["_start_perf_counter"]
-        if time.perf_counter() - start_time <= self.timeout_seconds:
-            return False
-        self.mark_timed_out(state)
-        return True
-
     def mark_timed_out(self, state: State) -> None:
         state["timed_out"] = True
         state["is_truncated"] = True
+        state["is_completed"] = True
+        state["stop_condition"] = "timeout_reached"
 
     @vf.stop
     async def max_total_completion_tokens_reached(self, state: State) -> bool:
@@ -206,12 +197,9 @@ class MultiTurnEnv(vf.Environment):
             return state
 
         try:
-            try:
-                return await asyncio.wait_for(
-                    run_rollout_loop(), timeout=self.timeout_seconds
-                )
-            except asyncio.TimeoutError:
-                await self.is_completed(state)
-                return state
+            await asyncio.wait_for(run_rollout_loop(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            self.mark_timed_out(state)
         finally:
             await self._finalize_rollout(state)
+        return state

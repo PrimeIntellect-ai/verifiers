@@ -1,7 +1,6 @@
 """Tests for the MultiTurnEnv class."""
 
 import asyncio
-import time
 
 import pytest
 from datasets import Dataset
@@ -33,10 +32,10 @@ class TestMultiTurnEnv:
         assert env.timeout_seconds is None
 
     @pytest.mark.asyncio
-    async def test_timeout_reached_stop_condition(
+    async def test_mark_timed_out_sets_terminal_state(
         self, mock_client, sample_chat_dataset
     ):
-        """Test the timeout_reached stop condition."""
+        """mark_timed_out sets all four state fields callers depend on."""
         from tests.conftest import SimpleMultiTurnEnv
 
         env = SimpleMultiTurnEnv(
@@ -48,20 +47,12 @@ class TestMultiTurnEnv:
             timeout_seconds=10.0,
         )
 
-        state: State = {
-            "timing": {"start_time": time.time()},
-            "_start_perf_counter": time.perf_counter(),
-        }
-        assert await env.timeout_reached(state) is False
-        assert state.get("timed_out") is None
-
-        state = {
-            "timing": {"start_time": time.time() - 20},
-            "_start_perf_counter": time.perf_counter() - 20,
-        }
-        assert await env.timeout_reached(state) is True
+        state: State = {}
+        env.mark_timed_out(state)
         assert state["timed_out"] is True
         assert state["is_truncated"] is True
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "timeout_reached"
 
     @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env, make_input):
