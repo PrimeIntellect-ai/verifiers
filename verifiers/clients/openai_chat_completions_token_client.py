@@ -120,8 +120,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
             self.logger.warning(
-                "TITO fell back to MITO on turn %d; see prior TITO log line for sub-reason.",
-                len(state["trajectory"]) + 1,
+                f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
             )
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
