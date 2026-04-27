@@ -120,6 +120,13 @@ class Harness:
         trajectory the trainer sees — e.g. rlm_harness uses it to drop
         sub-agent calls (``X-RLM-Depth`` header > 0) so only the
         parent agent's turns contribute to the policy gradient.
+    agent_patch_state_key:
+        Optional state key that receives a git patch of the agent's
+        repository edits. When set, ``ComposableEnv`` snapshots the
+        task workdir after task setup and harness install, then stores
+        the post-rollout diff relative to that snapshot under this key.
+        Intended for git-backed coding agents; ignored for non-git
+        workdirs.
     """
 
     install_script: str | None = None
@@ -144,6 +151,7 @@ class Harness:
     keep_trajectory_step: (
         Callable[[TrajectoryStep, State, dict[str, str]], bool] | None
     ) = None
+    agent_patch_state_key: str | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

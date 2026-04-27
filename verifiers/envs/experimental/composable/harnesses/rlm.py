@@ -235,6 +235,7 @@ def rlm_harness(
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
         keep_trajectory_step=keep_trajectory_step,
+        agent_patch_state_key="agent_patch",
     )
 
 
