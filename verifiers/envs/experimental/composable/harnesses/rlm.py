@@ -22,6 +22,7 @@ DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_RLM_EXEC_TIMEOUT = 300
+DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
@@ -93,7 +94,9 @@ def rlm_harness(
     rlm_ref: str = DEFAULT_RLM_REF,
     rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
     rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
+    rlm_max_depth: int = DEFAULT_RLM_MAX_DEPTH,
     summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
+    include_sub_rlm_trajectories: bool = False,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
@@ -111,6 +114,10 @@ def rlm_harness(
       ``ToolMonitorRubric`` tracks exactly the active tools)
     - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
     - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+    - ``rlm_max_depth`` → ``RLM_MAX_DEPTH``: deepest sub-agent level
+      allowed. ``0`` (default) disables ``rlm()`` recursion from inside
+      ipython entirely; ``1`` lets the parent spawn sub-agents but
+      blocks them from spawning their own; etc.
     - ``summarize_at_tokens`` → ``RLM_SUMMARIZE_AT_TOKENS``: when set to
       a positive int, rlm auto-compacts the current branch once the
       prompt_tokens of a turn reach the threshold. Pass ``(lo, hi)``
@@ -118,6 +125,14 @@ def rlm_harness(
       rollout in a GRPO-style group sees the same draw because the
       prompt is identical, while different prompts get different
       thresholds across the dataset. ``None`` disables auto-compaction.
+    - ``include_sub_rlm_trajectories`` (default ``False``): whether
+      sub-agent API calls (i.e. ``rlm("subtask")`` from inside ipython)
+      land in the rollout trajectory the trainer sees. Off by default
+      so the model treats sub-agents as black boxes — only the parent
+      turns drive policy gradients. rlm tags every outbound request
+      with ``X-RLM-Depth`` (parent ``"0"``, sub-agent ``"1"``, etc.);
+      the harness uses ``Harness.keep_trajectory_step`` to drop steps
+      whose request had depth > 0.
 
     Callers do not need to — and should not — add these keys to
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
@@ -189,6 +204,7 @@ def rlm_harness(
         "RLM_TOOLS": ",".join(tool_names),
         "RLM_MAX_TURNS": str(rlm_max_turns),
         "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+        "RLM_MAX_DEPTH": str(rlm_max_depth),
     }
 
     def env_vars_for_rollout(state: State) -> dict[str, str]:
@@ -197,6 +213,10 @@ def rlm_harness(
         if summarize_env is not None:
             env_vars["RLM_SUMMARIZE_AT_TOKENS"] = summarize_env
         return env_vars
+
+    keep_trajectory_step = (
+        None if include_sub_rlm_trajectories else _keep_only_parent_rlm_steps
+    )
 
     return Harness(
         install_script=build_install_script(),
@@ -214,7 +234,19 @@ def rlm_harness(
         environment_vars=env_vars_for_rollout,
         post_install_uploads=post_install_uploads,
         post_install_script=post_install_script,
+        keep_trajectory_step=keep_trajectory_step,
     )
+
+
+def _keep_only_parent_rlm_steps(step, state, headers) -> bool:
+    """Drop trajectory steps whose API request was tagged as a sub-agent call.
+
+    rlm sets ``X-RLM-Depth: 0`` on parent calls and increments for each
+    nested ``rlm()``. Anything > 0 is a sub-agent — its output isn't
+    what the policy gradient should see; the model should learn to use
+    sub-agents as black boxes returning a single answer string.
+    """
+    return headers.get("x-rlm-depth", "0") == "0"
 
 
 def _build_summarize_resolver(
