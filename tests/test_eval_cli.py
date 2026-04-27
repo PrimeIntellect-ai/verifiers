@@ -246,6 +246,32 @@ def test_cli_extra_env_kwargs_support_timeout_seconds(monkeypatch, run_cli):
     }
 
 
+def test_cli_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cli):
+    """--timeout wins over timeout_seconds in --extra-env-kwargs."""
+    captured = run_cli(
+        monkeypatch,
+        {
+            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
+            "timeout": 600,
+        },
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {
+        "timeout_seconds": 600,
+        "foo": "bar",
+    }
+
+
+def test_cli_timeout_flag_alone(monkeypatch, run_cli):
+    """--timeout alone injects timeout_seconds into extra_env_kwargs."""
+    captured = run_cli(
+        monkeypatch,
+        {"timeout": 120},
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {"timeout_seconds": 120}
+
+
 def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
