@@ -59,6 +59,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Overrides `timeout_seconds` in `--extra-env-kwargs`. Bounds generation only — scoring is not bounded. |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
@@ -73,10 +74,26 @@ The `--env-args` flag passes arguments to your `load_environment()` function:
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
 ```
 
-The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` or setting rollout limits like `timeout_seconds` which may not be exposed via `load_environment()`:
+The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` which may not be exposed via `load_environment()`:
 
 ```bash
-prime eval run my-env -x '{"max_turns": 20, "timeout_seconds": 600}'
+prime eval run my-env -x '{"max_turns": 20}'
+```
+
+For per-rollout wall-clock timeouts, prefer the dedicated `--timeout` flag, which injects `timeout_seconds` into the environment constructor and **wins over** any `timeout_seconds` set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+
+```bash
+prime eval run my-env --timeout 600
+```
+
+When the timeout fires, the rollout is marked `timed_out=True` / `is_truncated=True` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
+
+The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
+
+```toml
+[[eval]]
+env_id = "my-env"
+timeout = 600
 ```
 
 #### Executor autoscaling
