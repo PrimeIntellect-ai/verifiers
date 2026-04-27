@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 
 from math_verify import parse, verify
+from math_verify.errors import TimeoutException as MathVerifyTimeout
 
 from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
@@ -45,7 +46,7 @@ def verify_response(
         )
         elapsed = time.perf_counter() - start
         return float(is_correct), elapsed
-    except BaseException:
+    except (Exception, MathVerifyTimeout):
         elapsed = time.perf_counter() - start
         return 0.0, elapsed
 
