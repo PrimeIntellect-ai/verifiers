@@ -666,7 +666,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.stop
     async def agent_completed(self, state: State) -> bool:
         """Check if agent has completed."""
-        return state.get("agent_completed", False) and not state.get("timed_out", False)
+        return state.get("agent_completed", False)
 
     async def post_rollout(self, state: State):
         """

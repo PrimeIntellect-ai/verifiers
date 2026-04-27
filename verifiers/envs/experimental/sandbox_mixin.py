@@ -218,7 +218,6 @@ class SandboxMixin:
                 except BaseException:
                     return
                 self.register_sandbox(sandbox.id)
-                state["sandbox_id"] = sandbox.id
                 asyncio.create_task(self.delete_sandbox(sandbox.id))
 
             create_task.add_done_callback(cleanup_created_sandbox)

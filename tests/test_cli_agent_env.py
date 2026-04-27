@@ -130,9 +130,6 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
-        state = {"agent_completed": True, "timed_out": True}
-        assert await env.agent_completed(state) is False
-
     def test_disabled_timeout_omits_sandbox_timeout(self, sample_dataset):
         """Disabling rollout timeout should not send a zero-minute sandbox timeout."""
         env = vf.CliAgentEnv(
