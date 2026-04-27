@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 from abc import abstractmethod
-from contextlib import suppress
 from typing import final
 
 import verifiers as vf
@@ -79,7 +78,7 @@ class MultiTurnEnv(vf.Environment):
     async def timeout_reached(self, state: State) -> bool:
         if self.timeout_seconds is None:
             return False
-        start_time = state.get("_start_perf_counter", state["timing"]["start_time"])
+        start_time = state["_start_perf_counter"]
         if time.perf_counter() - start_time <= self.timeout_seconds:
             return False
         self.mark_timed_out(state)
@@ -139,6 +138,12 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
+    async def _finalize_rollout(self, state: State) -> None:
+        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
+        await self._render_timing(state)
+        await self.render_completion(state)
+        await self._cleanup(state)
+
     async def add_model_response(
         self,
         state: State,
@@ -173,7 +178,6 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
-        rollout_task: asyncio.Task[State] | None = None
 
         async def run_rollout_loop() -> State:
             nonlocal state
@@ -199,34 +203,15 @@ class MultiTurnEnv(vf.Environment):
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
-            await self.render_completion(state)
             return state
 
         try:
-            if self.timeout_seconds is None:
-                return await run_rollout_loop()
-
-            rollout_task = asyncio.create_task(run_rollout_loop())
-            done, _ = await asyncio.wait({rollout_task}, timeout=self.timeout_seconds)
-            if rollout_task in done or rollout_task.done():
-                return await rollout_task
-
-            if not rollout_task.cancel():
-                return await rollout_task
-            with suppress(asyncio.CancelledError):
-                await rollout_task
-
-            self.mark_timed_out(state)
-            state["is_completed"] = True
-            state["stop_condition"] = "timeout_reached"
-            await self._render_timing(state)
-            await self._cleanup(state)
-            await self.render_completion(state)
-            return state
-        except asyncio.CancelledError:
-            if rollout_task is not None and not rollout_task.done():
-                rollout_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await rollout_task
-            await self._cleanup(state)
-            raise
+            try:
+                return await asyncio.wait_for(
+                    run_rollout_loop(), timeout=self.timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                await self.is_completed(state)
+                return state
+        finally:
+            await self._finalize_rollout(state)

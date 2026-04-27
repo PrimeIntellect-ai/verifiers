@@ -662,7 +662,7 @@ class Environment(ABC):
         return False
 
     async def _render_timing(self, state: State):
-        start_time = state.get("_start_perf_counter", state["timing"]["start_time"])
+        start_time = state["_start_perf_counter"]
         end_time = time.perf_counter()
         state["timing"]["generation_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
@@ -672,8 +672,6 @@ class Environment(ABC):
         """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
         for condition in self._stop_conditions:
             if await self._render_stop(state, condition):
-                await self._render_timing(state)
-                await self._cleanup(state)
                 return True
         return False
 
