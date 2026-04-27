@@ -19,7 +19,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Ablation Sweeps](#ablation-sweeps)
   - [Configuration Precedence](#configuration-precedence)
 
-Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
+Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default), the OpenAI Responses API (via `--api-client-type openai_responses`), and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
 
 ## Basic Usage
 
@@ -102,7 +102,7 @@ env.set_concurrency(256)
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `openai_chat_completions_token`, or `anthropic_messages` |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `openai_chat_completions_token`, `openai_responses`, or `anthropic_messages` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
@@ -130,7 +130,7 @@ key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"openai_responses"` for models that require the OpenAI Responses API (e.g., tool calling with `reasoning_effort` on gpt-5.x), or `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
