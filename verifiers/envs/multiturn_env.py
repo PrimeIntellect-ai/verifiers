@@ -75,7 +75,6 @@ class MultiTurnEnv(vf.Environment):
 
     def mark_timed_out(self, state: State) -> None:
         state["timed_out"] = True
-        state["is_truncated"] = True
         state["is_completed"] = True
         state["stop_condition"] = "timeout_reached"
 

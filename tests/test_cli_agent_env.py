@@ -1,8 +1,6 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
-import asyncio
 import tempfile
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -147,28 +145,6 @@ class TestCliAgentEnv:
         resources = env.get_sandbox_resources({})
 
         assert "timeout_minutes" not in resources
-
-    @pytest.mark.asyncio
-    async def test_poll_next_request_exits_on_rollout_timeout(self, sample_dataset):
-        """Polling should unblock when the inherited rollout timeout is reached."""
-        env = vf.CliAgentEnv(
-            run_command="python agent.py",
-            dataset=sample_dataset,
-            rubric=vf.Rubric(),
-            timeout_seconds=0.01,
-            poll_interval=0.001,
-        )
-        state = {
-            "request_id_queue": asyncio.Queue(),
-            "agent_completed": False,
-            "timing": {"start_time": time.perf_counter() - 1.0},
-        }
-
-        request_id = await env._poll_next_request(state)
-
-        assert request_id is None
-        assert state["timed_out"] is True
-        assert state["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):

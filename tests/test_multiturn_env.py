@@ -50,9 +50,9 @@ class TestMultiTurnEnv:
         state: State = {}
         env.mark_timed_out(state)
         assert state["timed_out"] is True
-        assert state["is_truncated"] is True
         assert state["is_completed"] is True
         assert state["stop_condition"] == "timeout_reached"
+        assert "is_truncated" not in state
 
     @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env, make_input):
@@ -164,7 +164,6 @@ class TestMultiTurnEnv:
         assert len(state["trajectory"]) == 1
         assert state["timed_out"] is True
         assert state["is_completed"] is True
-        assert state["is_truncated"] is True
         assert state["stop_condition"] == "timeout_reached"
         completion = state["completion"]
         assert len(completion) == 1
@@ -205,7 +204,6 @@ class TestMultiTurnEnv:
 
         assert state["timed_out"] is True
         assert state["is_completed"] is True
-        assert state["is_truncated"] is True
         assert state["stop_condition"] == "timeout_reached"
         assert state["trajectory"] == []
         assert state["completion"] == []
