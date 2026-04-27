@@ -131,8 +131,8 @@ class MultiTurnEnv(vf.Environment):
 
     async def _finalize_rollout(self, state: State) -> None:
         """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
-        await self._render_timing(state)
         await self.render_completion(state)
+        await self._render_timing(state)
         await self._cleanup(state)
 
     async def add_model_response(
@@ -170,7 +170,7 @@ class MultiTurnEnv(vf.Environment):
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
 
-        async def run_rollout_loop() -> State:
+        async def rollout_loop() -> State:
             nonlocal state
 
             try:
@@ -197,7 +197,7 @@ class MultiTurnEnv(vf.Environment):
             return state
 
         try:
-            await asyncio.wait_for(run_rollout_loop(), timeout=self.timeout_seconds)
+            await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             self.mark_timed_out(state)
         finally:
