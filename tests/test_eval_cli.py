@@ -420,6 +420,21 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     assert config.client_config.api_base_url == "https://custom.example/v1"
 
 
+def test_cli_accepts_openai_responses_client_type(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "gpt-5.2",
+            "api_client_type": "openai_responses",
+            "api_key_var": "OPENAI_API_KEY",
+            "api_base_url": "https://api.openai.com/v1",
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "openai_responses"
+
+
 def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
