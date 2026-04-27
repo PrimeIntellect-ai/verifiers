@@ -72,7 +72,7 @@ class CliAgentMonitorRubric(vf.Rubric):
 
     async def agent_timeout(self, state: vf.State) -> float:
         """Whether the agent timed out."""
-        return float(bool(state.get("agent_timed_out") or state.get("timed_out")))
+        return float(bool(state.get("timed_out")))
 
     async def agent_error(self, state: vf.State) -> float:
         """Whether the agent errored (non-zero exit_code)."""
@@ -375,14 +375,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             return
 
         try:
-            await asyncio.wait_for(
-                self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
-            state["agent_timed_out"] = True
-            self.mark_timed_out(state)
+            await self.poll_job_completion(state, sandbox_id, background_job)
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise
@@ -497,7 +490,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Poll for the next intercepted request, checking liveness in between.
 
         Returns a request_id when a request arrives, or None when the agent
-        has completed or the rollout has timed out.
+        has completed.
         """
         request_id_queue = state["request_id_queue"]
         while True:
@@ -514,13 +507,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     )
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    return None
-                if (
-                    self.timeout_seconds is not None
-                    and time.perf_counter() - state["timing"]["start_time"]
-                    > self.timeout_seconds
-                ):
-                    self.mark_timed_out(state)
                     return None
 
     async def get_prompt_messages(self, state: State) -> Messages:
@@ -680,11 +666,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.stop
     async def agent_completed(self, state: State) -> bool:
         """Check if agent has completed."""
-        return (
-            state.get("agent_completed", False)
-            and not state.get("agent_timed_out", False)
-            and not state.get("timed_out", False)
-        )
+        return state.get("agent_completed", False) and not state.get("timed_out", False)
 
     async def post_rollout(self, state: State):
         """
@@ -709,7 +691,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
         )
         exit_code = state.get("agent_exit_code")
-        timed_out = state.get("agent_timed_out", False) or state.get("timed_out", False)
+        timed_out = state.get("timed_out", False)
         duration_s = state["timing"].get("total_ms", 0) / 1000
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
