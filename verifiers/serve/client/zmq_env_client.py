@@ -32,8 +32,14 @@ class ZMQEnvClient(EnvClient):
 
     DEFAULT_REQUEST_TIMEOUT = 36_000  # 10h
 
-    def __init__(self, address: str = "tcp://127.0.0.1:5000", **kwargs):
+    def __init__(
+        self,
+        address: str = "tcp://127.0.0.1:5000",
+        auth_token: str | None = None,
+        **kwargs,
+    ):
         super().__init__(address=address, **kwargs)
+        self.auth_token = auth_token.encode() if auth_token is not None else None
 
         # ZMQ context
         self.ctx = zmq.asyncio.Context()
@@ -142,10 +148,17 @@ class ZMQEnvClient(EnvClient):
         self.socket.close()
         self.ctx.term()
 
+    def _build_request_frames(self, request_id: bytes, payload: bytes) -> list[bytes]:
+        if self.auth_token is None:
+            return [request_id, payload]
+        return [request_id, self.auth_token, payload]
+
     async def send_cancel(self, request_id: str) -> None:
         """Send a cancel signal (empty payload) to the server for a request."""
         try:
-            await self.socket.send_multipart([request_id.encode(), b""])
+            await self.socket.send_multipart(
+                self._build_request_frames(request_id.encode(), b"")
+            )
         except BaseException:
             pass
 
@@ -293,7 +306,9 @@ class ZMQEnvClient(EnvClient):
             async with self.pending_lock:
                 self.pending_requests[request_id] = pending_req
 
-            await self.socket.send_multipart([request_id.encode(), payload_bytes])
+            await self.socket.send_multipart(
+                self._build_request_frames(request_id.encode(), payload_bytes)
+            )
 
             try:
                 raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
@@ -359,7 +374,8 @@ class ZMQEnvClient(EnvClient):
         forwarded to the event loop via ``call_soon_threadsafe``.
 
         Uses a DEALER socket on the main address (same port as requests).
-        Sends ``b"ping"`` as the payload; the server responds inline.
+        Sends ``b"ping"`` as the payload; the server responds inline. When
+        configured, the auth token is sent as a dedicated frame.
         """
         ctx = zmq.Context()
         sock = ctx.socket(zmq.DEALER)
@@ -379,7 +395,7 @@ class ZMQEnvClient(EnvClient):
         while not self.stop_health_thread.is_set():
             is_healthy = False
             try:
-                sock.send_multipart([b"health", b"ping"])
+                sock.send_multipart(self._build_request_frames(b"health", b"ping"))
                 frames = sock.recv_multipart()
                 if len(frames) == 2:
                     resp = msgpack.unpackb(frames[1], raw=False)

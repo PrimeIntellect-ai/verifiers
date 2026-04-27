@@ -27,21 +27,27 @@ from verifiers.serve import (
     ZMQEnvServer,
 )
 
+_DEFAULT_CLIENT_AUTH = object()
 
-def make_client(address: str = "tcp://127.0.0.1:5555", **kwargs) -> ZMQEnvClient:
+
+def make_client(
+    address: str = "tcp://127.0.0.1:5555",
+    auth_token: str | None = None,
+    **kwargs,
+) -> ZMQEnvClient:
     """Create a ZMQEnvClient with health checks disabled by default."""
     kwargs.setdefault("health_check_interval", 0)
-    return ZMQEnvClient(address=address, **kwargs)
+    return ZMQEnvClient(address=address, auth_token=auth_token, **kwargs)
 
 
-def make_mock_server(address: str) -> ZMQEnvServer:
+def make_mock_server(address: str, auth_token: str | None = None) -> ZMQEnvServer:
     """Create a ZMQEnvServer with a mocked environment (no real env loading)."""
     with patch("verifiers.serve.server.env_server.vf") as mock_vf:
         mock_env = MagicMock()
         mock_env._teardown = AsyncMock()
         mock_vf.load_environment.return_value = mock_env
         mock_vf.setup_logging = MagicMock()
-        return ZMQEnvServer(env_id="test", address=address)
+        return ZMQEnvServer(env_id="test", address=address, auth_token=auth_token)
 
 
 def make_rollout_request() -> RunRolloutRequest:
@@ -77,7 +83,12 @@ def make_pending_request(
 
 
 @contextlib.asynccontextmanager
-async def run_server_and_client():
+async def run_server_and_client(
+    *,
+    auth_token: str | None = None,
+    client_auth_token: object | str | None = _DEFAULT_CLIENT_AUTH,
+    client_health_check_interval: float = 0,
+):
     """Start a mock ZMQ server and connected client, tearing both down on exit.
 
     The router's worker spawning is mocked out so no subprocesses are created.
@@ -87,7 +98,7 @@ async def run_server_and_client():
     port = get_free_port()
     address = f"tcp://127.0.0.1:{port}"
 
-    server = make_mock_server(address)
+    server = make_mock_server(address, auth_token=auth_token)
 
     # Mock out worker lifecycle — we don't want real subprocesses in unit tests
     server.router.start_workers = MagicMock()
@@ -98,7 +109,14 @@ async def run_server_and_client():
     server_loop = asyncio.create_task(server.serve(stop_event=stop_event))
     await asyncio.sleep(0.1)  # let server bind and start polling
 
-    client = make_client(address=address)
+    resolved_client_auth = (
+        auth_token if client_auth_token is _DEFAULT_CLIENT_AUTH else client_auth_token
+    )
+    client = make_client(
+        address=address,
+        auth_token=resolved_client_auth,
+        health_check_interval=client_health_check_interval,
+    )
 
     try:
         yield server, client
@@ -406,3 +424,62 @@ class TestCancelForwarding:
             client_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await client_task
+
+
+class TestZMQAuth:
+    """Tests for optional transport-level auth on the ZMQ env server."""
+
+    @pytest.mark.asyncio
+    async def test_valid_token_dispatches_request(self):
+        """Matching client/server tokens allow requests through to the router."""
+        async with run_server_and_client(auth_token="shared-token") as (server, client):
+            client_task = asyncio.create_task(
+                client.send_request(
+                    make_rollout_request(), RunRolloutResponse, timeout=30
+                )
+            )
+
+            await asyncio.sleep(0.3)
+
+            assert server.router.dispatch_request.call_count == 1
+
+            client_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await client_task
+
+    @pytest.mark.asyncio
+    async def test_missing_token_rejected_before_dispatch(self):
+        """An auth-enabled server rejects unauthenticated requests."""
+        async with run_server_and_client(
+            auth_token="shared-token",
+            client_auth_token=None,
+        ) as (server, client):
+            with pytest.raises(RuntimeError, match="Unauthorized"):
+                await client.send_request(
+                    make_rollout_request(), RunRolloutResponse, timeout=1
+                )
+
+            assert server.router.dispatch_request.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_rejected_before_dispatch(self):
+        """Wrong tokens are rejected without reaching the router."""
+        async with run_server_and_client(
+            auth_token="shared-token",
+            client_auth_token="wrong-token",
+        ) as (server, client):
+            with pytest.raises(RuntimeError, match="Unauthorized"):
+                await client.send_request(
+                    make_rollout_request(), RunRolloutResponse, timeout=1
+                )
+
+            assert server.router.dispatch_request.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_health_checks_include_auth_token(self):
+        """Health probes succeed when the client carries the shared token."""
+        async with run_server_and_client(
+            auth_token="shared-token",
+            client_health_check_interval=0.05,
+        ) as (_server, client):
+            await client.wait_for_server_startup(timeout=1.0)

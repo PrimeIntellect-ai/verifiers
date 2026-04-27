@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
@@ -672,3 +672,40 @@ async def test_generate_resume_raises_on_metadata_mismatch(
             model="test-model",
             results_path=results_path,
         )
+
+
+@pytest.mark.asyncio
+async def test_start_server_wires_shared_auth_token(make_dummy_env, mock_client):
+    env = make_dummy_env(mock_client)
+
+    client_instance = AsyncMock()
+    client_instance.wait_for_server_startup = AsyncMock()
+    process = MagicMock()
+    ctx = MagicMock()
+    ctx.Process.return_value = process
+
+    with (
+        patch("verifiers.envs.environment.get_free_port", return_value=4321),
+        patch("verifiers.envs.environment.mp.get_context", return_value=ctx),
+        patch(
+            "verifiers.envs.environment.ZMQEnvClient", return_value=client_instance
+        ) as mock_env_client,
+    ):
+        await env.start_server()
+
+    process_kwargs = ctx.Process.call_args.kwargs["kwargs"]
+    auth_token = process_kwargs["auth_token"]
+
+    assert isinstance(auth_token, str)
+    assert auth_token
+    assert process_kwargs["address"] == "tcp://127.0.0.1:4321"
+    assert ctx.Process.call_args.kwargs["target"].__qualname__.endswith("run_server")
+    assert client_instance.wait_for_server_startup.await_count == 1
+    assert env.env_server_process is process
+    assert env.env_client is client_instance
+    assert mock_env_client.call_args.kwargs["auth_token"] == auth_token
+    assert mock_env_client.call_args.kwargs["address"] == "tcp://127.0.0.1:4321"
+
+    if env.death_pipe_writer is not None:
+        env.death_pipe_writer.close()
+        env.death_pipe_writer = None

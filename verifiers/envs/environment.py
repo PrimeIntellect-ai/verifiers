@@ -5,6 +5,7 @@ import atexit
 import json
 import logging
 import multiprocessing as mp
+import secrets
 import signal
 import time
 import uuid
@@ -1286,6 +1287,7 @@ class Environment(ABC):
         from verifiers.serve import ZMQEnvServer
 
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        auth_token = secrets.token_hex(32)
         extra_env_kwargs = extra_env_kwargs or {}
 
         # Death pipe: parent keeps writer, children monitor reader.
@@ -1309,6 +1311,7 @@ class Environment(ABC):
             ),
             kwargs=dict(
                 address=address,
+                auth_token=auth_token,
                 num_workers=num_workers,
                 death_pipe=death_pipe_reader,
             ),
@@ -1319,6 +1322,7 @@ class Environment(ABC):
         death_pipe_reader.close()
         self.env_client = ZMQEnvClient(
             address=address,
+            auth_token=auth_token,
             health_check_interval=health_check_interval,
             startup_timeout=startup_timeout,
             recovery_timeout=recovery_timeout,
