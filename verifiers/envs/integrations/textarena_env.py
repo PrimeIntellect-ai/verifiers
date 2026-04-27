@@ -136,6 +136,12 @@ class TextArenaEnv(vf.MultiTurnEnv):
         eval_dataset_rows = []
         _, user_prompt = self.ta_env.get_observation()
         words = self.ta_env.word_list
+        if isinstance(words, dict):
+            words = [
+                w
+                for values in words.values()
+                for w in (values if isinstance(values, (list, tuple)) else [values])
+            ]
         # set seed
         random.seed(self.seed)
         for i in range(self.num_train_examples + self.num_eval_examples):
