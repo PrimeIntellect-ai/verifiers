@@ -103,7 +103,7 @@ class EndpointHarness(Harness):
         return await client.chat.completions.create(
             model=resources.model,
             messages=self.endpoint_message_payload(state["prompt"]),
-            tools=self.endpoint_tool_payload(state["tool_defs"]),
+            tools=self.endpoint_tool_payload(resources.tools.defs()),
             **resources.sampling_args,
         )
 

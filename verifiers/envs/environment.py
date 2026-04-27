@@ -65,6 +65,7 @@ from verifiers.types import (
     State,
     TokenUsage,
     Tool,
+    flatten_task_input,
 )
 from verifiers.utils.async_utils import (
     maybe_call_with_named_args,
@@ -561,10 +562,13 @@ class Environment(ABC):
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
+        state_task = flatten_task_input(state_input)
+        state_input = cast(RolloutInput, state_task)
         state = State(input=state_input)
+        state["task"] = state_task
 
         # Convert prompt to Pydantic messages
-        raw_prompt = input.get("prompt")
+        raw_prompt = state_input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
             state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
 

@@ -23,8 +23,8 @@ from verifiers.envs.experimental.toolset import (
     CallableTool,
     MCPTool,
     ToolArgumentError,
-    ToolInjector,
     Toolset,
+    _ToolInjector,
     default_tool_injectors,
     is_context_binding,
     is_zero_arg_callable,
@@ -38,7 +38,6 @@ from verifiers.envs.experimental.channels.channel import (
     ChannelMap,
     LifecycleHooks,
     ResourcePatch,
-    as_list,
 )
 
 
@@ -228,7 +227,7 @@ class MCPToolRuntime:
 
 
 @dataclass(frozen=True)
-class ToolHandle:
+class _ToolHandle:
     registry: ToolRegistry
     name: str
 
@@ -255,7 +254,7 @@ class ToolHandle:
         )
 
 
-class ToolRegistry(Mapping[str, ToolHandle]):
+class ToolRegistry(Mapping[str, _ToolHandle]):
     """Name-indexed collection of callable, stateful, and MCP tools."""
 
     def __init__(self, tools: Iterable[Any] | None = None):
@@ -274,12 +273,19 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         if isinstance(tool, Toolset):
             self.add_toolset(tool)
             return
-        if isinstance(tool, ToolInjector):
-            self.add_injector(tool)
-            return
+        if isinstance(tool, _ToolInjector):
+            raise TypeError(
+                "Tool injectors are internal. Use Toolset(bindings=...) for hidden "
+                "tool arguments."
+            )
         if isinstance(tool, MCPTool):
             self._mcp_specs.append(tool)
             return
+        if isinstance(tool, Tool | Mapping):
+            raise TypeError(
+                "Schema-only tools are not valid tool channel inputs. Pass a "
+                "callable, CallableTool, MCPTool, or Toolset."
+            )
         name = self._tool_name(tool)
         if name in self._tools:
             raise ValueError(f"Duplicate tool name: {name}")
@@ -308,8 +314,8 @@ class ToolRegistry(Mapping[str, ToolHandle]):
                 raise ValueError(f"Conflicting tool binding: {name}")
             return
         self._bindings[name] = value
-        self.add_injector(
-            ToolInjector(
+        self._add_injector(
+            _ToolInjector(
                 name,
                 lambda context, name=name: self.resolve_binding(name, context),
             )
@@ -328,41 +334,17 @@ class ToolRegistry(Mapping[str, ToolHandle]):
 
     def extend(self, tools: object) -> None:
         tools = load_tools_source(tools)
-        if isinstance(tools, ToolRegistry):
-            for tool in tools._tools.values():
-                self.add(tool)
-            self._mcp_specs.extend(tools._mcp_specs)
-            for name, value in tools._bindings.items():
-                self.add_binding(name, value)
-            for injector in tools._injectors.values():
-                self.add_injector(injector)
-            for name, configs in tools._channel_contributions.items():
-                self._channel_contributions[name] = (
-                    *self._channel_contributions.get(name, ()),
-                    *configs,
-                )
-            return
         if isinstance(tools, Toolset):
             self.add_toolset(tools)
             return
         for tool in tools:
             self.add(tool)
 
-    def add_injector(self, injector: ToolInjector) -> None:
+    def _add_injector(self, injector: _ToolInjector) -> None:
         existing = self._injectors.get(injector.name)
         if existing is not None and existing != injector:
             raise ValueError(f"Conflicting tool injector: {injector.name}")
         self._injectors[injector.name] = injector
-
-    def merged(self, tools: Iterable[Any]) -> ToolRegistry:
-        registry = ToolRegistry()
-        registry._tools = dict(self._tools)
-        registry._injectors = dict(self._injectors)
-        registry._bindings = dict(self._bindings)
-        registry._binding_cache = dict(self._binding_cache)
-        registry._channel_contributions = dict(self._channel_contributions)
-        registry.extend(tools)
-        return registry
 
     def ensure_ready(self) -> None:
         if not self._mcp_specs:
@@ -435,26 +417,11 @@ class ToolRegistry(Mapping[str, ToolHandle]):
         return contributions
 
     def _normalize_tool(self, tool: Any) -> Any:
-        if isinstance(tool, CallableTool | Tool | MCPToolWrapper):
+        if isinstance(tool, CallableTool | MCPToolWrapper):
             return tool
         return tool
 
     def _tool_def(self, tool: Any) -> Tool:
-        if isinstance(tool, Tool):
-            return tool
-        if isinstance(tool, Mapping):
-            payload = dict(tool)
-            function_payload = payload.get("function")
-            if payload.get("type") == "function" and isinstance(
-                function_payload, Mapping
-            ):
-                return Tool(
-                    name=str(function_payload.get("name", "")),
-                    description=str(function_payload.get("description", "")),
-                    parameters=dict(function_payload.get("parameters") or {}),
-                    strict=function_payload.get("strict"),  # type: ignore[arg-type]
-                )
-            return Tool.model_validate(payload)
         if isinstance(tool, CallableTool):
             return self._callable_tool_def(tool)
         if isinstance(tool, MCPToolWrapper):
@@ -585,14 +552,6 @@ class ToolRegistry(Mapping[str, ToolHandle]):
             if tool.name:
                 return tool.name
             return getattr(tool.func, "__name__", tool.func.__class__.__name__)
-        if isinstance(tool, Tool):
-            return tool.name
-        if isinstance(tool, Mapping):
-            if "name" in tool:
-                return str(tool["name"])
-            function_payload = tool.get("function")
-            if isinstance(function_payload, Mapping) and "name" in function_payload:
-                return str(function_payload["name"])
         name = getattr(tool, "name", None)
         if isinstance(name, str) and name:
             return name
@@ -601,11 +560,11 @@ class ToolRegistry(Mapping[str, ToolHandle]):
             return function_name
         raise ValueError(f"Tool has no name: {tool!r}")
 
-    def __getitem__(self, key: str) -> ToolHandle:
+    def __getitem__(self, key: str) -> _ToolHandle:
         self.ensure_ready()
         if key not in self._tools:
             raise KeyError(key)
-        return ToolHandle(self, key)
+        return _ToolHandle(self, key)
 
     def __iter__(self) -> Iterator[str]:
         self.ensure_ready()
@@ -622,10 +581,7 @@ def resolve_tools(
     registry = ToolRegistry()
     for config in configs:
         if isinstance(config, Mapping) and (
-            "tools" in config
-            or "bindings" in config
-            or "injectors" in config
-            or "channels" in config
+            "tools" in config or "bindings" in config or "channels" in config
         ):
             tool_config = cast(Mapping[str, object], config)
             channels = tool_config.get("channels")
@@ -636,9 +592,10 @@ def resolve_tools(
             ).items():
                 registry.add_binding(name, value)
             registry.extend(tool_config.get("tools"))
-            registry.extend(as_list(tool_config.get("injectors")))
-        elif isinstance(config, ToolRegistry):
-            registry.extend(config)
+        elif isinstance(config, Mapping):
+            raise TypeError(
+                "Tools channel mappings must contain one of: tools, bindings, channels."
+            )
         else:
             registry.extend(config)
     rubric_contributions: tuple[object, ...] = ()

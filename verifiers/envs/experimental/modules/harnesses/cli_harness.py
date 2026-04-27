@@ -626,7 +626,7 @@ class CliHarness(EndpointHarness):
         sandbox_runtime = self.require_sandbox_runtime()
         sandbox_scoring = bool(resources.require("sandbox_scoring"))
         if (
-            resources.scoring != "none"
+            resources.scoring_mode != "none"
             and (self.keep_sandbox_for_scoring or sandbox_scoring)
             and state.get("is_completed")
         ):

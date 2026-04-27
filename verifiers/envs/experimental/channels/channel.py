@@ -36,21 +36,33 @@ class ChannelContext:
 @dataclass(frozen=True)
 class LifecycleHooks:
     stop: tuple[LifecycleHandler, ...] = ()
+    render: tuple[LifecycleHandler, ...] = ()
+    render_group: tuple[LifecycleHandler, ...] = ()
     cleanup: tuple[LifecycleHandler, ...] = ()
+    cleanup_group: tuple[LifecycleHandler, ...] = ()
     teardown: tuple[LifecycleHandler, ...] = ()
 
     def merged(self, other: "LifecycleHooks") -> "LifecycleHooks":
         return LifecycleHooks(
             stop=(*self.stop, *other.stop),
+            render=(*self.render, *other.render),
+            render_group=(*self.render_group, *other.render_group),
             cleanup=(*self.cleanup, *other.cleanup),
+            cleanup_group=(*self.cleanup_group, *other.cleanup_group),
             teardown=(*self.teardown, *other.teardown),
         )
 
     def get(self, kind: str) -> tuple[LifecycleHandler, ...]:
         if kind == "stop":
             return self.stop
+        if kind == "render":
+            return self.render
+        if kind == "render_group":
+            return self.render_group
         if kind == "cleanup":
             return self.cleanup
+        if kind == "cleanup_group":
+            return self.cleanup_group
         if kind == "teardown":
             return self.teardown
         raise ValueError(f"Unknown lifecycle hook kind: {kind}")

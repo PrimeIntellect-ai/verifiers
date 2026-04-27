@@ -42,6 +42,7 @@ class Env(Environment):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            score_rollout=self.score_rollouts,
         ):
             harness = self.resources.harness
             assert harness is not None

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar, cast, overload
 
 from verifiers.clients import Client
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import DatasetBuilder, SamplingArgs
+from verifiers.types import DatasetBuilder, SamplingArgs, State
 from verifiers.utils.async_utils import maybe_await
 
 from verifiers.envs.experimental.channels.channel import (
@@ -21,8 +21,15 @@ from verifiers.envs.experimental.channels.channel import (
     resolve_resource_objects,
 )
 from verifiers.envs.experimental.channels import (
-    ToolRegistry,
     attach_resources,
+)
+from verifiers.envs.experimental.channels.tools_channel import ToolRegistry
+from verifiers.envs.experimental.lifecycle import Lifecycle
+from verifiers.envs.experimental.scoring import (
+    Scoring,
+    rubric_class_objects,
+    rubric_cleanup_handlers,
+    signals_from_rubric,
 )
 from verifiers.envs.experimental.task import Task
 from verifiers.envs.experimental.taskset import Taskset
@@ -43,7 +50,10 @@ class _RolloutState:
     client: Client
     model: str
     sampling_args: SamplingArgs
+    score_rollout: bool
     hooks: LifecycleHooks
+    lifecycle: Lifecycle
+    scoring: Scoring
     runtime: dict[str, object]
 
 
@@ -53,10 +63,12 @@ class Resources:
 
     taskset: Taskset | None = None
     harness: Harness | None = None
-    scoring: ScoringMode | None = None
+    scoring_mode: ScoringMode | None = None
     objects: dict[str, object] = field(default_factory=dict)
     resource_types: dict[str, ResourceType] = field(default_factory=dict)
     hooks: LifecycleHooks = field(default_factory=LifecycleHooks)
+    _lifecycle: Lifecycle = field(init=False)
+    _scoring: Scoring = field(init=False)
     dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
     eval_dataset: Dataset | DatasetBuilder | None = field(default=None, init=False)
     env_id: str | None = field(default=None, init=False)
@@ -70,10 +82,12 @@ class Resources:
     def __post_init__(self) -> None:
         if self.harness is None:
             raise ValueError("Resources requires a harness.")
-        if self.scoring is None:
-            self.scoring = "group" if self.taskset is not None else "run"
-        if self.scoring not in {"run", "group", "none"}:
-            raise ValueError("resources.scoring must be 'run', 'group', or 'none'.")
+        if self.scoring_mode is None:
+            self.scoring_mode = "group" if self.taskset is not None else "run"
+        if self.scoring_mode not in {"run", "group", "none"}:
+            raise ValueError(
+                "resources.scoring_mode must be 'run', 'group', or 'none'."
+            )
         owners = self.owners()
         definitions = channel_definitions(*owners)
         resolution = resolve_resource_objects(*owners, phase="env")
@@ -90,10 +104,21 @@ class Resources:
         self.env_id = self.taskset.name if self.taskset is not None else None
         self.objects.update(resolution.objects)
         self.resource_types.update(channel_resource_types(definitions))
-        rubric = self.require("rubric", Rubric)
-        attach_resources(rubric, self)
         self.hooks = resolution.hooks
+        source_rubric = self.require("rubric", Rubric)
+        self.attach_rubric_objects(source_rubric)
+        attach_resources(source_rubric, self)
+        self._scoring = self.build_scoring(self.objects, source_rubric)
+        self._lifecycle = self.build_lifecycle(self.hooks, source_rubric)
+        self.objects["rubric"] = ResourcesRubric(self, source_rubric)
         self.harness.resources = self
+
+    def attach_rubric_objects(self, rubric: Rubric) -> None:
+        for name, value in rubric_class_objects(rubric).items():
+            existing = self.objects.get(name)
+            if existing is not None and not same_resource_object(name, existing, value):
+                raise ValueError(f"Rubric class object {name!r} collides.")
+            self.objects[name] = value
 
     def owners(self) -> tuple[object, ...]:
         owners: list[object] = []
@@ -102,6 +127,31 @@ class Resources:
         if self.harness is not None:
             owners.append(self.harness)
         return tuple(owners)
+
+    def build_scoring(self, objects: dict[str, object], rubric: Rubric) -> Scoring:
+        return Scoring(
+            [
+                *signals_from_rubric(rubric),
+                *cast(list, objects.get("metrics") or []),
+                *cast(list, objects.get("rewards") or []),
+                *cast(list, objects.get("advantages") or []),
+            ]
+        )
+
+    def build_lifecycle(self, hooks: LifecycleHooks, rubric: Rubric) -> Lifecycle:
+        return Lifecycle(
+            render_rollout=hooks.render,
+            render_group=hooks.render_group,
+            cleanup_rollout=(
+                *rubric_cleanup_handlers(rubric, "rollout"),
+                *hooks.cleanup,
+            ),
+            cleanup_group=(
+                *rubric_cleanup_handlers(rubric, "group"),
+                *hooks.cleanup_group,
+            ),
+            teardown=hooks.teardown,
+        )
 
     def __getattr__(self, name: str) -> object:
         rollout_objects = self.rollout_objects()
@@ -121,6 +171,20 @@ class Resources:
     @property
     def rubric(self) -> Rubric:
         return self.require("rubric", Rubric)
+
+    @property
+    def lifecycle(self) -> Lifecycle:
+        rollout = self._rollout.get()
+        if rollout is not None:
+            return rollout.lifecycle
+        return self._lifecycle
+
+    @property
+    def scoring(self) -> Scoring:
+        rollout = self._rollout.get()
+        if rollout is not None:
+            return rollout.scoring
+        return self._scoring
 
     @property
     def tools(self) -> ToolRegistry:
@@ -175,6 +239,13 @@ class Resources:
         return rollout.sampling_args
 
     @property
+    def score_rollout_enabled(self) -> bool:
+        rollout = self._rollout.get()
+        if rollout is None:
+            return self.scoring_mode != "none"
+        return rollout.score_rollout and self.scoring_mode != "none"
+
+    @property
     def runtime(self) -> dict[str, object]:
         rollout = self._rollout.get()
         if rollout is None:
@@ -200,17 +271,32 @@ class Resources:
         client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        score_rollout: bool = True,
     ) -> AsyncIterator[None]:
         resolution = resolve_resource_objects(
             *self.owners(), phase="rollout", task=task
         )
+        rollout_objects = dict(resolution.objects)
+        source_rubric = cast(Rubric, rollout_objects["rubric"])
+        for name, value in rubric_class_objects(source_rubric).items():
+            existing = rollout_objects.get(name, self.objects.get(name))
+            if existing is not None and not same_resource_object(name, existing, value):
+                raise ValueError(f"Rubric class object {name!r} collides.")
+            rollout_objects[name] = value
+        attach_resources(source_rubric, self)
+        rollout_scoring = self.build_scoring(rollout_objects, source_rubric)
+        rollout_lifecycle = self.build_lifecycle(resolution.hooks, source_rubric)
+        rollout_objects["rubric"] = ResourcesRubric(self, source_rubric)
         rollout_token = self._rollout.set(
             _RolloutState(
-                objects=dict(resolution.objects),
+                objects=rollout_objects,
                 client=client,
                 model=model,
                 sampling_args=sampling_args or {},
+                score_rollout=score_rollout,
                 hooks=resolution.hooks,
+                lifecycle=rollout_lifecycle,
+                scoring=rollout_scoring,
                 runtime={},
             )
         )
@@ -227,7 +313,41 @@ class Resources:
         if self._teardown_complete:
             return
         self._teardown_complete = True
-        await self.run_handlers("teardown")
+        await self.lifecycle.teardown()
+
+
+class ResourcesRubric(Rubric):
+    """Environment adapter for the staged taskset/harness scoring runtime."""
+
+    def __init__(self, resources: Resources, source_rubric: Rubric):
+        super().__init__(parser=source_rubric.parser)
+        self.resources = resources
+
+    def _get_reward_func_names(self) -> list[str]:
+        return self.resources.scoring.signal_names()
+
+    async def score_rollout(self, state: State):
+        return None
+
+    async def score_group(self, states: list[State]):
+        taskset = self.resources.taskset
+        if taskset is None:
+            raise RuntimeError("Group scoring requires a taskset.")
+        tasks = [taskset.to_task(cast(dict, state["input"])) for state in states]
+        await self.resources.lifecycle.render_group(tasks, states, self.resources)
+        await self.resources.scoring.group(tasks, states, self.resources)
+        await self.resources.lifecycle.cleanup_group(tasks, states, self.resources)
+
+    async def cleanup(self, state: State):
+        return None
+
+    async def dummy_score_rollout(self, state: State):
+        state["reward"] = 0.0
+        state["metrics"] = {}
+
+    async def dummy_score_group(self, states: list[State]):
+        for state in states:
+            await self.dummy_score_rollout(state)
 
 
 def unique_handlers(handlers: list[LifecycleHandler]) -> list[LifecycleHandler]:
@@ -256,3 +376,9 @@ def sorted_handlers(
             str(getattr(handler, "__name__", "")),
         ),
     )
+
+
+def same_resource_object(name: str, existing: object, incoming: object) -> bool:
+    if existing is incoming:
+        return True
+    return name == "parser" and existing.__class__ is incoming.__class__

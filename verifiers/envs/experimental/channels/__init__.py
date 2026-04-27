@@ -9,10 +9,14 @@ from verifiers.envs.experimental.channels.channel import (
     resolve_resource_objects,
 )
 from verifiers.envs.experimental.channels.cleanup_channel import cleanup_channel
+from verifiers.envs.experimental.channels.advantage_channel import advantage_channel
 from verifiers.envs.experimental.channels.endpoint_channel import (
     Endpoint,
     endpoint_channel,
 )
+from verifiers.envs.experimental.channels.metrics_channel import metrics_channel
+from verifiers.envs.experimental.channels.render_channel import render_channel
+from verifiers.envs.experimental.channels.rewards_channel import rewards_channel
 from verifiers.envs.experimental.channels.rubric_channel import (
     NoOpRubric,
     attach_resources,
@@ -34,16 +38,13 @@ from verifiers.envs.experimental.channels.system_prompt_channel import (
 )
 from verifiers.envs.experimental.channels.teardown_channel import teardown_channel
 from verifiers.envs.experimental.channels.tools_channel import (
-    ToolHandle,
     ToolMonitorRubric,
-    ToolRegistry,
     tools_channel,
 )
 from verifiers.envs.experimental.toolset import (
     CallableTool,
     MCPTool,
     ToolArgumentError,
-    ToolInjector,
     Toolset,
 )
 from verifiers.envs.experimental.channels.user_channel import User, user_channel
@@ -52,6 +53,10 @@ DEFAULT_CHANNELS = {
     "system_prompt": system_prompt_channel,
     "tools": tools_channel,
     "rubric": rubric_channel,
+    "metrics": metrics_channel,
+    "rewards": rewards_channel,
+    "advantage": advantage_channel,
+    "render": render_channel,
     "skills": skills_channel,
     "sandbox": sandbox_channel,
     "endpoint": endpoint_channel,
@@ -78,19 +83,20 @@ __all__ = [
     "SandboxResources",
     "SandboxTimeouts",
     "ToolArgumentError",
-    "ToolHandle",
-    "ToolInjector",
     "ToolMonitorRubric",
-    "ToolRegistry",
     "Toolset",
     "User",
     "attach_resources",
     "canonicalize_rubric_config",
     "compose_rubrics",
     "cleanup_channel",
+    "advantage_channel",
     "endpoint_channel",
+    "metrics_channel",
+    "render_channel",
     "resolve_channels",
     "resolve_resource_objects",
+    "rewards_channel",
     "rubric_channel",
     "sandbox_channel",
     "skills_channel",

@@ -8,10 +8,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast, final
 
-from verifiers.decorators import cleanup, discover_decorated, stop
+from verifiers.decorators import discover_decorated, render, stop
 from verifiers.errors import Error, OverlongPromptError, ToolCallError, ToolParseError
 from verifiers.rubrics.rubric import Rubric
-from verifiers.rubrics.rubric_group import RubricGroup
 from verifiers.types import (
     AssistantMessage,
     Message,
@@ -40,7 +39,7 @@ from .channels import (
     User,
 )
 from .configs import RunConfig
-from .task import Task
+from .task import Task, task_to_input
 
 if TYPE_CHECKING:
     from .resources import Resources
@@ -86,6 +85,10 @@ class Harness:
         self.max_tool_calls_per_turn = self.run_config.max_tool_calls_per_turn
         self.tool_call_limit_message = self.run_config.tool_call_limit_message
         self._stop_conditions = discover_decorated(self, "stop")
+        self._render_handlers = discover_decorated(self, "render")
+        self._metric_handlers = discover_decorated(self, "metric")
+        self._reward_handlers = discover_decorated(self, "reward")
+        self._advantage_handlers = discover_decorated(self, "advantage")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
 
@@ -128,6 +131,14 @@ class Harness:
             )
         if self._stop_conditions:
             add_lifecycle_channel(channels, "stop", self._stop_conditions)
+        if self._render_handlers:
+            add_lifecycle_channel(channels, "render", self._render_handlers)
+        if self._metric_handlers:
+            add_lifecycle_channel(channels, "metrics", self._metric_handlers)
+        if self._reward_handlers:
+            add_lifecycle_channel(channels, "rewards", self._reward_handlers)
+        if self._advantage_handlers:
+            add_lifecycle_channel(channels, "advantage", self._advantage_handlers)
         if self._cleanup_handlers:
             add_lifecycle_channel(channels, "cleanup", self._cleanup_handlers)
         if self._teardown_handlers:
@@ -205,15 +216,13 @@ class Harness:
         return False
 
     async def setup_state(self, task: Task, resources: Resources) -> State:
-        state = State(input=task.to_input())
+        state = State(input=task_to_input(task))
+        state["task"] = dict(task)
         state["prompt"] = normalize_messages(task.prompt, field_name="task.prompt")
-        state["model"] = resources.model
-        state["sampling_args"] = resources.sampling_args
         state["done"] = False
         state["is_completed"] = False
         state["is_truncated"] = False
         state["stop_condition"] = None
-        state["tool_defs"] = resources.tools.defs()
         state["trajectory"] = []
         state["num_model_requests"] = 0
         state["completion"] = None
@@ -481,22 +490,12 @@ class Harness:
             full = concat_messages([full, cast(Messages, final_env_response)])
         state["completion"] = full[len(first_prompt) :]
 
-    @cleanup(priority=100)
+    @render(priority=100)
     async def render_state(
         self, task: Task, state: State, resources: Resources
     ) -> None:
         await self.render_timing(task, state, resources)
         await self.render_completion(task, state, resources)
-
-    async def cleanup(self, task: Task, state: State, resources: Resources) -> None:
-        for handler in resources.current_handlers("cleanup"):
-            await maybe_call_with_named_args(
-                handler,
-                task=task,
-                state=state,
-                harness=self,
-                resources=resources,
-            )
 
     def pending_model_requests(
         self, resources: Resources
@@ -604,28 +603,17 @@ class Harness:
                     state["error"] = error_info(e)
             await self.wait_for_pending_model_requests(state, resources)
             cleanup_started = True
-            await self.cleanup(task, state, resources)
-            if resources.scoring == "run":
-                if has_group_reward_funcs(resources.rubric):
-                    raise ValueError(
-                        "resources.scoring='run' cannot run rubrics with "
-                        "group reward functions."
-                    )
-                await resources.rubric.score_rollout(state)
-                await resources.rubric.cleanup(state)
+            await resources.lifecycle.render_rollout(task, state, resources)
+            if resources.score_rollout_enabled:
+                await resources.scoring.rollout(task, state, resources)
+            await resources.lifecycle.cleanup_rollout(task, state, resources)
             return state
         except asyncio.CancelledError:
             await self.cancel_pending_model_requests(state, resources)
             raise
         finally:
             if not cleanup_started:
-                await self.cleanup(task, state, resources)
-
-
-def has_group_reward_funcs(rubric: Rubric) -> bool:
-    if isinstance(rubric, RubricGroup):
-        return any(has_group_reward_funcs(child) for child in rubric.rubrics)
-    return bool(rubric._get_group_reward_funcs())
+                await resources.lifecycle.cleanup_rollout(task, state, resources)
 
 
 def add_channel_shorthand(

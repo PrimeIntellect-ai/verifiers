@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import (
     Callable,
     Literal,
     TypeAlias,
+    cast,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -293,6 +295,7 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
+    task: dict[str, Any]
     client: Client
     model: str
     sampling_args: SamplingArgs | None
@@ -333,6 +336,26 @@ class State(dict):
                 input_obj[key] = value
                 return
         super().__setitem__(key, value)
+
+
+TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id", "channels", "task"}
+
+
+def normalize_task_payload(value: object) -> dict[str, Any]:
+    """Normalize the optional serialized task payload attached to a rollout."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, Mapping):
+        raise TypeError("input.task must be a mapping.")
+    return dict(cast(Mapping[str, Any], value))
+
+
+def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a row-shaped task dict with legacy nested task payload flattened."""
+    flattened = {key: value for key, value in input_data.items() if key != "task"}
+    if "task" in input_data and input_data["task"] is not None:
+        flattened.update(normalize_task_payload(input_data["task"]))
+    return flattened
 
 
 # oai tools

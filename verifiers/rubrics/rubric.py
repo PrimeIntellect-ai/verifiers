@@ -12,6 +12,7 @@ from verifiers.types import (
     RewardFunc,
     RolloutScore,
     State,
+    TASK_INPUT_FIELDS,
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -121,18 +122,38 @@ class Rubric:
         return bool(param_names & group_indicators) or returns_list
 
     def score_objects(self, state: State) -> dict[str, Any]:
-        objects = dict(
-            prompt=state["prompt"],
-            completion=state["completion"],
-            answer=state.get("answer", ""),
-            state=state,
-            info=state.get("info", {}),
-            **self.class_objects,
+        task = self.task_for_state(state, self.class_objects.get("resources"))
+        objects = self.task_score_fields(state, task)
+        objects.update(
+            {
+                "prompt": state["prompt"],
+                "completion": state["completion"],
+                "answer": state.get("answer", ""),
+                "state": state,
+                "info": state.get("info", {}),
+                **self.class_objects,
+            }
         )
-        objects["task"] = self.task_for_state(state, objects.get("resources"))
+        objects["task"] = task
         for provider in self.score_object_providers:
             objects.update(provider(state))
         return objects
+
+    def task_score_fields(self, state: State, task: object) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        input_data = state.get("input")
+        if isinstance(input_data, Mapping):
+            row = cast(Mapping[str, Any], input_data)
+            fields.update(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in TASK_INPUT_FIELDS
+                }
+            )
+        if isinstance(task, Mapping):
+            fields.update(cast(Mapping[str, Any], task))
+        return fields
 
     def group_score_objects(self, states: list[State]) -> dict[str, Any]:
         state_objects = [self.score_objects(state) for state in states]
@@ -299,6 +320,10 @@ class Rubric:
         if wants_kwargs or "task" in requested:
             objects["task"] = self.task_for_state(state, objects.get("resources"))
         if wants_kwargs or not requested <= known:
+            for name, value in self.task_score_fields(
+                state, objects.get("task")
+            ).items():
+                objects.setdefault(name, value)
             for provider in self.score_object_providers:
                 objects.update(provider(state))
         return objects

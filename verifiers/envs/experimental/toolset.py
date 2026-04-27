@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from verifiers.envs.experimental.binding import (
     Binding,
@@ -12,9 +12,6 @@ from verifiers.envs.experimental.binding import (
     StateBinding,
     TaskBinding,
 )
-
-if TYPE_CHECKING:
-    from verifiers.envs.experimental.channels.tools_channel import ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -46,7 +43,7 @@ class Toolset:
 
 
 @dataclass(frozen=True)
-class ToolInjector:
+class _ToolInjector:
     name: str
     resolve: Callable[[BindingContext], object]
 
@@ -92,15 +89,15 @@ def inject_tools(context: BindingContext) -> object:
     return getattr(context.resources, "tools")
 
 
-def default_tool_injectors() -> dict[str, ToolInjector]:
+def default_tool_injectors() -> dict[str, _ToolInjector]:
     return {
-        "resources": ToolInjector("resources", inject_resources),
-        "state": ToolInjector("state", inject_state),
-        "task": ToolInjector("task", inject_task),
-        "client": ToolInjector("client", inject_client),
-        "model": ToolInjector("model", inject_model),
-        "sampling_args": ToolInjector("sampling_args", inject_sampling_args),
-        "tools": ToolInjector("tools", inject_tools),
+        "resources": _ToolInjector("resources", inject_resources),
+        "state": _ToolInjector("state", inject_state),
+        "task": _ToolInjector("task", inject_task),
+        "client": _ToolInjector("client", inject_client),
+        "model": _ToolInjector("model", inject_model),
+        "sampling_args": _ToolInjector("sampling_args", inject_sampling_args),
+        "tools": _ToolInjector("tools", inject_tools),
     }
 
 
@@ -115,12 +112,10 @@ def is_context_binding(value: object) -> bool:
     return isinstance(value, Binding | StateBinding | TaskBinding | ResourceBinding)
 
 
-def load_tools_source(source: object) -> ToolRegistry | Toolset | Iterable[Any]:
-    from verifiers.envs.experimental.channels.tools_channel import ToolRegistry
-
+def load_tools_source(source: object) -> Toolset | Iterable[Any]:
     if source is None:
         return []
-    if isinstance(source, ToolRegistry | Toolset):
+    if isinstance(source, Toolset):
         return source
     if callable(source):
         if is_zero_arg_callable(source):

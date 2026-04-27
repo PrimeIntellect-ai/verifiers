@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
+    advantage,
     cleanup,
+    metric,
+    render,
+    reward,
     stop,
     teardown,
 )
@@ -85,9 +89,6 @@ __all__ = [
     "CallableTool",
     "MCPTool",
     "ResourceBinding",
-    "ToolHandle",
-    "ToolInjector",
-    "ToolRegistry",
     "Toolset",
     "StateBinding",
     "TaskBinding",
@@ -114,6 +115,10 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "cleanup",
+    "render",
+    "metric",
+    "reward",
+    "advantage",
     "stop",
     "teardown",
     "ensure_keys",
@@ -201,9 +206,6 @@ _LAZY_IMPORTS = {
     "ResourceBinding": "verifiers.envs.experimental.binding:ResourceBinding",
     "StateBinding": "verifiers.envs.experimental.binding:StateBinding",
     "TaskBinding": "verifiers.envs.experimental.binding:TaskBinding",
-    "ToolHandle": "verifiers.envs.experimental.channels:ToolHandle",
-    "ToolInjector": "verifiers.envs.experimental.toolset:ToolInjector",
-    "ToolRegistry": "verifiers.envs.experimental.channels:ToolRegistry",
     "Toolset": "verifiers.envs.experimental.toolset:Toolset",
     "User": "verifiers.envs.experimental.channels:User",
 }
@@ -293,13 +295,8 @@ if TYPE_CHECKING:
     from .envs.experimental.channels import SandboxSeed, SandboxSpec, SandboxTimeouts  # noqa: F401
     from .envs.experimental.task import Task  # noqa: F401
     from .envs.experimental.taskset import Taskset  # noqa: F401
-    from .envs.experimental.channels import ToolHandle, ToolRegistry, User  # noqa: F401
-    from .envs.experimental.toolset import (
-        CallableTool,
-        MCPTool,
-        ToolInjector,
-        Toolset,
-    )  # noqa: F401
+    from .envs.experimental.channels import User  # noqa: F401
+    from .envs.experimental.toolset import CallableTool, MCPTool, Toolset  # noqa: F401
     from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401

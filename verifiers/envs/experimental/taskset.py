@@ -8,7 +8,12 @@ from datasets import Dataset
 
 from verifiers.decorators import discover_decorated
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, RolloutInput, UserMessage
+from verifiers.types import (
+    Messages,
+    RolloutInput,
+    UserMessage,
+    flatten_task_input,
+)
 from verifiers.utils.message_utils import normalize_messages
 
 from .channels import Channel, ChannelMap
@@ -45,6 +50,10 @@ class Taskset:
         self._tools_loaded = False
         self.name = name or ""
         self._stop_conditions = discover_decorated(self, "stop")
+        self._render_handlers = discover_decorated(self, "render")
+        self._metric_handlers = discover_decorated(self, "metric")
+        self._reward_handlers = discover_decorated(self, "reward")
+        self._advantage_handlers = discover_decorated(self, "advantage")
         self._cleanup_handlers = discover_decorated(self, "cleanup")
         self._teardown_handlers = discover_decorated(self, "teardown")
 
@@ -89,12 +98,18 @@ class Taskset:
             channels["tools"] = tools
         if self._stop_conditions:
             channels["stop"] = self._stop_conditions
+        if self._render_handlers:
+            channels["render"] = self._render_handlers
+        if self._metric_handlers:
+            channels["metrics"] = self._metric_handlers
+        if self._reward_handlers:
+            channels["rewards"] = self._reward_handlers
+        if self._advantage_handlers:
+            channels["advantage"] = self._advantage_handlers
         if self._cleanup_handlers:
             channels["cleanup"] = self._cleanup_handlers
         if self._teardown_handlers:
             channels["teardown"] = self._teardown_handlers
-        if task is not None:
-            channels.update(task.channels)
         return channels
 
     def channel_objects(self) -> dict[str, object]:
@@ -141,36 +156,27 @@ class Taskset:
         return dataset.map(format_row, with_indices=True)
 
     def to_task(self, input: RolloutInput | Mapping[str, Any]) -> Task:
-        row = dict(input)
+        row = flatten_task_input(input)
         info = row.get("info") or {}
         if isinstance(info, str):
             info = json.loads(info)
+        row["info"] = dict(info)
         raw_prompt = row.get("prompt")
         if raw_prompt is None:
             question = row.get("question") or row.get("instruction") or ""
-            task_prompt: Messages | str = (
-                [UserMessage(content=str(question))] if question else []
-            )
+            if question:
+                row["prompt"] = [UserMessage(content=str(question))]
         elif isinstance(raw_prompt, str):
-            task_prompt = raw_prompt
+            row["prompt"] = normalize_messages(raw_prompt, field_name="task.prompt")
         elif isinstance(raw_prompt, list):
-            task_prompt = cast(Messages, raw_prompt)
+            row["prompt"] = normalize_messages(
+                cast(Messages, raw_prompt),
+                field_name="task.prompt",
+            )
         else:
             raise TypeError("task.prompt must be vf.Messages or str.")
-        prompt = normalize_messages(task_prompt, field_name="task.prompt")
-        channels = row.get("channels") or {}
-        if isinstance(channels, str):
-            channels = json.loads(channels)
-        known = {"prompt", "example_id", "env_id", "answer", "info", "channels"}
-        inputs = {key: value for key, value in row.items() if key not in known}
-        return Task(
-            prompt=prompt,
-            example_id=int(row.get("example_id", 0)),
-            answer=row.get("answer", ""),
-            info=dict(info),
-            inputs=inputs,
-            channels=dict(channels),
-        )
+        row.setdefault("example_id", 0)
+        return Task(row)
 
     def __iter__(self):
         dataset = self.get_dataset()

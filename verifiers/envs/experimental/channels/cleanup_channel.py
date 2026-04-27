@@ -12,42 +12,47 @@ from verifiers.envs.experimental.channels.channel import (
     as_list,
     lifecycle_handlers,
 )
+from verifiers.envs.experimental.channels.render_channel import (
+    staged_handlers,
+    validate_handler,
+)
 
 
 def resolve_cleanup(
     configs: list[ChannelConfig], context: ChannelContext
 ) -> ResourcePatch:
-    harness_handlers: list[object] = []
-    rubric_handlers: list[object] = []
+    rollout_handlers: list[object] = []
+    group_handlers: list[object] = []
     for config in configs:
         targets = cleanup_targets(config)
-        harness_handlers.extend(targets["harness"])
-        rubric_handlers.extend(targets["rubric"])
-    contributions: dict[str, tuple[ChannelConfig, ...]] = {}
-    if rubric_handlers:
-        contributions["rubric"] = ({"cleanup": rubric_handlers},)
+        rollout_handlers.extend(targets["rollout"])
+        group_handlers.extend(targets["group"])
     return ResourcePatch(
-        hooks=LifecycleHooks(cleanup=tuple(lifecycle_handlers(harness_handlers))),
-        contributions=contributions,
+        hooks=LifecycleHooks(
+            cleanup=tuple(lifecycle_handlers(rollout_handlers)),
+            cleanup_group=tuple(lifecycle_handlers(group_handlers)),
+        ),
     )
 
 
 cleanup_channel = Channel(
     name="cleanup",
-    extends="rubric",
     resolve_fn=resolve_cleanup,
 )
 
 
 def cleanup_targets(config: ChannelConfig) -> dict[str, list[object]]:
-    targets: dict[str, list[object]] = {"harness": [], "rubric": []}
-    if isinstance(config, Mapping):
+    if isinstance(config, Mapping) and ("harness" in config or "rubric" in config):
         mapping = cast(Mapping[str, object], config)
+        targets: dict[str, list[object]] = {"rollout": [], "group": []}
         unknown = set(mapping) - {"harness", "rubric"}
         if unknown:
             raise ValueError(f"Unknown cleanup target(s): {sorted(unknown)}")
-        for target in targets:
-            targets[target].extend(as_list(mapping.get(target)))
+        for handler in as_list(mapping.get("harness")):
+            validate_handler(handler, "cleanup", "rollout")
+            targets["rollout"].append(handler)
+        for handler in as_list(mapping.get("rubric")):
+            validate_handler(handler, "cleanup", "rollout")
+            targets["rollout"].append(handler)
         return targets
-    targets["harness"].extend(as_list(config))
-    return targets
+    return staged_handlers(config, "cleanup")
