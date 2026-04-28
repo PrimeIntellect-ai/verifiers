@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import math
 import os
 import tarfile
 import tempfile
@@ -127,6 +128,31 @@ class SandboxMixin:
     timeouts: SandboxTimeouts
     with_retry: Callable
 
+    SANDBOX_MAX_TIMEOUT_MINUTES = 24 * 60  # SDK ceiling for sandbox lifetime
+    SANDBOX_SCORING_BUFFER_MINUTES = (
+        60  # extra sandbox lifetime past rollout end for scoring
+    )
+    sandbox_timeout_minutes: int | None = None
+
+    def compute_sandbox_timeout_minutes(self) -> int:
+        """Resolve sandbox lifetime cap in minutes.
+
+        Precedence:
+        1. ``self.sandbox_timeout_minutes`` if explicitly set — overrides auto-derivation.
+        2. ``SANDBOX_MAX_TIMEOUT_MINUTES`` if no rollout timeout (``timeout_seconds`` is None).
+        3. Otherwise ``ceil(timeout_seconds / 60) + SANDBOX_SCORING_BUFFER_MINUTES``,
+           clamped to ``SANDBOX_MAX_TIMEOUT_MINUTES``.
+        """
+        if self.sandbox_timeout_minutes is not None:
+            return self.sandbox_timeout_minutes
+        timeout_seconds: float | None = getattr(self, "timeout_seconds", None)
+        if timeout_seconds is None:
+            return self.SANDBOX_MAX_TIMEOUT_MINUTES
+        return min(
+            math.ceil(timeout_seconds / 60) + self.SANDBOX_SCORING_BUFFER_MINUTES,
+            self.SANDBOX_MAX_TIMEOUT_MINUTES,
+        )
+
     def register_sandbox(self, sandbox_id: str) -> None:
         """Register a sandbox for active tracking and crash teardown."""
         self.active_sandboxes.add(sandbox_id)
@@ -205,8 +231,23 @@ class SandboxMixin:
         if self.sandbox_creation_rate_limiter is not None:
             await self.sandbox_creation_rate_limiter.acquire()
 
+        create_task = asyncio.create_task(
+            self.with_retry(self.sandbox_client.create)(request)
+        )
         try:
-            sandbox = await self.with_retry(self.sandbox_client.create)(request)
+            sandbox = await asyncio.shield(create_task)
+        except asyncio.CancelledError:
+
+            def cleanup_created_sandbox(task: asyncio.Task):
+                try:
+                    sandbox = task.result()
+                except BaseException:
+                    return
+                self.register_sandbox(sandbox.id)
+                asyncio.create_task(self.delete_sandbox(sandbox.id))
+
+            create_task.add_done_callback(cleanup_created_sandbox)
+            raise
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
 

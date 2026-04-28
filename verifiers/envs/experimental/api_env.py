@@ -25,7 +25,6 @@ from verifiers.utils.interception_utils import (
 )
 from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.serve_utils import get_free_port
 
 from prime_tunnel import Tunnel
 
@@ -69,9 +68,7 @@ class ApiEnv(vf.MultiTurnEnv):
         self.timeout_seconds = timeout_seconds
         self.use_tunnel = use_tunnel
 
-        interception_port = (
-            get_free_port() if interception_port is None else interception_port
-        )
+        interception_port = 0 if interception_port is None else interception_port
         self.init_interception(interception_port, interception_url)
         self.add_rubric(ApiEnvMonitorRubric())
 
@@ -156,15 +153,16 @@ class ApiEnv(vf.MultiTurnEnv):
                 f"http://localhost:{interception_server.port}/rollout/{rollout_id}/v1"
             )
 
-    async def setup_state(self, state: State) -> State:
+    async def setup_state(self, state: State) -> None:
         """Start interception, register rollout, launch agent."""
-        state = await super().setup_state(state)
+        await super().setup_state(state)
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
         interception_server = self._require_interception_server()
         await interception_server.start()
+        self.interception_port = interception_server.port
 
         state["interception_base_url"] = await self.compute_base_url(state, rollout_id)
 
@@ -181,7 +179,6 @@ class ApiEnv(vf.MultiTurnEnv):
         self.logger.info(
             f"Started  rollout_id={rollout_id} | example_id={state['example_id']}"
         )
-        return state
 
     async def launch_agent(self, state: State) -> None:
         """Start the agent. Override in subclasses for different execution models."""

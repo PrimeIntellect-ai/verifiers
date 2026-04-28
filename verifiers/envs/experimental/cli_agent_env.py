@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import os
 import time
 from typing import Any
@@ -71,7 +70,6 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
         interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
-        timeout_seconds: float = 3600.0,
         poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
@@ -102,7 +100,6 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
             interception_url=interception_url,
             use_tunnel=True,
             max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
             poll_interval=poll_interval,
             **kwargs,
         )
@@ -189,7 +186,7 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
             "gpu_count": self.gpu_count,
             "gpu_type": None,
             "vm": self.gpu_count > 0,
-            "timeout_minutes": math.ceil(self.timeout_seconds / 60),
+            "timeout_minutes": self.compute_sandbox_timeout_minutes(),
         }
 
     PROTECTED_ENV_VARS = frozenset(
@@ -253,16 +250,7 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
             return
 
         try:
-            await asyncio.wait_for(
-                self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
-            state["agent_timed_out"] = True
-            state["error"] = make_agent_error(
-                state, f"Agent timed out after {self.timeout_seconds}s"
-            )
+            await self.poll_job_completion(state, sandbox_id, background_job)
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise

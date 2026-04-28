@@ -425,10 +425,9 @@ class ExampleStatefulToolEnv(StatefulToolEnv):
         super().__init__(tools=[offset_tool], **kwargs)
 
     async def setup_state(self, state, **kwargs):
-        state = await super().setup_state(state, **kwargs)
+        await super().setup_state(state, **kwargs)
         state["offset"] = 3
         state["update_calls"] = 0
-        return state
 
     def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
         state["update_calls"] += 1

@@ -35,9 +35,15 @@ class MultiTurnMonitorRubric(vf.Rubric):
 
 
 class MultiTurnEnv(vf.Environment):
-    def __init__(self, max_turns: int = -1, **kwargs):
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.timeout_seconds = timeout_seconds
         self.max_total_completion_tokens: int = -1
 
         self.add_rubric(MultiTurnMonitorRubric())
@@ -67,6 +73,11 @@ class MultiTurnEnv(vf.Environment):
     async def max_turns_reached(self, state: State) -> bool:
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
 
+    def mark_timed_out(self, state: State) -> None:
+        state["timed_out"] = True
+        state["is_completed"] = True
+        state["stop_condition"] = "timeout_reached"
+
     @vf.stop
     async def max_total_completion_tokens_reached(self, state: State) -> bool:
         if self.max_total_completion_tokens <= 0:
@@ -81,9 +92,8 @@ class MultiTurnEnv(vf.Environment):
         """Check if env_response signaled termination via final_env_response."""
         return state.get("final_env_response") is not None
 
-    async def setup_state(self, state: State) -> State:
-        """Override to add environment-specific state fields."""
-        return state
+    async def setup_state(self, state: State) -> None:
+        """Override to add environment-specific state fields. Mutate state in place."""
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
@@ -116,6 +126,12 @@ class MultiTurnEnv(vf.Environment):
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
+
+    async def _finalize_rollout(self, state: State) -> None:
+        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
+        await self._cleanup(state)
+        await self._render_timing(state)
+        await self.render_completion(state)
 
     async def add_model_response(
         self,
@@ -151,9 +167,10 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
-        try:
+
+        async def rollout_loop() -> None:
             try:
-                state = await self.setup_state(state)
+                await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
@@ -173,8 +190,11 @@ class MultiTurnEnv(vf.Environment):
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
-            await self.render_completion(state)
-            return state
-        except asyncio.CancelledError:
-            await self._cleanup(state)
-            raise
+
+        try:
+            await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            self.mark_timed_out(state)
+        finally:
+            await self._finalize_rollout(state)
+        return state

@@ -62,7 +62,8 @@ class TestCliAgentEnv:
         assert env.run_command == "python agent.py"
         assert env.docker_image == "python:3.11-slim"
         assert env.interception_port == 8765
-        assert env.timeout_seconds == 3600.0
+        assert env.timeout_seconds is None
+        assert env.sandbox_timeout_minutes is None
 
     def test_init_custom_config(self, sample_dataset):
         """Test initialization with custom configuration."""
@@ -130,22 +131,34 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
-    @pytest.mark.asyncio
-    async def test_timeout_reached_stop_condition(self, sample_dataset):
-        """Test the timeout_reached stop condition."""
+    @pytest.mark.parametrize(
+        "timeout_seconds,expected_minutes",
+        [
+            (None, 24 * 60),  # no rollout cap → SDK ceiling
+            (600.0, 10 + 60),  # finite → ceil + scoring buffer
+            (24 * 3600.0, 24 * 60),  # buffer would overflow → clamped to ceiling
+        ],
+    )
+    def test_sandbox_timeout_auto_derived(
+        self, sample_dataset, timeout_seconds, expected_minutes
+    ):
         env = vf.CliAgentEnv(
             run_command="python agent.py",
             dataset=sample_dataset,
             rubric=vf.Rubric(),
-            timeout_seconds=10.0,
+            timeout_seconds=timeout_seconds,
         )
-        import time
+        assert env.get_sandbox_resources({})["timeout_minutes"] == expected_minutes
 
-        state = {"timing": {"start_time": time.time()}}
-        assert await env.timeout_reached(state) is False
-
-        state = {"timing": {"start_time": time.time() - 20}}
-        assert await env.timeout_reached(state) is True
+    def test_sandbox_timeout_explicit_override(self, sample_dataset):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=600.0,
+            sandbox_timeout_minutes=30,
+        )
+        assert env.get_sandbox_resources({})["timeout_minutes"] == 30
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):
