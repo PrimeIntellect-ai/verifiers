@@ -89,8 +89,8 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
         self._memory_gb = memory_gb
         self._disk_size_gb = disk_size_gb
         self.labels = labels or ["solve"]
-        self.timeout_seconds = timeout_seconds
-        self.test_output_tail_chars = test_output_tail_chars
+        self.timeout_seconds: float = timeout_seconds
+        self.test_output_tail_chars: int = test_output_tail_chars
 
         dataset = dataset or taskset.get_dataset()
         rubric = SolveRubric()
@@ -104,8 +104,10 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
 
     # --- Lifecycle ---
 
-    async def setup_state(self, state: State) -> State:
-        state = await super().setup_state(state)
+    async def setup_state(self, state: State, **kwargs: Any) -> State:
+        # Don't reassign from super's return — some MRO paths mutate
+        # in place and return None. Use the input ref throughout.
+        await super().setup_state(state)
         state["attempts"] = state.get("attempts", 0) + 1
         info = state["info"]
         spec = self.taskset.get_sandbox_spec(info)
