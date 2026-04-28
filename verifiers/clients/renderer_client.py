@@ -17,11 +17,6 @@ import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
 
-# Dedicated logger for extension-break diagnostics. Set to DEBUG to see the
-# two token streams at the divergence point; left at the default WARNING
-# so there's no overhead in production.
-_incremental_logger = logging.getLogger("verifiers.renderer_client.extension_break")
-
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
@@ -60,6 +55,39 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.message_utils import maybe_normalize_messages
+
+# Dedicated logger for extension-break diagnostics. Set to DEBUG to see the
+# two token streams at the divergence point; left at the default WARNING
+# so there's no overhead in production.
+_incremental_logger = logging.getLogger("verifiers.renderer_client.extension_break")
+
+
+# Module-level bridge counters. Incremented by every RendererClient instance
+# that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
+# orchestrator) can read and reset these per training step to surface a
+# bridge_break_rate metric.
+_bridge_metrics_lock = threading.Lock()
+_bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
+
+
+def get_bridge_metrics() -> dict[str, int]:
+    """Snapshot the in-memory bridge counters (attempts/successes/failures)."""
+    with _bridge_metrics_lock:
+        return dict(_bridge_metrics)
+
+
+def reset_bridge_metrics() -> None:
+    """Zero the in-memory bridge counters."""
+    with _bridge_metrics_lock:
+        for k in _bridge_metrics:
+            _bridge_metrics[k] = 0
+
+
+def _record_bridge(success: bool) -> None:
+    with _bridge_metrics_lock:
+        _bridge_metrics["attempts"] += 1
+        _bridge_metrics["successes" if success else "failures"] += 1
+
 
 # Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
 # tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
@@ -580,6 +608,7 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             ),
         )
+        _record_bridge(success=bridged is not None)
         if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):
             # _log_extension_break emits the full "extension break at turn N"
             # diagnostic (both token streams, divergence point, decoded text).
