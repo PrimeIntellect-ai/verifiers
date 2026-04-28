@@ -4741,7 +4741,6 @@ class ViewRunScreen(Screen):
 
         timing = record.get("timing")
         if isinstance(timing, dict):
-            # Compute model/env totals from trajectory if available
             line = format_timing_line(
                 total=float(timing.get("total", 0.0)),
                 setup=float(timing.get("setup", 0.0)),
@@ -4753,16 +4752,10 @@ class ViewRunScreen(Screen):
             )
             self._append_context_section(out, "Timing", line)
 
-            # Per-turn breakdown — flat list of model/env steps in execution order
-            steps = timing.get("steps") if isinstance(timing, dict) else None
-            if not isinstance(steps, list):
-                attr = getattr(timing, "steps", None)
-                steps = attr if isinstance(attr, list) else []
+            steps = timing.get("steps") or []
             step_lines = []
             model_idx = 0
             for s in steps:
-                if not isinstance(s, dict):
-                    s = s.model_dump() if hasattr(s, "model_dump") else {}
                 kind = s.get("kind")
                 duration = float(s.get("duration", 0.0))
                 if kind == "model":
