@@ -204,7 +204,7 @@ def print_time(time_s: float) -> str:
     - >1d -> Xd Yh
     - >1h -> Xh Ym
     - >1m -> Xm Ys
-    - <1s -> X.Ys
+    - <1s -> Xms
     - Else: Xs
     """
     if time_s >= 86400:  # >1d
@@ -220,7 +220,8 @@ def print_time(time_s: float) -> str:
         s = (time_s % 60) // 1
         return f"{m:.0f}m" + (f" {s:.0f}s" if s > 0 else "")
     elif time_s < 1:  # <1s
-        return f"{time_s:.1f}s"
+        ms = time_s * 1e3
+        return f"{ms:.0f}ms"
     else:
         return f"{time_s:.0f}s"
 
