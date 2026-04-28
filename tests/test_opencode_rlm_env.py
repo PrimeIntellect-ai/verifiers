@@ -289,13 +289,12 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-            return_value=state,
         ):
-            result = await env.setup_state(state)
-        assert result["sub_llm_turns"] == 0
-        assert result["sub_llm_prompt_tokens"] == 0
-        assert result["sub_llm_completion_tokens"] == 0
-        assert result["_sub_llm_tasks"] == set()
+            await env.setup_state(state)
+        assert state["sub_llm_turns"] == 0
+        assert state["sub_llm_prompt_tokens"] == 0
+        assert state["sub_llm_completion_tokens"] == 0
+        assert state["_sub_llm_tasks"] == set()
 
     @pytest.mark.asyncio
     async def test_preserves_existing_sub_metrics(self):
@@ -305,10 +304,9 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-            return_value=state,
         ):
-            result = await env.setup_state(state)
-        assert result["sub_llm_turns"] == 3
+            await env.setup_state(state)
+        assert state["sub_llm_turns"] == 3
 
 
 # =============================================================================

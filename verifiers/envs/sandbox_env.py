@@ -224,7 +224,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Return sandbox request for this rollout. Override to customize per-state."""
         return self.sandbox_request.model_copy()
 
-    async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
+    async def setup_state(self, state: vf.State, **kwargs) -> None:
         """Create per-rollout sandbox"""
         request = self.get_sandbox_request(state)
         try:
@@ -239,7 +239,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             "ready_wait_time": 0.0,
             "command_execution_times": [],
         }
-        return await super().setup_state(state, **kwargs)
+        await super().setup_state(state, **kwargs)
 
     def update_tool_args(
         self,

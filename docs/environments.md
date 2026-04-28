@@ -477,7 +477,7 @@ class MySandboxEnv(vf.StatefulToolEnv):
     
     async def setup_state(self, state, **kwargs):
         state["session_id"] = await create_session()
-        return await super().setup_state(state, **kwargs)
+        await super().setup_state(state, **kwargs)
     
     def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
         if tool_name == "run_code":
@@ -570,7 +570,7 @@ class MyGameEnv(vf.MultiTurnEnv):
         return state.get("lives", 1) <= 0
 ```
 
-`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and `max_total_completion_tokens` by default.
+`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and `max_total_completion_tokens` by default. Per-rollout wall-clock timeouts are configured via the [`--timeout` flag](evaluation#evaluation-options) at evaluation time.
 
 Execution order can be controlled with `priority` (higher runs first). This is useful for checking cheap conditions before expensive ones:
 
@@ -617,10 +617,10 @@ Override `setup_state` to initialize per-rollout state:
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
-    async def setup_state(self, state: vf.State) -> vf.State:
+    async def setup_state(self, state: vf.State) -> None:
         state["board"] = initialize_board()
         state["score"] = 0
-        return await super().setup_state(state)
+        await super().setup_state(state)
 ```
 
 ### Cleanup and Teardown
@@ -886,7 +886,7 @@ Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
 - **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling (like `sandbox_client_max_workers`) parameters via `SandboxMixin`. Subclasses can override `get_sandbox_resources(state)` for per-instance resource allocation and `build_env_vars(state)` for custom environment variables (`PROTECTED_ENV_VARS` cannot be overridden). VMs are auto-enabled when `gpu_count > 0`
-  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and `MultiTurnEnv.timeout_seconds` (wall-clock rollout cap). Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
+  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and the per-rollout wall-clock cap configured via the `--timeout` CLI flag. Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
 
     ```python
     from verifiers.envs.experimental.sandbox_mixin import SandboxTimeouts
@@ -899,7 +899,7 @@ Newer and more experimental environment classes include:
     ```
 - **`ComposableEnv`** — `CliAgentEnv` subclass that separates *what to solve* (`TaskSet`) from *how to solve it* (`Harness`). Wire a task collection and an agent config together with zero subclassing. Delegates sandbox spec, instruction, setup, and env vars to the `TaskSet`; install script, run command, and system prompt to the `Harness`. Supports `install_env` for install-only environment variables, task directory upload via `TaskSet.get_upload_dirs()` joined with `Harness.upload_dir_mapping`, and harness-declared metrics collection via `Harness.metrics_path`. Scoring is owned by per-taskset rubrics
   - **`TaskSet`** / **`SandboxTaskSet`** — define task collections. `SandboxTaskSet` adds `SandboxSpec` (image, CPU, memory, GPU, timeout) per instance, a `setup(state)` hook, and `validate_instance(state)` for gold-patch validation. Key methods: `get_instruction(info)`, `get_rubric()`, `get_sandbox_spec(info)`, `get_env_vars()`, `get_upload_dirs()`. Includes `validate(n, concurrency, out_path=, max_retries=, resume=)` for streaming bulk validation (per-row JSONL, tqdm progress, resume + retry-on-`InfraError`) and `filter()`/`take()` combinators. Also accepts a `filter_fn: str | None` constructor kwarg (a Python expression string, typically a lambda, evaluating to `Callable[[dict], bool]`) that is applied to post-processed rows (`{"question", "info", "answer", ...}`) via `dataset.filter(...)` at the end of `__init__`. Evaluated with restricted builtins (`re`, `len`, `all`, `any`, `sum`, `min`, `max`, `sorted`, `set`, `frozenset`) — still `eval()` of user input, so intended for local `vf-eval` invocations (e.g. `SWEBenchTaskSet(filter_fn="lambda x: x['info']['repo'] == 'django/django'")`), not untrusted inputs
-  - **`Harness`** — agent-side config dataclass: `install_script`, `install_timeout`, `run_command`, `system_prompt`, `system_prompt_path`, `instruction_path`, `log_path`, `sandbox_spec`, `skills_path`, `upload_dir_mapping`, `get_upload_dirs`, `metrics_path`, `metrics_prefix`, `metrics_key`, `metrics_keys`, `tool_names`, `environment_vars` (a `Callable[[State], dict[str, str]] | None`; called per-rollout by `ComposableEnv.build_env_vars(state)` so harnesses can compute env vars from per-rollout state — for static dicts, ignore the `state` arg and return the same mapping), `post_install_uploads` (small `{sandbox_path: content}` dict uploaded via the single-file path after `install_script` — e.g. RLM's `/usr/local/bin/git` refusal shim), `post_install_script` (shell run after those uploads land; typical use is `chmod +x`), `keep_trajectory_step` (per-step filter `(step, state, headers) -> bool`)
+  - **`Harness`** — agent-side config dataclass: `install_script`, `install_timeout`, `run_command`, `system_prompt`, `system_prompt_path`, `instruction_path`, `log_path`, `sandbox_spec`, `skills_path`, `upload_dir_mapping`, `get_upload_dirs`, `metrics_path`, `metrics_prefix`, `metrics_key`, `metrics_keys`, `tool_names`, `environment_vars` (a `Callable[[State], dict[str, str]] | None`; called per-rollout by `ComposableEnv.build_env_vars(state)` so harnesses can compute env vars from per-rollout state — for static dicts, ignore the `state` arg and return the same mapping), `post_install_uploads` (small `{sandbox_path: content}` dict uploaded via the single-file path after `install_script` — generic post-install hook for layering harness-computed assets onto a fully-installed agent), `post_install_script` (shell run after those uploads land; typical use is `chmod +x`), `keep_trajectory_step` (per-step filter `(step, state, headers) -> bool`)
   - **`SandboxSpec`** — per-instance sandbox requirements: `image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

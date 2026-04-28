@@ -84,7 +84,7 @@ class OpenSWETaskSet(SandboxTaskSet):
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
         """
         Args:

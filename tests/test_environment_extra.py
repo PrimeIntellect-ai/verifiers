@@ -40,7 +40,7 @@ from verifiers.utils.save_utils import state_to_output
 # Local simple concrete Environment for testing
 class DummyEnvironment(Environment):
     async def setup_state(self, state):
-        return state
+        pass
 
     async def rollout(
         self,
@@ -52,7 +52,7 @@ class DummyEnvironment(Environment):
         state = await self.init_state(
             input, client=client, model=model, sampling_args=sampling_args
         )
-        state = await self.setup_state(state)
+        await self.setup_state(state)
 
         prompt_messages = state["prompt"]
         response = await self.get_model_response(state=state, prompt=prompt_messages)

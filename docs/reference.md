@@ -351,7 +351,12 @@ Single-response Q&A tasks. Inherits from `Environment`.
 
 ```python
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = -1, **kwargs): ...
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ): ...
 ```
 
 Multi-turn interactions. Subclasses must implement `env_response`.
@@ -363,7 +368,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
     """Generate environment feedback after model turn."""
 ```
 
-**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
+**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `timeout_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
 
 **Hooks:**
 
