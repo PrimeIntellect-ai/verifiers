@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
@@ -55,12 +54,6 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.message_utils import maybe_normalize_messages
-
-# Dedicated logger for extension-break diagnostics. Set to DEBUG to see the
-# two token streams at the divergence point; left at the default WARNING
-# so there's no overhead in production.
-_incremental_logger = logging.getLogger("verifiers.renderer_client.extension_break")
-
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -434,98 +427,6 @@ def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     )
 
 
-def _log_extension_break(
-    renderer: Renderer,
-    *,
-    turn_n: int,
-    prev_prompt_ids: list[int],
-    prev_completion_ids: list[int],
-    full_prompt: list[RendererMessage],
-    tools: list[ToolSpec] | None,
-) -> None:
-    """Emit a DEBUG log showing the two token streams that diverge when the
-    bridge trick fails at the start of turn ``turn_n``.
-
-    Stream A = ``prev_prompt_ids + prev_completion_ids`` — the exact tokens
-    vLLM saw and sampled at turn N-1. Stream B = ``render_ids(full_prompt,
-    add_generation_prompt=True)`` — what the client will now send as a fresh
-    render. Their longest common prefix shows how much of the previous
-    turn's history the renderer still honors bitwise; tokens after that
-    point are where the assistant history got "rewritten".
-    """
-    try:
-        rerender_ids = renderer.render_ids(
-            full_prompt, tools=tools, add_generation_prompt=True
-        )
-    except Exception as exc:  # pragma: no cover — diagnostic only
-        _incremental_logger.debug(
-            f"extension break at turn {turn_n}: re-render failed ({exc!r}); "
-            f"prev_combined_len={len(prev_prompt_ids) + len(prev_completion_ids)}"
-        )
-        return
-
-    prev_combined = list(prev_prompt_ids) + list(prev_completion_ids)
-    max_check = min(len(prev_combined), len(rerender_ids))
-    div = 0
-    while div < max_check and prev_combined[div] == rerender_ids[div]:
-        div += 1
-
-    if div >= len(prev_prompt_ids):
-        reason = "renderer rewrote assistant history"
-    else:
-        reason = "prompt tokens diverged (unusual — investigate tokenizer stability)"
-
-    # Show a small window around the divergence so the log is scannable
-    # but not overwhelming. Full arrays are still logged after.
-    window = 8
-    lo = max(0, div - window)
-    hi_prev = min(len(prev_combined), div + window)
-    hi_rer = min(len(rerender_ids), div + window)
-
-    prev_window = prev_combined[lo:hi_prev]
-    rer_window = rerender_ids[lo:hi_rer]
-
-    tokenizer = getattr(renderer, "_tokenizer", None) or getattr(
-        renderer, "tokenizer", None
-    )
-
-    def _decode(ids: list[int]) -> str:
-        if tokenizer is None:
-            return "<tokenizer unavailable>"
-        try:
-            return tokenizer.decode(ids, skip_special_tokens=False)
-        except Exception as exc:  # pragma: no cover
-            return f"<decode failed: {exc!r}>"
-
-    _incremental_logger.debug(
-        "extension break at turn %d: %s\n"
-        "  diverged at token %d "
-        "(prev_prompt=%d, prev_completion=%d, rerender=%d)\n"
-        "  prev[%d:%d] text:     %r\n"
-        "  prev[%d:%d] ids:      %s\n"
-        "  rerender[%d:%d] text: %r\n"
-        "  rerender[%d:%d] ids:  %s",
-        turn_n,
-        reason,
-        div,
-        len(prev_prompt_ids),
-        len(prev_completion_ids),
-        len(rerender_ids),
-        lo,
-        hi_prev,
-        _decode(prev_window),
-        lo,
-        hi_prev,
-        prev_window,
-        lo,
-        hi_rer,
-        _decode(rer_window),
-        lo,
-        hi_rer,
-        rer_window,
-    )
-
-
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -542,71 +443,29 @@ async def _get_incremental_prompt_ids(
 
     # Each renderer's bridge_to_next_turn (or the generic fallback) decides
     # how to handle a truncated anchor, so we don't special-case truncation
-    # here. When the bridge can't extend (e.g. DefaultRenderer without
-    # synthesize_close_on_truncation), it returns None and the caller falls
-    # back to a full re-render — matching main's TITO-on-truncation behavior.
-    trajectory_list = list(trajectory)
-    turn_n = len(trajectory_list)
-
+    # here. When the bridge can't extend (e.g. DefaultRenderer, which
+    # doesn't know its template's close), it returns None and the caller
+    # falls back to a full re-render — matching main's TITO-on-truncation
+    # behavior.
     normalized_prompt = _normalize_for_comparison(prompt)
-    last_reason: str | None = None
-    last_detail: str | None = None
-    for step in reversed(trajectory_list):
+    for step in reversed(list(trajectory)):
         token_ids = _step_token_ids(step)
         if token_ids is None:
-            last_reason = "empty_completion_ids"
-            prev_prompt_len = len(list(_get_value(step, "prompt", []) or []))
-            prev_comp_len = len(list(_get_value(step, "completion", []) or []))
-            last_detail = (
-                f"step has no usable token_ids "
-                f"(prompt_msgs={prev_prompt_len}, completion_msgs={prev_comp_len}) "
-                f"— likely training-budget truncation zeroed completion_ids"
-            )
             continue
 
         previous_messages = _step_rendered_messages(step)
         if not previous_messages or len(previous_messages) >= len(prompt):
-            last_reason = "no_valid_prefix"
-            last_detail = (
-                f"prev_messages={len(previous_messages)}, cur_prompt={len(prompt)}"
-            )
             continue
         prefix_len = len(previous_messages)
         norm_prev = _normalize_for_comparison(previous_messages)
         if normalized_prompt[:prefix_len] != norm_prev:
-            # Find the first diverging message index so we can show what
-            # changed between the two renderings.
-            div_idx = next(
-                (i for i in range(prefix_len) if normalized_prompt[i] != norm_prev[i]),
-                prefix_len,
-            )
-            prev_msg = norm_prev[div_idx] if div_idx < len(norm_prev) else None
-            cur_msg = (
-                normalized_prompt[div_idx] if div_idx < len(normalized_prompt) else None
-            )
-            last_reason = "norm_mismatch"
-            last_detail = (
-                f"first diverging message at idx={div_idx} / {prefix_len}\n"
-                f"  prev: {prev_msg!r}\n"
-                f"  cur:  {cur_msg!r}"
-            )
             continue
 
         tail = prompt[prefix_len:]
         if not _is_valid_incremental_tail(tail):
-            last_reason = "invalid_tail"
-            last_detail = (
-                f"tail roles = "
-                f"{[getattr(m, 'role', None) or _get_value(m, 'role') for m in tail]}"
-            )
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
-        # Every Renderer defines bridge_to_next_turn; when it returns None
-        # (DefaultRenderer always, hand-coded renderers when they can't
-        # prove the contract, e.g. a truncated prior without the opt-in
-        # ``synthesize_close_on_truncation``) the caller falls back to a
-        # fresh render of the full prompt.
         bridged = await _run_with_renderer(
             renderer,
             lambda r: r.bridge_to_next_turn(
@@ -617,35 +476,8 @@ async def _get_incremental_prompt_ids(
             ),
         )
         _record_bridge(success=bridged is not None)
-        if bridged is None and _incremental_logger.isEnabledFor(logging.DEBUG):
-            # _log_extension_break emits the full "extension break at turn N"
-            # diagnostic (both token streams, divergence point, decoded text).
-            # No extra category=bridge_returned_none line — the dump itself
-            # already tags the break as a bridge failure.
-            await _run_with_renderer(
-                renderer,
-                lambda r: _log_extension_break(
-                    r,
-                    turn_n=turn_n,
-                    prev_prompt_ids=list(previous_prompt_ids),
-                    prev_completion_ids=list(previous_completion_ids),
-                    full_prompt=prompt,
-                    tools=tools,
-                ),
-            )
         return bridged
 
-    if last_reason is not None:
-        _incremental_logger.debug(
-            "extension break turn %d: category=%s\n  %s",
-            turn_n,
-            last_reason,
-            last_detail or "",
-        )
-    else:
-        _incremental_logger.debug(
-            "extension break turn %d: category=no_trajectory_match", turn_n
-        )
     return None
 
 
