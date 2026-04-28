@@ -237,6 +237,37 @@ async def test_from_native_response_parses_text_tool_usage_and_raw_output():
 
 
 @pytest.mark.asyncio
+async def test_from_native_response_uses_none_content_for_tool_call_only_response():
+    native_response = SimpleNamespace(
+        id="resp_1",
+        created_at=123.0,
+        model="gpt-5.2",
+        status="completed",
+        incomplete_details=None,
+        usage=None,
+        output=[
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"q":"x"}',
+                "status": "completed",
+            },
+        ],
+    )
+    client = OpenAIResponsesClient(object())
+
+    await client.raise_from_native_response(native_response)
+    response = await client.from_native_response(native_response)
+
+    assert response.message.content is None
+    assert response.message.finish_reason == "tool_calls"
+    assert response.message.tool_calls == [
+        ToolCall(id="call_1", name="lookup", arguments='{"q":"x"}')
+    ]
+
+
+@pytest.mark.asyncio
 async def test_response_message_extras_round_trip_into_next_prompt():
     response = Response(
         id="resp_1",

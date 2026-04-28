@@ -318,7 +318,7 @@ class OpenAIResponsesClient(
                     items.append(dumped)
             return items
 
-        def parse_content(response: OpenAIResponsesNativeResponse) -> str:
+        def parse_content(response: OpenAIResponsesNativeResponse) -> str | None:
             chunks: list[str] = []
             for item in getattr(response, "output", []) or []:
                 if _get_field(item, "type") != "message":
@@ -333,7 +333,7 @@ class OpenAIResponsesClient(
                         refusal = _get_field(part, "refusal")
                         if isinstance(refusal, str):
                             chunks.append(refusal)
-            return "".join(chunks)
+            return "".join(chunks) or None
 
         def parse_tool_calls(response: OpenAIResponsesNativeResponse) -> list[ToolCall]:
             tool_calls: list[ToolCall] = []
