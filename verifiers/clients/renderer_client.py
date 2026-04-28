@@ -91,6 +91,280 @@ def _record_bridge(success: bool) -> None:
 _DEFAULT_POOL_SIZE = 1
 
 
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
+async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
+    if isinstance(renderer, RendererPool):
+
+        def _work():
+            with renderer.checkout() as r:
+                return fn(r)
+
+        return await asyncio.to_thread(_work)
+    return fn(renderer)
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
+    # tool_call.arguments is serialized as a string on one side (our trajectory
+    # uses json.dumps with default separators) and often comes back from
+    # upstream scaffolds re-stringified with JS JSON.stringify (compact, no
+    # spaces). Both encode the same dict; parse and normalize structurally so
+    # pure-format drift doesn't block incremental prompt matching.
+    if _key == "arguments" and isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    if hasattr(value, "model_dump"):
+        return _normalize_for_comparison(value.model_dump(exclude_none=True))
+    if isinstance(value, Mapping):
+        return {
+            str(k): _normalize_for_comparison(v, _key=str(k))
+            for k, v in value.items()
+            if v is not None
+        }
+    if isinstance(value, list):
+        return [_normalize_for_comparison(v) for v in value]
+    return value
+
+
+def _normalize_content(content: Any) -> Any:
+    """Convert Pydantic content parts to plain dicts."""
+    if isinstance(content, list):
+        return [
+            dict(p)
+            if isinstance(p, Mapping)
+            else cast(dict, p.model_dump())
+            if hasattr(p, "model_dump")
+            else p
+            for p in content
+        ]
+    return content
+
+
+def _to_renderer_message(message: Message) -> RendererMessage:
+    """Convert a verifiers Message (Pydantic model) to a renderer Message (TypedDict)."""
+    if isinstance(message, SystemMessage):
+        return RendererMessage(
+            role="system", content=_normalize_content(message.content)
+        )
+    elif isinstance(message, UserMessage):
+        return RendererMessage(role="user", content=_normalize_content(message.content))
+    elif isinstance(message, AssistantMessage):
+        msg = RendererMessage(
+            role="assistant",
+            content=_normalize_content(message.content),
+        )
+        if message.reasoning_content is not None:
+            msg["reasoning_content"] = message.reasoning_content
+        if message.tool_calls is not None:
+            msg["tool_calls"] = [
+                RendererToolCall(
+                    type="function",
+                    id=tc.id,
+                    function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
+                )
+                for tc in message.tool_calls
+            ]
+        return msg
+    elif isinstance(message, ToolMessage):
+        return RendererMessage(
+            role="tool",
+            content=_normalize_content(message.content),
+            tool_call_id=message.tool_call_id,
+        )
+    elif isinstance(message, TextMessage):
+        return RendererMessage(role="user", content=message.content)
+    else:
+        raise ValueError(f"Unknown message type: {type(message)}")
+
+
+def _attach_tool_call_names(
+    messages: list[RendererMessage],
+) -> list[RendererMessage]:
+    """Fill ``name`` on tool-role messages from prior assistant ``tool_calls``.
+
+    The verifiers ``ToolMessage`` schema has ``role``/``content``/``tool_call_id``
+    but no ``name`` field. Some renderers use the function name when emitting
+    tool results — notably GPT-OSS Harmony, which prefixes results with
+    ``<|start|>functions.{name} to=assistant``. Without recovery, every result
+    falls back to ``functions.unknown``.
+
+    We walk the converted-renderer-dict list once, build a ``tool_call_id →
+    name`` map from assistant ``tool_calls`` entries, and set ``name`` on
+    every subsequent tool message that doesn't already carry one. Validated
+    end-to-end on GPT-OSS-20b.
+    """
+    lookup: dict[str, str] = {}
+    for m in messages:
+        role = m.get("role") if isinstance(m, Mapping) else None
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                if not isinstance(tc, Mapping):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function")
+                tc_name = fn.get("name") if isinstance(fn, Mapping) else None
+                if isinstance(tc_id, str) and isinstance(tc_name, str):
+                    lookup[tc_id] = tc_name
+        elif role == "tool" and "name" not in m:
+            tcid = m.get("tool_call_id")
+            if isinstance(tcid, str):
+                name = lookup.get(tcid)
+                if name is not None:
+                    m["name"] = name
+    return messages
+
+
+def _coerce_renderer_message(message: Any) -> RendererMessage:
+    if isinstance(message, Mapping):
+        return cast(
+            RendererMessage,
+            {
+                str(k): _normalize_content(v)
+                for k, v in message.items()
+                if v is not None
+            },
+        )
+    return _to_renderer_message(cast(Message, message))
+
+
+def _message_role(message: Any) -> str | None:
+    role = _get_value(message, "role")
+    return role if isinstance(role, str) else None
+
+
+def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
+    if not messages:
+        return False
+
+    roles = [_message_role(message) for message in messages]
+    if roles[-1] == "user":
+        return all(role == "tool" for role in roles[:-1])
+    return all(role == "tool" for role in roles)
+
+
+def _step_is_truncated(step: Any) -> bool:
+    if bool(_get_value(step, "is_truncated", False)):
+        return True
+
+    tokens = _get_value(step, "tokens")
+    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
+        return True
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    return bool(_get_value(message, "is_truncated", False))
+
+
+def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
+    # Prefer step.tokens (post-parse_response_tokens) when populated. In
+    # multi-turn rollouts, parse_response_tokens zeroes out completion_ids
+    # whenever prompt_len > max_seq_len (training-budget enforcement) —
+    # that destroys the anchor tokens this lookup needs for bridging. Fall
+    # back to the raw response tokens in that case so the bridge can
+    # continue to chain across turns; interleave_rollout still enforces
+    # training budget at sample-assembly time.
+    tokens = _get_value(step, "tokens")
+    if tokens is not None:
+        prompt_ids = _get_value(tokens, "prompt_ids")
+        completion_ids = _get_value(tokens, "completion_ids")
+        if prompt_ids and completion_ids:
+            return list(prompt_ids), list(completion_ids)
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    raw_tokens = _get_value(message, "tokens")
+    if raw_tokens is None:
+        return None
+    prompt_ids = _get_value(raw_tokens, "prompt_ids")
+    completion_ids = _get_value(raw_tokens, "completion_ids")
+    if not prompt_ids or not completion_ids:
+        return None
+    return list(prompt_ids), list(completion_ids)
+
+
+def _step_rendered_messages(step: Any) -> list[RendererMessage]:
+    prompt = list(_get_value(step, "prompt", []) or [])
+    completion = list(_get_value(step, "completion", []) or [])
+    return _attach_tool_call_names(
+        [_coerce_renderer_message(message) for message in prompt + completion]
+    )
+
+
+async def _get_incremental_prompt_ids(
+    *,
+    renderer: Renderer | RendererPool,
+    prompt: list[RendererMessage],
+    state: Any,
+    tools: list[ToolSpec] | None,
+) -> list[int] | None:
+    if not state:
+        return None
+
+    trajectory = _get_value(state, "trajectory")
+    if not trajectory:
+        return None
+
+    # Each renderer's bridge_to_next_turn (or the generic fallback) decides
+    # how to handle a truncated anchor, so we don't special-case truncation
+    # here. When the bridge can't extend (e.g. DefaultRenderer, which
+    # doesn't know its template's close), it returns None and the caller
+    # falls back to a full re-render — matching main's TITO-on-truncation
+    # behavior.
+    normalized_prompt = _normalize_for_comparison(prompt)
+    for step in reversed(list(trajectory)):
+        token_ids = _step_token_ids(step)
+        if token_ids is None:
+            continue
+
+        previous_messages = _step_rendered_messages(step)
+        if not previous_messages or len(previous_messages) >= len(prompt):
+            continue
+        prefix_len = len(previous_messages)
+        norm_prev = _normalize_for_comparison(previous_messages)
+        if normalized_prompt[:prefix_len] != norm_prev:
+            continue
+
+        tail = prompt[prefix_len:]
+        if not _is_valid_incremental_tail(tail):
+            continue
+
+        previous_prompt_ids, previous_completion_ids = token_ids
+        bridged = await _run_with_renderer(
+            renderer,
+            lambda r: r.bridge_to_next_turn(
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
+            ),
+        )
+        _record_bridge(success=bridged is not None)
+        return bridged
+
+    return None
+
+
+def _parse_finish_reason(raw: str | None) -> FinishReason:
+    match raw:
+        case "stop":
+            return "stop"
+        case "length":
+            return "length"
+        case "tool_calls":
+            return "tool_calls"
+        case _:
+            return None
+
+
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -288,277 +562,3 @@ class RendererClient(
                 tool_calls=tool_calls,
             ),
         )
-
-
-# ── Helpers ─────────────────────────────────────────────────────────
-
-
-async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
-    if isinstance(renderer, RendererPool):
-
-        def _work():
-            with renderer.checkout() as r:
-                return fn(r)
-
-        return await asyncio.to_thread(_work)
-    return fn(renderer)
-
-
-def _get_value(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, Mapping):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
-    # tool_call.arguments is serialized as a string on one side (our trajectory
-    # uses json.dumps with default separators) and often comes back from
-    # upstream scaffolds re-stringified with JS JSON.stringify (compact, no
-    # spaces). Both encode the same dict; parse and normalize structurally so
-    # pure-format drift doesn't block incremental prompt matching.
-    if _key == "arguments" and isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    if hasattr(value, "model_dump"):
-        return _normalize_for_comparison(value.model_dump(exclude_none=True))
-    if isinstance(value, Mapping):
-        return {
-            str(k): _normalize_for_comparison(v, _key=str(k))
-            for k, v in value.items()
-            if v is not None
-        }
-    if isinstance(value, list):
-        return [_normalize_for_comparison(v) for v in value]
-    return value
-
-
-def _coerce_renderer_message(message: Any) -> RendererMessage:
-    if isinstance(message, Mapping):
-        return cast(
-            RendererMessage,
-            {
-                str(k): _normalize_content(v)
-                for k, v in message.items()
-                if v is not None
-            },
-        )
-    return _to_renderer_message(cast(Message, message))
-
-
-def _message_role(message: Any) -> str | None:
-    role = _get_value(message, "role")
-    return role if isinstance(role, str) else None
-
-
-def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
-    if not messages:
-        return False
-
-    roles = [_message_role(message) for message in messages]
-    if roles[-1] == "user":
-        return all(role == "tool" for role in roles[:-1])
-    return all(role == "tool" for role in roles)
-
-
-def _step_is_truncated(step: Any) -> bool:
-    if bool(_get_value(step, "is_truncated", False)):
-        return True
-
-    tokens = _get_value(step, "tokens")
-    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
-        return True
-
-    response = _get_value(step, "response")
-    message = _get_value(response, "message")
-    return bool(_get_value(message, "is_truncated", False))
-
-
-def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
-    # Prefer step.tokens (post-parse_response_tokens) when populated. In
-    # multi-turn rollouts, parse_response_tokens zeroes out completion_ids
-    # whenever prompt_len > max_seq_len (training-budget enforcement) —
-    # that destroys the anchor tokens this lookup needs for bridging. Fall
-    # back to the raw response tokens in that case so the bridge can
-    # continue to chain across turns; interleave_rollout still enforces
-    # training budget at sample-assembly time.
-    tokens = _get_value(step, "tokens")
-    if tokens is not None:
-        prompt_ids = _get_value(tokens, "prompt_ids")
-        completion_ids = _get_value(tokens, "completion_ids")
-        if prompt_ids and completion_ids:
-            return list(prompt_ids), list(completion_ids)
-
-    response = _get_value(step, "response")
-    message = _get_value(response, "message")
-    raw_tokens = _get_value(message, "tokens")
-    if raw_tokens is None:
-        return None
-    prompt_ids = _get_value(raw_tokens, "prompt_ids")
-    completion_ids = _get_value(raw_tokens, "completion_ids")
-    if not prompt_ids or not completion_ids:
-        return None
-    return list(prompt_ids), list(completion_ids)
-
-
-def _step_rendered_messages(step: Any) -> list[RendererMessage]:
-    prompt = list(_get_value(step, "prompt", []) or [])
-    completion = list(_get_value(step, "completion", []) or [])
-    return _attach_tool_call_names(
-        [_coerce_renderer_message(message) for message in prompt + completion]
-    )
-
-
-async def _get_incremental_prompt_ids(
-    *,
-    renderer: Renderer | RendererPool,
-    prompt: list[RendererMessage],
-    state: Any,
-    tools: list[ToolSpec] | None,
-) -> list[int] | None:
-    if not state:
-        return None
-
-    trajectory = _get_value(state, "trajectory")
-    if not trajectory:
-        return None
-
-    # Each renderer's bridge_to_next_turn (or the generic fallback) decides
-    # how to handle a truncated anchor, so we don't special-case truncation
-    # here. When the bridge can't extend (e.g. DefaultRenderer, which
-    # doesn't know its template's close), it returns None and the caller
-    # falls back to a full re-render — matching main's TITO-on-truncation
-    # behavior.
-    normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
-        token_ids = _step_token_ids(step)
-        if token_ids is None:
-            continue
-
-        previous_messages = _step_rendered_messages(step)
-        if not previous_messages or len(previous_messages) >= len(prompt):
-            continue
-        prefix_len = len(previous_messages)
-        norm_prev = _normalize_for_comparison(previous_messages)
-        if normalized_prompt[:prefix_len] != norm_prev:
-            continue
-
-        tail = prompt[prefix_len:]
-        if not _is_valid_incremental_tail(tail):
-            continue
-
-        previous_prompt_ids, previous_completion_ids = token_ids
-        bridged = await _run_with_renderer(
-            renderer,
-            lambda r: r.bridge_to_next_turn(
-                previous_prompt_ids,
-                previous_completion_ids,
-                tail,
-                tools=tools,
-            ),
-        )
-        _record_bridge(success=bridged is not None)
-        return bridged
-
-    return None
-
-
-def _normalize_content(content: Any) -> Any:
-    """Convert Pydantic content parts to plain dicts."""
-    if isinstance(content, list):
-        return [
-            dict(p)
-            if isinstance(p, Mapping)
-            else cast(dict, p.model_dump())
-            if hasattr(p, "model_dump")
-            else p
-            for p in content
-        ]
-    return content
-
-
-def _to_renderer_message(message: Message) -> RendererMessage:
-    """Convert a verifiers Message (Pydantic model) to a renderer Message (TypedDict)."""
-    if isinstance(message, SystemMessage):
-        return RendererMessage(
-            role="system", content=_normalize_content(message.content)
-        )
-    elif isinstance(message, UserMessage):
-        return RendererMessage(role="user", content=_normalize_content(message.content))
-    elif isinstance(message, AssistantMessage):
-        msg = RendererMessage(
-            role="assistant",
-            content=_normalize_content(message.content),
-        )
-        if message.reasoning_content is not None:
-            msg["reasoning_content"] = message.reasoning_content
-        if message.tool_calls is not None:
-            msg["tool_calls"] = [
-                RendererToolCall(
-                    type="function",
-                    id=tc.id,
-                    function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
-                )
-                for tc in message.tool_calls
-            ]
-        return msg
-    elif isinstance(message, ToolMessage):
-        return RendererMessage(
-            role="tool",
-            content=_normalize_content(message.content),
-            tool_call_id=message.tool_call_id,
-        )
-    elif isinstance(message, TextMessage):
-        return RendererMessage(role="user", content=message.content)
-    else:
-        raise ValueError(f"Unknown message type: {type(message)}")
-
-
-def _attach_tool_call_names(
-    messages: list[RendererMessage],
-) -> list[RendererMessage]:
-    """Fill ``name`` on tool-role messages from prior assistant ``tool_calls``.
-
-    The verifiers ``ToolMessage`` schema has ``role``/``content``/``tool_call_id``
-    but no ``name`` field. Some renderers use the function name when emitting
-    tool results — notably GPT-OSS Harmony, which prefixes results with
-    ``<|start|>functions.{name} to=assistant``. Without recovery, every result
-    falls back to ``functions.unknown``.
-
-    We walk the converted-renderer-dict list once, build a ``tool_call_id →
-    name`` map from assistant ``tool_calls`` entries, and set ``name`` on
-    every subsequent tool message that doesn't already carry one. Validated
-    end-to-end on GPT-OSS-20b.
-    """
-    lookup: dict[str, str] = {}
-    for m in messages:
-        role = m.get("role") if isinstance(m, Mapping) else None
-        if role == "assistant":
-            for tc in m.get("tool_calls") or []:
-                if not isinstance(tc, Mapping):
-                    continue
-                tc_id = tc.get("id")
-                fn = tc.get("function")
-                tc_name = fn.get("name") if isinstance(fn, Mapping) else None
-                if isinstance(tc_id, str) and isinstance(tc_name, str):
-                    lookup[tc_id] = tc_name
-        elif role == "tool" and "name" not in m:
-            tcid = m.get("tool_call_id")
-            if isinstance(tcid, str):
-                name = lookup.get(tcid)
-                if name is not None:
-                    m["name"] = name
-    return messages
-
-
-def _parse_finish_reason(raw: str | None) -> FinishReason:
-    match raw:
-        case "stop":
-            return "stop"
-        case "length":
-            return "length"
-        case "tool_calls":
-            return "tool_calls"
-        case _:
-            return None
