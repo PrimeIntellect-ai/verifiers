@@ -976,20 +976,6 @@ async def run_evaluations_tui(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
-        # Running sums for live timing average — only walk new outputs each
-        # progress event (O(M) per update, O(N) total across the run).
-        timing_sums: dict[str, float] = {}
-        timing_counts: dict[str, int] = {}
-        TIMING_KEYS = (
-            "setup",
-            "generation",
-            "scoring",
-            "overhead",
-            "total",
-            "model",
-            "env",
-        )
-
         def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
@@ -1003,20 +989,6 @@ async def run_evaluations_tui(
             for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
 
-            for o in new_outputs:
-                t = o.get("timing")
-                if not isinstance(t, dict):
-                    continue
-                for key in TIMING_KEYS:
-                    if key in t:
-                        timing_sums[key] = timing_sums.get(key, 0.0) + float(t[key])
-                        timing_counts[key] = timing_counts.get(key, 0) + 1
-            avg_timing = (
-                {k: timing_sums[k] / timing_counts[k] for k in timing_sums}
-                if timing_sums
-                else None
-            )
-
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
@@ -1024,7 +996,6 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
-                avg_timing=avg_timing,
             )
 
         on_progress: list[ProgressCallback] = [on_display_progress]
