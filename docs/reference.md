@@ -200,18 +200,19 @@ class RolloutTiming(CustomBaseModel):
     setup: float = 0.0                      # measured: setup_state()
     steps: list[TimingEntry] = []           # flat sequence of model/env slices
     # Phase anchors (perf_counter values, excluded from model_dump):
-    #   start_rollout, end_rollout, start_scoring, end_scoring
+    #   start_generation, end_generation, start_scoring, end_scoring
     # Derived (computed fields, included in model_dump):
     #   model, env, generation, scoring, total, overhead
 ```
 
 Durations are derived from the phase anchors:
 
+- `generation = end_generation - start_generation`
 - `scoring = end_scoring - start_scoring`
-- `total = (end_scoring or end_rollout) - start_rollout`
-- `overhead = total - setup - generation - scoring`
+- `total = end_scoring - start_generation`
+- `overhead = total - setup - model - env - scoring`
 
-`overhead` is a true gap measurement: any rollout time not attributed to setup, model/env steps, or scoring shows up here.
+`start_generation` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases — e.g. gaps between model/env steps.
 
 ### TokenUsage
 

@@ -266,8 +266,8 @@ class RolloutTiming(CustomBaseModel):
     # Phase anchors — perf_counter values, only meaningful relative to each
     # other. Excluded from serialization (the derived durations are what
     # downstream readers care about).
-    start_rollout: float = Field(default_factory=time.perf_counter, exclude=True)
-    end_rollout: float = Field(default=0.0, exclude=True)
+    start_generation: float = Field(default=0.0, exclude=True)
+    end_generation: float = Field(default=0.0, exclude=True)
     start_scoring: float = Field(default=0.0, exclude=True)
     end_scoring: float = Field(default=0.0, exclude=True)
 
@@ -287,27 +287,28 @@ class RolloutTiming(CustomBaseModel):
     @computed_field
     @property
     def generation(self) -> float:
-        return sum(s.duration for s in self.steps)
+        if self.end_generation <= 0.0:
+            return 0.0
+        return self.end_generation - self.start_generation
 
     @computed_field
     @property
     def scoring(self) -> float:
         if self.end_scoring <= 0.0:
             return 0.0
-        return max(0.0, self.end_scoring - self.start_scoring)
+        return self.end_scoring - self.start_scoring
 
     @computed_field
     @property
     def total(self) -> float:
-        end = self.end_scoring if self.end_scoring > 0.0 else self.end_rollout
-        if end <= 0.0:
+        if self.end_scoring <= 0.0:
             return 0.0
-        return max(0.0, end - self.start_rollout)
+        return self.end_scoring - self.start_generation
 
     @computed_field
     @property
     def overhead(self) -> float:
-        return self.total - self.setup - self.generation - self.scoring
+        return self.total - self.setup - self.model - self.env - self.scoring
 
 
 class ErrorInfo(TypedDict):
