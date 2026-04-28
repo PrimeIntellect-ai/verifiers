@@ -272,7 +272,7 @@ class KimiK2Renderer:
                 emit_text(role, oi)
                 emit_special(self._im_middle, oi)
                 emit_text(content, oi)
-                emit_special(self._im_end, i)
+                emit_special(self._im_end, oi)
 
         # Generation prompt
         if add_generation_prompt:

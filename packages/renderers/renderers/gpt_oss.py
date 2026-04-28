@@ -32,6 +32,7 @@ from renderers.base import (
     RenderedTokens,
     ToolSpec,
     reject_assistant_in_extension,
+    trim_to_turn_close,
 )
 from renderers.parsing import parse_gpt_oss
 
@@ -296,14 +297,23 @@ class GptOssRenderer:
         ):
             return None
 
-        previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
-        # Harmony stops cleanly on <|return|> or <|call|>; content beyond
-        # those means vLLM hit max_tokens. Synthesise <|end|> — the
-        # non-terminal close — so the template stays well-formed.
-        if previous_ids[-1] not in {self._return, self._call}:
-            if not self.synthesize_close_on_truncation:
-                return None
-            previous_ids = previous_ids + [self._end]
+        # Harmony stops cleanly on <|return|> or <|call|>. trim_to_turn_close
+        # scans `previous_completion_ids` backwards to the last close token,
+        # which (a) trims any trailing tokens after a stop marker and (b)
+        # safely handles empty completions (would otherwise inspect the
+        # prompt's last token). When the prior turn was truncated at
+        # max_tokens, synth <|end|> — the non-terminal close — keeps the
+        # template well-formed; opt-in via ``synthesize_close_on_truncation``.
+        previous_ids = trim_to_turn_close(
+            previous_prompt_ids,
+            previous_completion_ids,
+            {self._return, self._call},
+            synthesize_close=(
+                self._end if self.synthesize_close_on_truncation else None
+            ),
+        )
+        if previous_ids is None:
+            return None
 
         ext: list[int] = []
 

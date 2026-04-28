@@ -145,7 +145,8 @@ async def completions_request(
             exc=exc,
         )
         raise
-    choice = data.get("choices", [{}])[0]
+    choices = data.get("choices") or [{}]
+    choice = choices[0]
 
     # -- Parse completion tokens --
     completion_ids = choice.get("token_ids") or []
