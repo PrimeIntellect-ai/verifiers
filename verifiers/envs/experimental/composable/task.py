@@ -571,7 +571,7 @@ class TaskSet:
                     )
                     state["sandbox_id"] = sb.id
                     state["sandbox_client"] = client
-                    state["test_timeout"] = spec.timeout_minutes * 60
+                    state["test_timeout"] = (spec.timeout_minutes or 60) * 60
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
