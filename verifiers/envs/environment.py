@@ -705,12 +705,12 @@ class Environment(ABC):
                 sampling_args,
             )
 
-            state["timing"].scoring.start = time.perf_counter()
+            state["timing"].scoring.start = time.time()
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
-            state["timing"].scoring.end = time.perf_counter()
+            state["timing"].scoring.end = time.time()
 
             await self.rubric.cleanup(state)
 
@@ -767,14 +767,14 @@ class Environment(ABC):
             ]
             group_states = await asyncio.gather(*rollout_tasks)
 
-            start_scoring = time.perf_counter()
+            start_scoring = time.time()
             for state in group_states:
                 state["timing"].scoring.start = start_scoring
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
-            end_scoring = time.perf_counter()
+            end_scoring = time.time()
             for state in group_states:
                 state["timing"].scoring.end = end_scoring
 

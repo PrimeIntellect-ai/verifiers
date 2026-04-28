@@ -691,12 +691,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         exit_code = state.get("agent_exit_code")
         timed_out = state.get("timed_out", False)
         # post_rollout runs during finalization, before Environment.run_rollout
-        # stamps end_scoring. timing.total is therefore still 0 here, so derive
-        # the live duration from the generation-phase start anchor.
+        # stamps scoring.end. timing.total is therefore still 0 here, so derive
+        # the live duration from the generation-phase start.
         timing = state.get("timing")
         gen = getattr(timing, "generation", None) if timing is not None else None
         gen_start = getattr(gen, "start", 0.0) if gen is not None else 0.0
-        duration_s = time.perf_counter() - gen_start if gen_start > 0 else 0.0
+        duration_s = time.time() - gen_start if gen_start > 0 else 0.0
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
             f"Finished rollout_id={state.get('rollout_id')}",

@@ -248,12 +248,11 @@ class RolloutInput(BaseRolloutInput, total=False):
 
 
 class TimeSpan(CustomBaseModel):
-    """A timed span. ``duration`` derives from start/end perf_counter timestamps.
+    """A timed span. ``duration`` derives from start/end Unix timestamps.
 
-    All values in seconds. Used as the building block for every measured
-    slice of a rollout — phases (setup, generation, scoring) and individual
-    model/env steps share the same shape so downstream display code can
-    plot a timeline directly.
+    ``start`` and ``end`` are wall-clock seconds since the epoch (i.e.
+    ``time.time()``). Downstream display can convert directly to a
+    human-readable timestamp via ``datetime.fromtimestamp(span.start)``.
     """
 
     start: float = 0.0
@@ -279,12 +278,12 @@ class TimeSpans(CustomBaseModel):
 
 
 class RolloutTiming(CustomBaseModel):
-    """Rollout-level timing. All values in seconds.
+    """Rollout-level timing. All values in seconds (Unix timestamps).
 
     Each measured phase (``setup``, ``generation``, ``scoring``) is a
-    ``TimeSpan`` carrying perf_counter start/end timestamps. ``model`` and
+    ``TimeSpan`` carrying wall-clock start/end timestamps. ``model`` and
     ``env`` are ``TimeSpans`` collections of the corresponding step slices
-    (execution order is recoverable from each span's ``start`` timestamp).
+    (each appended in execution order).
     """
 
     start_time: float = Field(default_factory=time.time)
