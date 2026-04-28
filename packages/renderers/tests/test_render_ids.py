@@ -2,6 +2,10 @@
 
 Every test case runs against every (model, renderer) pair from conftest.
 If a test passes, the renderer is token-for-token correct for that case.
+
+GPT-OSS is auto-skipped here by ``conftest._skip_gpt_oss_for_hf_parity_tests``
+since our GptOssRenderer matches openai-harmony / vLLM, not the HF Jinja
+template. See ``test_gpt_oss_harmony_parity.py`` for harmony parity coverage.
 """
 
 from functools import lru_cache

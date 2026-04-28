@@ -1,6 +1,24 @@
-"""GptOssRenderer — OpenAI open-source model format (Harmony).
+"""GptOssRenderer — adapter over OpenAI's harmony reference encoder.
 
-Wire format: channel-based, no BOS token.
+Wire format: harmony (channel-based, no BOS). The official renderer ships
+in the ``openai-harmony`` package — vLLM uses it directly, so matching
+its output guarantees byte-identical tokens with vLLM's serving path
+(and with what the model was trained on).
+
+This renderer is a thin adapter that:
+
+  - converts each ``RendererMessage`` to one or more ``openai_harmony``
+    messages (assistant tool_calls split into per-call ASSISTANT messages
+    with channel=commentary and recipient=functions.<name>; tool results
+    routed via TOOL author + recipient=assistant)
+  - prepends the canonical SystemContent preamble (model identity,
+    knowledge cutoff, current date, reasoning_effort, channel config)
+    when ``use_system_prompt`` is set — matches HF's apply_chat_template
+    behaviour, which the model was trained against
+  - renders one harmony message at a time via ``enc.render(m)`` so each
+    token can be attributed to its source caller index. ``enc.render``
+    is byte-identical to ``enc.render_conversation`` when concatenated;
+    verified empirically.
 
 Special tokens
 --------------
@@ -11,19 +29,26 @@ Special tokens
 <|channel|>    followed by channel name
 <|message|>    content start
 <|constrain|>  followed by constraint (e.g. "json")
-
-Channels
---------
-analysis    chain-of-thought / thinking (hidden from users)
-commentary  tool calls and tool results
-final       user-facing response text
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 
+from openai_harmony import (
+    Conversation,
+    DeveloperContent,
+    HarmonyEncoding,
+    HarmonyEncodingName,
+    Message as HarmonyMessage,
+    ReasoningEffort,
+    Role,
+    SystemContent,
+    ToolDescription,
+    load_harmony_encoding,
+)
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import (
@@ -36,103 +61,61 @@ from renderers.base import (
 )
 from renderers.parsing import parse_gpt_oss
 
-# ---------------------------------------------------------------------------
-# TypeScript tool-formatting helpers
-# ---------------------------------------------------------------------------
+
+def _reasoning_effort(effort: str | None) -> ReasoningEffort:
+    if effort is None:
+        return ReasoningEffort.MEDIUM
+    e = effort.lower()
+    if e == "low":
+        return ReasoningEffort.LOW
+    if e == "medium":
+        return ReasoningEffort.MEDIUM
+    if e == "high":
+        return ReasoningEffort.HIGH
+    raise ValueError(f"Unknown reasoning_effort: {effort!r}")
 
 
-def _json_type_to_typescript(schema: dict) -> str:
-    """Convert a JSON Schema type node to a TypeScript type string."""
-    if "oneOf" in schema:
-        return " | ".join(_json_type_to_typescript(s) for s in schema["oneOf"])
-    if "anyOf" in schema:
-        return " | ".join(_json_type_to_typescript(s) for s in schema["anyOf"])
+def _content_text(content: Any) -> str:
+    """Flatten content (string or list of parts) to plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            ptype = p.get("type")
+            if ptype == "text":
+                out.append(p.get("text", ""))
+            elif ptype == "thinking":
+                out.append(p.get("thinking", ""))
+        return "".join(out)
+    return str(content)
 
-    json_type = schema.get("type", "any")
 
-    if isinstance(json_type, list):
-        return " | ".join(_json_type_to_typescript({"type": t}) for t in json_type)
-
-    if json_type == "string":
-        if "enum" in schema:
-            return " | ".join(json.dumps(v) for v in schema["enum"])
-        base_type = "string"
-    elif json_type in ("number", "integer"):
-        base_type = "number"
-    elif json_type == "boolean":
-        base_type = "boolean"
-    elif json_type == "array":
-        items_type = _json_type_to_typescript(schema.get("items", {}))
-        base_type = f"{items_type}[]"
-    elif json_type == "object":
-        base_type = _json_schema_to_typescript(schema)
+def _tool_to_description(tool: ToolSpec) -> ToolDescription:
+    """Convert an OpenAI-format tool spec to a harmony ToolDescription."""
+    if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+        fn = tool["function"]
     else:
-        base_type = "any"
-
-    if schema.get("nullable"):
-        return f"{base_type} | null"
-    return base_type
-
-
-def _json_schema_to_typescript(schema: dict) -> str:
-    """Convert a JSON Schema object node to an inline TypeScript type string."""
-    if schema.get("type") != "object":
-        return "any"
-
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", []))
-
-    type_parts = []
-    for prop_name, prop_schema in properties.items():
-        prop_type = _json_type_to_typescript(prop_schema)
-        optional = "" if prop_name in required else "?"
-        type_parts.append(f"{prop_name}{optional}: {prop_type}")
-
-    return "{ " + ", ".join(type_parts) + " }"
+        fn = tool
+    return ToolDescription.new(
+        name=fn.get("name", ""),
+        description=fn.get("description", ""),
+        parameters=fn.get("parameters") or {},
+    )
 
 
-def _format_tool_definition(tool: ToolSpec) -> str:
-    """Format a ToolSpec dict as a Harmony TypeScript-style definition.
-
-    Produces:
-        // {description}
-        type {name} = (_: { param: type, ... }) => any;
-    """
-    lines: list[str] = []
-    if tool.get("description"):
-        lines.append(f"// {tool['description']}")
-
-    params: dict = tool.get("parameters") or {}
-    if params.get("type") == "object" and params.get("properties"):
-        ts_params = _json_schema_to_typescript(params)
-        lines.append(f"type {tool['name']} = (_: {ts_params}) => any;")
-    else:
-        lines.append(f"type {tool['name']} = (_: {{}}) => any;")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# System-prompt template
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT_TEMPLATE = (
-    "You are ChatGPT, a large language model trained by OpenAI.\n"
-    "Knowledge cutoff: 2024-06\n"
-    "Current date: {current_date}\n\n"
-    "Reasoning: {reasoning_effort}\n\n"
-    "# Valid channels: analysis, commentary, final."
-    " Channel must be included for every message."
-)
-
-
-# ---------------------------------------------------------------------------
-# Renderer
-# ---------------------------------------------------------------------------
+def _arguments_to_str(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments, ensure_ascii=False)
 
 
 class GptOssRenderer:
-    """Deterministic message → token renderer for OpenAI OSS (Harmony) models."""
+    """Deterministic message → token renderer for OpenAI gpt-oss (harmony)."""
 
     synthesize_close_on_truncation = True
 
@@ -140,26 +123,40 @@ class GptOssRenderer:
         self,
         tokenizer: PreTrainedTokenizer,
         *,
-        use_system_prompt: bool = False,
-        reasoning_effort: str | None = None,
+        use_system_prompt: bool = True,
+        reasoning_effort: str | None = "medium",
+        conversation_start_date: str | None = None,
+        knowledge_cutoff: str | None = None,
+        model_identity: str | None = None,
     ):
         """Initialise the renderer.
 
         Args:
             tokenizer: HuggingFace tokenizer.
-            use_system_prompt: When True, prepend OpenAI's built-in system
-                message (requires ``reasoning_effort`` to be set).
-            reasoning_effort: Effort level string (e.g. ``"high"``).  Must be
-                provided iff ``use_system_prompt=True``.
+            use_system_prompt: When True (default), prepend the canonical
+                harmony SystemContent preamble. Matches HF's
+                apply_chat_template behaviour.
+            reasoning_effort: ``"low" | "medium" | "high"``. Default
+                ``"medium"`` (matches apply_chat_template).
+            conversation_start_date: Optional ISO date for the preamble.
+                Defaults to today's date in YYYY-MM-DD form.
+            knowledge_cutoff: Optional knowledge cutoff string. Harmony's
+                default is built into ``SystemContent.new()``.
+            model_identity: Optional override for the model identity line.
         """
-        assert use_system_prompt == (reasoning_effort is not None), (
-            "reasoning_effort must be set if and only if use_system_prompt=True"
-        )
         self._tokenizer = tokenizer
+        self._enc: HarmonyEncoding = load_harmony_encoding(
+            HarmonyEncodingName.HARMONY_GPT_OSS
+        )
         self._use_system_prompt = use_system_prompt
-        self._reasoning_effort = reasoning_effort
+        self._reasoning_effort = _reasoning_effort(reasoning_effort)
+        self._conversation_start_date = (
+            conversation_start_date or datetime.now().strftime("%Y-%m-%d")
+        )
+        self._knowledge_cutoff = knowledge_cutoff
+        self._model_identity = model_identity
 
-        # Cache special-token IDs once
+        # Cache special-token IDs for the bridge / generation-prompt path.
         self._start = self._token_id("<|start|>")
         self._end = self._token_id("<|end|>")
         self._return = self._token_id("<|return|>")
@@ -197,51 +194,90 @@ class GptOssRenderer:
         tokens: list[int] = []
         indices: list[int] = []
 
-        def emit_ids(ids: list[int], msg_idx: int) -> None:
+        def emit(ids: list[int], msg_idx: int) -> None:
             tokens.extend(ids)
             indices.extend([msg_idx] * len(ids))
 
-        def emit_special(token_id: int, msg_idx: int) -> None:
-            tokens.append(token_id)
-            indices.append(msg_idx)
-
-        def emit_text(text: str, msg_idx: int) -> None:
-            emit_ids(self._encode(text), msg_idx)
-
-        # Prepend internal system message when configured
-        effective_messages: list[Message] = list(messages)
+        # ── Build harmony prefix (system + developer) ───────────────────
+        # When tools are present, harmony's conversation-level renderer
+        # injects a channel-routing line into the SystemContent block
+        # (``Calls to these tools must go to the commentary channel:
+        # 'functions'.``). Per-message ``enc.render`` doesn't know about
+        # the surrounding tool namespaces, so we render the prefix via
+        # ``render_conversation`` to pick that up correctly.
+        first_system_idx = next(
+            (i for i, m in enumerate(messages) if m.get("role") == "system"),
+            None,
+        )
+        prefix_msgs: list[HarmonyMessage] = []
         if self._use_system_prompt:
-            current_date = datetime.now().strftime("%Y-%m-%d")
-            sys_content = _SYSTEM_PROMPT_TEMPLATE.format(
-                current_date=current_date,
-                reasoning_effort=self._reasoning_effort,
+            sys_content = SystemContent.new().with_reasoning_effort(
+                self._reasoning_effort
             )
-            # Use a sentinel role so _render_message renders it as "system"
-            # without applying the developer mapping
-            effective_messages = [
-                {"role": "_gptoss_internal_system", "content": sys_content}
-            ] + effective_messages
-
-        num = len(effective_messages)
-        for i, msg in enumerate(effective_messages):
-            is_last = i == num - 1
-            self._render_message(
-                msg,
-                i,
-                is_last=is_last,
-                tools=tools if i == 0 else None,
-                emit_special=emit_special,
-                emit_text=emit_text,
+            sys_content = sys_content.with_conversation_start_date(
+                self._conversation_start_date
+            )
+            if self._knowledge_cutoff is not None:
+                sys_content = sys_content.with_knowledge_cutoff(self._knowledge_cutoff)
+            if self._model_identity is not None:
+                sys_content = sys_content.with_model_identity(self._model_identity)
+            prefix_msgs.append(
+                HarmonyMessage.from_role_and_content(Role.SYSTEM, sys_content)
+            )
+        if first_system_idx is not None or tools:
+            dev = DeveloperContent.new()
+            if first_system_idx is not None:
+                instructions = _content_text(messages[first_system_idx].get("content"))
+                if instructions:
+                    dev = dev.with_instructions(instructions)
+            if tools:
+                dev = dev.with_function_tools(
+                    [_tool_to_description(t) for t in tools]
+                )
+            prefix_msgs.append(
+                HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev)
             )
 
-        # Generation prompt: <|start|>assistant<|channel|>analysis<|message|>
-        # (model begins emitting from the analysis channel)
+        if prefix_msgs:
+            prefix_tokens = self._enc.render_conversation(
+                Conversation.from_messages(prefix_msgs)
+            )
+            # Attribute the whole prefix block to first_system_idx if the
+            # caller supplied a system message (so its content has *some*
+            # caller-relative attribution); otherwise to -1 (pure scaffolding).
+            prefix_origin = first_system_idx if first_system_idx is not None else -1
+            emit(prefix_tokens, prefix_origin)
+
+        # ── Iterate the rest of the messages ────────────────────────────
+        last_idx = len(messages) - 1
+        for i, msg in enumerate(messages):
+            if i == first_system_idx:
+                continue  # already emitted as developer
+            for hm in self._to_harmony_messages(msg):
+                emit(self._enc.render(hm), i)
+
+        # When the conversation ends on an assistant final-channel turn,
+        # ``apply_chat_template`` (and ``render_conversation_for_training``)
+        # close it with ``<|return|>`` instead of ``<|end|>`` to mark the
+        # final assistant turn as terminal. Per-message rendering always
+        # uses ``<|end|>``, so patch it here when applicable.
+        if (
+            not add_generation_prompt
+            and last_idx >= 0
+            and messages[last_idx].get("role") == "assistant"
+            and tokens
+            and tokens[-1] == self._end
+            and not (messages[last_idx].get("tool_calls"))
+        ):
+            tokens[-1] = self._return
+
+        # ── Generation prompt: <|start|>assistant<|channel|>analysis<|message|>
         if add_generation_prompt:
-            emit_special(self._start, -1)
-            emit_text("assistant", -1)
-            emit_special(self._channel, -1)
-            emit_text("analysis", -1)
-            emit_special(self._message, -1)
+            emit([self._start], -1)
+            emit(self._encode("assistant"), -1)
+            emit([self._channel], -1)
+            emit(self._encode("analysis"), -1)
+            emit([self._message], -1)
 
         return RenderedTokens(token_ids=tokens, message_indices=indices)
 
@@ -280,15 +316,11 @@ class GptOssRenderer:
         *,
         tools: list[ToolSpec] | None = None,
     ) -> list[int] | None:
-        """Hand-written Harmony bridge.
+        """Per-message harmony bridge.
 
-        Harmony's assistant layout depends on whether the turn is the last
-        in the conversation (``<|return|>`` close vs ``<|end|>`` close,
-        ``final`` channel vs ``analysis`` preamble). That makes any
-        prefix-based diff over ``render()`` output unsafe — the same
-        assistant renders differently in the two positions. Instead we
-        hand-emit each new message directly, re-using the per-role
-        helpers from ``render()`` so the bridge can never drift.
+        Each new message is rendered in isolation via ``enc.render(m)`` —
+        same primitive ``render()`` uses — so the bridge can never drift
+        from the full re-render.
         """
         if (
             not previous_prompt_ids
@@ -297,13 +329,6 @@ class GptOssRenderer:
         ):
             return None
 
-        # Harmony stops cleanly on <|return|> or <|call|>. trim_to_turn_close
-        # scans `previous_completion_ids` backwards to the last close token,
-        # which (a) trims any trailing tokens after a stop marker and (b)
-        # safely handles empty completions (would otherwise inspect the
-        # prompt's last token). When the prior turn was truncated at
-        # max_tokens, synth <|end|> — the non-terminal close — keeps the
-        # template well-formed; opt-in via ``synthesize_close_on_truncation``.
         previous_ids = trim_to_turn_close(
             previous_prompt_ids,
             previous_completion_ids,
@@ -316,233 +341,121 @@ class GptOssRenderer:
             return None
 
         ext: list[int] = []
-
-        def emit_special(token_id: int, _msg_idx: int = -1) -> None:
-            ext.append(token_id)
-
-        def emit_text(text: str, _msg_idx: int = -1) -> None:
-            ext.extend(self._encode(text))
-
-        for i, msg in enumerate(new_messages):
+        for msg in new_messages:
             role = msg.get("role")
-            if role == "tool":
-                self._render_tool_result(
-                    msg, i, emit_special=emit_special, emit_text=emit_text
-                )
-            elif role in ("user", "system", "developer", "_gptoss_internal_system"):
-                # New messages never carry the original first-message tools
-                # block; the tool definitions were baked into prev_prompt_ids
-                # at turn 0 and don't need to be re-rendered mid-rollout.
-                self._render_message(
-                    msg,
-                    i,
-                    is_last=False,
-                    tools=None,
-                    emit_special=emit_special,
-                    emit_text=emit_text,
-                )
-            else:
+            if role not in ("tool", "user", "system", "developer"):
                 return None
+            for hm in self._to_harmony_messages(msg):
+                ext.extend(self._enc.render(hm))
 
         # Generation prompt: <|start|>assistant<|channel|>analysis<|message|>
-        emit_special(self._start, -1)
-        emit_text("assistant", -1)
-        emit_special(self._channel, -1)
-        emit_text("analysis", -1)
-        emit_special(self._message, -1)
+        ext.append(self._start)
+        ext.extend(self._encode("assistant"))
+        ext.append(self._channel)
+        ext.extend(self._encode("analysis"))
+        ext.append(self._message)
 
         return previous_ids + ext
 
-    # ── rendering helpers ────────────────────────────────────────────────────
+    # ── message conversion ───────────────────────────────────────────────────
 
-    def _render_message(
-        self,
-        msg: Message,
-        msg_idx: int,
-        *,
-        is_last: bool,
-        tools: list[ToolSpec] | None,
-        emit_special,
-        emit_text,
-    ) -> None:
+    def _to_harmony_messages(self, msg: Message) -> list[HarmonyMessage]:
+        """Convert a single RendererMessage to one or more harmony messages.
+
+        Splits in two cases:
+          - assistant with reasoning_content + content → analysis message
+            then final message
+          - assistant with multiple tool_calls → one ASSISTANT message per
+            tool_call, with recipient=functions.<name>, channel=commentary
+        """
         role = msg.get("role", "")
 
-        if role == "tool":
-            self._render_tool_result(
-                msg, msg_idx, emit_special=emit_special, emit_text=emit_text
+        if role == "user":
+            return [
+                HarmonyMessage.from_role_and_content(Role.USER, _content_text(msg.get("content")))
+            ]
+
+        if role == "system" or role == "developer":
+            # Caller's system message is normally pulled out as developer
+            # Instructions in render(); reaching here means it's a
+            # secondary system or an explicit developer message. Render
+            # as developer with the content as instructions.
+            dev = DeveloperContent.new().with_instructions(
+                _content_text(msg.get("content"))
             )
-            return
+            return [HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev)]
 
-        # Map roles
-        if role == "_gptoss_internal_system":
-            wire_role = "system"
-        elif role == "system":
-            wire_role = "developer"
-        else:
-            wire_role = role
-
-        emit_special(self._start, msg_idx)
-        emit_text(wire_role, msg_idx)
+        if role == "tool":
+            # Tool result. Author needs the function name; we recover it
+            # from `name` (set client-side via _attach_tool_call_names) or
+            # from the message dict.
+            tool_name = msg.get("name") or "unknown"
+            if not tool_name.startswith("functions."):
+                tool_name = f"functions.{tool_name}"
+            content = _content_text(msg.get("content"))
+            tm = HarmonyMessage.from_author_and_content(
+                {"role": "tool", "name": tool_name}, content
+            )
+            tm = tm.with_recipient("assistant").with_channel("commentary")
+            return [tm]
 
         if role == "assistant":
-            self._render_assistant(
-                msg,
-                msg_idx,
-                is_last=is_last,
-                emit_special=emit_special,
-                emit_text=emit_text,
-            )
-        elif role == "system":
-            # System messages from user → developer role with "# Instructions" wrapper
-            content = msg.get("content") or ""
-            if isinstance(content, list):
-                content = "".join(
-                    p.get("text", "") for p in content if p.get("type") == "text"
-                )
-            emit_special(self._channel, msg_idx)
-            emit_text("final", msg_idx)
-            emit_special(self._message, msg_idx)
-            emit_text(f"# Instructions\n\n{content}\n\n", msg_idx)
-            emit_special(self._end, msg_idx)
-        else:
-            # user / developer / internal system
-            content = msg.get("content") or ""
-            if isinstance(content, list):
-                content = "".join(
-                    p.get("text", "") for p in content if p.get("type") == "text"
-                )
+            return self._assistant_to_harmony(msg)
 
-            # Inject tool declarations into first developer/system message when tools given
-            if tools and role in ("developer", "_gptoss_internal_system", "system"):
-                tool_defs = "\n\n".join(_format_tool_definition(t) for t in tools)
-                tools_block = (
-                    "# Tools\n\n## functions\n\nnamespace functions {\n\n"
-                    + tool_defs
-                    + "\n\n} // namespace functions"
-                )
-                content = (content + "\n\n" + tools_block).strip()
+        # Unknown role: render as developer with the raw content.
+        dev = DeveloperContent.new().with_instructions(_content_text(msg.get("content")))
+        return [HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev)]
 
-            emit_special(self._message, msg_idx)
-            emit_text(content, msg_idx)
-            emit_special(self._end, msg_idx)
+    def _assistant_to_harmony(self, msg: Message) -> list[HarmonyMessage]:
+        """Convert an assistant message to harmony messages.
 
-    def _render_assistant(
-        self,
-        msg: Message,
-        msg_idx: int,
-        *,
-        is_last: bool,
-        emit_special,
-        emit_text,
-    ) -> None:
-        """Emit assistant channels: analysis → (commentary tool calls | final text)."""
-        content = msg.get("content") or ""
-        tool_calls = msg.get("tool_calls") or []
+        Layout:
+          - text content (if any)      → final channel
+          - each tool_call             → commentary channel,
+                                         recipient=functions.<name>
 
-        # Extract thinking / text from content
-        thinking = ""
-        text = ""
-        reasoning_content = msg.get("reasoning_content")
-        if isinstance(reasoning_content, str):
-            thinking = reasoning_content
-            text = content if isinstance(content, str) else ""
-        elif isinstance(content, list):
-            for part in content:
-                if part.get("type") == "thinking":
-                    thinking += part.get("thinking", "")
-                elif part.get("type") == "text":
-                    text += part.get("text", "")
-        else:
-            text = content
+        ``reasoning_content`` is intentionally NOT emitted: harmony strips
+        analysis-channel messages from history-style rendering (verified
+        against ``HarmonyEncoding.render_conversation`` /
+        ``render_conversation_for_training``). Per-turn thinking is only
+        relevant for live generation; once a turn closes, its analysis
+        block is dropped from context.
+        """
+        out: list[HarmonyMessage] = []
 
-        # Analysis channel (thinking) — always emitted for non-terminal assistant turns
-        # and whenever thinking content exists
-        if thinking or not is_last:
-            emit_special(self._channel, msg_idx)
-            emit_text("analysis", msg_idx)
-            emit_special(self._message, msg_idx)
-            emit_text(thinking, msg_idx)
-            emit_special(self._end, msg_idx)
-            # Open next assistant block if there is more to emit
-            if tool_calls or text or is_last:
-                emit_special(self._start, msg_idx)
-                emit_text("assistant", msg_idx)
-        elif thinking == "" and is_last and not tool_calls:
-            # Pure final-channel response with no thinking
-            emit_special(self._channel, msg_idx)
-            emit_text("final", msg_idx)
-            emit_special(self._message, msg_idx)
-            emit_text(text, msg_idx)
-            emit_special(self._return, msg_idx)
-            return
-
-        if tool_calls:
-            # If there's a text preamble before tool calls, emit it as commentary
-            if text:
-                emit_special(self._channel, msg_idx)
-                emit_text("commentary", msg_idx)
-                emit_special(self._message, msg_idx)
-                emit_text(text, msg_idx)
-                emit_special(self._end, msg_idx)
-                emit_special(self._start, msg_idx)
-                emit_text("assistant", msg_idx)
-
-            for tc_idx, tc in enumerate(tool_calls):
-                func = tc.get("function") or tc
-                name = func.get("name", "")
-                arguments = func.get("arguments", {})
-                args_str = (
-                    json.dumps(arguments, ensure_ascii=False)
-                    if not isinstance(arguments, str)
-                    else arguments
-                )
-                emit_text(f" to=functions.{name}", msg_idx)
-                emit_special(self._channel, msg_idx)
-                emit_text("commentary ", msg_idx)
-                emit_special(self._constrain, msg_idx)
-                emit_text("json", msg_idx)
-                emit_special(self._message, msg_idx)
-                emit_text(args_str, msg_idx)
-                emit_special(self._call, msg_idx)
-
-                # If more tool calls follow, open the next assistant block
-                if tc_idx < len(tool_calls) - 1:
-                    emit_special(self._start, msg_idx)
-                    emit_text("assistant", msg_idx)
-        else:
-            # Final channel
-            emit_special(self._channel, msg_idx)
-            emit_text("final", msg_idx)
-            emit_special(self._message, msg_idx)
-            emit_text(text, msg_idx)
-            if is_last:
-                emit_special(self._return, msg_idx)
-            else:
-                emit_special(self._end, msg_idx)
-
-    def _render_tool_result(
-        self,
-        msg: Message,
-        msg_idx: int,
-        *,
-        emit_special,
-        emit_text,
-    ) -> None:
-        """Emit a tool result message in Harmony commentary format."""
-        tool_name = msg.get("name") or "unknown"
-        if not tool_name.startswith("functions."):
-            tool_name = f"functions.{tool_name}"
-
-        content = msg.get("content") or ""
+        content = msg.get("content")
+        text_parts: list[str] = []
         if isinstance(content, list):
-            content = "".join(
-                p.get("text", "") for p in content if p.get("type") == "text"
-            )
+            for p in content:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("type") == "text":
+                    text_parts.append(p.get("text", ""))
+                # Thinking parts are dropped (see docstring).
+        elif isinstance(content, str):
+            text_parts.append(content)
+        text = "".join(text_parts)
 
-        emit_special(self._start, msg_idx)
-        emit_text(f"{tool_name} to=assistant", msg_idx)
-        emit_special(self._channel, msg_idx)
-        emit_text("commentary", msg_idx)
-        emit_special(self._message, msg_idx)
-        emit_text(content, msg_idx)
-        emit_special(self._end, msg_idx)
+        if text:
+            m = HarmonyMessage.from_role_and_content(Role.ASSISTANT, text)
+            m = m.with_channel("final")
+            out.append(m)
+
+        tool_calls = msg.get("tool_calls") or []
+        for tc in tool_calls:
+            fn = tc.get("function") or tc
+            name = fn.get("name", "")
+            args = _arguments_to_str(fn.get("arguments", {}))
+            recipient = name if name.startswith("functions.") else f"functions.{name}"
+            m = HarmonyMessage.from_role_and_content(Role.ASSISTANT, args)
+            m = m.with_channel("commentary").with_recipient(recipient)
+            out.append(m)
+
+        # Empty assistant (no text and no tool_calls) — emit an empty
+        # final-channel message so message_indices stays non-empty.
+        if not out:
+            m = HarmonyMessage.from_role_and_content(Role.ASSISTANT, "")
+            m = m.with_channel("final")
+            out.append(m)
+
+        return out
