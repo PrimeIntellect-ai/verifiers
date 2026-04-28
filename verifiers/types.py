@@ -307,10 +307,7 @@ class RolloutTiming(CustomBaseModel):
     @computed_field
     @property
     def overhead(self) -> float:
-        return max(
-            0.0,
-            self.total - self.setup - self.generation - self.scoring,
-        )
+        return self.total - self.setup - self.generation - self.scoring
 
 
 class ErrorInfo(TypedDict):
