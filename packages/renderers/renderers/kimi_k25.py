@@ -372,9 +372,17 @@ def _encode_tools_typescript(tools: list[ToolSpec]) -> str:
         return ""
     functions = []
     for tool in tools:
-        if tool.get("type") != "function":
+        # Support both shapes:
+        #  * OpenAI envelope: {"type": "function", "function": {...}}
+        #  * Flat ``ToolSpec`` (TypedDict in renderers.base): {name, description, parameters}
+        # ToolNamespaceConfig non-function entries (e.g. ``"_plugin"``) are
+        # skipped explicitly.
+        if tool.get("type") and tool.get("type") != "function":
             continue
-        func_def_dict = tool.get("function") or {}
+        if isinstance(tool.get("function"), dict):
+            func_def_dict = tool["function"]
+        else:
+            func_def_dict = tool
         if not func_def_dict:
             continue
         func_def = _function_to_typescript(func_def_dict)
