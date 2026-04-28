@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import os
 import time
 import uuid
@@ -96,7 +95,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
-        timeout_seconds: float | None = 3600.0,
         poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
@@ -124,7 +122,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     ):
         super().__init__(
             max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
             message_type="chat",
             **kwargs,
         )
@@ -253,24 +250,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         docker_image = await self.get_docker_image(state)
         resources = self.get_sandbox_resources(state)
 
-        sandbox_request_kwargs = {
-            "name": rollout_id,
-            "docker_image": docker_image,
-            "start_command": self.start_command,
-            "cpu_cores": resources["cpu_cores"],
-            "memory_gb": resources["memory_gb"],
-            "disk_size_gb": resources["disk_size_gb"],
-            "gpu_count": resources["gpu_count"],
-            "gpu_type": resources.get("gpu_type"),
-            "vm": resources.get("vm", resources["gpu_count"] > 0),
-            "environment_vars": env_vars,
-            "team_id": self.team_id,
-            "advanced_configs": self.advanced_configs,
-            "labels": self.labels if self.labels else [],
-        }
-        if "timeout_minutes" in resources:
-            sandbox_request_kwargs["timeout_minutes"] = resources["timeout_minutes"]
-        sandbox_request = CreateSandboxRequest(**cast(Any, sandbox_request_kwargs))
+        sandbox_request = CreateSandboxRequest(
+            name=rollout_id,
+            docker_image=docker_image,
+            start_command=self.start_command,
+            cpu_cores=resources["cpu_cores"],
+            memory_gb=resources["memory_gb"],
+            disk_size_gb=resources["disk_size_gb"],
+            gpu_count=resources["gpu_count"],
+            gpu_type=resources.get("gpu_type"),
+            vm=resources.get("vm", resources["gpu_count"] > 0),
+            timeout_minutes=resources["timeout_minutes"],
+            environment_vars=env_vars,
+            team_id=self.team_id,
+            advanced_configs=self.advanced_configs,
+            labels=self.labels if self.labels else [],
+        )
         self.logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
@@ -301,17 +296,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
     def get_sandbox_resources(self, state: State) -> dict[str, Any]:
         """Get sandbox resource allocation. Override for per-instance resources."""
-        resources = {
+        return {
             "cpu_cores": self.cpu_cores,
             "memory_gb": self.memory_gb,
             "disk_size_gb": self.disk_size_gb,
             "gpu_count": self.gpu_count,
             "gpu_type": None,
             "vm": self.gpu_count > 0,
+            "timeout_minutes": self.compute_sandbox_timeout_minutes(),
         }
-        if self.timeout_seconds is not None:
-            resources["timeout_minutes"] = math.ceil(self.timeout_seconds / 60)
-        return resources
 
     # Keys set by build_env_vars that subclasses must not override.
     PROTECTED_ENV_VARS = frozenset(

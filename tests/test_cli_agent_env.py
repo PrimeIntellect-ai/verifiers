@@ -62,7 +62,8 @@ class TestCliAgentEnv:
         assert env.run_command == "python agent.py"
         assert env.docker_image == "python:3.11-slim"
         assert env.interception_port == 8765
-        assert env.timeout_seconds == 3600.0
+        assert env.timeout_seconds is None
+        assert env.sandbox_timeout_minutes is None
 
     def test_init_custom_config(self, sample_dataset):
         """Test initialization with custom configuration."""
@@ -130,8 +131,8 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
-    def test_disabled_timeout_omits_sandbox_timeout(self, sample_dataset):
-        """Disabling rollout timeout should not send a zero-minute sandbox timeout."""
+    def test_disabled_timeout_uses_max_sandbox_lifetime(self, sample_dataset):
+        """timeout_seconds=None caps sandbox at the SDK ceiling (24h)."""
         env = vf.CliAgentEnv(
             run_command="python agent.py",
             dataset=sample_dataset,
@@ -141,7 +142,47 @@ class TestCliAgentEnv:
 
         resources = env.get_sandbox_resources({})
 
-        assert "timeout_minutes" not in resources
+        assert resources["timeout_minutes"] == env.SANDBOX_MAX_TIMEOUT_MINUTES
+
+    def test_finite_timeout_adds_scoring_buffer(self, sample_dataset):
+        """timeout_seconds=N pads sandbox lifetime with the scoring buffer."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=600.0,
+        )
+
+        resources = env.get_sandbox_resources({})
+
+        assert resources["timeout_minutes"] == 10 + env.SANDBOX_SCORING_BUFFER_MINUTES
+
+    def test_buffer_capped_at_sandbox_max(self, sample_dataset):
+        """rollout timeout + buffer is clamped to the SDK ceiling."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=24 * 3600.0,
+        )
+
+        resources = env.get_sandbox_resources({})
+
+        assert resources["timeout_minutes"] == env.SANDBOX_MAX_TIMEOUT_MINUTES
+
+    def test_sandbox_timeout_minutes_override(self, sample_dataset):
+        """sandbox_timeout_minutes overrides the auto-derived value."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=600.0,
+            sandbox_timeout_minutes=30,
+        )
+
+        resources = env.get_sandbox_resources({})
+
+        assert resources["timeout_minutes"] == 30
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):
