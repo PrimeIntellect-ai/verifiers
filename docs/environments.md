@@ -570,7 +570,7 @@ class MyGameEnv(vf.MultiTurnEnv):
         return state.get("lives", 1) <= 0
 ```
 
-`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, `timeout_seconds`, and `max_total_completion_tokens` by default.
+`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and `max_total_completion_tokens` by default. Per-rollout wall-clock timeouts are configured via the [`--timeout` flag](evaluation#evaluation-options) at evaluation time.
 
 Execution order can be controlled with `priority` (higher runs first). This is useful for checking cheap conditions before expensive ones:
 
@@ -886,7 +886,7 @@ Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
 - **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling (like `sandbox_client_max_workers`) parameters via `SandboxMixin`. Subclasses can override `get_sandbox_resources(state)` for per-instance resource allocation and `build_env_vars(state)` for custom environment variables (`PROTECTED_ENV_VARS` cannot be overridden). VMs are auto-enabled when `gpu_count > 0`
-  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and `MultiTurnEnv.timeout_seconds` (wall-clock rollout cap). Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
+  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and the per-rollout wall-clock cap configured via the `--timeout` CLI flag. Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
 
     ```python
     from verifiers.envs.experimental.sandbox_mixin import SandboxTimeouts
