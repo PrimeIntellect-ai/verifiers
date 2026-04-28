@@ -124,6 +124,6 @@ Three options trade off control vs simplicity:
 
 - **`openai_chat_completions`** (MITO) — server-side templating, text only. Standard OpenAI path. The trainer re-tokenizes for training, which can drift across multi-turn rollouts and fragment them into multiple samples.
 - **`openai_chat_completions_token`** (TITO) — server-side templating, returns token IDs alongside text. The trainer doesn't re-tokenize. Use when the server's chat template is stable across turns.
-- **`renderer`** — client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). Strongest token preservation: `bridge_to_next_turn` keeps multi-turn rollouts merged into one sample and survives mid-completion truncation cleanly.
+- **`renderer`** *(experimental)* — client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). Stronger token-preservation in theory: `bridge_to_next_turn` keeps multi-turn rollouts merged into one sample and survives mid-completion truncation cleanly. Hand-coded renderers exist only for a subset of models and corner cases are still being shaken out.
 
-For RL training, prefer `renderer` if your model has a hand-coded renderer; otherwise `openai_chat_completions_token`. See [Inference Client Types](training.md#inference-client-types) for the full breakdown.
+For production training, use `openai_chat_completions_token` — it's the tried-and-tested path. Try `renderer` if you want the stronger guarantees and your model has a hand-coded renderer. See [Inference Client Types](training.md#inference-client-types) for the full breakdown.

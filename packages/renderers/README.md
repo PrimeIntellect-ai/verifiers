@@ -1,6 +1,8 @@
 # renderers
 
-A per-model, Python-native chat-template layer that moves prompt assembly, tool-call parsing, and reasoning parsing out of vLLM and into our own code. Lives in `packages/renderers/` in the verifiers repo; consumed by `verifiers.clients.renderer_client`. Replaces the old TITO client.
+A per-model, Python-native chat-template layer that moves prompt assembly, tool-call parsing, and reasoning parsing out of vLLM and into our own code. Lives in `packages/renderers/` in the verifiers repo; consumed by `verifiers.clients.renderer_client`.
+
+> **Status: experimental.** Available alongside the production `openai_chat_completions_token` (TITO) client. Use TITO for tried-and-tested workloads; renderers offer stronger token-preservation guarantees but only ship hand-coded support for a subset of models and corner cases are still being shaken out.
 
 ---
 
