@@ -637,7 +637,6 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    from verifiers.utils.display_utils import format_timing_line
     from verifiers.utils.logging_utils import print_time
 
     outputs = results["outputs"]
@@ -654,22 +653,7 @@ def print_timing(results: GenerateOutputs):
             out.append(float(v))
         return out
 
-    def _stat(key: str, fn) -> float:
-        vals = _values(key)
-        return float(fn(vals)) if vals else 0.0
-
-    print(
-        "Timing: "
-        + format_timing_line(
-            total=_stat("total", np.mean),
-            setup=_stat("setup", np.mean),
-            generation=_stat("generation", np.mean),
-            scoring=_stat("scoring", np.mean),
-            overhead=_stat("overhead", np.mean),
-            model=_stat("model", np.mean),
-            env=_stat("env", np.mean),
-        )
-    )
+    print("Timing:")
     for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
         vals = _values(key)
         if not vals:
