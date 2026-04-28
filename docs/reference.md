@@ -197,6 +197,7 @@ class StepTiming(CustomBaseModel):
 ```python
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
+    start_time: float           # wall-clock at rollout start (time.time())
     setup: float = 0.0          # measured: setup_state()
     scoring: float = 0.0        # measured: rubric.score_rollout()
     total: float = 0.0          # measured: whole-rollout wall-clock

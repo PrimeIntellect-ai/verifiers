@@ -273,8 +273,8 @@ class StepTiming(CustomBaseModel):
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
 
-    # Set at init, excluded from serialization (internal bookkeeping)
-    start_time: float = Field(default_factory=time.time, exclude=True)
+    start_time: float = Field(default_factory=time.time)
+    # start_timer is internal bookkeeping (perf_counter for monotonic elapsed math)
     start_timer: float = Field(default_factory=time.perf_counter, exclude=True)
 
     setup: float = 0.0  # setup_state() wall-clock
