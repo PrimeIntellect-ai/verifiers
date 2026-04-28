@@ -228,9 +228,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
 
-    async def setup_state(self, state: State) -> State:
+    async def setup_state(self, state: State) -> None:
         """Setup sandbox + interception for this rollout"""
-        state = await super().setup_state(state)
+        await super().setup_state(state)
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -287,8 +287,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"example_id={state['example_id']}",
         ]
         self.logger.info(" | ".join(parts))
-
-        return state
 
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""

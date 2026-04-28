@@ -477,7 +477,7 @@ class MySandboxEnv(vf.StatefulToolEnv):
     
     async def setup_state(self, state, **kwargs):
         state["session_id"] = await create_session()
-        return await super().setup_state(state, **kwargs)
+        await super().setup_state(state, **kwargs)
     
     def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
         if tool_name == "run_code":
@@ -617,10 +617,10 @@ Override `setup_state` to initialize per-rollout state:
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
-    async def setup_state(self, state: vf.State) -> vf.State:
+    async def setup_state(self, state: vf.State) -> None:
         state["board"] = initialize_board()
         state["score"] = 0
-        return await super().setup_state(state)
+        await super().setup_state(state)
 ```
 
 ### Cleanup and Teardown
