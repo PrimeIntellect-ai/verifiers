@@ -91,7 +91,7 @@ prime eval run my-env -a '{"difficulty":"hard"}'
 ```bash
 prime eval run my-env -x '{"max_turns":20,"timeout_seconds":600}'
 ```
-3. Bound per-rollout wall-clock time (preferred over `timeout_seconds` in `-x`; wins over both `-x` and TOML `[eval.extra_env_kwargs]`):
+3. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
 ```bash
 prime eval run my-env --timeout 600
 ```
@@ -122,7 +122,7 @@ env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-9. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+10. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"

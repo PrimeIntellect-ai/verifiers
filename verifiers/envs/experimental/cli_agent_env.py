@@ -38,7 +38,6 @@ from verifiers.utils.interception_utils import (
 )
 from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.serve_utils import get_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +151,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
-        interception_port = (
-            get_free_port() if interception_port is None else interception_port
-        )
+        interception_port = 0 if interception_port is None else interception_port
         self.init_interception(interception_port, interception_url)
         self.add_rubric(SandboxMonitorRubric())
         self.add_rubric(CliAgentMonitorRubric())
@@ -228,15 +225,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
 
-    async def setup_state(self, state: State) -> State:
+    async def setup_state(self, state: State) -> None:
         """Setup sandbox + interception for this rollout"""
-        state = await super().setup_state(state)
+        await super().setup_state(state)
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
         interception_server = self._require_interception_server()
         await interception_server.start()
+        self.interception_port = interception_server.port
 
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
@@ -287,8 +285,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"example_id={state['example_id']}",
         ]
         self.logger.info(" | ".join(parts))
-
-        return state
 
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""

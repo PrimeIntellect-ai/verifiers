@@ -26,7 +26,6 @@ class SimpleEnvironment(Environment):
 
     async def setup_state(self, state):
         """Setup state for SimpleEnvironment."""
-        return state
 
     async def rollout(
         self,
@@ -38,7 +37,7 @@ class SimpleEnvironment(Environment):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)
         try:
-            state = await self.setup_state(state)
+            await self.setup_state(state)
 
             prompt_messages = state["prompt"]
             response = await self.get_model_response(state, prompt_messages)
@@ -550,8 +549,6 @@ class RetryCounterEnv(SimpleEnvironment):
             raise self.error_type(
                 f"Simulated failure {self.call_counts[example_id]}/{self.fail_count}"
             )
-
-        return state
 
 
 class TestMaybeRetry:

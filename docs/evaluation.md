@@ -59,7 +59,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
-| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Overrides `timeout_seconds` in `--extra-env-kwargs`. Bounds generation only — scoring is not bounded. |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
@@ -80,7 +80,7 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 prime eval run my-env -x '{"max_turns": 20}'
 ```
 
-For per-rollout wall-clock timeouts, prefer the dedicated `--timeout` flag, which injects `timeout_seconds` into the environment constructor and **wins over** any `timeout_seconds` set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
 
 ```bash
 prime eval run my-env --timeout 600

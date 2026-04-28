@@ -156,7 +156,6 @@ class TestMultiTurnEnv:
         class SlowSetupEnv(MultiTurnEnv):
             async def setup_state(self, state):  # type: ignore[override]
                 await asyncio.sleep(1)
-                return state
 
             async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
                 return [{"role": "user", "content": "Continue"}]
