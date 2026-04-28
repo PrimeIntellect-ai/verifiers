@@ -9,6 +9,7 @@ from renderers import RendererPool
 from renderers.base import ParsedResponse, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
+    _attach_tool_call_names,
     _get_incremental_prompt_ids,
     _is_valid_incremental_tail,
     _step_token_ids,
@@ -79,6 +80,64 @@ def test_renderer_client_uses_renderer_model_name_override():
     create_renderer_mock.assert_called_once_with(
         tokenizer_mock.return_value, renderer="qwen3_vl"
     )
+
+
+# Provenance: Eli's review on PR #1068, comment 3150580768.
+#   "RendererClient parses the GPT-OSS assistant tool call into ToolCall(name=...),
+#   but ToolEnv returns ToolMessage with only content/tool_call_id, and
+#   _to_renderer_message forwards only role/content/tool_call_id. As a result every
+#   GPT-OSS tool result rendered through this path becomes `functions.unknown
+#   to=assistant`."
+# The verifiers ToolMessage schema has no `name` field, so per-message conversion
+# can't recover it — we have to walk the list and look up the prior assistant
+# tool_call by tool_call_id. This test pins the contract of that lookup.
+def test_attach_tool_call_names_recovers_function_name_from_prior_call():
+    messages = [
+        _to_renderer_message(UserMessage(content="2+2?")),
+        _to_renderer_message(
+            AssistantMessage(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="c1", name="calculator", arguments="{}"),
+                ],
+            )
+        ),
+        _to_renderer_message(ToolMessage(content="4", tool_call_id="c1")),
+    ]
+    out = _attach_tool_call_names(messages)
+    assert out[2]["role"] == "tool"
+    assert out[2]["name"] == "calculator"
+
+
+def test_attach_tool_call_names_preserves_existing_name():
+    """Caller-supplied `name` (already on a Mapping input) wins over recovery."""
+    messages: list = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "calculator", "arguments": "{}"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "explicit",
+            "content": "4",
+            "tool_call_id": "c1",
+        },
+    ]
+    out = _attach_tool_call_names(messages)
+    assert out[1]["name"] == "explicit"
+
+
+def test_attach_tool_call_names_unknown_tool_call_id_left_unset():
+    """A tool message with no matching prior call gets no `name` (renderer
+    falls back to its own default, e.g. GPT-OSS uses 'unknown')."""
+    messages = [
+        _to_renderer_message(UserMessage(content="hi")),
+        _to_renderer_message(ToolMessage(content="orphan", tool_call_id="nope")),
+    ]
+    out = _attach_tool_call_names(messages)
+    assert "name" not in out[1]
 
 
 @pytest.mark.asyncio

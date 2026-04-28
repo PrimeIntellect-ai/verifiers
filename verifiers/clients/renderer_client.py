@@ -159,7 +159,10 @@ class RendererClient(
         self, messages: Messages
     ) -> tuple[list[RendererMessage], dict]:
         messages = maybe_normalize_messages(messages, field_name="prompt")
-        return [_to_renderer_message(m) for m in messages], {}
+        return (
+            _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
+            {},
+        )
 
     async def to_native_tool(self, tool: Tool) -> ToolSpec:
         return ToolSpec(
@@ -390,7 +393,9 @@ def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
 def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     prompt = list(_get_value(step, "prompt", []) or [])
     completion = list(_get_value(step, "completion", []) or [])
-    return [_coerce_renderer_message(message) for message in prompt + completion]
+    return _attach_tool_call_names(
+        [_coerce_renderer_message(message) for message in prompt + completion]
+    )
 
 
 def _log_extension_break(
@@ -656,6 +661,43 @@ def _to_renderer_message(message: Message) -> RendererMessage:
         return RendererMessage(role="user", content=message.content)
     else:
         raise ValueError(f"Unknown message type: {type(message)}")
+
+
+def _attach_tool_call_names(
+    messages: list[RendererMessage],
+) -> list[RendererMessage]:
+    """Fill ``name`` on tool-role messages from prior assistant ``tool_calls``.
+
+    The verifiers ``ToolMessage`` schema has ``role``/``content``/``tool_call_id``
+    but no ``name`` field. Some renderers use the function name when emitting
+    tool results — notably GPT-OSS Harmony, which prefixes results with
+    ``<|start|>functions.{name} to=assistant``. Without recovery, every result
+    falls back to ``functions.unknown``.
+
+    We walk the converted-renderer-dict list once, build a ``tool_call_id →
+    name`` map from assistant ``tool_calls`` entries, and set ``name`` on
+    every subsequent tool message that doesn't already carry one. Validated
+    end-to-end on GPT-OSS-20b.
+    """
+    lookup: dict[str, str] = {}
+    for m in messages:
+        role = m.get("role") if isinstance(m, Mapping) else None
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                if not isinstance(tc, Mapping):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function")
+                tc_name = fn.get("name") if isinstance(fn, Mapping) else None
+                if isinstance(tc_id, str) and isinstance(tc_name, str):
+                    lookup[tc_id] = tc_name
+        elif role == "tool" and "name" not in m:
+            tcid = m.get("tool_call_id")
+            if isinstance(tcid, str):
+                name = lookup.get(tcid)
+                if name is not None:
+                    m["name"] = name
+    return messages
 
 
 def _parse_finish_reason(raw: str | None) -> FinishReason:

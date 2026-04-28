@@ -177,9 +177,22 @@ def test_tool_call_no_content(model_name, tokenizer, renderer):
     try:
         expected = _expected(tokenizer, msgs, tools=TOOLS)
     except TypeError as exc:
-        # Qwen3-VL's Jinja template iterates ``content`` and crashes on
-        # ``content=None`` (``TypeError: 'NoneType' object is not iterable``).
-        # Upstream template bug, not our rendering's fault.
+        # Qwen3-VL upstream chat-template bug. The assistant branch only
+        # checks `is string` and then unconditionally iterates the else,
+        # so `content=None` raises TypeError on `for x in None`:
+        #
+        #   {%- if message.content is string %}
+        #       {{- message.content }}
+        #   {%- else %}
+        #       {%- for content_item in message.content %}   ← crash
+        #           {%- if 'text' in content_item %}
+        #               {{- content_item.text }}
+        #           ...
+        #
+        # Same pattern in the user-role branch. The fix upstream would be
+        # `{%- elif message.content %}` to skip iteration on falsy content.
+        # Until Qwen ships a fixed template this is xfail; the imperative
+        # xfail auto-promotes to xpass when upstream is fixed.
         import pytest
 
         pytest.xfail(f"{model_name}: apply_chat_template raised {exc!r}")
@@ -217,6 +230,28 @@ def test_single_tool_response(model_name, tokenizer, renderer):
             ],
         },
         {"role": "tool", "content": '{"temp": 20}'},
+        {"role": "assistant", "content": "It's 20 degrees."},
+    ]
+    assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
+        tokenizer, msgs, tools=TOOLS
+    )
+
+
+def test_tool_response_with_name(model_name, tokenizer, renderer):
+    """Tool message carries `name` (function name). Pins the renderer contract
+    that if `name` is supplied it gets rendered (e.g., GPT-OSS Harmony emits
+    `<|start|>functions.{name} to=assistant`). Catches regressions where a
+    renderer silently drops the field."""
+    msgs = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+            ],
+        },
+        {"role": "tool", "name": "get_weather", "content": '{"temp": 20}'},
         {"role": "assistant", "content": "It's 20 degrees."},
     ]
     assert renderer.render_ids(msgs, tools=TOOLS) == _expected(
