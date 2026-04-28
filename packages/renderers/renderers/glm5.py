@@ -254,7 +254,10 @@ class GLM5Renderer:
         # previous_completion_ids. Truncation means none is there yet.
         previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
         stop_ids = {self._endoftext, self._user, self._observation}
-        if not previous_ids[len(previous_prompt_ids):] or previous_ids[-1] not in stop_ids:
+        if (
+            not previous_ids[len(previous_prompt_ids) :]
+            or previous_ids[-1] not in stop_ids
+        ):
             # Truncation: opt-in renderers synthesise <|endoftext|> as the
             # canonical turn end.
             if not self.synthesize_close_on_truncation:
@@ -329,9 +332,7 @@ class GLM5Renderer:
             emit_special(self._think, msg_idx)
             emit_text(reasoning_content.strip(), msg_idx)
             emit_special(self._think_end, msg_idx)
-        elif (
-            self.empty_think_on_last_assistant and msg_idx > last_user_index
-        ):
+        elif self.empty_think_on_last_assistant and msg_idx > last_user_index:
             # GLM-5.1: wrap the last assistant with an empty <think></think>
             # even without reasoning, matching the Jinja template.
             emit_special(self._think, msg_idx)
@@ -409,9 +410,5 @@ class GLM51Renderer(GLM5Renderer):
     @staticmethod
     def _format_tool_spec(tool: ToolSpec) -> str:
         spec = tool["function"] if "function" in tool else tool
-        spec = {
-            k: v
-            for k, v in spec.items()
-            if k not in ("defer_loading", "strict")
-        }
+        spec = {k: v for k, v in spec.items() if k not in ("defer_loading", "strict")}
         return json.dumps(spec, ensure_ascii=False)

@@ -124,5 +124,3 @@ async def test_completions_request_uses_prebuilt_prompt_ids_without_rendering():
 
     assert client.calls[0]["body"]["prompt_token_ids"] == [11, 12, 13]
     assert result["prompt_ids"] == [11, 12, 13]
-
-

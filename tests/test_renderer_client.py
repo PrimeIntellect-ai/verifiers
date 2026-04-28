@@ -477,9 +477,11 @@ def _build_truncated_state(tokenizer, renderer):
             }
         ]
     }
-    next_turn_prompt = step_prompt + step_completion + [
-        {"role": "user", "content": "Your guess was invalid. Give a 5-letter word."}
-    ]
+    next_turn_prompt = (
+        step_prompt
+        + step_completion
+        + [{"role": "user", "content": "Your guess was invalid. Give a 5-letter word."}]
+    )
     return prev_prompt_ids, prev_completion_ids, state, next_turn_prompt
 
 

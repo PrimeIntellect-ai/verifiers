@@ -88,7 +88,7 @@ def _simulate_prior_turn(renderer):
     full_with_assistant = renderer.render_ids(
         prior + assistant, add_generation_prompt=False
     )
-    prev_completion = list(full_with_assistant[len(prev_prompt):])
+    prev_completion = list(full_with_assistant[len(prev_prompt) :])
 
     # Trim past any trailing scaffolding the template emits AFTER the
     # close (e.g. chatml's trailing ``\n``). vLLM only returns tokens up
@@ -125,18 +125,24 @@ def test_bridge_extends_prev_verbatim_on_clean_stop(br_renderer, br_model):
 
 def test_bridge_rejects_assistant_in_extension(br_renderer):
     prev_prompt, prev_completion = _simulate_prior_turn(br_renderer)
-    assert br_renderer.bridge_to_next_turn(
-        prev_prompt,
-        prev_completion,
-        [{"role": "assistant", "content": "forbidden"}],
-    ) is None
+    assert (
+        br_renderer.bridge_to_next_turn(
+            prev_prompt,
+            prev_completion,
+            [{"role": "assistant", "content": "forbidden"}],
+        )
+        is None
+    )
 
 
 def test_bridge_rejects_empty_prev_or_new(br_renderer):
     _, prev_completion = _simulate_prior_turn(br_renderer)
-    assert br_renderer.bridge_to_next_turn(
-        [], prev_completion, [{"role": "user", "content": "x"}]
-    ) is None
+    assert (
+        br_renderer.bridge_to_next_turn(
+            [], prev_completion, [{"role": "user", "content": "x"}]
+        )
+        is None
+    )
     prev_prompt, _ = _simulate_prior_turn(br_renderer)
     assert br_renderer.bridge_to_next_turn(prev_prompt, prev_completion, []) is None
 
@@ -173,7 +179,9 @@ def test_bridge_synthesises_close_on_truncation(br_renderer, br_model):
     )
 
 
-def test_bridge_extension_includes_new_message_text(br_renderer, br_tokenizer, br_model):
+def test_bridge_extension_includes_new_message_text(
+    br_renderer, br_tokenizer, br_model
+):
     prev_prompt, prev_completion = _simulate_prior_turn(br_renderer)
     new_messages = [{"role": "user", "content": "HELLO_SENTINEL_XYZ"}]
 
@@ -181,7 +189,7 @@ def test_bridge_extension_includes_new_message_text(br_renderer, br_tokenizer, b
         prev_prompt, prev_completion, new_messages
     )
     assert bridged is not None
-    ext = bridged[len(prev_prompt) + len(prev_completion):]
+    ext = bridged[len(prev_prompt) + len(prev_completion) :]
     decoded = br_tokenizer.decode(ext, skip_special_tokens=False)
     assert "HELLO_SENTINEL_XYZ" in decoded, (
         f"{br_model}: new-message content missing from extension; got {decoded!r}"

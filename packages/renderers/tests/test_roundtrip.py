@@ -99,7 +99,7 @@ def _extract_assistant_tokens(renderer, prompt, assistant_msg):
     """
     prompt_ids = renderer.render_ids(prompt, add_generation_prompt=False)
     full_ids = renderer.render_ids(prompt + [assistant_msg])
-    return full_ids[len(prompt_ids):]
+    return full_ids[len(prompt_ids) :]
 
 
 def _normalize_args(args: Any) -> Any:
@@ -192,9 +192,7 @@ def test_roundtrip_single_tool_call(
     completion_ids = _extract_assistant_tokens(rt_renderer, PROMPT, msg)
     parsed = rt_renderer.parse_response(completion_ids)
 
-    assert parsed.tool_calls, (
-        f"{rt_model}: tool_calls lost, got {parsed.tool_calls!r}"
-    )
+    assert parsed.tool_calls, f"{rt_model}: tool_calls lost, got {parsed.tool_calls!r}"
     assert len(parsed.tool_calls) == 1
     tc = parsed.tool_calls[0]
     assert tc["function"]["name"] == "get_weather", (
@@ -287,15 +285,11 @@ def test_think_reasoning_parser_preserves_boundary_whitespace():
         "\n<think>Reason text</think>\nThe answer is four."
     )
 
-    assert reasoning == "Reason text", (
-        f"reasoning boundary stripped: {reasoning!r}"
-    )
+    assert reasoning == "Reason text", f"reasoning boundary stripped: {reasoning!r}"
     assert content.startswith("\n"), (
         f"content lost leading '\\n' after </think>: {content!r}"
     )
-    assert content == "\nThe answer is four.", (
-        f"content mangled: {content!r}"
-    )
+    assert content == "\nThe answer is four.", f"content mangled: {content!r}"
 
 
 def test_think_reasoning_parser_preserves_trailing_reasoning_whitespace():

@@ -658,12 +658,18 @@ class KimiK25Renderer:
             if role == "assistant":
                 is_suffix = i > last_non_tc_assistant
                 self._render_assistant_body(
-                    msg, i, is_suffix=is_suffix,
-                    emit_special=emit_special, emit_text=emit_text,
+                    msg,
+                    i,
+                    is_suffix=is_suffix,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
                 )
             elif role == "tool":
                 self._render_tool_body(
-                    msg, i, emit_special=emit_special, emit_text=emit_text,
+                    msg,
+                    i,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
                     emit_ids=emit_ids,
                 )
             elif msg.get("content") is not None:
@@ -777,7 +783,10 @@ class KimiK25Renderer:
 
             if role == "tool":
                 self._render_tool_body(
-                    msg, i, emit_special=emit_special, emit_text=emit_text,
+                    msg,
+                    i,
+                    emit_special=emit_special,
+                    emit_text=emit_text,
                     emit_ids=emit_ids,
                 )
             elif msg.get("content") is not None:

@@ -226,8 +226,7 @@ def _log_overlong_prompt_diagnostic(
         tc_count = len(tool_calls) if tool_calls else 0
         msg_summary.append(f"[{i}]{role}(c={content_len},tc={tc_count})")
     _request_logger.warning(
-        "vllm 4xx prompt_len=%d messages=%d max_tokens=%s "
-        "per_msg=%s response_body=%s",
+        "vllm 4xx prompt_len=%d messages=%d max_tokens=%s per_msg=%s response_body=%s",
         len(prompt_ids),
         len(messages),
         max_tokens,

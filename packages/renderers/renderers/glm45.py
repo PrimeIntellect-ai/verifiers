@@ -237,7 +237,10 @@ class GLM45Renderer:
         # followed by a literal ``\n`` in the prompt text.
         previous_ids = list(previous_prompt_ids) + list(previous_completion_ids)
         stop_ids = {self._endoftext, self._user, self._observation}
-        if not previous_ids[len(previous_prompt_ids):] or previous_ids[-1] not in stop_ids:
+        if (
+            not previous_ids[len(previous_prompt_ids) :]
+            or previous_ids[-1] not in stop_ids
+        ):
             if not self.synthesize_close_on_truncation:
                 return None
             previous_ids.append(self._endoftext)

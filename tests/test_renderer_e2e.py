@@ -152,7 +152,9 @@ class ScriptedVLLM:
         pass
 
 
-def _make_renderer_client(renderer, completions: list[list[int]]) -> tuple[RendererClient, ScriptedVLLM]:
+def _make_renderer_client(
+    renderer, completions: list[list[int]]
+) -> tuple[RendererClient, ScriptedVLLM]:
     """Build a RendererClient wired to a ScriptedVLLM."""
     scripted = ScriptedVLLM(completions)
     client = object.__new__(RendererClient)
@@ -217,7 +219,9 @@ async def test_reverse_text_single_turn(tokenizer_and_renderer, model_family):
         {"role": "system", "content": system_text},
         {"role": "user", "content": user_text},
     ]
-    completion_ids = _canonical_completion(renderer, input_messages_tmp, expected_output)
+    completion_ids = _canonical_completion(
+        renderer, input_messages_tmp, expected_output
+    )
 
     client, scripted = _make_renderer_client(renderer, [completion_ids])
 
@@ -333,8 +337,12 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
         async def after_three_turns(self, state: State) -> bool:
             return len(state["trajectory"]) >= 3
 
-        async def env_response(self, messages: Messages, state: State, **kwargs) -> Messages:
-            assistant_count = sum(1 for m in messages if getattr(m, "role", None) == "assistant")
+        async def env_response(
+            self, messages: Messages, state: State, **kwargs
+        ) -> Messages:
+            assistant_count = sum(
+                1 for m in messages if getattr(m, "role", None) == "assistant"
+            )
             idx = assistant_count - 1
             return [vf.UserMessage(content=followups[idx])]
 
@@ -380,7 +388,9 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
     if not has_extension:
         for turn_idx, step in enumerate(trajectory):
             step_prompt_dicts = [_to_renderer_message(m) for m in step["prompt"]]
-            expected = renderer.render_ids(step_prompt_dicts, add_generation_prompt=True)
+            expected = renderer.render_ids(
+                step_prompt_dicts, add_generation_prompt=True
+            )
             assert scripted.requests[turn_idx]["prompt_token_ids"] == expected, (
                 f"turn {turn_idx}: client sent prompt_ids that don't match "
                 f"render_ids(step['prompt']) for {model_name}. "
@@ -489,7 +499,8 @@ async def test_extension_break_emits_diagnostic_log(caplog):
         target.removeHandler(caplog.handler)
 
     break_records = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.name == "verifiers.renderer_client.extension_break"
     ]
     assert len(break_records) >= 1, (
@@ -505,5 +516,3 @@ async def test_extension_break_emits_diagnostic_log(caplog):
     assert "text" in msg and "ids" in msg
     # Token ID lists are Python lists formatted in the message.
     assert re.search(r"\bids:\s*\[", msg), "expected at least one token-id list in log"
-
-

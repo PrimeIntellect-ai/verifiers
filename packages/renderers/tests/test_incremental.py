@@ -145,7 +145,10 @@ def test_fake_bridge_extends_verbatim_on_clean_stop():
         prev_prompt, prev_completion, [{"role": "user", "content": "next"}]
     )
     assert result == [1, 2, 3, 99, 42]
-    assert result[: len(prev_prompt) + len(prev_completion)] == prev_prompt + prev_completion
+    assert (
+        result[: len(prev_prompt) + len(prev_completion)]
+        == prev_prompt + prev_completion
+    )
 
 
 def test_fake_bridge_synthesises_on_truncation():

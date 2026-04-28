@@ -714,11 +714,13 @@ def parse_gpt_oss(
         # commentary block within the same turn).
         body_start = msg_pos + 1
         candidates = [
-            pos for pos in (
+            pos
+            for pos in (
                 _find(ids, start_id, body_start),
                 _find(ids, end_id, body_start),
                 _find(ids, call_id, body_start),
-            ) if pos != -1
+            )
+            if pos != -1
         ]
         body_end = min(candidates) if candidates else len(ids)
 

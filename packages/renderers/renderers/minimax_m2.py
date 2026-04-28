@@ -395,9 +395,7 @@ class MiniMaxM2Renderer:
         # through a single emit_text call instead of splitting the merge.
         prefix = "" if prev_is_tool else "\n"
         suffix = "\n" if next_is_tool else ""
-        emit_text(
-            prefix + "<response>" + content + "</response>" + suffix, orig_idx
-        )
+        emit_text(prefix + "<response>" + content + "</response>" + suffix, orig_idx)
 
         if not next_is_tool:
             emit_special(self._eos, orig_idx)

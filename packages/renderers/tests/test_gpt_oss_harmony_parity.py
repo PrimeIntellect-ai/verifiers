@@ -102,10 +102,12 @@ def test_no_system_message(renderer, encoder):
     msgs = [{"role": "user", "content": "Hello!"}]
     got = renderer.render_ids(msgs, add_generation_prompt=False)
 
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(Role.USER, "Hello!"),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(Role.USER, "Hello!"),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 
@@ -118,14 +120,16 @@ def test_system_and_user(renderer, encoder):
     ]
     got = renderer.render_ids(msgs, add_generation_prompt=False)
 
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(
-            Role.DEVELOPER,
-            DeveloperContent.new().with_instructions("You are helpful."),
-        ),
-        HarmonyMessage.from_role_and_content(Role.USER, "Hello!"),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(
+                Role.DEVELOPER,
+                DeveloperContent.new().with_instructions("You are helpful."),
+            ),
+            HarmonyMessage.from_role_and_content(Role.USER, "Hello!"),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 
@@ -138,13 +142,15 @@ def test_terminal_assistant_uses_return(renderer, encoder):
     ]
     got = renderer.render_ids(msgs, add_generation_prompt=False)
 
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(Role.USER, "Hi"),
-        HarmonyMessage.from_role_and_content(Role.ASSISTANT, "Hello!").with_channel(
-            "final"
-        ),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(Role.USER, "Hi"),
+            HarmonyMessage.from_role_and_content(Role.ASSISTANT, "Hello!").with_channel(
+                "final"
+            ),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 
@@ -162,11 +168,13 @@ def test_tools_with_system(renderer, encoder):
         .with_instructions("You are a weather assistant.")
         .with_function_tools([_tool_description()])
     )
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev),
-        HarmonyMessage.from_role_and_content(Role.USER, "Weather?"),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev),
+            HarmonyMessage.from_role_and_content(Role.USER, "Weather?"),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 
@@ -199,24 +207,24 @@ def test_tool_call_and_response(renderer, encoder):
     got = renderer.render_ids(msgs, tools=TOOLS, add_generation_prompt=False)
 
     dev = DeveloperContent.new().with_function_tools([_tool_description()])
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev),
-        HarmonyMessage.from_role_and_content(Role.USER, "Weather in Paris?"),
-        HarmonyMessage.from_role_and_content(
-            Role.ASSISTANT, '{"city": "Paris"}'
-        )
-        .with_channel("commentary")
-        .with_recipient("functions.get_weather"),
-        HarmonyMessage.from_author_and_content(
-            {"role": "tool", "name": "functions.get_weather"}, '{"temp": 20}'
-        )
-        .with_recipient("assistant")
-        .with_channel("commentary"),
-        HarmonyMessage.from_role_and_content(
-            Role.ASSISTANT, "It's 20 degrees in Paris."
-        ).with_channel("final"),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev),
+            HarmonyMessage.from_role_and_content(Role.USER, "Weather in Paris?"),
+            HarmonyMessage.from_role_and_content(Role.ASSISTANT, '{"city": "Paris"}')
+            .with_channel("commentary")
+            .with_recipient("functions.get_weather"),
+            HarmonyMessage.from_author_and_content(
+                {"role": "tool", "name": "functions.get_weather"}, '{"temp": 20}'
+            )
+            .with_recipient("assistant")
+            .with_channel("commentary"),
+            HarmonyMessage.from_role_and_content(
+                Role.ASSISTANT, "It's 20 degrees in Paris."
+            ).with_channel("final"),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 
@@ -236,13 +244,15 @@ def test_assistant_with_reasoning_content_strips_analysis(renderer, encoder):
     got = renderer.render_ids(msgs, add_generation_prompt=False)
 
     # Oracle has no analysis message — it would be stripped anyway.
-    conv = Conversation.from_messages([
-        HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
-        HarmonyMessage.from_role_and_content(Role.USER, "2+2?"),
-        HarmonyMessage.from_role_and_content(Role.ASSISTANT, "Four.").with_channel(
-            "final"
-        ),
-    ])
+    conv = Conversation.from_messages(
+        [
+            HarmonyMessage.from_role_and_content(Role.SYSTEM, _system_content()),
+            HarmonyMessage.from_role_and_content(Role.USER, "2+2?"),
+            HarmonyMessage.from_role_and_content(Role.ASSISTANT, "Four.").with_channel(
+                "final"
+            ),
+        ]
+    )
     expected = encoder.render_conversation_for_training(conv)
     assert got == expected
 

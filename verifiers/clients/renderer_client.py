@@ -114,7 +114,9 @@ class RendererClient(
     # Cache key is (renderer_model_name, renderer_name, tool_parser,
     # reasoning_parser, pool_size) so that different parser configs or pool
     # sizes for the same model don't collide.
-    _shared_pools: ClassVar[dict[tuple[str, str, str | None, str | None, int], RendererPool]] = {}
+    _shared_pools: ClassVar[
+        dict[tuple[str, str, str | None, str | None, int], RendererPool]
+    ] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
@@ -152,7 +154,13 @@ class RendererClient(
         reasoning_parser = (
             self._config.reasoning_parser if self._config is not None else None
         )
-        cache_key = (renderer_model, renderer_name, tool_parser, reasoning_parser, self._pool_size)
+        cache_key = (
+            renderer_model,
+            renderer_name,
+            tool_parser,
+            reasoning_parser,
+            self._pool_size,
+        )
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:

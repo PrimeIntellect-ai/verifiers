@@ -98,18 +98,24 @@ class Qwen3ToolParser:
         i = tc_start
         while i < len(ids):
             if ids[i] == self._tc_id:
-                end = _find(ids, self._tc_end_id, i + 1) if self._tc_end_id is not None else -1
+                end = (
+                    _find(ids, self._tc_end_id, i + 1)
+                    if self._tc_end_id is not None
+                    else -1
+                )
                 if end == -1:
                     end = len(ids)
                 tc_text = _decode(self._tokenizer, ids[i + 1 : end]).strip()
                 try:
                     parsed = json.loads(tc_text)
-                    tool_calls.append({
-                        "function": {
-                            "name": parsed.get("name", ""),
-                            "arguments": parsed.get("arguments", {}),
+                    tool_calls.append(
+                        {
+                            "function": {
+                                "name": parsed.get("name", ""),
+                                "arguments": parsed.get("arguments", {}),
+                            }
                         }
-                    })
+                    )
                 except json.JSONDecodeError:
                     pass
                 i = end + 1
@@ -136,7 +142,11 @@ class Qwen35ToolParser:
         i = tc_start
         while i < len(ids):
             if ids[i] == self._tc_id:
-                end = _find(ids, self._tc_end_id, i + 1) if self._tc_end_id is not None else -1
+                end = (
+                    _find(ids, self._tc_end_id, i + 1)
+                    if self._tc_end_id is not None
+                    else -1
+                )
                 if end == -1:
                     break
                 block_text = _decode(self._tokenizer, ids[i + 1 : end])
@@ -155,7 +165,9 @@ class Qwen35ToolParser:
                             arguments[arg_name] = json.loads(arg_value)
                         except (json.JSONDecodeError, ValueError):
                             arguments[arg_name] = arg_value
-                    tool_calls.append({"function": {"name": name, "arguments": arguments}})
+                    tool_calls.append(
+                        {"function": {"name": name, "arguments": arguments}}
+                    )
                 i = end + 1
             else:
                 i += 1
@@ -184,7 +196,11 @@ class GlmToolParser:
         i = tc_start
         while i < len(ids):
             if ids[i] == self._tc_id:
-                end = _find(ids, self._tc_end_id, i + 1) if self._tc_end_id is not None else -1
+                end = (
+                    _find(ids, self._tc_end_id, i + 1)
+                    if self._tc_end_id is not None
+                    else -1
+                )
                 if end == -1:
                     break
                 block = ids[i + 1 : end]
@@ -198,17 +214,31 @@ class GlmToolParser:
                     j = first_ak
                     while j < len(block):
                         if block[j] == self._ak_id:
-                            ake = _find(block, self._ake_id, j + 1) if self._ake_id is not None else -1
+                            ake = (
+                                _find(block, self._ake_id, j + 1)
+                                if self._ake_id is not None
+                                else -1
+                            )
                             if ake == -1:
                                 break
                             key = _decode(self._tokenizer, block[j + 1 : ake]).strip()
-                            av = _find(block, self._av_id, ake + 1) if self._av_id is not None else -1
+                            av = (
+                                _find(block, self._av_id, ake + 1)
+                                if self._av_id is not None
+                                else -1
+                            )
                             if av == -1:
                                 break
-                            ave = _find(block, self._ave_id, av + 1) if self._ave_id is not None else -1
+                            ave = (
+                                _find(block, self._ave_id, av + 1)
+                                if self._ave_id is not None
+                                else -1
+                            )
                             if ave == -1:
                                 break
-                            val_text = _decode(self._tokenizer, block[av + 1 : ave]).strip()
+                            val_text = _decode(
+                                self._tokenizer, block[av + 1 : ave]
+                            ).strip()
                             try:
                                 arguments[key] = json.loads(val_text)
                             except (json.JSONDecodeError, ValueError):
@@ -241,7 +271,11 @@ class DeepSeekV3ToolParser:
         if section_start == -1:
             return ids, None
         content_ids = ids[:section_start]
-        section_end = _find(ids, self._tcs_end, section_start + 1) if self._tcs_end is not None else -1
+        section_end = (
+            _find(ids, self._tcs_end, section_start + 1)
+            if self._tcs_end is not None
+            else -1
+        )
         if section_end == -1:
             section_end = len(ids)
         section_ids = ids[section_start + 1 : section_end]
@@ -252,7 +286,11 @@ class DeepSeekV3ToolParser:
             if self._tc_begin is None or section_ids[i] != self._tc_begin:
                 i += 1
                 continue
-            end = _find(section_ids, self._tc_end, i + 1) if self._tc_end is not None else -1
+            end = (
+                _find(section_ids, self._tc_end, i + 1)
+                if self._tc_end is not None
+                else -1
+            )
             if end == -1:
                 end = len(section_ids)
             block_text = _decode(self._tokenizer, section_ids[i + 1 : end])

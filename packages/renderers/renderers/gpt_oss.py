@@ -231,9 +231,7 @@ class GptOssRenderer:
                 if instructions:
                     dev = dev.with_instructions(instructions)
             if tools:
-                dev = dev.with_function_tools(
-                    [_tool_to_description(t) for t in tools]
-                )
+                dev = dev.with_function_tools([_tool_to_description(t) for t in tools])
             prefix_msgs.append(
                 HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev)
             )
@@ -372,7 +370,9 @@ class GptOssRenderer:
 
         if role == "user":
             return [
-                HarmonyMessage.from_role_and_content(Role.USER, _content_text(msg.get("content")))
+                HarmonyMessage.from_role_and_content(
+                    Role.USER, _content_text(msg.get("content"))
+                )
             ]
 
         if role == "system" or role == "developer":
@@ -403,7 +403,9 @@ class GptOssRenderer:
             return self._assistant_to_harmony(msg)
 
         # Unknown role: render as developer with the raw content.
-        dev = DeveloperContent.new().with_instructions(_content_text(msg.get("content")))
+        dev = DeveloperContent.new().with_instructions(
+            _content_text(msg.get("content"))
+        )
         return [HarmonyMessage.from_role_and_content(Role.DEVELOPER, dev)]
 
     def _assistant_to_harmony(self, msg: Message) -> list[HarmonyMessage]:

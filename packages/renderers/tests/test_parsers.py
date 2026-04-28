@@ -37,9 +37,7 @@ def test_qwen3_tool_parser_roundtrip():
     parser = get_tool_parser("qwen3", tok)
     assert isinstance(parser, Qwen3ToolParser)
 
-    completion_text = (
-        'hello\n<tool_call>\n{"name": "search", "arguments": {"q": "rain"}}\n</tool_call>'
-    )
+    completion_text = 'hello\n<tool_call>\n{"name": "search", "arguments": {"q": "rain"}}\n</tool_call>'
     token_ids = tok.encode(completion_text, add_special_tokens=False)
     content_ids, tool_calls = parser.extract(list(token_ids))
     assert tool_calls is not None
@@ -87,9 +85,7 @@ def test_default_renderer_uses_parsers():
     )
     assert renderer.supports_tools is True
 
-    completion = (
-        '<think>think</think>ok\n<tool_call>\n{"name": "f", "arguments": {}}\n</tool_call>'
-    )
+    completion = '<think>think</think>ok\n<tool_call>\n{"name": "f", "arguments": {}}\n</tool_call>'
     ids = tok.encode(completion, add_special_tokens=False)
     parsed = renderer.parse_response(list(ids))
     assert parsed.reasoning_content == "think"
