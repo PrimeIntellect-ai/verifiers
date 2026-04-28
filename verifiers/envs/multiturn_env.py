@@ -131,10 +131,10 @@ class MultiTurnEnv(vf.Environment):
         state["trajectory"].append(trajectory_step)
 
     async def _finalize_rollout(self, state: State) -> None:
-        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
+        """Run cleanup, then render completion and timing."""
+        await self._cleanup(state)
         await self.render_completion(state)
         await self._render_timing(state)
-        await self._cleanup(state)
 
     async def add_model_response(
         self,
