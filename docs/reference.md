@@ -198,11 +198,20 @@ class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
     start_time: float                       # wall-clock at rollout start (time.time())
     setup: float = 0.0                      # measured: setup_state()
-    scoring: float = 0.0                    # measured: rubric.score_rollout()
-    total: float = 0.0                      # measured: whole-rollout wall-clock
     steps: list[TimingEntry] = []           # flat sequence of model/env slices
-    # model, env, generation, overhead: derived, included in model_dump()
+    # Phase anchors (perf_counter values, excluded from model_dump):
+    #   start_rollout, end_rollout, start_scoring, end_scoring
+    # Derived (computed fields, included in model_dump):
+    #   model, env, generation, scoring, total, overhead
 ```
+
+Durations are derived from the phase anchors:
+
+- `scoring = end_scoring - start_scoring`
+- `total = (end_scoring or end_rollout) - start_rollout`
+- `overhead = total - setup - generation - scoring`
+
+`overhead` is a true gap measurement: any rollout time not attributed to setup, model/env steps, or scoring shows up here.
 
 ### TokenUsage
 
