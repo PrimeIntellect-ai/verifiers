@@ -537,8 +537,7 @@ def _timing_parts(
         parts.append(("generation", print_time(generation), subs))
     if scoring > 0:
         parts.append(("scoring", print_time(scoring), []))
-    if overhead > 0:
-        parts.append(("overhead", print_time(overhead), []))
+    parts.append(("overhead", print_time(overhead), []))
     return parts
 
 
