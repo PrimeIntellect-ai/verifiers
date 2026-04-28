@@ -46,6 +46,96 @@ def _module_package_name(module: ModuleType) -> str | None:
     return package_name or None
 
 
+def _validate_exception_types(
+    is_sandbox: bool,
+) -> tuple[tuple[type, ...], tuple[type, ...], tuple[type, ...]]:
+    """Return (timeout_types, infra_types, billing_types) for ``_classify_validate_outcome``.
+
+    Sandbox-specific exception types are imported lazily so pure-LLM tasksets
+    don't pull in ``prime_sandboxes``.
+    """
+    import asyncio
+
+    timeout_types: tuple[type, ...] = (asyncio.TimeoutError, TimeoutError)
+    infra_types: tuple[type, ...] = ()
+    billing_types: tuple[type, ...] = ()
+    if is_sandbox:
+        from prime_sandboxes import (
+            APIError,
+            APITimeoutError,
+            CommandTimeoutError,
+            DownloadTimeoutError,
+            PaymentRequiredError,
+            SandboxImagePullError,
+            SandboxNotRunningError,
+            SandboxTimeoutError,
+            UploadTimeoutError,
+        )
+
+        timeout_types = timeout_types + (
+            APITimeoutError,
+            CommandTimeoutError,
+            DownloadTimeoutError,
+            SandboxTimeoutError,
+            UploadTimeoutError,
+        )
+        infra_types = (
+            APIError,
+            SandboxImagePullError,
+            SandboxNotRunningError,
+        )
+        billing_types = (PaymentRequiredError,)
+    return timeout_types, infra_types, billing_types
+
+
+def _classify_validate_outcome(
+    valid: bool,
+    exc: BaseException | None,
+    state: dict | None = None,
+    *,
+    is_sandbox: bool = True,
+    test_output_tail_chars: int = 2000,
+) -> tuple[str, str | None]:
+    """Classify the outcome of ``validate_instance`` into a reason + log tail.
+
+    Returns ``(reason, test_output_tail)`` where ``reason`` is one of
+    ``pass``, ``test_failed``, ``gold_apply_failed``, ``setup_failed``,
+    ``sandbox_error``, ``billing_error``, ``timeout``.
+
+    Classification is exception-class driven. A failed ``validate_instance``
+    with no exception is always ``test_failed`` — the run completed, pytest
+    reported a non-pass result, and whatever is in ``state["test_output"]``
+    is a test log, not a typed signal.
+    """
+    import verifiers as vf
+
+    timeout_types, infra_types, billing_types = _validate_exception_types(is_sandbox)
+    test_output = state.get("test_output") if isinstance(state, dict) else None
+    tail: str | None = None
+    if isinstance(test_output, str) and test_output:
+        tail = test_output[-test_output_tail_chars:]
+    if valid:
+        return "pass", tail
+    if exc is not None:
+        if isinstance(exc, billing_types):
+            return "billing_error", tail
+        if isinstance(exc, timeout_types):
+            return "timeout", tail
+        if isinstance(exc, vf.InfraError) or isinstance(exc, infra_types):
+            return "sandbox_error", tail
+        # Gold-patch apply raises RuntimeError from within our own code
+        # (_apply_patch_file / _apply_gold_patch), so a narrow message check
+        # is the cleanest signal short of adding a dedicated exception class.
+        msg = str(exc).lower()
+        if "apply failed" in msg or "patch failed" in msg or "no gold patch" in msg:
+            return "gold_apply_failed", tail
+        return "setup_failed", tail
+    # exc is None and validate_instance returned False — the run completed,
+    # the test result was non-pass. Don't try to guess a finer-grained reason
+    # from the test log.
+    return "test_failed", tail
+
+
 def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path | None:
     """Find a sibling directory relative to a TaskSet's defining module.
 
@@ -370,8 +460,6 @@ class TaskSet:
         except ImportError:  # pragma: no cover
             tqdm = None  # type: ignore[assignment]
 
-        import verifiers as vf
-
         logger = logging.getLogger(__name__)
         ds = self.get_dataset()
         total = min(n, len(ds)) if n is not None else len(ds)
@@ -437,80 +525,16 @@ class TaskSet:
             async with write_lock:
                 await asyncio.to_thread(_write_line, out_path_p, line)
 
-        # Sandbox-specific exception types — imported lazily so pure-LLM
-        # tasksets don't pull in prime_sandboxes. Dispatch is via isinstance
-        # so pytest output containing the substring "timeout" never looks
-        # like a wall-clock timeout.
-        _sb_timeout_types: tuple[type, ...] = (asyncio.TimeoutError, TimeoutError)
-        _sb_infra_types: tuple[type, ...] = ()
-        _sb_billing_types: tuple[type, ...] = ()
-        if is_sandbox:
-            from prime_sandboxes import (
-                APIError,
-                APITimeoutError,
-                CommandTimeoutError,
-                DownloadTimeoutError,
-                PaymentRequiredError,
-                SandboxImagePullError,
-                SandboxNotRunningError,
-                SandboxTimeoutError,
-                UploadTimeoutError,
-            )
-
-            _sb_timeout_types = _sb_timeout_types + (
-                APITimeoutError,
-                CommandTimeoutError,
-                DownloadTimeoutError,
-                SandboxTimeoutError,
-                UploadTimeoutError,
-            )
-            _sb_infra_types = (
-                APIError,
-                SandboxImagePullError,
-                SandboxNotRunningError,
-            )
-            _sb_billing_types = (PaymentRequiredError,)
-
         def _classify(
             valid: bool, exc: BaseException | None, state: dict
         ) -> tuple[str, str | None]:
-            """Return (reason, test_output_tail).
-
-            Classification is exception-class driven. A failed
-            ``validate_instance`` with no exception is always
-            ``test_failed`` — the run completed, pytest reported a
-            non-pass result, and whatever is in ``state["test_output"]``
-            is a test log, not a typed signal.
-            """
-            test_output = state.get("test_output") if isinstance(state, dict) else None
-            tail = None
-            if isinstance(test_output, str) and test_output:
-                tail = test_output[-test_output_tail_chars:]
-            if valid:
-                return "pass", tail
-            if exc is not None:
-                if isinstance(exc, _sb_billing_types):
-                    return "billing_error", tail
-                if isinstance(exc, _sb_timeout_types):
-                    return "timeout", tail
-                if isinstance(exc, vf.InfraError) or isinstance(exc, _sb_infra_types):
-                    return "sandbox_error", tail
-                # Gold-patch apply raises RuntimeError from within our own
-                # code (_apply_patch_file / _apply_gold_patch), so a narrow
-                # message check is the cleanest signal short of adding a
-                # dedicated exception class.
-                msg = str(exc).lower()
-                if (
-                    "apply failed" in msg
-                    or "patch failed" in msg
-                    or "no gold patch" in msg
-                ):
-                    return "gold_apply_failed", tail
-                return "setup_failed", tail
-            # exc is None and validate_instance returned False — the run
-            # completed, the test result was non-pass. Don't try to guess
-            # a finer-grained reason from the test log.
-            return "test_failed", tail
+            return _classify_validate_outcome(
+                valid,
+                exc,
+                state,
+                is_sandbox=is_sandbox,
+                test_output_tail_chars=test_output_tail_chars,
+            )
 
         def _row_info(i: int) -> tuple[dict, str | None, str | None]:
             row = ds[i]
