@@ -538,7 +538,6 @@ def _timing_parts(
 
 
 def format_timing_line(
-    total: float = 0.0,
     setup: float = 0.0,
     generation: float = 0.0,
     scoring: float = 0.0,
@@ -550,8 +549,6 @@ def format_timing_line(
 
     Example: setup 750ms + generation 30s (model 27s + env 3s) + scoring 100ms + overhead 250ms
     """
-    from verifiers.utils.logging_utils import print_time
-
     parts = _timing_parts(setup, generation, scoring, overhead, model, env)
     strs: list[str] = []
     for label, value, subs in parts:
@@ -559,11 +556,10 @@ def format_timing_line(
         if subs:
             s += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
         strs.append(s)
-    return " + ".join(strs) if strs else f"total {print_time(total)}"
+    return " + ".join(strs)
 
 
 def format_timing_rich(
-    total: float = 0.0,
     setup: float = 0.0,
     generation: float = 0.0,
     scoring: float = 0.0,
@@ -574,8 +570,6 @@ def format_timing_rich(
     value_style: str = "white",
 ) -> Text:
     """Like :func:`format_timing_line` but returns a :class:`rich.text.Text` with styled labels and values."""
-    from verifiers.utils.logging_utils import print_time
-
     parts = _timing_parts(setup, generation, scoring, overhead, model, env)
     text = Text()
     for i, (label, value, subs) in enumerate(parts):
@@ -591,7 +585,4 @@ def format_timing_rich(
                 text.append(f"{sl} ", style=label_style)
                 text.append(sv, style=value_style)
             text.append(")", style=label_style)
-    if not parts:
-        text.append("total ", style=label_style)
-        text.append(print_time(total), style=value_style)
     return text

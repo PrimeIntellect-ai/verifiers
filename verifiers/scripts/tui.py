@@ -4742,7 +4742,6 @@ class ViewRunScreen(Screen):
         timing = record.get("timing")
         if isinstance(timing, dict):
             line = format_timing_line(
-                total=float(timing.get("total", 0.0)),
                 setup=float(timing.get("setup", {}).get("duration", 0.0)),
                 generation=float(timing.get("generation", {}).get("duration", 0.0)),
                 scoring=float(timing.get("scoring", {}).get("duration", 0.0)),

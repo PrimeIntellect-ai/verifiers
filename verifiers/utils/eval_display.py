@@ -371,7 +371,6 @@ class EvalDisplay(BaseDisplay):
         (already-flattened to scalar durations), not a raw RolloutTiming dump.
         """
         rich_line = format_timing_rich(
-            total=timing.get("total", 0.0),
             setup=timing.get("setup", 0.0),
             generation=timing.get("generation", 0.0),
             scoring=timing.get("scoring", 0.0),
