@@ -82,8 +82,28 @@ async def completions_request(
         "stop_token_ids": stop_token_ids,
     }
 
-    for key in ["temperature", "top_p", "seed", "n"]:
-        if key in sampling_args:
+    # Top-level keys accepted by vLLM /generate's GenerateRequest schema. We
+    # forward anything the caller set, mirroring the OpenAI chat-completions
+    # client (which splats ``sampling_args`` into the SDK call). ``cache_salt``
+    # is set by prime-rl's orchestrator per ckpt_step to invalidate stale
+    # prefix-cache KV after each policy update — without forwarding it, vLLM
+    # silently reuses KV computed with older weights → mismatch_kl drifts up
+    # over training.
+    _GENERATE_KEYS = (
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "seed",
+        "n",
+        "repetition_penalty",
+        "min_tokens",
+        "prompt_logprobs",
+        "priority",
+        "cache_salt",
+    )
+    for key in _GENERATE_KEYS:
+        if key in sampling_args and sampling_args[key] is not None:
             body[key] = sampling_args[key]
 
     max_tokens = sampling_args.get("max_completion_tokens") or sampling_args.get(
@@ -92,14 +112,15 @@ async def completions_request(
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 
-    extra_body = sampling_args.get("extra_body", {})
-    # ``cache_salt`` is set by prime-rl's orchestrator per ckpt_step to
-    # invalidate stale prefix-cache KV after each policy update. Without
-    # forwarding it here, vLLM silently reuses KV computed with older
-    # weights → the renderers-path mismatch_kl drifts up over training.
-    for key in ["repetition_penalty", "min_tokens", "min_p", "top_k", "cache_salt"]:
-        if key in extra_body:
+    # Fallback for callers using the OpenAI-SDK convention of stuffing
+    # vLLM-specific args under ``extra_body``.
+    extra_body = sampling_args.get("extra_body") or {}
+    for key in _GENERATE_KEYS:
+        if key not in body and key in extra_body and extra_body[key] is not None:
             body[key] = extra_body[key]
+
+    # Pass through caller-supplied HTTP headers (auth, tracing, etc.) to vLLM.
+    extra_headers = sampling_args.get("extra_headers") or {}
 
     # -- Send to vLLM --
     _request_logger.debug(
@@ -108,10 +129,14 @@ async def completions_request(
         len(messages),
         max_tokens,
     )
+    post_kwargs: dict[str, Any] = {
+        "cast_to": cast(Any, dict[str, Any]),
+        "body": body,
+    }
+    if extra_headers:
+        post_kwargs["options"] = cast(Any, {"headers": extra_headers})
     try:
-        data = await client.post(
-            "/generate", cast_to=cast(Any, dict[str, Any]), body=body
-        )
+        data = await client.post("/generate", **post_kwargs)
     except BadRequestError as exc:
         _log_overlong_prompt_diagnostic(
             prompt_ids=prompt_ids,
