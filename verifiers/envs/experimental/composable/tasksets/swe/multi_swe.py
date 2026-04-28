@@ -181,7 +181,8 @@ class MultiSWETaskSet(SandboxTaskSet):
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
-        ds_keep_in_memory: bool = True,
+        ds_keep_in_memory: bool = False,
+        ds_load_from_cache: bool = True,
         timeout_minutes: int = 60,
     ):
         """
@@ -198,6 +199,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
+        self.ds_load_from_cache = ds_load_from_cache
         self.timeout_minutes = timeout_minutes
         super().__init__(
             dataset=self._build_dataset,
@@ -211,7 +213,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         _kw = dict(
             num_proc=self.ds_num_proc,
             keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
+            load_from_cache_file=self.ds_load_from_cache,
         )
         dataset = load_dataset(
             self.dataset_name,
@@ -233,7 +235,7 @@ class MultiSWETaskSet(SandboxTaskSet):
             _process_example,
             remove_columns=dataset.column_names,
             keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
+            load_from_cache_file=self.ds_load_from_cache,
         )
 
     def get_instruction(self, info: dict) -> str:
