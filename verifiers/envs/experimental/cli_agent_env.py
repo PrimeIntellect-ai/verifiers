@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import os
 import time
 import uuid
@@ -71,7 +70,7 @@ class CliAgentMonitorRubric(vf.Rubric):
 
     async def agent_timeout(self, state: vf.State) -> float:
         """Whether the agent timed out."""
-        return float(bool(state.get("agent_timed_out")))
+        return float(bool(state.get("timed_out")))
 
     async def agent_error(self, state: vf.State) -> float:
         """Whether the agent errored (non-zero exit_code)."""
@@ -95,7 +94,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_port: int | None = None,
         interception_url: str | None = None,
         max_turns: int = -1,
-        timeout_seconds: float = 3600.0,
         poll_interval: float = 5.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
@@ -121,7 +119,11 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         keep_sandbox_for_scoring: bool = False,
         **kwargs,
     ):
-        super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
+        super().__init__(
+            max_turns=max_turns,
+            message_type="chat",
+            **kwargs,
+        )
         self.init_sandbox_client(
             max_retries=max_retries,
             base_delay=base_delay,
@@ -138,7 +140,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.keep_sandbox_for_scoring = keep_sandbox_for_scoring
         self.run_command = run_command
         self.poll_interval = poll_interval
-        self.timeout_seconds = timeout_seconds
         self.docker_image = docker_image
         self.start_command = start_command
         self.cpu_cores = cpu_cores
@@ -224,9 +225,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 assert self._tunnel.url is not None, "Tunnel started but URL is None"
                 return self._tunnel.url
 
-    async def setup_state(self, state: State) -> State:
+    async def setup_state(self, state: State) -> None:
         """Setup sandbox + interception for this rollout"""
-        state = await super().setup_state(state)
+        await super().setup_state(state)
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -285,8 +286,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         ]
         self.logger.info(" | ".join(parts))
 
-        return state
-
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
@@ -300,7 +299,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "gpu_count": self.gpu_count,
             "gpu_type": None,
             "vm": self.gpu_count > 0,
-            "timeout_minutes": math.ceil(self.timeout_seconds / 60),
+            "timeout_minutes": self.compute_sandbox_timeout_minutes(),
         }
 
     # Keys set by build_env_vars that subclasses must not override.
@@ -365,16 +364,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             return
 
         try:
-            await asyncio.wait_for(
-                self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            self.logger.warning(f"Agent timed out after {self.timeout_seconds}s")
-            state["agent_timed_out"] = True
-            state["error"] = make_agent_error(
-                state, f"Agent timed out after {self.timeout_seconds}s"
-            )
+            await self.poll_job_completion(state, sandbox_id, background_job)
         except asyncio.CancelledError:
             self.logger.debug("Completion wait task cancelled")
             raise
@@ -489,7 +479,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Poll for the next intercepted request, checking liveness in between.
 
         Returns a request_id when a request arrives, or None when the agent
-        has completed or the rollout has timed out.
+        has completed.
         """
         request_id_queue = state["request_id_queue"]
         while True:
@@ -506,8 +496,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     )
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    return None
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
                     return None
 
     async def get_prompt_messages(self, state: State) -> Messages:
@@ -678,12 +666,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Check if agent has completed."""
         return state.get("agent_completed", False)
 
-    @vf.stop
-    async def timeout_reached(self, state: State) -> bool:
-        """Check rollout timeout"""
-        elapsed = time.time() - state["timing"]["start_time"]
-        return elapsed > self.timeout_seconds
-
     async def post_rollout(self, state: State):
         """
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
@@ -707,7 +689,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
         )
         exit_code = state.get("agent_exit_code")
-        timed_out = state.get("agent_timed_out", False)
+        timed_out = state.get("timed_out", False)
         duration_s = state["timing"].get("total_ms", 0) / 1000
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [

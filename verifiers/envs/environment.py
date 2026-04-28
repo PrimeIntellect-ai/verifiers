@@ -615,6 +615,7 @@ class Environment(ABC):
             scoring_ms=0.0,
             total_ms=0.0,
             start_time=time.time(),
+            start_timer=time.perf_counter(),
         )
         return state
 
@@ -661,18 +662,15 @@ class Environment(ABC):
         return False
 
     async def _render_timing(self, state: State):
-        start_time = state["timing"]["start_time"]
-        end_time = time.time()
-        state["timing"]["generation_ms"] = (end_time - start_time) * 1000
-        state["timing"]["total_ms"] = (end_time - start_time) * 1000
+        elapsed_ms = (time.perf_counter() - state["timing"]["start_timer"]) * 1000
+        state["timing"]["generation_ms"] = elapsed_ms
+        state["timing"]["total_ms"] = elapsed_ms
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
         """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
         for condition in self._stop_conditions:
             if await self._render_stop(state, condition):
-                await self._render_timing(state)
-                await self._cleanup(state)
                 return True
         return False
 
