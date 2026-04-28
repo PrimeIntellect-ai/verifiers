@@ -322,10 +322,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         messages: str | OpenAIChatMessages,
         tools: list[OpenAITool] | None,
         model: str,
-        extra_kwargs: dict = {},
+        extra_kwargs: dict | None = None,
         **kwargs,
     ) -> list[int]:
         """Tokenize messages using the vLLM /tokenize API."""
+        if extra_kwargs is None:
+            extra_kwargs = {}
         if isinstance(messages, str):
             body = dict(
                 model=model,

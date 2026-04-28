@@ -246,6 +246,7 @@ class RolloutInput(BaseRolloutInput, total=False):
 
 class RolloutTiming(TypedDict, total=False):
     start_time: float
+    start_timer: float
     generation_ms: float
     scoring_ms: float
     total_ms: float
