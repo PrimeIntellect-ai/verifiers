@@ -247,7 +247,7 @@ class RolloutInput(BaseRolloutInput, total=False):
     info: Info | str
 
 
-class TimedSpan(CustomBaseModel):
+class TimeSpan(CustomBaseModel):
     """A timed span. ``duration`` derives from start/end perf_counter timestamps.
 
     All values in seconds. Used as the building block for every measured
@@ -267,10 +267,10 @@ class TimedSpan(CustomBaseModel):
         return self.end - self.start
 
 
-class TimedSpans(CustomBaseModel):
-    """A list of ``TimedSpan``s. ``duration`` is the sum over children."""
+class TimeSpans(CustomBaseModel):
+    """A list of ``TimeSpan``s. ``duration`` is the sum over children."""
 
-    spans: list[TimedSpan] = Field(default_factory=list)
+    spans: list[TimeSpan] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -282,18 +282,18 @@ class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds.
 
     Each measured phase (``setup``, ``generation``, ``scoring``) is a
-    ``TimedSpan`` carrying perf_counter start/end timestamps. ``model`` and
-    ``env`` are ``TimedSpans`` collections of the corresponding step slices
+    ``TimeSpan`` carrying perf_counter start/end timestamps. ``model`` and
+    ``env`` are ``TimeSpans`` collections of the corresponding step slices
     (execution order is recoverable from each span's ``start`` timestamp).
     """
 
     start_time: float = Field(default_factory=time.time)
 
-    setup: TimedSpan = Field(default_factory=TimedSpan)
-    generation: TimedSpan = Field(default_factory=TimedSpan)
-    scoring: TimedSpan = Field(default_factory=TimedSpan)
-    model: TimedSpans = Field(default_factory=TimedSpans)
-    env: TimedSpans = Field(default_factory=TimedSpans)
+    setup: TimeSpan = Field(default_factory=TimeSpan)
+    generation: TimeSpan = Field(default_factory=TimeSpan)
+    scoring: TimeSpan = Field(default_factory=TimeSpan)
+    model: TimeSpans = Field(default_factory=TimeSpans)
+    env: TimeSpans = Field(default_factory=TimeSpans)
 
     @computed_field
     @property

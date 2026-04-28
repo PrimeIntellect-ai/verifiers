@@ -12,7 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
-    TimedSpan,
+    TimeSpan,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import (
@@ -189,7 +189,7 @@ class MultiTurnEnv(vf.Environment):
                     # First iteration has no preceding env_response; skip recording.
                     if state["trajectory"]:
                         timing.env.spans.append(
-                            TimedSpan(start=start_time, end=end_time)
+                            TimeSpan(start=start_time, end=end_time)
                         )
 
                     prompt_messages = maybe_normalize_messages(
@@ -201,7 +201,7 @@ class MultiTurnEnv(vf.Environment):
                     start_time = time.perf_counter()
                     response = await self.get_model_response(state, prompt_messages)
                     end_time = time.perf_counter()
-                    timing.model.spans.append(TimedSpan(start=start_time, end=end_time))
+                    timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):

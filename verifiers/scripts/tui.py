@@ -4753,19 +4753,18 @@ class ViewRunScreen(Screen):
 
             model_spans = timing.get("model", {}).get("spans") or []
             env_spans = timing.get("env", {}).get("spans") or []
-            interleaved = sorted(
-                [("model", s) for s in model_spans] + [("env", s) for s in env_spans],
-                key=lambda x: float(x[1].get("start", 0.0)),
-            )
+            # In a rollout the loop alternates model[i] -> env[i] -> model[i+1] ...
+            # (and the final turn has no trailing env), so we can render in
+            # execution order by zipping indices.
             step_lines = []
-            model_idx = 0
-            for kind, s in interleaved:
-                duration = float(s.get("duration", 0.0))
-                if kind == "model":
-                    model_idx += 1
-                    step_lines.append(f"turn {model_idx}: model {print_time(duration)}")
-                else:
-                    step_lines.append(f"         env   {print_time(duration)}")
+            for i, m in enumerate(model_spans):
+                step_lines.append(
+                    f"turn {i + 1}: model {print_time(float(m.get('duration', 0.0)))}"
+                )
+                if i < len(env_spans):
+                    step_lines.append(
+                        f"         env   {print_time(float(env_spans[i].get('duration', 0.0)))}"
+                    )
             if step_lines:
                 self._append_context_section(
                     out, "Per-turn timing", "\n".join(step_lines)

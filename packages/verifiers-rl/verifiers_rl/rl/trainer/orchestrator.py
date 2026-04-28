@@ -312,8 +312,12 @@ class Orchestrator:
         for output in outputs:
             timing = output.get("timing", {})
             for key in timing_fields:
-                if key in timing:
-                    timing_accum[key].append(float(timing[key]))
+                if key not in timing:
+                    continue
+                val = timing[key]
+                if isinstance(val, dict):
+                    val = val.get("duration", 0.0)
+                timing_accum[key].append(float(val))
 
         for key in timing_fields:
             if timing_accum[key]:

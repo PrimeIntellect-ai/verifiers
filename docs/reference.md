@@ -182,13 +182,23 @@ class TrajectoryStepTokens(TypedDict):
 
 Token-level data for training.
 
-### TimingEntry
+### TimeSpan
 
 ```python
-class TimingEntry(CustomBaseModel):
-    """Single measured slice of a rollout. All values in seconds."""
-    kind: Literal["model", "env"]
-    duration: float
+class TimeSpan(CustomBaseModel):
+    """A timed span. duration = end - start."""
+    start: float = 0.0   # perf_counter timestamp
+    end: float = 0.0     # perf_counter timestamp
+    # duration: float    (computed_field)
+```
+
+### TimeSpans
+
+```python
+class TimeSpans(CustomBaseModel):
+    """A list of TimeSpan with aggregate duration (sum)."""
+    spans: list[TimeSpan] = []
+    # duration: float    (computed_field)
 ```
 
 ### RolloutTiming
@@ -196,23 +206,21 @@ class TimingEntry(CustomBaseModel):
 ```python
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
-    start_time: float                       # wall-clock at rollout start (time.time())
-    setup: float = 0.0                      # measured: setup_state()
-    steps: list[TimingEntry] = []           # flat sequence of model/env slices
-    # Phase anchors (perf_counter values, excluded from model_dump):
-    #   start_generation, end_generation, start_scoring, end_scoring
-    # Derived (computed fields, included in model_dump):
-    #   model, env, generation, scoring, total, overhead
+    start_time: float                       # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()            # setup_state() span
+    generation: TimeSpan = TimeSpan()       # full generation phase
+    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
+    model: TimeSpans = TimeSpans()          # all model-call spans
+    env: TimeSpans = TimeSpans()            # all env-response spans
+    # total, overhead: float                (computed_fields)
 ```
 
-Durations are derived from the phase anchors:
+Derivations:
 
-- `generation = end_generation - start_generation`
-- `scoring = end_scoring - start_scoring`
-- `total = end_scoring - start_generation`
-- `overhead = total - setup - model - env - scoring`
+- `total    = scoring.end - generation.start`
+- `overhead = total - setup.duration - model.duration - env.duration - scoring.duration`
 
-`start_generation` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases — e.g. gaps between model/env steps.
+`generation.start` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases.
 
 ### TokenUsage
 

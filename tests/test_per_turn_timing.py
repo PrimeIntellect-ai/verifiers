@@ -1,4 +1,4 @@
-"""Tests for the per-rollout TimedSpans timing structure."""
+"""Tests for the per-rollout TimeSpans timing structure."""
 
 import pytest
 from datasets import Dataset
