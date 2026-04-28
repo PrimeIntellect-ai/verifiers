@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, Mapping, final
 
 import verifiers as vf
@@ -84,9 +83,6 @@ class EnvGroupRubric(vf.Rubric):
         environment's rubric. Ensures all states have metrics for all reward function names
         across all environments.
         """
-        start_scoring = time.perf_counter()
-        for state in states:
-            state["timing"]["start_scoring"] = start_scoring
         num_states = len(states)
         # get task from first state (all states in a group have the same task)
         task = states[0].get("task", "default")
@@ -96,7 +92,6 @@ class EnvGroupRubric(vf.Rubric):
             for state in states:
                 state["reward"] = 0.0
                 state["metrics"] = {name: 0.0 for name in self.all_reward_names}
-                state["timing"]["end_scoring"] = time.perf_counter()
             return
 
         # Score all states using the environment's rubric
@@ -114,13 +109,10 @@ class EnvGroupRubric(vf.Rubric):
                 if reward_name in aggregated_metrics:
                     aggregated_metrics[reward_name][i] = score
 
-        end_scoring = time.perf_counter()
         for i, state in enumerate(states):
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["start_scoring"] = start_scoring
-            state["timing"]["end_scoring"] = end_scoring
 
 
 class EnvGroup(vf.Environment):

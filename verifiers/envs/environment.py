@@ -6,6 +6,7 @@ import json
 import logging
 import multiprocessing as mp
 import signal
+import time
 import uuid
 import warnings
 from abc import ABC, abstractmethod
@@ -704,10 +705,12 @@ class Environment(ABC):
                 sampling_args,
             )
 
+            state["timing"]["start_scoring"] = time.perf_counter()
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
+            state["timing"]["end_scoring"] = time.perf_counter()
 
             await self.rubric.cleanup(state)
 
@@ -764,10 +767,16 @@ class Environment(ABC):
             ]
             group_states = await asyncio.gather(*rollout_tasks)
 
+            start_scoring = time.perf_counter()
+            for state in group_states:
+                state["timing"]["start_scoring"] = start_scoring
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
+            end_scoring = time.perf_counter()
+            for state in group_states:
+                state["timing"]["end_scoring"] = end_scoring
 
             for state in group_states:
                 await self.rubric.cleanup(state)
