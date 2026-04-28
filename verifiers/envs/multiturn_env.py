@@ -170,8 +170,9 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
+            nonlocal state
             try:
-                await self.setup_state(state)
+                state = await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
