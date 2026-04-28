@@ -155,9 +155,7 @@ class KimiK2Renderer:
         else:
             tool_declare_injected = False
 
-        prev_messages_len = len(messages)
         messages, auto_system_idx = self._ensure_system_message(messages)
-        auto_system_injected = len(messages) > prev_messages_len
 
         # Map indices in the (possibly-normalised) ``messages`` list back to
         # the caller's original list. Injected system / tool_declare get
@@ -413,9 +411,8 @@ class KimiK2Renderer:
         tool_calls = msg.get("tool_calls") or []
         if tool_calls:
             emit_special(self._tool_calls_section_begin, msg_idx)
-            for idx, tc in enumerate(tool_calls):
+            for tc in tool_calls:
                 func = tc.get("function") or tc
-                name = func.get("name", "")
                 arguments = func.get("arguments", {})
                 args_str = (
                     json.dumps(arguments, ensure_ascii=False)
