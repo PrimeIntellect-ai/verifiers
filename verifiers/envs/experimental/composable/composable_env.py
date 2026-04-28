@@ -240,9 +240,8 @@ class ComposableEnv(CliAgentEnv):
 
         The post-install step runs ``Harness.post_install_uploads`` and
         ``Harness.post_install_script`` after the agent is fully
-        installed — harnesses use it to layer small assets onto the
-        installed agent (e.g. RLM's ``/usr/local/bin/git`` refusal
-        shim)."""
+        installed — a generic hook harnesses use to layer small assets
+        onto the installed agent."""
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
@@ -381,11 +380,10 @@ class ComposableEnv(CliAgentEnv):
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
 
         Runs after ``_install_agent`` so harnesses can layer small assets
-        on top of a fully-installed agent (e.g. RLM stages its git refusal
-        shim into ``$HOME/.local/bin/git`` and chmods it executable).
-        Uses the single-file upload path — not ``_upload_dir`` — because
-        these are small, harness-computed blobs of content rather than
-        local directories on disk.
+        on top of a fully-installed agent. Uses the single-file upload
+        path — not ``_upload_dir`` — because these are small,
+        harness-computed blobs of content rather than local directories
+        on disk.
         """
         uploads = self.harness.post_install_uploads
         if uploads:
