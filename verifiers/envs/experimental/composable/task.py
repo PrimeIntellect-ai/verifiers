@@ -597,7 +597,7 @@ class TaskSet:
         async def validate_one(i: int) -> dict:
             async with sem:
                 info, instance_id, repo = _row_info(i)
-                t0 = time.time()
+                start_time = time.perf_counter()
                 attempts = 0
                 last_valid = False
                 last_exc: BaseException | None = None
@@ -613,7 +613,8 @@ class TaskSet:
                     if valid or reason != "sandbox_error":
                         break  # only InfraError triggers retry
 
-                elapsed = time.time() - t0
+                end_time = time.perf_counter()
+                elapsed = end_time - start_time
                 result = {
                     "index": i,
                     "instance_id": instance_id,
@@ -637,7 +638,7 @@ class TaskSet:
             f"(concurrency={concurrency}, max_retries={max_retries}, "
             f"skipped={skipped} from prior run)"
         )
-        t0 = time.time()
+        start_time = time.perf_counter()
         results: list[dict] = list(prior_rows)
         tasks = [asyncio.create_task(validate_one(i)) for i in todo_indices]
         passed = sum(1 for r in prior_rows if r.get("valid"))
@@ -709,7 +710,8 @@ class TaskSet:
             if is_sandbox:
                 client.teardown()
 
-        elapsed = time.time() - t0
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
         denom = len(results) or 1
         rate = passed / denom
         logger.info(
