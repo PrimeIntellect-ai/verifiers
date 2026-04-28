@@ -8,28 +8,34 @@ per-token attribution (``RenderedTokens.message_indices``) was never
 covered, even though it directly drives the loss mask in
 ``build_supervised_sample``.
 
-That gap surfaced through a real bug: in ``KimiK2Renderer.render`` the
-unknown-role fallback emitted the closing ``<|im_end|>`` with the
-post-normalisation index ``i`` instead of the caller-relative ``oi``.
-Token IDs were unchanged (so render-parity still passed), but the
-``message_indices`` slot for that token pointed at the wrong message —
-and when an auto-system was injected before the unknown-role message,
-``i`` could even point past the end of the caller's input list.
+That gap surfaced through two real bugs:
 
-Two tests live here:
+- ``KimiK2Renderer.render``'s unknown-role fallback emitted the closing
+  ``<|im_end|>`` with the post-normalisation index ``i`` instead of the
+  caller-relative ``oi``.
+- ``KimiK25Renderer.render`` used the raw post-normalisation index
+  everywhere, shifting *every* index by one whenever auto-system
+  injection happened.
 
-1. ``test_message_indices_in_range`` — parametrised across every
-   (model, renderer) pair. Renders a canonical multi-role conversation
-   and asserts the contract: every entry in ``message_indices`` is
-   either ``-1`` (structural scaffolding) or a valid caller-relative
-   index. This pins the invariant for all renderers; on the canonical
-   role set it does *not* exercise Kimi's unknown-role fallback.
+In both cases token IDs were unchanged (so render-parity still passed),
+but ``message_indices`` pointed at wrong (or out-of-range) messages.
 
-2. ``test_kimi_k2_unknown_role_message_indices`` — Kimi-specific
-   regression: triggers auto-system injection (no system in the input)
-   plus an unknown role, which is exactly the path the original bug
-   was on. Without the fix this test catches a stray index that points
-   past the caller's last message.
+Tests in this file:
+
+1. ``test_message_indices_in_range`` — parametrised via the conftest
+   matrix. Renders a no-system multi-role conversation and asserts the
+   contract: every entry in ``message_indices`` is either ``-1``
+   (structural scaffolding) or a valid caller-relative index, and every
+   caller message contributes at least one token. The no-system input
+   forces renderers that auto-inject default system messages
+   (Kimi K2 / K2.5 / K2.6) into the injection path — the path where the
+   post-normalisation index can shift away from the caller-relative one.
+
+2. ``test_kimi_k2_unknown_role_message_indices`` — Kimi-K2-specific
+   regression: triggers auto-system injection plus an unknown role,
+   which is exactly the path the original bug was on. Without the fix
+   this test catches a stray index that points past the caller's last
+   message.
 """
 
 from __future__ import annotations
@@ -38,9 +44,13 @@ from __future__ import annotations
 def test_message_indices_in_range(model_name, renderer):
     """Every emitted token's ``message_indices`` must be in
     ``[-1, len(messages))``. ``-1`` is the documented sentinel for
-    structural scaffolding (e.g. trailing generation prompt)."""
+    structural scaffolding (e.g. trailing generation prompt).
+
+    Uses a no-system input so renderers that auto-inject default system
+    messages (Kimi K2 / K2.5 / K2.6) actually take the injection path —
+    that's the path where the post-normalisation index can shift away
+    from the caller-relative one and the bug surfaces."""
     msgs = [
-        {"role": "system", "content": "You are helpful."},
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello!"},
     ]

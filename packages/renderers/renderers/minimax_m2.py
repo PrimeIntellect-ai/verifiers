@@ -60,11 +60,9 @@ class MiniMaxM2Renderer:
         self,
         tokenizer: PreTrainedTokenizer,
         *,
-        enable_thinking: bool = True,
         default_system: str = _DEFAULT_SYSTEM,
     ):
         self._tokenizer = tokenizer
-        self._enable_thinking = enable_thinking
         self._default_system = default_system
 
         self._bos = self._token_id("]~!b[")
