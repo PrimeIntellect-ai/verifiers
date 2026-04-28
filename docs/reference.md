@@ -187,8 +187,8 @@ Token-level data for training.
 ```python
 class TimeSpan(CustomBaseModel):
     """A timed span. duration = end - start."""
-    start: float = 0.0   # perf_counter timestamp
-    end: float = 0.0     # perf_counter timestamp
+    start: float = 0.0   # Unix timestamp (seconds since epoch)
+    end: float = 0.0     # Unix timestamp (seconds since epoch)
     # duration: float    (computed_field)
 ```
 
