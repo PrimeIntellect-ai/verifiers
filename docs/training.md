@@ -159,9 +159,19 @@ RL training can be sensitive to implementation details and hyperparameters. Some
 
 The best way to improve training is to ensure appropriate task difficulty for your model. When using Hosted Training or `prime-rl`, you can enable online difficulty filtering to ensure that rollout groups used for training always contain a diversity of rewards.
 
+### Inference Client Types
+
+The rollout client's `client_type` controls how prompt assembly and token state flow between the inference server and the trainer. For RL the trainer must see the exact tokens the server sampled — re-tokenization across turns drifts under BPE round-trip and fragments multi-turn rollouts into multiple training samples.
+
+- **`openai_chat_completions`** (MITO, *messages-in*): standard OpenAI-compatible path. Server-side chat templating, returns text. The trainer re-tokenizes — fine for eval and short single-turn training, but can fragment multi-turn rollouts.
+- **`openai_chat_completions_token`** (TITO, *token-in*): server-side templating, but returns prompt and completion token IDs alongside text so the trainer doesn't re-tokenize. Use when you trust the server's chat template to be stable across turns.
+- **`renderer`**: client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). The trainer renders messages to token IDs locally and sends those to vLLM's `/v1/generate` endpoint. The renderer's `bridge_to_next_turn` extends prior-turn tokens verbatim across multi-turn boundaries (the *extension property*) and synthesizes the canonical turn-close on mid-completion truncation, so multi-turn rollouts merge into one training sample with one clean loss mask.
+
+For RL training prefer `renderer` when a hand-coded renderer exists for your model (see the renderers README); otherwise fall back to `openai_chat_completions_token`. See [reference § Built-in Clients](reference.md#built-in-client-implementations) for the full list.
+
 ### Common Issues
 
-**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. The `renderer` client type sidesteps this by tokenizing client-side with a renderer that mirrors the model's exact template (including the `<think>` handling we want for RL); we also provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
 - Reduce `rollouts_per_example` or `micro_batch_size`
