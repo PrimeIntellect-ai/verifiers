@@ -94,7 +94,7 @@ class EnvGroupRubric(vf.Rubric):
             for state in states:
                 state["reward"] = 0.0
                 state["metrics"] = {name: 0.0 for name in self.all_reward_names}
-                state["timing"]["scoring_ms"] = 0.0
+                state["timing"]["scoring_s"] = 0.0
             return
 
         # Score all states using the environment's rubric
@@ -114,13 +114,20 @@ class EnvGroupRubric(vf.Rubric):
 
         # Update all states with aggregated metrics (ensuring all reward names are present)
         end_time = time.time()
-        scoring_ms = (end_time - start_time) * 1000
+        scoring_s = end_time - start_time
         for i, state in enumerate(states):
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["scoring_ms"] = scoring_ms
-            state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
+            state["timing"]["scoring_s"] = scoring_s
+            state["timing"]["total_s"] += scoring_s
+            st = state["timing"]
+            st["overhead_s"] = (
+                st["total_s"]
+                - st.get("setup_s", 0.0)
+                - st["generation_s"]
+                - st["scoring_s"]
+            )
 
 
 class EnvGroup(vf.Environment):

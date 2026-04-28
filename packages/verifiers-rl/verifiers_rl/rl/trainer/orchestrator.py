@@ -301,24 +301,23 @@ class Orchestrator:
                 masked_fraction = 1.0 - (valid_tokens / total_tokens)
                 metrics_dict["tokens/masked_fraction"] = float(masked_fraction)
 
-        generation_ms: list[float] = []
-        scoring_ms: list[float] = []
-        total_ms: list[float] = []
+        timing_fields = (
+            "setup_s",
+            "generation_s",
+            "scoring_s",
+            "overhead_s",
+            "total_s",
+        )
+        timing_accum: dict[str, list[float]] = {k: [] for k in timing_fields}
         for output in outputs:
             timing = output.get("timing", {})
-            if "generation_ms" in timing:
-                generation_ms.append(float(timing["generation_ms"]))
-            if "scoring_ms" in timing:
-                scoring_ms.append(float(timing["scoring_ms"]))
-            if "total_ms" in timing:
-                total_ms.append(float(timing["total_ms"]))
+            for key in timing_fields:
+                if key in timing:
+                    timing_accum[key].append(float(timing[key]))
 
-        if generation_ms:
-            metrics_dict["timing/generation_ms"] = float(np.mean(generation_ms))
-        if scoring_ms:
-            metrics_dict["timing/scoring_ms"] = float(np.mean(scoring_ms))
-        if total_ms:
-            metrics_dict["timing/total_ms"] = float(np.mean(total_ms))
+        for key in timing_fields:
+            if timing_accum[key]:
+                metrics_dict[f"timing/{key}"] = float(np.mean(timing_accum[key]))
 
         metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
         errors = [output.get("error") for output in outputs]

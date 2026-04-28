@@ -694,7 +694,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         exit_code = state.get("agent_exit_code")
         timed_out = state.get("timed_out", False)
-        duration_s = state["timing"].get("total_ms", 0) / 1000
+        duration_s = state["timing"].get("total_s", 0)
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
             f"Finished rollout_id={state.get('rollout_id')}",

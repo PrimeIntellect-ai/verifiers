@@ -187,9 +187,11 @@ Token-level data for training.
 ```python
 class RolloutTiming(TypedDict, total=False):
     start_time: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+    setup_s: float
+    generation_s: float
+    scoring_s: float
+    overhead_s: float
+    total_s: float
 ```
 
 ### TokenUsage

@@ -35,18 +35,26 @@ def make_aligned_row(left: Text, right: Text) -> Table:
 
 
 def make_kv_line(
-    items: dict[str, object], prefix: str = "╰─ ", prefix_style: str = "dim"
+    items: dict[str, object],
+    prefix: str = "╰─ ",
+    prefix_style: str = "dim",
+    section_label: str | None = None,
+    value_style: str = "bold",
 ) -> Text:
     """Create a key-value line like: ╰─ name value   name value
 
-    Keys are dim, values are bold, separated by 3 spaces.
+    Keys are dim, values use ``value_style`` (default bold), separated by 3 spaces.
+    If ``section_label`` is provided it is inserted after the prefix in a distinct style.
     """
     text = Text()
     text.append(prefix, style=prefix_style)
+    if section_label:
+        text.append(section_label, style="bold dim")
+        text.append("  ")
     for i, (name, value) in enumerate(items.items()):
         text.append(name, style="dim")
         text.append(" ", style="dim")
-        text.append(str(value), style="bold")
+        text.append(str(value), style=value_style)
         if i < len(items) - 1:
             text.append("   ")
     return text

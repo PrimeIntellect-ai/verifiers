@@ -611,9 +611,11 @@ class Environment(ABC):
         state["error"] = None
         state["final_env_response"] = None
         state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
+            setup_s=0.0,
+            generation_s=0.0,
+            scoring_s=0.0,
+            overhead_s=0.0,
+            total_s=0.0,
             start_time=time.time(),
             start_timer=time.perf_counter(),
         )
@@ -662,9 +664,21 @@ class Environment(ABC):
         return False
 
     async def _render_timing(self, state: State):
-        elapsed_ms = (time.perf_counter() - state["timing"]["start_timer"]) * 1000
-        state["timing"]["generation_ms"] = elapsed_ms
-        state["timing"]["total_ms"] = elapsed_ms
+        model_s = 0.0
+        env_s = 0.0
+        generation_s = 0.0
+        for step in state.get("trajectory", []):
+            st = step.get("timing", {})
+            model_s += st.get("model_s", 0.0)
+            env_s += st.get("env_s", 0.0)
+            generation_s += st.get("turn_s", 0.0)
+        state["timing"]["generation_s"] = generation_s
+        state["timing"]["model_s"] = model_s
+        state["timing"]["env_s"] = env_s
+        state["timing"]["total_s"] = (
+            time.perf_counter() - state["timing"]["start_timer"]
+        )
+        # overhead_s is finalized after scoring in rubric.score_*
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:

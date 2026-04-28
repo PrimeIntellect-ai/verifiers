@@ -15,6 +15,7 @@ from verifiers.types import (
     ResponseMessage,
     ResponseTokens,
     State,
+    StepTiming,
     TrajectoryStep,
     TrajectoryStepTokens,
 )
@@ -173,6 +174,7 @@ def test_process_trajectory_steps_for_training(make_input):
             is_truncated=False,
             trajectory_id="test_trajectory",
             extras={},
+            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         )
     ]
 
@@ -202,6 +204,7 @@ def test_process_trajectory_steps_for_training(make_input):
             is_truncated=False,
             trajectory_id="test_trajectory",
             extras={},
+            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         )
     ]
 
@@ -257,6 +260,7 @@ def test_process_trajectory_steps_skip_missing_tokens(make_input):
             is_truncated=False,
             trajectory_id="test_trajectory",
             extras={},
+            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         ),
         TrajectoryStep(
             prompt=[{"role": "user", "content": "Hello"}],
@@ -276,6 +280,7 @@ def test_process_trajectory_steps_skip_missing_tokens(make_input):
             is_truncated=False,
             trajectory_id="test_trajectory",
             extras={},
+            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         ),
     ]
 

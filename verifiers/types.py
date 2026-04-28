@@ -218,6 +218,12 @@ class VersionInfo(TypedDict):
     env_commit: str | None
 
 
+class StepTiming(TypedDict, total=False):
+    model_s: float  # wall-clock seconds for get_model_response()
+    env_s: float  # wall-clock seconds for get_prompt_messages() (tool/env execution)
+    turn_s: float  # model_s + env_s
+
+
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -228,6 +234,7 @@ class TrajectoryStep(TypedDict):
     is_truncated: bool
     trajectory_id: str
     extras: dict[str, Any]
+    timing: StepTiming
 
 
 class BaseRolloutInput(TypedDict):
@@ -246,9 +253,13 @@ class RolloutInput(BaseRolloutInput, total=False):
 class RolloutTiming(TypedDict, total=False):
     start_time: float
     start_timer: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+    setup_s: float
+    generation_s: float
+    scoring_s: float
+    overhead_s: float
+    total_s: float
+    model_s: float  # sum of per-step model_s
+    env_s: float  # sum of per-step env_s
 
 
 class ErrorInfo(TypedDict):

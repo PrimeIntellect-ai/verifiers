@@ -46,7 +46,7 @@ class SimpleEnvironment(Environment):
             from verifiers.utils.response_utils import parse_response_message
 
             completion_messages = await parse_response_message(response)
-            from verifiers.types import TrajectoryStep
+            from verifiers.types import StepTiming, TrajectoryStep
             from verifiers.utils.response_utils import parse_response_tokens
 
             tokens = await parse_response_tokens(response)
@@ -60,6 +60,7 @@ class SimpleEnvironment(Environment):
                 is_truncated=False,
                 trajectory_id=state["trajectory_id"],
                 extras={},
+                timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
             )
             state["trajectory"].append(trajectory_step)
             state["is_completed"] = True

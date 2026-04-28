@@ -217,7 +217,7 @@ def state_to_output(
             from verifiers.utils.usage_utils import compute_context_token_metrics
 
             token_usage.update(compute_context_token_metrics(trajectory))
-        output["token_usage"] = token_usage  # type: ignore[assignment]
+        output["token_usage"] = token_usage
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")

@@ -637,24 +637,45 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    print("Timing:")
-    timing = [o["timing"] for o in results["outputs"]]
-    timing_col = to_col_order(timing)
-    generation_ms_arr = np.array(timing_col["generation_ms"])
-    scoring_ms_arr = np.array(timing_col["scoring_ms"])
-    total_ms_arr = np.array(timing_col["total_ms"])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
+    from verifiers.utils.logging_utils import format_timing_line
+
+    outputs = results["outputs"]
+    timing_list = [o["timing"] for o in outputs]
+    timing_col = to_col_order(timing_list)
+
+    # Compute per-rollout model_s/env_s totals
+    model_s_totals: list[float] = []
+    env_s_totals: list[float] = []
+    for o in outputs:
+        trajectory = o.get("trajectory")
+        if not isinstance(trajectory, list):
+            continue
+        rl, re = 0.0, 0.0
+        for step in trajectory:
+            st = step.get("timing")
+            if isinstance(st, dict):
+                rl += float(st.get("model_s", 0.0))
+                re += float(st.get("env_s", 0.0))
+        model_s_totals.append(rl)
+        env_s_totals.append(re)
+
+    def _mean(key: str) -> float:
+        return float(np.mean(timing_col[key])) if key in timing_col else 0.0
+
+    avg_model = float(np.mean(model_s_totals)) if model_s_totals else None
+    avg_env = float(np.mean(env_s_totals)) if env_s_totals else None
 
     print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
+        "Timing (avg): "
+        + format_timing_line(
+            total_s=_mean("total_s"),
+            setup_s=_mean("setup_s"),
+            generation_s=_mean("generation_s"),
+            scoring_s=_mean("scoring_s"),
+            overhead_s=_mean("overhead_s"),
+            model_s=avg_model,
+            env_s=avg_env,
+        )
     )
 
 
@@ -978,6 +999,33 @@ async def run_evaluations_tui(
             pass_all_k = metadata.get("pass_all_k") or {}
             for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
+
+            # Compute average timing across all outputs
+            avg_timing = None
+            if all_outputs:
+                timing_sums: dict[str, float] = {}
+                timing_counts: dict[str, int] = {}
+                for o in all_outputs:
+                    t = o.get("timing")
+                    if not isinstance(t, dict):
+                        continue
+                    for key in (
+                        "setup_s",
+                        "generation_s",
+                        "scoring_s",
+                        "overhead_s",
+                        "total_s",
+                        "model_s",
+                        "env_s",
+                    ):
+                        if key in t:
+                            timing_sums[key] = timing_sums.get(key, 0.0) + float(t[key])
+                            timing_counts[key] = timing_counts.get(key, 0) + 1
+                if timing_sums:
+                    avg_timing = {
+                        k: timing_sums[k] / timing_counts[k] for k in timing_sums
+                    }
+
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
@@ -985,6 +1033,7 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                avg_timing=avg_timing,
             )
 
         on_progress: list[ProgressCallback] = [on_display_progress]

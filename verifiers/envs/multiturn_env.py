@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from abc import abstractmethod
 from typing import final
 
@@ -11,6 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
+    StepTiming,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import (
@@ -156,6 +158,7 @@ class MultiTurnEnv(vf.Environment):
             is_truncated=is_truncated,
             trajectory_id=state["trajectory_id"],
             extras={},
+            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         )
         await self.add_trajectory_step(state, trajectory_step)
 
@@ -170,21 +173,39 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
+            t_setup = time.time()
             try:
                 await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
+            finally:
+                state["timing"]["setup_s"] = time.time() - t_setup
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
+                    t0 = time.time()
                     prompt_messages = await self.get_prompt_messages(state)
+                    env_s = time.time() - t0
+                    if state["trajectory"]:
+                        prev = state["trajectory"][-1]
+                        prev["timing"]["env_s"] = env_s
+                        prev["timing"]["turn_s"] += env_s
+
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
                     )
                     if state.get("final_env_response") is not None:
                         continue
+
+                    t1 = time.time()
                     response = await self.get_model_response(state, prompt_messages)
+                    model_s = time.time() - t1
+
                     await self.add_model_response(state, prompt_messages, response)
+                    if state["trajectory"]:
+                        step = state["trajectory"][-1]
+                        step["timing"]["model_s"] = model_s
+                        step["timing"]["turn_s"] = model_s + step["timing"]["env_s"]
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True

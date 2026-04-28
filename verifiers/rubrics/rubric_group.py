@@ -78,11 +78,11 @@ class RubricGroup(Rubric):
             state["reward"] = original_reward
             state["metrics"] = original_metrics.copy()
             state["timing"] = original_timing.copy()
-        scoring_ms = (time.time() - start_time) * 1000
+        scoring_s = time.time() - start_time
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
-        state["timing"]["scoring_ms"] = scoring_ms
-        state["timing"]["total_ms"] = original_timing["total_ms"] + scoring_ms
+        state["timing"]["scoring_s"] = scoring_s
+        state["timing"]["total_s"] = original_timing["total_s"] + scoring_s
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -124,7 +124,7 @@ class RubricGroup(Rubric):
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
                 state["timing"] = original_timings[i].copy()
-        scoring_ms = (time.time() - start_time) * 1000
+        scoring_s = time.time() - start_time
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             if aggregated_metrics:
@@ -132,5 +132,5 @@ class RubricGroup(Rubric):
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
-            state["timing"]["scoring_ms"] = scoring_ms
-            state["timing"]["total_ms"] = original_timings[i]["total_ms"] + scoring_ms
+            state["timing"]["scoring_s"] = scoring_s
+            state["timing"]["total_s"] = original_timings[i]["total_s"] + scoring_s

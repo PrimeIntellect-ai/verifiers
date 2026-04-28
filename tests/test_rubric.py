@@ -165,9 +165,9 @@ class TestRubric:
         state["completion"] = "test"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -204,9 +204,9 @@ class TestRubric:
         state["completion"] = completion
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -257,9 +257,9 @@ class TestRubric:
             state["completion"] = ["answer1", "answer2", "wrong"][i]
             state["trajectory"] = []
             state["timing"] = {
-                "generation_ms": 0.0,
-                "scoring_ms": 0.0,
-                "total_ms": 0.0,
+                "generation_s": 0.0,
+                "scoring_s": 0.0,
+                "total_s": 0.0,
                 "start_time": 0.0,
             }
 
@@ -295,9 +295,9 @@ class TestRubric:
         state["completion"] = "test"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -338,9 +338,9 @@ class TestRubric:
         state["completion"] = "test"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -376,9 +376,9 @@ class TestRubric:
         state["completion"] = "test"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -412,9 +412,9 @@ class TestRubric:
         state["completion"] = [{"role": "assistant", "content": "a"}]
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -450,9 +450,9 @@ class TestRubric:
         state["completion"] = "a"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 

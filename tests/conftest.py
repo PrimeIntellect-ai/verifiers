@@ -489,9 +489,9 @@ def make_state() -> Callable[..., State]:
         tool_defs: list[Tool] | None = None,
         trajectory: list[TrajectoryStep] = [],
         timing=RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
+            generation_s=0.0,
+            scoring_s=0.0,
+            total_s=0.0,
         ),
         foo: str = "bar",  # custom field
         **kwargs,

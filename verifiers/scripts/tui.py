@@ -60,6 +60,7 @@ from textual.widgets._tabbed_content import ContentTabs
 from textual.widgets._tree import TreeNode
 
 from verifiers.utils.display_utils import format_numeric
+from verifiers.utils.logging_utils import format_timing_line, print_time
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
@@ -4740,12 +4741,53 @@ class ViewRunScreen(Screen):
 
         timing = record.get("timing")
         if isinstance(timing, dict):
-            timing_lines = []
-            for key in ("generation_ms", "scoring_ms", "total_ms"):
-                value = timing.get(key)
-                if value is not None:
-                    timing_lines.append(f"{key}: {_format_compact_metric(value)}")
-            self._append_context_section(out, "Timing", "\n".join(timing_lines))
+            # Compute model_s/env_s totals from trajectory if available
+            model_s_total = None
+            env_s_total = None
+            trajectory = record.get("trajectory")
+            if isinstance(trajectory, list) and trajectory:
+                model_s_total = 0.0
+                env_s_total = 0.0
+                for step in trajectory:
+                    st = step.get("timing")
+                    if isinstance(st, dict):
+                        model_s_total += float(st.get("model_s", 0.0))
+                        env_s_total += float(st.get("env_s", 0.0))
+
+            line = format_timing_line(
+                total_s=float(timing.get("total_s", 0.0)),
+                setup_s=float(timing.get("setup_s", 0.0)),
+                generation_s=float(timing.get("generation_s", 0.0)),
+                scoring_s=float(timing.get("scoring_s", 0.0)),
+                overhead_s=float(timing.get("overhead_s", 0.0)),
+                model_s=model_s_total,
+                env_s=env_s_total,
+            )
+            self._append_context_section(out, "Timing", line)
+
+            # Per-turn breakdown
+            if isinstance(trajectory, list) and trajectory:
+                step_lines = []
+                for i, step in enumerate(trajectory):
+                    step_timing = step.get("timing")
+                    if not isinstance(step_timing, dict):
+                        continue
+                    llm = step_timing.get("model_s")
+                    env = step_timing.get("env_s")
+                    turn = step_timing.get("turn_s")
+                    parts = []
+                    if llm is not None:
+                        parts.append(f"model={print_time(float(llm))}")
+                    if env is not None and float(env) > 0:
+                        parts.append(f"tools={print_time(float(env))}")
+                    if turn is not None:
+                        parts.append(f"total={print_time(float(turn))}")
+                    if parts:
+                        step_lines.append(f"turn {i}: {', '.join(parts)}")
+                if step_lines:
+                    self._append_context_section(
+                        out, "Per-turn timing", "\n".join(step_lines)
+                    )
         return out
 
     def _build_info_text(self, record: Dict[str, Any]) -> Text:

@@ -50,9 +50,9 @@ class TestMathRubric:
         state["completion"] = test_case["completion"]
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -84,9 +84,9 @@ class TestMathRubric:
         state["completion"] = test_case["completion"]
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
@@ -117,9 +117,9 @@ class TestMathRubric:
         state["completion"] = completion
         state["trajectory"] = []
         state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
+            "generation_s": 0.0,
+            "scoring_s": 0.0,
+            "total_s": 0.0,
             "start_time": 0.0,
         }
 
