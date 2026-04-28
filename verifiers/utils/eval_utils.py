@@ -638,34 +638,36 @@ def print_info(results: GenerateOutputs):
 
 def print_timing(results: GenerateOutputs):
     from verifiers.utils.display_utils import format_timing_line
+    from verifiers.utils.logging_utils import print_time
 
     outputs = results["outputs"]
     timing_list = [o["timing"] for o in outputs]
     timing_col = to_col_order(timing_list)
 
-    # Per-rollout model/env come straight from the rollout-level timing
-    # (derived from RolloutTiming.steps).
-    model_s_totals = [float(o["timing"].get("model", 0.0)) for o in outputs]
-    env_s_totals = [float(o["timing"].get("env", 0.0)) for o in outputs]
-
-    def _mean(key: str) -> float:
-        return float(np.mean(timing_col[key])) if key in timing_col else 0.0
-
-    avg_model = float(np.mean(model_s_totals)) if model_s_totals else None
-    avg_env = float(np.mean(env_s_totals)) if env_s_totals else None
+    def _stat(key: str, fn) -> float:
+        return float(fn(timing_col[key])) if key in timing_col else 0.0
 
     print(
         "Timing: "
         + format_timing_line(
-            total=_mean("total"),
-            setup=_mean("setup"),
-            generation=_mean("generation"),
-            scoring=_mean("scoring"),
-            overhead=_mean("overhead"),
-            model=avg_model,
-            env=avg_env,
+            total=_stat("total", np.mean),
+            setup=_stat("setup", np.mean),
+            generation=_stat("generation", np.mean),
+            scoring=_stat("scoring", np.mean),
+            overhead=_stat("overhead", np.mean),
+            model=_stat("model", np.mean),
+            env=_stat("env", np.mean),
         )
     )
+    for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
+        if key not in timing_col:
+            continue
+        lo = _stat(key, np.min)
+        mean = _stat(key, np.mean)
+        hi = _stat(key, np.max)
+        print(
+            f"  {key:<10} min - {print_time(lo)}, mean - {print_time(mean)}, max - {print_time(hi)}"
+        )
 
 
 def print_usage(results: GenerateOutputs):

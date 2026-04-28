@@ -514,13 +514,13 @@ def _timing_parts(
     generation: float = 0.0,
     scoring: float = 0.0,
     overhead: float = 0.0,
-    model: float | None = None,
-    env: float | None = None,
+    model: float = 0.0,
+    env: float = 0.0,
 ) -> list[tuple[str, str, list[tuple[str, str]]]]:
     """Return timing breakdown as structured parts.
 
     Each part is ``(label, value, sub_parts)`` where *sub_parts* is a list of
-    ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/tools
+    ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/env
     inside generation).
     """
     from verifiers.utils.logging_utils import print_time
@@ -529,11 +529,7 @@ def _timing_parts(
     if setup > 0:
         parts.append(("setup", print_time(setup), []))
     if generation > 0:
-        subs: list[tuple[str, str]] = []
-        if model is not None and env is not None and env > 0:
-            subs = [("model", print_time(model)), ("env", print_time(env))]
-        elif model is not None:
-            subs = [("model", print_time(model))]
+        subs = [("model", print_time(model)), ("env", print_time(env))]
         parts.append(("generation", print_time(generation), subs))
     if scoring > 0:
         parts.append(("scoring", print_time(scoring), []))
@@ -547,8 +543,8 @@ def format_timing_line(
     generation: float = 0.0,
     scoring: float = 0.0,
     overhead: float = 0.0,
-    model: float | None = None,
-    env: float | None = None,
+    model: float = 0.0,
+    env: float = 0.0,
 ) -> str:
     """Format a compact timing breakdown string.
 
@@ -572,8 +568,8 @@ def format_timing_rich(
     generation: float = 0.0,
     scoring: float = 0.0,
     overhead: float = 0.0,
-    model: float | None = None,
-    env: float | None = None,
+    model: float = 0.0,
+    env: float = 0.0,
     label_style: str = "dim",
     value_style: str = "white",
 ) -> Text:

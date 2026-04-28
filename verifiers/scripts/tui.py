@@ -4747,8 +4747,8 @@ class ViewRunScreen(Screen):
                 generation=float(timing.get("generation", 0.0)),
                 scoring=float(timing.get("scoring", 0.0)),
                 overhead=float(timing.get("overhead", 0.0)),
-                model=float(timing.get("model", 0.0)) or None,
-                env=float(timing.get("env", 0.0)) or None,
+                model=float(timing.get("model", 0.0)),
+                env=float(timing.get("env", 0.0)),
             )
             self._append_context_section(out, "Timing", line)
 

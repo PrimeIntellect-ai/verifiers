@@ -372,8 +372,8 @@ class EvalDisplay(BaseDisplay):
             generation=timing.get("generation", 0.0),
             scoring=timing.get("scoring", 0.0),
             overhead=timing.get("overhead", 0.0),
-            model=timing.get("model"),
-            env=timing.get("env"),
+            model=timing.get("model", 0.0),
+            env=timing.get("env", 0.0),
         )
         text = Text()
         text.append("╰─ ", style="dim")
