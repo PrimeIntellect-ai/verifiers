@@ -123,6 +123,14 @@ class Harness:
         trajectory the trainer sees — e.g. rlm_harness uses it to drop
         sub-agent calls (``X-RLM-Depth`` header > 0) so only the
         parent agent's turns contribute to the policy gradient.
+    solve_only:
+        When ``True``, skip agent install + run entirely and instead
+        invoke ``taskset.validate_instance(state)`` (gold-patch
+        validation) inside the sandbox. ``ComposableEnv`` short-circuits
+        the LLM round-trip and the rollout completes once
+        ``validate_instance`` returns. Pair with the
+        :func:`verifiers.envs.experimental.composable.harnesses.solve.solve_harness`
+        factory.
     """
 
     install_script: str | None = None
@@ -147,6 +155,7 @@ class Harness:
     keep_trajectory_step: (
         Callable[[TrajectoryStep, State, dict[str, str]], bool] | None
     ) = None
+    solve_only: bool = False
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

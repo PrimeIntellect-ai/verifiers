@@ -44,6 +44,7 @@ import shlex
 import tarfile
 import tempfile
 import time
+import uuid
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,68 @@ def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
     if base in _UPLOAD_EXCLUDE_NAMES or base.endswith(_UPLOAD_EXCLUDE_SUFFIXES):
         return None
     return info
+
+
+def _classify_solve_outcome(
+    valid: bool, exc: BaseException | None, state: State
+) -> str:
+    """Map a ``validate_instance`` outcome to one of the validate() reasons.
+
+    Mirrors ``TaskSet.validate(...)``'s classifier so any tooling that
+    consumes solve-harness rollout state sees the same reason enum
+    (``pass``, ``test_failed``, ``gold_apply_failed``, ``setup_failed``,
+    ``sandbox_error``, ``billing_error``, ``timeout``).
+    """
+    if valid:
+        return "pass"
+    if exc is None:
+        return "test_failed"
+
+    # Typed sandbox/transport errors come from prime_sandboxes; import
+    # lazily so pure-LLM tasksets don't pull it in just to classify.
+    try:
+        from prime_sandboxes import (
+            APIError,
+            APITimeoutError,
+            CommandTimeoutError,
+            DownloadTimeoutError,
+            PaymentRequiredError,
+            SandboxImagePullError,
+            SandboxNotRunningError,
+            SandboxTimeoutError,
+            UploadTimeoutError,
+        )
+
+        timeout_types: tuple[type, ...] = (
+            asyncio.TimeoutError,
+            TimeoutError,
+            APITimeoutError,
+            CommandTimeoutError,
+            DownloadTimeoutError,
+            SandboxTimeoutError,
+            UploadTimeoutError,
+        )
+        infra_types: tuple[type, ...] = (
+            APIError,
+            SandboxImagePullError,
+            SandboxNotRunningError,
+        )
+        billing_types: tuple[type, ...] = (PaymentRequiredError,)
+    except ImportError:  # pragma: no cover — prime_sandboxes is a hard dep here
+        timeout_types = (asyncio.TimeoutError, TimeoutError)
+        infra_types = ()
+        billing_types = ()
+
+    if isinstance(exc, billing_types):
+        return "billing_error"
+    if isinstance(exc, timeout_types):
+        return "timeout"
+    if isinstance(exc, vf.InfraError) or isinstance(exc, infra_types):
+        return "sandbox_error"
+    msg = str(exc).lower()
+    if "apply failed" in msg or "patch failed" in msg or "no gold patch" in msg:
+        return "gold_apply_failed"
+    return "setup_failed"
 
 
 class HarnessMetricsRubricGroup(vf.RubricGroup):
@@ -134,6 +197,11 @@ class ComposableEnv(CliAgentEnv):
         kwargs["dataset"] = taskset.get_dataset
         if "rubric" not in kwargs:
             kwargs["rubric"] = taskset.get_rubric()
+        # Solve-harness scoring needs the sandbox alive while the rubric
+        # re-runs tests on the gold-patched workdir, so default
+        # keep_sandbox_for_scoring on when it isn't explicitly set.
+        if harness.solve_only:
+            kwargs.setdefault("keep_sandbox_for_scoring", True)
         super().__init__(run_command=harness.run_command, **kwargs)
 
         self.taskset = taskset
@@ -241,16 +309,123 @@ class ComposableEnv(CliAgentEnv):
         The post-install step runs ``Harness.post_install_uploads`` and
         ``Harness.post_install_script`` after the agent is fully
         installed — a generic hook harnesses use to layer small assets
-        onto the installed agent."""
+        onto the installed agent.
+
+        When the harness is ``solve_only`` (gold-patch validation), this
+        skips agent install/run and instead invokes
+        ``taskset.validate_instance(state)`` directly so the rubric
+        scores the gold patch as if an agent had produced it.
+        """
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
         await self.taskset.setup(state)
+        if self.harness.solve_only:
+            await self._run_solve_validation(state)
+            return
         await self._create_harness_input_dirs(sandbox_id)
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
         await self._run_post_install(sandbox_id)
+
+    async def _run_solve_validation(self, state: State) -> None:
+        """Run ``taskset.validate_instance`` and classify the outcome.
+
+        Populates ``state["solve_valid"]`` (bool), ``state["solve_reason"]``
+        (one of ``pass``, ``test_failed``, ``gold_apply_failed``,
+        ``setup_failed``, ``sandbox_error``, ``billing_error``,
+        ``timeout``), and — on ``InfraError`` / typed sandbox failures —
+        ``state["error"]`` so the standard ``has_error`` stop kicks in.
+        ``state["test_output"]`` is set by ``validate_instance`` itself
+        when tests run; the existing rubric reads it.
+        """
+        valid = False
+        exc: BaseException | None = None
+        try:
+            valid = bool(await self.taskset.validate_instance(state))
+        except vf.InfraError as e:
+            exc = e
+            state["error"] = e
+        except Exception as e:  # noqa: BLE001 — classified below
+            exc = e
+        reason = _classify_solve_outcome(valid, exc, state)
+        state["solve_valid"] = valid
+        state["solve_reason"] = reason
+        state["agent_completed"] = True
+
+    async def setup_state(self, state: State) -> State:
+        """Solve-harness rollouts skip interception/tunnel + agent start.
+
+        The base ``CliAgentEnv.setup_state`` always starts the
+        interception server, opens a Prime Tunnel, and stamps the tunnel
+        URL into the sandbox env vars before launching the agent. None
+        of that is needed for gold-patch validation, and the tunnel
+        start is non-trivial — bypass it entirely when ``solve_only`` is
+        set and run a stripped-down sandbox creation instead.
+        """
+        if not self.harness.solve_only:
+            return await super().setup_state(state)
+
+        # MultiTurnEnv.setup_state is the parent of CliAgentEnv.setup_state;
+        # call it directly to set up the rollout state without starting
+        # the interception server / tunnel.
+        state = await vf.MultiTurnEnv.setup_state(self, state)
+
+        rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
+        state["rollout_id"] = rollout_id
+        state["interception_base_url"] = ""
+        state["agent_completed"] = False
+
+        env_vars = await self.build_env_vars(state)
+        docker_image = await self.get_docker_image(state)
+        resources = self.get_sandbox_resources(state)
+
+        from prime_sandboxes import CreateSandboxRequest
+
+        sandbox_request = CreateSandboxRequest(
+            name=rollout_id,
+            docker_image=docker_image,
+            start_command=self.start_command,
+            cpu_cores=resources["cpu_cores"],
+            memory_gb=resources["memory_gb"],
+            disk_size_gb=resources["disk_size_gb"],
+            gpu_count=resources["gpu_count"],
+            gpu_type=resources.get("gpu_type"),
+            vm=resources.get("vm", resources["gpu_count"] > 0),
+            timeout_minutes=resources["timeout_minutes"],
+            environment_vars=env_vars,
+            team_id=self.team_id,
+            advanced_configs=self.advanced_configs,
+            labels=self.labels if self.labels else [],
+        )
+        self.logger.debug(f"Creating solve-harness sandbox docker_image={docker_image}")
+        await self.create_sandbox(state, sandbox_request)
+        return state
+
+    async def start_agent(self, state: State) -> None:
+        """Skip agent start when running solve-harness validation.
+
+        The gold-patch run already completed during ``post_sandbox_setup``
+        and ``state["agent_completed"]`` is True, so the rollout's stop
+        loop exits before the LLM round-trip is reached. Any non-solve
+        harness defers to the standard ``CliAgentEnv.start_agent``.
+        """
+        if self.harness.solve_only:
+            return
+        await super().start_agent(state)
+
+    @vf.stop(priority=50)
+    async def solve_harness_completed(self, state: State) -> bool:
+        """Stop the rollout once gold-patch validation has run.
+
+        Higher priority than ``agent_completed`` so ``state["stop_condition"]``
+        is the more specific ``"solve_harness_completed"`` rather than the
+        generic ``"agent_completed"`` whenever ``solve_only`` is set.
+        """
+        if not self.harness.solve_only:
+            return False
+        return state.get("solve_reason") is not None
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.

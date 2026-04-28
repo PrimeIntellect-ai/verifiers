@@ -24,6 +24,7 @@ from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
     build_mini_swe_agent_run_command,
     mini_swe_agent_harness,
 )
+from verifiers.envs.experimental.composable.harnesses.solve import solve_harness
 
 __all__ = [
     "rlm_harness",
@@ -46,4 +47,5 @@ __all__ = [
     "build_mini_swe_agent_run_command",
     "MINI_SWE_AGENT_INSTALL_SCRIPT",
     "MINI_SWE_AGENT_CONFIG",
+    "solve_harness",
 ]
