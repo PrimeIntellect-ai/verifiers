@@ -1177,6 +1177,21 @@ class EvalDisplay(BaseDisplay):
                 )
             )
 
+        # Metrics (avg)
+        if env_state.metrics:
+            metrics_text = Text()
+            for name, value in env_state.metrics.items():
+                value_str = format_numeric(value)
+                metrics_text.append(f"• {name}: ", style="cyan")
+                metrics_text.append(f"{value_str}\n")
+            items.append(
+                Panel(
+                    metrics_text,
+                    title="[dim]metrics (avg)[/dim]",
+                    border_style="dim",
+                )
+            )
+
         return Group(*items)
 
 
