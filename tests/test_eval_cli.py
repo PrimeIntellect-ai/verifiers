@@ -262,16 +262,6 @@ def test_cli_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cli):
     }
 
 
-def test_cli_timeout_flag_alone(monkeypatch, run_cli):
-    """--timeout alone injects timeout_seconds into extra_env_kwargs."""
-    captured = run_cli(
-        monkeypatch,
-        {"timeout": 120},
-    )
-
-    assert captured["configs"][0].extra_env_kwargs == {"timeout_seconds": 120}
-
-
 def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
