@@ -122,7 +122,7 @@ env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-9. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+10. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
