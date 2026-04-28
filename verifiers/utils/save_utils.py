@@ -169,9 +169,6 @@ def state_to_output(
     Raises:
         ValueError: If a state_columns value is not JSON-serializable.
     """
-    timing = state.get("timing", {})
-    if hasattr(timing, "model_dump"):
-        timing = timing.model_dump()
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
         prompt=state.get("prompt"),
@@ -181,7 +178,7 @@ def state_to_output(
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=timing,
+        timing=state["timing"].model_dump(),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),

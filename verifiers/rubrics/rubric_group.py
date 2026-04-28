@@ -63,11 +63,7 @@ class RubricGroup(Rubric):
         original_metrics = (
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
-        original_timing = (
-            state["timing"].model_copy()
-            if hasattr(state["timing"], "model_copy")
-            else state["timing"].copy()
-        )
+        original_timing = state["timing"].model_copy()
         start_time = time.time()
         for rubric in self.rubrics:
             await rubric.score_rollout(state)
@@ -81,16 +77,12 @@ class RubricGroup(Rubric):
             # restore original values for next rubric
             state["reward"] = original_reward
             state["metrics"] = original_metrics.copy()
-            state["timing"] = (
-                original_timing.model_copy()
-                if hasattr(original_timing, "model_copy")
-                else original_timing.copy()
-            )
+            state["timing"] = original_timing.model_copy()
         scoring = time.time() - start_time
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
-        state["timing"]["scoring"] = scoring
-        state["timing"]["total"] = original_timing["total"] + scoring
+        state["timing"].scoring = scoring
+        state["timing"].total = original_timing.total + scoring
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -115,12 +107,7 @@ class RubricGroup(Rubric):
             state.get("metrics", {}).copy() if state.get("metrics") else {}
             for state in states
         ]
-        original_timings = [
-            state["timing"].model_copy()
-            if hasattr(state["timing"], "model_copy")
-            else state["timing"].copy()
-            for state in states
-        ]
+        original_timings = [state["timing"].model_copy() for state in states]
         start_time = time.time()
         for rubric in self.rubrics:
             await rubric.score_group(states)
@@ -136,11 +123,7 @@ class RubricGroup(Rubric):
                     aggregated_metrics[key][i] += value
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
-                state["timing"] = (
-                    original_timings[i].model_copy()
-                    if hasattr(original_timings[i], "model_copy")
-                    else original_timings[i].copy()
-                )
+                state["timing"] = original_timings[i].model_copy()
         scoring = time.time() - start_time
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
@@ -149,5 +132,5 @@ class RubricGroup(Rubric):
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
-            state["timing"]["scoring"] = scoring
-            state["timing"]["total"] = original_timings[i]["total"] + scoring
+            state["timing"].scoring = scoring
+            state["timing"].total = original_timings[i].total + scoring

@@ -8,7 +8,7 @@ from datasets import Dataset
 
 from verifiers import EnvGroup, Rubric, SingleTurnEnv
 from verifiers.envs.env_group import EnvGroupRubric
-from verifiers.types import State
+from verifiers.types import RolloutTiming, State
 
 
 class TestEnvGroupRubric:
@@ -82,12 +82,7 @@ class TestEnvGroupRubric:
         )
         state["completion"] = "Test completion"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation": 0.0,
-            "scoring": 0.0,
-            "total": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
         state["is_completed"] = False
         state["stop_condition"] = None
         state["tool_defs"] = []
@@ -118,12 +113,7 @@ class TestEnvGroupRubric:
         state = State(input=make_input(prompt="Test", task="unknown_task"))
         state["completion"] = "Test"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation": 0.0,
-            "scoring": 0.0,
-            "total": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
         state["is_completed"] = False
         state["stop_condition"] = None
         state["tool_defs"] = []
