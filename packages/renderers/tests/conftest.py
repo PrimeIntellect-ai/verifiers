@@ -16,14 +16,8 @@ from renderers import create_renderer
 # Additional models for narrower tests (e.g. roundtrip) live with their
 # own parametrization in the test file.
 #
-# Not yet here: GPT-OSS (missing harmony system-preamble implementation)
-# and any GLM-5.1 tool-cycle cases. See test_roundtrip.py for the wider
-# matrix.
-#
-# Kimi K2.5 / K2.6 use a template that diverges from apply_chat_template,
-# so individual parity tests in test_render_ids may need to skip on those
-# pairs — but the indices contract (test_message_indices) and the parsing
-# tests still apply, so they belong in the shared matrix.
+# Not yet here: GPT-OSS (missing harmony system-preamble implementation
+# — see test_roundtrip.py for narrower coverage).
 RENDERER_MODELS = [
     ("Qwen/Qwen3-8B", "auto"),
     ("Qwen/Qwen3.5-9B", "auto"),
