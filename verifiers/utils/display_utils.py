@@ -507,3 +507,96 @@ class BaseDisplay:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Sync context manager exit - stop the display."""
         self.stop()
+
+
+def _timing_parts(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
+) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Return timing breakdown as structured parts.
+
+    Each part is ``(label, value, sub_parts)`` where *sub_parts* is a list of
+    ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/tools
+    inside generation).
+    """
+    from verifiers.utils.logging_utils import print_time
+
+    parts: list[tuple[str, str, list[tuple[str, str]]]] = []
+    if setup > 0:
+        parts.append(("setup", print_time(setup), []))
+    if generation > 0:
+        subs: list[tuple[str, str]] = []
+        if model is not None and env is not None and env > 0:
+            subs = [("model", print_time(model)), ("env", print_time(env))]
+        elif model is not None:
+            subs = [("model", print_time(model))]
+        parts.append(("generation", print_time(generation), subs))
+    if scoring > 0:
+        parts.append(("scoring", print_time(scoring), []))
+    if overhead > 0:
+        parts.append(("overhead", print_time(overhead), []))
+    return parts
+
+
+def format_timing_line(
+    total: float = 0.0,
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
+) -> str:
+    """Format a compact timing breakdown string.
+
+    Example: setup 750ms + generation 30s (model 27s + env 3s) + scoring 100ms + overhead 250ms
+    """
+    from verifiers.utils.logging_utils import print_time
+
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    strs: list[str] = []
+    for label, value, subs in parts:
+        s = f"{label} {value}"
+        if subs:
+            s += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
+        strs.append(s)
+    return " + ".join(strs) if strs else f"total {print_time(total)}"
+
+
+def format_timing_rich(
+    total: float = 0.0,
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
+    label_style: str = "dim",
+    value_style: str = "white",
+) -> Text:
+    """Like :func:`format_timing_line` but returns a :class:`rich.text.Text` with styled labels and values."""
+    from verifiers.utils.logging_utils import print_time
+
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    text = Text()
+    for i, (label, value, subs) in enumerate(parts):
+        if i > 0:
+            text.append(" + ", style=label_style)
+        text.append(f"{label} ", style=label_style)
+        text.append(value, style=value_style)
+        if subs:
+            text.append(" (", style=label_style)
+            for j, (sl, sv) in enumerate(subs):
+                if j > 0:
+                    text.append(" + ", style=label_style)
+                text.append(f"{sl} ", style=label_style)
+                text.append(sv, style=value_style)
+            text.append(")", style=label_style)
+    if not parts:
+        text.append("total ", style=label_style)
+        text.append(print_time(total), style=value_style)
+    return text

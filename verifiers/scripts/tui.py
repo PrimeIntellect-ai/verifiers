@@ -59,8 +59,8 @@ from textual.widgets._option_list import Option
 from textual.widgets._tabbed_content import ContentTabs
 from textual.widgets._tree import TreeNode
 
-from verifiers.utils.display_utils import format_numeric
-from verifiers.utils.logging_utils import format_timing_line, print_time
+from verifiers.utils.display_utils import format_numeric, format_timing_line
+from verifiers.utils.logging_utils import print_time
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]

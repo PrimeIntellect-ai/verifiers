@@ -241,7 +241,7 @@ class Rubric:
         assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
         )
-        start_time = time.time()
+        start_time = time.perf_counter()
         reward_scores = []
         for func in reward_funcs:
             reward_scores.append(
@@ -264,9 +264,9 @@ class Rubric:
                 ]
             ),
         )
-        scoring = time.time() - start_time
-        state["timing"]["scoring"] = scoring
-        state["timing"]["total"] = state["timing"].get("total", 0.0) + scoring
+        end_time = time.perf_counter()
+        state["timing"]["scoring"] = end_time - start_time
+        state["timing"]["total"] += state["timing"]["scoring"]
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
 
@@ -281,7 +281,7 @@ class Rubric:
 
         All reward functions are executed in order, parallelizing across states.
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         num_states = len(states)
         if num_states == 0:
             self.logger.warning("No states to score")
@@ -320,7 +320,7 @@ class Rubric:
                     aggregated_metrics[func_name][i] = score_value
 
         # update states with aggregated results
-        end_time = time.time()
+        end_time = time.perf_counter()
         scoring = end_time - start_time
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
@@ -335,4 +335,4 @@ class Rubric:
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
             state["timing"]["scoring"] = scoring
-            state["timing"]["total"] = state["timing"].get("total", 0.0) + scoring
+            state["timing"]["total"] += scoring

@@ -31,7 +31,7 @@ from verifiers.utils.display_utils import (
     make_aligned_row,
     make_kv_line,
 )
-from verifiers.utils.logging_utils import format_timing_rich
+from verifiers.utils.display_utils import format_timing_rich
 from verifiers.utils.message_utils import format_messages
 
 

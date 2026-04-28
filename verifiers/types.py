@@ -274,8 +274,6 @@ class RolloutTiming(CustomBaseModel):
     scoring: float = 0.0  # rubric.score_rollout() wall-clock
     total: float = 0.0  # whole-rollout wall-clock
     steps: list[TimingEntry] = Field(default_factory=list)
-    # Flat sequence of model / env slices in execution order. No attribution
-    # of env time to a specific assistant turn — display can group as needed.
 
     @computed_field
     @property

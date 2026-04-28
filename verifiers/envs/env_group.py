@@ -84,7 +84,7 @@ class EnvGroupRubric(vf.Rubric):
         environment's rubric. Ensures all states have metrics for all reward function names
         across all environments.
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         num_states = len(states)
         # get task from first state (all states in a group have the same task)
         task = states[0].get("task", "default")
@@ -113,14 +113,14 @@ class EnvGroupRubric(vf.Rubric):
                     aggregated_metrics[reward_name][i] = score
 
         # Update all states with aggregated metrics (ensuring all reward names are present)
-        end_time = time.time()
+        end_time = time.perf_counter()
         scoring = end_time - start_time
         for i, state in enumerate(states):
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
             state["timing"]["scoring"] = scoring
-            state["timing"]["total"] = state["timing"].get("total", 0.0) + scoring
+            state["timing"]["total"] += scoring
 
 
 class EnvGroup(vf.Environment):

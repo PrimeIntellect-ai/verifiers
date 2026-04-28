@@ -64,7 +64,7 @@ class RubricGroup(Rubric):
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
         original_timing = state["timing"].model_copy()
-        start_time = time.time()
+        start_time = time.perf_counter()
         for rubric in self.rubrics:
             await rubric.score_rollout(state)
             rubric_reward = state.get("reward", 0.0)
@@ -78,11 +78,11 @@ class RubricGroup(Rubric):
             state["reward"] = original_reward
             state["metrics"] = original_metrics.copy()
             state["timing"] = original_timing.model_copy()
-        scoring = time.time() - start_time
+        end_time = time.perf_counter()
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
-        state["timing"].scoring = scoring
-        state["timing"].total = original_timing.total + scoring
+        state["timing"].scoring = end_time - start_time
+        state["timing"].total = original_timing.total + state["timing"].scoring
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -108,7 +108,7 @@ class RubricGroup(Rubric):
             for state in states
         ]
         original_timings = [state["timing"].model_copy() for state in states]
-        start_time = time.time()
+        start_time = time.perf_counter()
         for rubric in self.rubrics:
             await rubric.score_group(states)
             for i, state in enumerate(states):
@@ -124,7 +124,8 @@ class RubricGroup(Rubric):
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
                 state["timing"] = original_timings[i].model_copy()
-        scoring = time.time() - start_time
+        end_time = time.perf_counter()
+        scoring = end_time - start_time
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             if aggregated_metrics:
