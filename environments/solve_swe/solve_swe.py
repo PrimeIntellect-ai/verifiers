@@ -6,11 +6,10 @@ from verifiers.envs.experimental.composable import SolveEnv
 from verifiers.envs.experimental.composable.tasksets.swe import make_swe_taskset
 
 
-def load_environment(task_type: str = "r2e", **solve_kwargs: Any) -> SolveEnv:
-    """Gold-patch validation of any SWE taskset (no agent, no LLM).
-
-    ``task_type`` selects the SWE backend (``r2e``, ``multiswe``,
-    ``swebench``, ``openswe``). Remaining kwargs forward to
-    ``SolveEnv``.
-    """
-    return SolveEnv(taskset=make_swe_taskset(backend=task_type), **solve_kwargs)
+def load_environment(
+    task_type: str = "r2e",
+    filter_fn: str | None = None,
+    **solve_kwargs: Any,
+) -> SolveEnv:
+    taskset = make_swe_taskset(backend=task_type, filter_fn=filter_fn)
+    return SolveEnv(taskset=taskset, **solve_kwargs)
