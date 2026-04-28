@@ -60,7 +60,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.message_utils import maybe_normalize_messages
 
 
 def handle_openai_overlong_prompt(func):
@@ -164,8 +163,6 @@ class OpenAIChatCompletionsClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[OpenAIChatMessages, dict]:
-        messages = maybe_normalize_messages(messages, field_name="prompt")
-
         def normalize_content_part(part: Any) -> dict[str, Any]:
             if isinstance(part, Mapping):
                 return dict(part)

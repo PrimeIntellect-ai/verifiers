@@ -342,20 +342,17 @@ def create_renderer_pool(
     ``create_renderer`` when the pool falls back to ``DefaultRenderer``.
     """
 
-    def factory(
-        _name=tokenizer_name_or_path,
-        _renderer=renderer,
-        _tool_parser=tool_parser,
-        _reasoning_parser=reasoning_parser,
-    ) -> Renderer:
+    def factory() -> Renderer:
         from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(_name, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name_or_path, trust_remote_code=True
+        )
         return create_renderer(
             tokenizer,
-            renderer=_renderer,
-            tool_parser=_tool_parser,
-            reasoning_parser=_reasoning_parser,
+            renderer=renderer,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
         )
 
     return RendererPool(factory, size=size)

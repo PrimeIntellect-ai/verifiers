@@ -32,23 +32,18 @@ def test_renderer_client_honors_configured_renderer_name():
     client._pool_size = 1
     client._config = vf.ClientConfig(client_type="renderer", renderer="qwen3_vl")
 
-    with (
-        patch(
-            "transformers.AutoTokenizer.from_pretrained", return_value=object()
-        ) as tokenizer_mock,
-        patch(
-            "verifiers.clients.renderer_client.create_renderer", return_value="renderer"
-        ) as create_renderer_mock,
-    ):
+    sentinel_pool = RendererPool.__new__(RendererPool)
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        return_value=sentinel_pool,
+    ) as create_pool_mock:
         pool = client._get_renderer_or_pool("Qwen/Qwen3-VL-4B-Instruct")
 
-    assert isinstance(pool, RendererPool)
-    tokenizer_mock.assert_called_once_with(
-        "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True
-    )
-    create_renderer_mock.assert_called_once_with(
-        tokenizer_mock.return_value,
+    assert pool is sentinel_pool
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
+        size=1,
         tool_parser=None,
         reasoning_parser=None,
     )
@@ -66,23 +61,18 @@ def test_renderer_client_uses_renderer_model_name_override():
         renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
     )
 
-    with (
-        patch(
-            "transformers.AutoTokenizer.from_pretrained", return_value=object()
-        ) as tokenizer_mock,
-        patch(
-            "verifiers.clients.renderer_client.create_renderer", return_value="renderer"
-        ) as create_renderer_mock,
-    ):
+    sentinel_pool = RendererPool.__new__(RendererPool)
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        return_value=sentinel_pool,
+    ) as create_pool_mock:
         pool = client._get_renderer_or_pool("r8-smoke")
 
-    assert isinstance(pool, RendererPool)
-    tokenizer_mock.assert_called_once_with(
-        "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True
-    )
-    create_renderer_mock.assert_called_once_with(
-        tokenizer_mock.return_value,
+    assert pool is sentinel_pool
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
+        size=1,
         tool_parser=None,
         reasoning_parser=None,
     )

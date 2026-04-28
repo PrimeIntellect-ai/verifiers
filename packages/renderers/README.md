@@ -48,7 +48,7 @@ Round-trip invariant: rendering `[user, assistant(content=X, reasoning=Y, tool_c
 
 ```python
 from transformers import AutoTokenizer
-from renderers.base import create_renderer
+from renderers import create_renderer
 
 tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
 r = create_renderer(tok, renderer="auto")   # → Qwen3Renderer
@@ -63,7 +63,7 @@ Available hand-coded renderers: `qwen3`, `qwen3_vl`, `qwen3.5`, `glm5`, `glm4.5`
 For multi-threaded pre-tokenization, use `RendererPool`:
 
 ```python
-from renderers.base import create_renderer_pool
+from renderers import create_renderer_pool
 
 pool = create_renderer_pool("Qwen/Qwen3-8B", renderer="auto", size=16)
 with pool.checkout() as r:

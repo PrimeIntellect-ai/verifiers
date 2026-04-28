@@ -23,7 +23,7 @@ from renderers import (
     Renderer,
     RendererPool,
     ToolSpec,
-    create_renderer,
+    create_renderer_pool,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
@@ -53,7 +53,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.message_utils import maybe_normalize_messages
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -157,27 +156,12 @@ class RendererClient(
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
-
-                def factory(
-                    _name=renderer_name,
-                    _model=renderer_model,
-                    _tool_parser=tool_parser,
-                    _reasoning_parser=reasoning_parser,
-                ) -> Renderer:
-                    from transformers import AutoTokenizer
-
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        _model, trust_remote_code=True
-                    )
-                    return create_renderer(
-                        tokenizer,
-                        renderer=_name,
-                        tool_parser=_tool_parser,
-                        reasoning_parser=_reasoning_parser,
-                    )
-
-                self._shared_pools[cache_key] = RendererPool(
-                    factory, size=self._pool_size
+                self._shared_pools[cache_key] = create_renderer_pool(
+                    renderer_model,
+                    renderer=renderer_name,
+                    size=self._pool_size,
+                    tool_parser=tool_parser,
+                    reasoning_parser=reasoning_parser,
                 )
 
         return self._shared_pools[cache_key]
@@ -187,7 +171,6 @@ class RendererClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[RendererMessage], dict]:
-        messages = maybe_normalize_messages(messages, field_name="prompt")
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             {},
