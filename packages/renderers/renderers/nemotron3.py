@@ -208,7 +208,7 @@ class Nemotron3Renderer:
         when none is provided. Returns ``(messages, auto_injected)`` so the
         caller can emit the injected system's tokens with ``msg_idx=-1``
         (keeping message_indices aligned with the caller's input list —
-        ``build_supervised_sample`` relies on this).
+        ``build_training_sample`` relies on this).
         """
         if not messages or messages[0].get("role") != "system":
             return [{"role": "system", "content": ""}] + list(messages), True
@@ -232,7 +232,7 @@ class Nemotron3Renderer:
         messages, auto_system_injected = self._normalize_messages(messages)
         # Offset to map indices in the normalized list back to the caller's
         # original message list. The injected system itself uses msg_idx=-1
-        # (sentinel) so build_supervised_sample can't dereference it.
+        # (sentinel) so build_training_sample can't dereference it.
         idx_offset = -1 if auto_system_injected else 0
 
         def orig_idx(i: int) -> int:

@@ -159,7 +159,7 @@ class KimiK2Renderer:
 
         # Map indices in the (possibly-normalised) ``messages`` list back to
         # the caller's original list. Injected system / tool_declare get
-        # msg_idx=-1 (sentinel) so build_supervised_sample can't dereference
+        # msg_idx=-1 (sentinel) so build_training_sample can't dereference
         # past the caller's input length.
         injected_positions = set()
         if tool_declare_injected:

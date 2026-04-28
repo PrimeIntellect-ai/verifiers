@@ -1,9 +1,9 @@
-"""Barrage test: build_supervised_sample and build_trajectory_step.
+"""Barrage test: build_training_sample and build_trajectory_step.
 
 Runs against every (model, renderer) pair.
 """
 
-from renderers import build_supervised_sample, build_trajectory_step
+from renderers import build_training_sample, build_trajectory_step
 
 
 def _expected(tokenizer, messages, **kwargs):
@@ -22,26 +22,26 @@ def _expected(tokenizer, messages, **kwargs):
     return list(result)
 
 
-def test_build_supervised_sample_ids_match(model_name, tokenizer, renderer):
+def test_build_training_sample_ids_match(model_name, tokenizer, renderer):
     """Token IDs must match apply_chat_template."""
     msgs = [
         {"role": "system", "content": "You are helpful."},
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello!"},
     ]
-    ids, mask = build_supervised_sample(
+    ids, mask = build_training_sample(
         renderer, msgs, role_to_mask=lambda m: m["role"] == "assistant"
     )
     assert ids == _expected(tokenizer, msgs)
 
 
-def test_build_supervised_sample_has_trainable_tokens(model_name, tokenizer, renderer):
+def test_build_training_sample_has_trainable_tokens(model_name, tokenizer, renderer):
     """At least some tokens should be marked for training."""
     msgs = [
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello!"},
     ]
-    ids, mask = build_supervised_sample(
+    ids, mask = build_training_sample(
         renderer, msgs, role_to_mask=lambda m: m["role"] == "assistant"
     )
     assert sum(mask) > 0

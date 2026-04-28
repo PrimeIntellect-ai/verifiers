@@ -459,7 +459,7 @@ def create_renderer(
 # ---------------------------------------------------------------------------
 
 
-def build_supervised_sample(
+def build_training_sample(
     renderer: Renderer,
     messages: list[Message],
     *,

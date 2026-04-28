@@ -1,7 +1,7 @@
 """Default Renderer — falls back to tokenizer.apply_chat_template() for unsupported models.
 
 This is the escape hatch: works with any model that has a Jinja chat template,
-but doesn't provide message_indices (so build_supervised_sample uses incremental
+but doesn't provide message_indices (so build_training_sample uses incremental
 rendering) and parse_response is basic text extraction unless tool/reasoning
 parsers are plugged in.
 """
