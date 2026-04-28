@@ -138,7 +138,7 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
         finally:
             state["elapsed_s"] = time.monotonic() - t0
 
-        reason, _tail = _classify_validate_outcome(
+        reason, tail = _classify_validate_outcome(
             valid,
             exc,
             state,
@@ -146,10 +146,8 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
             test_output_tail_chars=self.test_output_tail_chars,
         )
         state["reason"] = reason
-        if isinstance(state.get("test_output"), str) and state["test_output"]:
-            state["test_output_tail"] = state["test_output"][
-                -self.test_output_tail_chars :
-            ]
+        if tail:
+            state["test_output_tail"] = tail
 
         return state
 
