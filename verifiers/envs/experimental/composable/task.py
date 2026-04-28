@@ -76,11 +76,7 @@ def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path 
 
 @dataclass
 class SandboxSpec:
-    """Sandbox requirements for a task instance.
-
-    ``timeout_minutes=None`` defers to ``SandboxMixin.compute_sandbox_timeout_minutes``,
-    which derives lifetime from the rollout timeout plus the scoring buffer.
-    """
+    """Sandbox requirements for a task instance."""
 
     image: str = "python:3.11-slim"
     cpu_cores: int = 4
@@ -88,6 +84,7 @@ class SandboxSpec:
     disk_size_gb: int = 10
     gpu_count: int = 0
     gpu_type: str | None = None
+    # If None, lifetime is derived by SandboxMixin.compute_sandbox_timeout_minutes.
     timeout_minutes: int | None = None
 
 

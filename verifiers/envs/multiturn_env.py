@@ -93,12 +93,7 @@ class MultiTurnEnv(vf.Environment):
         return state.get("final_env_response") is not None
 
     async def setup_state(self, state: State) -> State:
-        """Override to add environment-specific state fields.
-
-        Mutate ``state`` in place; the return is preserved for subclass-chaining
-        ergonomics but the rollout loop ignores it. Constructing a new dict and
-        returning it has no effect.
-        """
+        """Override to add environment-specific state fields."""
         return state
 
     async def get_prompt_messages(self, state: State) -> Messages:

@@ -4,12 +4,13 @@ Validates that rlm_harness() produces a Harness with the correct metrics
 fields and that the install script is generated correctly.
 """
 
+import asyncio
 import importlib
 import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -179,49 +180,17 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
     assert 'test -f "$RLM_CHECKOUT_PATH/install.sh"' in script
     assert "git clone" not in script
     assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
-    # Shim setup is a post-install step now, NOT part of install_script.
-    assert "/usr/local/bin/" not in script
 
 
-def test_rlm_harness_blocks_git_by_default(tmp_path):
-    """By default RLM uploads a sh shim that refuses on any invocation
-    and exits 1. The shim is staged at /tmp and moved to
-    $HOME/.local/bin/git by the post-install script — that dir is on
-    the agent's PATH (via the run_command's ``export PATH=...``) but
-    NOT on the container's default PATH, so scoring's
-    ``execute_command`` calls (e.g. ``git apply`` in eval scripts) keep
-    resolving to the real ``/usr/bin/git``."""
+def test_rlm_harness_does_not_set_post_install_hooks(tmp_path):
+    """rlm_harness no longer wires sandbox-side post-install hooks.
+
+    The git block now lives at the rlm tool layer
+    (https://github.com/PrimeIntellect-ai/rlm/pull/70); the harness
+    leaves ``post_install_uploads`` / ``post_install_script`` as
+    ``None`` so nothing is layered on top of the install."""
     checkout = _make_git_checkout(tmp_path / "rlm")
     harness = rlm_harness(local_checkout=checkout)
-
-    assert harness.post_install_uploads is not None
-    assert set(harness.post_install_uploads.keys()) == {"/tmp/__rlm_git_shim"}
-
-    shim = harness.post_install_uploads["/tmp/__rlm_git_shim"]
-    assert shim.startswith("#!/bin/sh\n")
-    assert "Bash command 'git' is not allowed." in shim
-    assert "exit 1" in shim
-
-    script = harness.post_install_script
-    assert script is not None
-    # Shim must end up at $HOME/.local/bin/git, executable, with parent
-    # dir created if missing.
-    assert 'mkdir -p "$HOME/.local/bin"' in script
-    assert 'mv /tmp/__rlm_git_shim "$HOME/.local/bin/git"' in script
-    assert 'chmod +x "$HOME/.local/bin/git"' in script
-    # The shim must NOT live anywhere on the container's default PATH —
-    # /usr/local/bin/git would shadow the real git for scoring's
-    # execute_command shells (which don't get $HOME/.local/bin
-    # prepended) and break ``git apply`` of test_patches in eval.sh.
-    assert "/usr/local/bin/git" not in script
-
-
-def test_rlm_harness_allow_git_uploads_nothing(tmp_path):
-    """``allow_git=True`` skips the shim entirely — no uploads, no
-    post-install script. Matches opencode's ``allow_git=True`` default:
-    the caller has opted in, so don't get in their way."""
-    checkout = _make_git_checkout(tmp_path / "rlm")
-    harness = rlm_harness(local_checkout=checkout, allow_git=True)
 
     assert harness.post_install_uploads is None
     assert harness.post_install_script is None
@@ -807,6 +776,223 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
     assert state["metrics"]["rlm_turns"] == 3.0
     assert state["metrics"]["rlm_prompt_tokens"] == 100.0
     assert state["metrics"]["rlm_completion_tokens"] == 25.0
+
+
+def test_rlm_harness_keep_trajectory_step_drops_sub_agent_by_default():
+    """Default config installs a filter that drops X-RLM-Depth > 0 steps."""
+    from verifiers.envs.experimental.composable.harnesses.rlm import (
+        _keep_only_parent_rlm_steps,
+    )
+
+    harness = rlm_harness()
+    assert harness.keep_trajectory_step is _keep_only_parent_rlm_steps
+
+    # Parent-agent calls (depth absent or "0") → keep.
+    assert harness.keep_trajectory_step(None, {}, {}) is True
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "0"}) is True
+    # Sub-agent calls → drop.
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "1"}) is False
+    assert harness.keep_trajectory_step(None, {}, {"x-rlm-depth": "5"}) is False
+
+
+def test_rlm_harness_include_sub_rlm_trajectories_disables_filter():
+    """``include_sub_rlm_trajectories=True`` removes the filter entirely."""
+    harness = rlm_harness(include_sub_rlm_trajectories=True)
+    assert harness.keep_trajectory_step is None
+
+
+# ── keep_trajectory_step end-to-end (header-stash ordering) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_get_model_response_stashes_headers_before_clear():
+    """``CliAgentEnv.get_model_response`` must stash the intercept's headers
+    on ``state["_last_request_headers"]`` BEFORE clearing
+    ``state["current_request_id"]``.
+
+    Why this matters: the rollout loop calls ``add_model_response`` (which
+    invokes ``add_trajectory_step``) immediately after ``get_model_response``
+    returns. By that point ``current_request_id`` has been cleared, so any
+    consumer that wants the originating request's headers must read them
+    from the stash key — see ``ComposableEnv.add_trajectory_step``.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+        rubric=vf.Rubric(),
+    )
+
+    request_id = "req-test-stash"
+    headers_in = {"x-rlm-depth": "1", "user-agent": "rlm/0.1"}
+    intercept = {
+        "stream": False,
+        "headers": headers_in,
+        "response_future": asyncio.get_event_loop().create_future(),
+    }
+    env._interception_server.intercepts[request_id] = intercept
+
+    state: dict = {"current_request_id": request_id, "model": "test-model"}
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    with patch.object(
+        environment_module.Environment,
+        "get_model_response",
+        new=AsyncMock(return_value=fake_response),
+    ):
+        result = await env.get_model_response(
+            state=state,
+            prompt=[{"role": "user", "content": "go"}],
+        )
+
+    assert result is fake_response
+    # The whole point of the fix: headers must outlive the clear.
+    assert state["current_request_id"] is None
+    assert state["_last_request_headers"] == headers_in
+
+
+@pytest.mark.asyncio
+async def test_composable_env_add_trajectory_step_reads_stashed_headers(
+    tmp_path,
+):
+    """``ComposableEnv.add_trajectory_step`` must consult
+    ``state["_last_request_headers"]`` (NOT ``current_request_id``, which is
+    already None when this runs) when invoking the harness filter.
+
+    Drives the actual code path with the rlm harness's
+    ``_keep_only_parent_rlm_steps`` filter and asserts that depth=1 steps
+    are dropped while depth=0 steps are kept.
+    """
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+    )
+
+    parent_step = {"prompt": [], "completion": [{"role": "assistant", "content": "p"}]}
+    sub_step = {"prompt": [], "completion": [{"role": "assistant", "content": "s"}]}
+
+    state: dict = {
+        "trajectory": [],
+        # current_request_id is None at this point — get_model_response cleared it.
+        "current_request_id": None,
+        "_last_request_headers": {"x-rlm-depth": "1"},
+    }
+    await env.add_trajectory_step(state, sub_step)
+    assert state["trajectory"] == [], "sub-agent step (depth=1) must be dropped"
+
+    state["_last_request_headers"] = {"x-rlm-depth": "0"}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step], "parent step (depth=0) must be kept"
+
+    # Missing header (e.g. non-rlm caller) is treated as parent.
+    state["_last_request_headers"] = {}
+    await env.add_trajectory_step(state, parent_step)
+    assert state["trajectory"] == [parent_step, parent_step]
+
+
+@pytest.mark.asyncio
+async def test_composable_env_keep_trajectory_step_end_to_end(tmp_path):
+    """Full ordering: ``get_model_response`` runs first (clearing
+    ``current_request_id`` and stashing headers), then
+    ``add_trajectory_step`` runs and reads the stash.
+
+    Mimics ``MultiTurnEnv.rollout`` calling the two methods back-to-back.
+    Without the stash, ``add_trajectory_step`` would see no headers and
+    keep every step — this test would fail by the sub-agent step landing
+    in the trajectory.
+    """
+    from datasets import Dataset
+    import verifiers.envs.environment as environment_module
+
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=rlm_harness(local_checkout=_make_git_checkout(tmp_path / "rlm")),
+        dataset=Dataset.from_dict(
+            {
+                "prompt": [[{"role": "user", "content": "task"}]],
+                "answer": [""],
+                "example_id": [0],
+            }
+        ),
+    )
+
+    fake_response = vf.Response(
+        id="resp-1",
+        created=0,
+        model="test-model",
+        usage=None,
+        message=vf.ResponseMessage(
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+        ),
+    )
+
+    async def run_one_turn(depth: str) -> dict:
+        request_id = f"req-{depth}"
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "headers": {"x-rlm-depth": depth},
+            "response_future": asyncio.get_event_loop().create_future(),
+        }
+        state: dict = {
+            "current_request_id": request_id,
+            "model": "test-model",
+            "trajectory": [],
+        }
+        with patch.object(
+            environment_module.Environment,
+            "get_model_response",
+            new=AsyncMock(return_value=fake_response),
+        ):
+            await env.get_model_response(
+                state=state,
+                prompt=[{"role": "user", "content": "go"}],
+            )
+        # Mimic MultiTurnEnv.rollout's next call.
+        step = {
+            "prompt": [],
+            "completion": [{"role": "assistant", "content": "x"}],
+        }
+        await env.add_trajectory_step(state, step)
+        return state
+
+    sub_state = await run_one_turn("1")
+    assert sub_state["trajectory"] == [], (
+        "sub-agent (depth=1) step must NOT land in trajectory"
+    )
+
+    parent_state = await run_one_turn("0")
+    assert len(parent_state["trajectory"]) == 1, (
+        "parent (depth=0) step must land in trajectory"
+    )
 
 
 def test_rlm_harness_env_vars_static_int():
