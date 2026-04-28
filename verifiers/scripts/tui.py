@@ -4753,33 +4753,23 @@ class ViewRunScreen(Screen):
             )
             self._append_context_section(out, "Timing", line)
 
-            # Per-turn breakdown — read from rollout-level timing.steps
+            # Per-turn breakdown — flat list of model/env steps in execution order
             steps = timing.get("steps") if isinstance(timing, dict) else None
             if not isinstance(steps, list):
-                # When loaded from JSON the model serializes to dict; the live
-                # object exposes .steps as a list of StepTiming-shaped dicts.
-                steps_attr = getattr(timing, "steps", None)
-                steps = steps_attr if isinstance(steps_attr, list) else []
+                attr = getattr(timing, "steps", None)
+                steps = attr if isinstance(attr, list) else []
             step_lines = []
-            for i, step_timing in enumerate(steps):
-                if not isinstance(step_timing, dict):
-                    step_timing = (
-                        step_timing.model_dump()
-                        if hasattr(step_timing, "model_dump")
-                        else {}
-                    )
-                llm = step_timing.get("model")
-                env = step_timing.get("env")
-                turn = step_timing.get("turn")
-                parts = []
-                if llm is not None:
-                    parts.append(f"model={print_time(float(llm))}")
-                if env is not None and float(env) > 0:
-                    parts.append(f"tools={print_time(float(env))}")
-                if turn is not None:
-                    parts.append(f"total={print_time(float(turn))}")
-                if parts:
-                    step_lines.append(f"turn {i}: {', '.join(parts)}")
+            model_idx = 0
+            for s in steps:
+                if not isinstance(s, dict):
+                    s = s.model_dump() if hasattr(s, "model_dump") else {}
+                kind = s.get("kind")
+                duration = float(s.get("duration", 0.0))
+                if kind == "model":
+                    model_idx += 1
+                    step_lines.append(f"turn {model_idx}: model {print_time(duration)}")
+                elif kind == "env":
+                    step_lines.append(f"         env   {print_time(duration)}")
             if step_lines:
                 self._append_context_section(
                     out, "Per-turn timing", "\n".join(step_lines)

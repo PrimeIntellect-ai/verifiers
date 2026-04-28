@@ -12,7 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
-    StepTiming,
+    TimingEntry,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import (
@@ -130,10 +130,10 @@ class MultiTurnEnv(vf.Environment):
         state["trajectory"].append(trajectory_step)
 
     async def _finalize_rollout(self, state: State) -> None:
-        """Run cleanup, then render completion and timing."""
+        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
         await self._cleanup(state)
-        await self.render_completion(state)
         await self._render_timing(state)
+        await self.render_completion(state)
 
     async def add_model_response(
         self,
@@ -181,13 +181,13 @@ class MultiTurnEnv(vf.Environment):
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
+                    steps = state["timing"]["steps"]
                     t0 = time.time()
                     prompt_messages = await self.get_prompt_messages(state)
                     env_elapsed = time.time() - t0
-                    # env time logically belongs to the previous turn
-                    steps = state["timing"]["steps"]
-                    if steps:
-                        steps[-1].env = env_elapsed
+                    # First iteration has no preceding env_response; skip recording.
+                    if state["trajectory"]:
+                        steps.append(TimingEntry(kind="env", duration=env_elapsed))
 
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
@@ -197,9 +197,7 @@ class MultiTurnEnv(vf.Environment):
 
                     t1 = time.time()
                     response = await self.get_model_response(state, prompt_messages)
-                    model_elapsed = time.time() - t1
-
-                    state["timing"]["steps"].append(StepTiming(model=model_elapsed))
+                    steps.append(TimingEntry(kind="model", duration=time.time() - t1))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):

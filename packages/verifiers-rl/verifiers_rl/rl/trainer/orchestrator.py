@@ -302,11 +302,11 @@ class Orchestrator:
                 metrics_dict["tokens/masked_fraction"] = float(masked_fraction)
 
         timing_fields = (
-            "setup_s",
-            "generation_s",
-            "scoring_s",
-            "overhead_s",
-            "total_s",
+            "setup",
+            "generation",
+            "scoring",
+            "overhead",
+            "total",
         )
         timing_accum: dict[str, list[float]] = {k: [] for k in timing_fields}
         for output in outputs:

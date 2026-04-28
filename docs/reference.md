@@ -182,14 +182,13 @@ class TrajectoryStepTokens(TypedDict):
 
 Token-level data for training.
 
-### StepTiming
+### TimingEntry
 
 ```python
-class StepTiming(CustomBaseModel):
-    """Per-turn timing. All values in seconds."""
-    model: float = 0.0          # measured: get_model_response()
-    env: float = 0.0            # measured: get_prompt_messages()
-    # turn: derived (= model + env), included in model_dump()
+class TimingEntry(CustomBaseModel):
+    """Single measured slice of a rollout. All values in seconds."""
+    kind: Literal["model", "env"]
+    duration: float
 ```
 
 ### RolloutTiming
@@ -197,11 +196,11 @@ class StepTiming(CustomBaseModel):
 ```python
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
-    start_time: float           # wall-clock at rollout start (time.time())
-    setup: float = 0.0          # measured: setup_state()
-    scoring: float = 0.0        # measured: rubric.score_rollout()
-    total: float = 0.0          # measured: whole-rollout wall-clock
-    steps: list[StepTiming] = []  # per-turn timings
+    start_time: float                       # wall-clock at rollout start (time.time())
+    setup: float = 0.0                      # measured: setup_state()
+    scoring: float = 0.0                    # measured: rubric.score_rollout()
+    total: float = 0.0                      # measured: whole-rollout wall-clock
+    steps: list[TimingEntry] = []           # flat sequence of model/env slices
     # model, env, generation, overhead: derived, included in model_dump()
 ```
 

@@ -256,18 +256,11 @@ class RolloutInput(BaseRolloutInput, total=False):
     info: Info | str
 
 
-class StepTiming(CustomBaseModel):
-    """Per-turn timing. All values in seconds."""
+class TimingEntry(CustomBaseModel):
+    """Single measured slice of a rollout. All values in seconds."""
 
-    model: float = 0.0  # get_model_response() wall-clock
-    env: float = 0.0  # get_prompt_messages() wall-clock (env_response, tools)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def turn(self) -> float:
-        # Approximation: ignores in-turn overhead between get_prompt_messages
-        # and get_model_response (e.g. tool-defs normalization).
-        return self.model + self.env
+    kind: Literal["model", "env"]
+    duration: float
 
 
 class RolloutTiming(CustomBaseModel):
@@ -280,24 +273,26 @@ class RolloutTiming(CustomBaseModel):
     setup: float = 0.0  # setup_state() wall-clock
     scoring: float = 0.0  # rubric.score_rollout() wall-clock
     total: float = 0.0  # whole-rollout wall-clock
-    steps: list[StepTiming] = Field(default_factory=list)  # per-turn timings
+    steps: list[TimingEntry] = Field(default_factory=list)
+    # Flat sequence of model / env slices in execution order. No attribution
+    # of env time to a specific assistant turn — display can group as needed.
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def model(self) -> float:
-        return sum(s.model for s in self.steps)
+        return sum(s.duration for s in self.steps if s.kind == "model")
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def env(self) -> float:
-        return sum(s.env for s in self.steps)
+        return sum(s.duration for s in self.steps if s.kind == "env")
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def generation(self) -> float:
-        return sum(s.turn for s in self.steps)
+        return sum(s.duration for s in self.steps)
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def overhead(self) -> float:
         return max(
