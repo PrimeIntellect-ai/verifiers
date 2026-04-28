@@ -915,6 +915,16 @@ def test_load_toml_config_with_extra_env_kwargs():
     assert result[0]["extra_env_kwargs"] == {"timeout_seconds": 600}
 
 
+def test_load_toml_config_with_top_level_timeout():
+    """Top-level `timeout` is a recognized field on [[eval]] tables."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\ntimeout = 600\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["timeout"] == 600
+
+
 def test_load_toml_config_invalid_global_field():
     """Invalid global field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:

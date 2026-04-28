@@ -453,6 +453,7 @@ def load_toml_config(
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "timeout",
         # logging
         "verbose",
         "disable_tui",
