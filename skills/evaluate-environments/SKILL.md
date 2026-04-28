@@ -89,7 +89,7 @@ prime eval run my-env -a '{"difficulty":"hard"}'
 ```
 2. Override constructor kwargs:
 ```bash
-prime eval run my-env -x '{"max_turns":20,"timeout_seconds":600}'
+prime eval run my-env -x '{"max_turns":20}'
 ```
 3. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
 ```bash

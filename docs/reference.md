@@ -182,16 +182,26 @@ class TrajectoryStepTokens(TypedDict):
 
 Token-level data for training.
 
+### StepTiming
+
+```python
+class StepTiming(CustomBaseModel):
+    """Per-turn timing. All values in seconds."""
+    model: float = 0.0          # measured: get_model_response()
+    env: float = 0.0            # measured: get_prompt_messages()
+    # turn: derived (= model + env), included in model_dump()
+```
+
 ### RolloutTiming
 
 ```python
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    setup_s: float
-    generation_s: float
-    scoring_s: float
-    overhead_s: float
-    total_s: float
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+    setup: float = 0.0          # measured: setup_state()
+    scoring: float = 0.0        # measured: rubric.score_rollout()
+    total: float = 0.0          # measured: whole-rollout wall-clock
+    steps: list[StepTiming] = []  # per-turn timings
+    # model, env, generation, overhead: derived, included in model_dump()
 ```
 
 ### TokenUsage
