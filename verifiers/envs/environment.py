@@ -656,9 +656,9 @@ class Environment(ABC):
         return False
 
     async def _render_timing(self, state: State):
-        # generation, model, env, overhead are derived live from
-        # state["timing"].steps and the other measured fields.
-        state["timing"]["total"] = time.perf_counter() - state["timing"]["start_timer"]
+        # Mark end of the rollout phase. scoring/total/overhead derive
+        # from this and the scoring anchors set later by the rubric.
+        state["timing"]["end_rollout"] = time.perf_counter()
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:

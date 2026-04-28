@@ -413,10 +413,8 @@ class TestRubricGroup:
         await group.score_rollout(state)
 
         assert state["timing"]["scoring"] >= 0.0
-        # total should equal generation plus the group's scoring
-        assert state["timing"]["total"] == pytest.approx(
-            0.1 + state["timing"]["scoring"], abs=0.001
-        )
+        # total is one-shot (perf_counter delta from RolloutTiming creation)
+        assert state["timing"]["total"] >= state["timing"]["scoring"]
         # scoring should not accumulate across rubrics (not N * per-rubric time)
         assert state["timing"]["scoring"] < 1.0
 
@@ -458,10 +456,8 @@ class TestRubricGroup:
 
         for state in states:
             assert state["timing"]["scoring"] >= 0.0
-            # total should equal generation plus the group's scoring
-            assert state["timing"]["total"] == pytest.approx(
-                0.05 + state["timing"]["scoring"], abs=0.001
-            )
+            # total is one-shot (perf_counter delta from RolloutTiming creation)
+            assert state["timing"]["total"] >= state["timing"]["scoring"]
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_rollout_uses_rubric_parser(self):

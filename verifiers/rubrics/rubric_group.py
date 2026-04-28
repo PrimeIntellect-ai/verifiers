@@ -63,8 +63,8 @@ class RubricGroup(Rubric):
         original_metrics = (
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
+        state["timing"]["start_scoring"] = time.perf_counter()
         original_timing = state["timing"].model_copy()
-        start_time = time.perf_counter()
         for rubric in self.rubrics:
             await rubric.score_rollout(state)
             rubric_reward = state.get("reward", 0.0)
@@ -78,11 +78,9 @@ class RubricGroup(Rubric):
             state["reward"] = original_reward
             state["metrics"] = original_metrics.copy()
             state["timing"] = original_timing.model_copy()
-        end_time = time.perf_counter()
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
-        state["timing"].scoring = end_time - start_time
-        state["timing"].total = original_timing.total + state["timing"].scoring
+        state["timing"]["end_scoring"] = time.perf_counter()
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -107,8 +105,10 @@ class RubricGroup(Rubric):
             state.get("metrics", {}).copy() if state.get("metrics") else {}
             for state in states
         ]
+        start_scoring = time.perf_counter()
+        for state in states:
+            state["timing"]["start_scoring"] = start_scoring
         original_timings = [state["timing"].model_copy() for state in states]
-        start_time = time.perf_counter()
         for rubric in self.rubrics:
             await rubric.score_group(states)
             for i, state in enumerate(states):
@@ -124,8 +124,7 @@ class RubricGroup(Rubric):
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
                 state["timing"] = original_timings[i].model_copy()
-        end_time = time.perf_counter()
-        scoring = end_time - start_time
+        end_scoring = time.perf_counter()
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             if aggregated_metrics:
@@ -133,5 +132,4 @@ class RubricGroup(Rubric):
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
-            state["timing"].scoring = scoring
-            state["timing"].total = original_timings[i].total + scoring
+            state["timing"]["end_scoring"] = end_scoring

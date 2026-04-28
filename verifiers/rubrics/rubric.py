@@ -241,7 +241,7 @@ class Rubric:
         assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
         )
-        start_time = time.perf_counter()
+        state["timing"]["start_scoring"] = time.perf_counter()
         reward_scores = []
         for func in reward_funcs:
             reward_scores.append(
@@ -264,9 +264,7 @@ class Rubric:
                 ]
             ),
         )
-        end_time = time.perf_counter()
-        state["timing"]["scoring"] = end_time - start_time
-        state["timing"]["total"] += state["timing"]["scoring"]
+        state["timing"]["end_scoring"] = time.perf_counter()
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
 
@@ -281,11 +279,13 @@ class Rubric:
 
         All reward functions are executed in order, parallelizing across states.
         """
-        start_time = time.perf_counter()
+        start_scoring = time.perf_counter()
         num_states = len(states)
         if num_states == 0:
             self.logger.warning("No states to score")
             return
+        for state in states:
+            state["timing"]["start_scoring"] = start_scoring
         aggregated_rewards = [0.0] * num_states
         aggregated_metrics: dict[str, list[float]] = {}
 
@@ -319,9 +319,7 @@ class Rubric:
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
 
-        # update states with aggregated results
-        end_time = time.perf_counter()
-        scoring = end_time - start_time
+        end_scoring = time.perf_counter()
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
@@ -334,5 +332,4 @@ class Rubric:
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["scoring"] = scoring
-            state["timing"]["total"] += scoring
+            state["timing"]["end_scoring"] = end_scoring

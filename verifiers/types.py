@@ -60,15 +60,6 @@ class CustomBaseModel(BaseModel):
     def __contains__(self, key):
         return hasattr(self, key)
 
-    def keys(self):
-        return self.model_dump().keys()
-
-    def values(self):
-        return self.model_dump().values()
-
-    def items(self):
-        return self.model_dump().items()
-
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
             return self.model_dump() == dict(other)
@@ -264,15 +255,23 @@ class TimingEntry(CustomBaseModel):
 
 
 class RolloutTiming(CustomBaseModel):
-    """Rollout-level timing. All values in seconds."""
+    """Rollout-level timing. All values in seconds.
+
+    Phase anchors are ``perf_counter()`` values (excluded from serialization);
+    durations and overhead are derived from them.
+    """
 
     start_time: float = Field(default_factory=time.time)
-    # start_timer is internal bookkeeping (perf_counter for monotonic elapsed math)
-    start_timer: float = Field(default_factory=time.perf_counter, exclude=True)
 
-    setup: float = 0.0  # setup_state() wall-clock
-    scoring: float = 0.0  # rubric.score_rollout() wall-clock
-    total: float = 0.0  # whole-rollout wall-clock
+    # Phase anchors — perf_counter values, only meaningful relative to each
+    # other. Excluded from serialization (the derived durations are what
+    # downstream readers care about).
+    start_rollout: float = Field(default_factory=time.perf_counter, exclude=True)
+    end_rollout: float = Field(default=0.0, exclude=True)
+    start_scoring: float = Field(default=0.0, exclude=True)
+    end_scoring: float = Field(default=0.0, exclude=True)
+
+    setup: float = 0.0  # measured: setup_state()
     steps: list[TimingEntry] = Field(default_factory=list)
 
     @computed_field
@@ -289,6 +288,21 @@ class RolloutTiming(CustomBaseModel):
     @property
     def generation(self) -> float:
         return sum(s.duration for s in self.steps)
+
+    @computed_field
+    @property
+    def scoring(self) -> float:
+        if self.end_scoring <= 0.0:
+            return 0.0
+        return max(0.0, self.end_scoring - self.start_scoring)
+
+    @computed_field
+    @property
+    def total(self) -> float:
+        end = self.end_scoring if self.end_scoring > 0.0 else self.end_rollout
+        if end <= 0.0:
+            return 0.0
+        return max(0.0, end - self.start_rollout)
 
     @computed_field
     @property
