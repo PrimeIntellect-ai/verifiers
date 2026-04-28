@@ -52,7 +52,7 @@ class EnvEvalState:
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     usage: TokenUsage | None = None
-    avg_timing: dict[str, float] | None = None  # RolloutTiming fields + model_s, env_s
+    avg_timing: dict[str, float] | None = None  # RolloutTiming fields + model, env
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -367,13 +367,13 @@ class EvalDisplay(BaseDisplay):
     def _make_timing_row(timing: dict[str, float]) -> Text:
         """Create a compact timing breakdown line with section label."""
         rich_line = format_timing_rich(
-            total_s=timing.get("total_s", 0.0),
-            setup_s=timing.get("setup_s", 0.0),
-            generation_s=timing.get("generation_s", 0.0),
-            scoring_s=timing.get("scoring_s", 0.0),
-            overhead_s=timing.get("overhead_s", 0.0),
-            model_s=timing.get("model_s"),
-            env_s=timing.get("env_s"),
+            total=timing.get("total", 0.0),
+            setup=timing.get("setup", 0.0),
+            generation=timing.get("generation", 0.0),
+            scoring=timing.get("scoring", 0.0),
+            overhead=timing.get("overhead", 0.0),
+            model=timing.get("model"),
+            env=timing.get("env"),
         )
         text = Text()
         text.append("╰─ ", style="dim")

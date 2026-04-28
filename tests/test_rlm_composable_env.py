@@ -689,7 +689,7 @@ async def test_rlm_collects_logs_and_metrics(tmp_path):
     state = {
         "sandbox_id": "sbx",
         "info": {"id": 0},
-        "timing": {"total_s": 0, "generation_s": 0, "scoring_s": 0},
+        "timing": {"total": 0, "generation": 0, "scoring": 0},
         "trajectory": [],
     }
 
@@ -762,7 +762,7 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
         "completion": [{"role": "assistant", "content": "done"}],
         "task": "test",
         "answer": "",
-        "timing": {"total_s": 0, "generation_s": 0, "scoring_s": 0},
+        "timing": {"total": 0, "generation": 0, "scoring": 0},
         "trajectory": [],
         "test_output": "PASS",
     }

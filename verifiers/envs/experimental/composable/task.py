@@ -702,7 +702,7 @@ class TaskSet:
             raise
         finally:
             if is_sandbox:
-                client.teardown()  # type: ignore[name-defined]
+                client.teardown()
 
         elapsed = time.time() - t0
         denom = len(results) or 1

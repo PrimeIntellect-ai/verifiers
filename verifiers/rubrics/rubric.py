@@ -264,14 +264,9 @@ class Rubric:
                 ]
             ),
         )
-        end_time = time.time()
-        scoring_s = end_time - start_time
-        state["timing"]["scoring_s"] = scoring_s
-        state["timing"]["total_s"] += scoring_s
-        t = state["timing"]
-        t["overhead_s"] = (
-            t["total_s"] - t.get("setup_s", 0.0) - t["generation_s"] - t["scoring_s"]
-        )
+        scoring = time.time() - start_time
+        state["timing"]["scoring"] = scoring
+        state["timing"]["total"] = state["timing"].get("total", 0.0) + scoring
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
 
@@ -326,7 +321,7 @@ class Rubric:
 
         # update states with aggregated results
         end_time = time.time()
-        scoring_s = end_time - start_time
+        scoring = end_time - start_time
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
@@ -339,12 +334,5 @@ class Rubric:
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["scoring_s"] = scoring_s
-            state["timing"]["total_s"] += scoring_s
-            st = state["timing"]
-            st["overhead_s"] = (
-                st["total_s"]
-                - st.get("setup_s", 0.0)
-                - st["generation_s"]
-                - st["scoring_s"]
-            )
+            state["timing"]["scoring"] = scoring
+            state["timing"]["total"] = state["timing"].get("total", 0.0) + scoring

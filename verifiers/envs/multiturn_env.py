@@ -158,7 +158,6 @@ class MultiTurnEnv(vf.Environment):
             is_truncated=is_truncated,
             trajectory_id=state["trajectory_id"],
             extras={},
-            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         )
         await self.add_trajectory_step(state, trajectory_step)
 
@@ -179,17 +178,17 @@ class MultiTurnEnv(vf.Environment):
             except vf.Error as e:
                 state["error"] = e
             finally:
-                state["timing"]["setup_s"] = time.time() - t_setup
+                state["timing"]["setup"] = time.time() - t_setup
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
                     t0 = time.time()
                     prompt_messages = await self.get_prompt_messages(state)
-                    env_s = time.time() - t0
-                    if state["trajectory"]:
-                        prev = state["trajectory"][-1]
-                        prev["timing"]["env_s"] = env_s
-                        prev["timing"]["turn_s"] += env_s
+                    env_elapsed = time.time() - t0
+                    # env time logically belongs to the previous turn
+                    steps = state["timing"]["steps"]
+                    if steps:
+                        steps[-1].env = env_elapsed
 
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
@@ -199,13 +198,10 @@ class MultiTurnEnv(vf.Environment):
 
                     t1 = time.time()
                     response = await self.get_model_response(state, prompt_messages)
-                    model_s = time.time() - t1
+                    model_elapsed = time.time() - t1
 
+                    state["timing"]["steps"].append(StepTiming(model=model_elapsed))
                     await self.add_model_response(state, prompt_messages, response)
-                    if state["trajectory"]:
-                        step = state["trajectory"][-1]
-                        step["timing"]["model_s"] = model_s
-                        step["timing"]["turn_s"] = model_s + step["timing"]["env_s"]
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True

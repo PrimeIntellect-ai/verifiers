@@ -1295,7 +1295,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
             category = "Flow"
         elif "error" in lowered:
             category = "Errors"
-        elif "time" in lowered or lowered.endswith("_ms"):
+        elif "time" in lowered:
             category = "Timing"
         elif "reward" in lowered or "score" in lowered or "task" in lowered:
             category = "Scores"
@@ -4741,53 +4741,49 @@ class ViewRunScreen(Screen):
 
         timing = record.get("timing")
         if isinstance(timing, dict):
-            # Compute model_s/env_s totals from trajectory if available
-            model_s_total = None
-            env_s_total = None
-            trajectory = record.get("trajectory")
-            if isinstance(trajectory, list) and trajectory:
-                model_s_total = 0.0
-                env_s_total = 0.0
-                for step in trajectory:
-                    st = step.get("timing")
-                    if isinstance(st, dict):
-                        model_s_total += float(st.get("model_s", 0.0))
-                        env_s_total += float(st.get("env_s", 0.0))
-
+            # Compute model/env totals from trajectory if available
             line = format_timing_line(
-                total_s=float(timing.get("total_s", 0.0)),
-                setup_s=float(timing.get("setup_s", 0.0)),
-                generation_s=float(timing.get("generation_s", 0.0)),
-                scoring_s=float(timing.get("scoring_s", 0.0)),
-                overhead_s=float(timing.get("overhead_s", 0.0)),
-                model_s=model_s_total,
-                env_s=env_s_total,
+                total=float(timing.get("total", 0.0)),
+                setup=float(timing.get("setup", 0.0)),
+                generation=float(timing.get("generation", 0.0)),
+                scoring=float(timing.get("scoring", 0.0)),
+                overhead=float(timing.get("overhead", 0.0)),
+                model=float(timing.get("model", 0.0)) or None,
+                env=float(timing.get("env", 0.0)) or None,
             )
             self._append_context_section(out, "Timing", line)
 
-            # Per-turn breakdown
-            if isinstance(trajectory, list) and trajectory:
-                step_lines = []
-                for i, step in enumerate(trajectory):
-                    step_timing = step.get("timing")
-                    if not isinstance(step_timing, dict):
-                        continue
-                    llm = step_timing.get("model_s")
-                    env = step_timing.get("env_s")
-                    turn = step_timing.get("turn_s")
-                    parts = []
-                    if llm is not None:
-                        parts.append(f"model={print_time(float(llm))}")
-                    if env is not None and float(env) > 0:
-                        parts.append(f"tools={print_time(float(env))}")
-                    if turn is not None:
-                        parts.append(f"total={print_time(float(turn))}")
-                    if parts:
-                        step_lines.append(f"turn {i}: {', '.join(parts)}")
-                if step_lines:
-                    self._append_context_section(
-                        out, "Per-turn timing", "\n".join(step_lines)
+            # Per-turn breakdown — read from rollout-level timing.steps
+            steps = timing.get("steps") if isinstance(timing, dict) else None
+            if not isinstance(steps, list):
+                # When loaded from JSON the model serializes to dict; the live
+                # object exposes .steps as a list of StepTiming-shaped dicts.
+                steps_attr = getattr(timing, "steps", None)
+                steps = steps_attr if isinstance(steps_attr, list) else []
+            step_lines = []
+            for i, step_timing in enumerate(steps):
+                if not isinstance(step_timing, dict):
+                    step_timing = (
+                        step_timing.model_dump()
+                        if hasattr(step_timing, "model_dump")
+                        else {}
                     )
+                llm = step_timing.get("model")
+                env = step_timing.get("env")
+                turn = step_timing.get("turn")
+                parts = []
+                if llm is not None:
+                    parts.append(f"model={print_time(float(llm))}")
+                if env is not None and float(env) > 0:
+                    parts.append(f"tools={print_time(float(env))}")
+                if turn is not None:
+                    parts.append(f"total={print_time(float(turn))}")
+                if parts:
+                    step_lines.append(f"turn {i}: {', '.join(parts)}")
+            if step_lines:
+                self._append_context_section(
+                    out, "Per-turn timing", "\n".join(step_lines)
+                )
         return out
 
     def _build_info_text(self, record: Dict[str, Any]) -> Text:

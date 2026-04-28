@@ -83,9 +83,9 @@ class TestEnvGroupRubric:
         state["completion"] = "Test completion"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_s": 0.0,
-            "scoring_s": 0.0,
-            "total_s": 0.0,
+            "generation": 0.0,
+            "scoring": 0.0,
+            "total": 0.0,
             "start_time": 0.0,
         }
         state["is_completed"] = False
@@ -119,9 +119,9 @@ class TestEnvGroupRubric:
         state["completion"] = "Test"
         state["trajectory"] = []
         state["timing"] = {
-            "generation_s": 0.0,
-            "scoring_s": 0.0,
-            "total_s": 0.0,
+            "generation": 0.0,
+            "scoring": 0.0,
+            "total": 0.0,
             "start_time": 0.0,
         }
         state["is_completed"] = False

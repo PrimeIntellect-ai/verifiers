@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import (
@@ -12,7 +13,7 @@ from typing import (
     TypeAlias,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -50,11 +51,23 @@ class CustomBaseModel(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
     def get(self, key, default=None):
         return getattr(self, key, default)
 
     def __contains__(self, key):
         return hasattr(self, key)
+
+    def keys(self):
+        return self.model_dump().keys()
+
+    def values(self):
+        return self.model_dump().values()
+
+    def items(self):
+        return self.model_dump().items()
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
@@ -218,12 +231,6 @@ class VersionInfo(TypedDict):
     env_commit: str | None
 
 
-class StepTiming(TypedDict, total=False):
-    model_s: float  # wall-clock seconds for get_model_response()
-    env_s: float  # wall-clock seconds for get_prompt_messages() (tool/env execution)
-    turn_s: float  # model_s + env_s
-
-
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -234,7 +241,6 @@ class TrajectoryStep(TypedDict):
     is_truncated: bool
     trajectory_id: str
     extras: dict[str, Any]
-    timing: StepTiming
 
 
 class BaseRolloutInput(TypedDict):
@@ -250,16 +256,54 @@ class RolloutInput(BaseRolloutInput, total=False):
     info: Info | str
 
 
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    start_timer: float
-    setup_s: float
-    generation_s: float
-    scoring_s: float
-    overhead_s: float
-    total_s: float
-    model_s: float  # sum of per-step model_s
-    env_s: float  # sum of per-step env_s
+class StepTiming(CustomBaseModel):
+    """Per-turn timing. All values in seconds."""
+
+    model: float = 0.0  # get_model_response() wall-clock
+    env: float = 0.0  # get_prompt_messages() wall-clock (env_response, tools)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def turn(self) -> float:
+        # Approximation: ignores in-turn overhead between get_prompt_messages
+        # and get_model_response (e.g. tool-defs normalization).
+        return self.model + self.env
+
+
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+
+    # Set at init, excluded from serialization (internal bookkeeping)
+    start_time: float = Field(default_factory=time.time, exclude=True)
+    start_timer: float = Field(default_factory=time.perf_counter, exclude=True)
+
+    setup: float = 0.0  # setup_state() wall-clock
+    scoring: float = 0.0  # rubric.score_rollout() wall-clock
+    total: float = 0.0  # whole-rollout wall-clock
+    steps: list[StepTiming] = Field(default_factory=list)  # per-turn timings
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def model(self) -> float:
+        return sum(s.model for s in self.steps)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def env(self) -> float:
+        return sum(s.env for s in self.steps)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def generation(self) -> float:
+        return sum(s.turn for s in self.steps)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def overhead(self) -> float:
+        return max(
+            0.0,
+            self.total - self.setup - self.generation - self.scoring,
+        )
 
 
 class ErrorInfo(TypedDict):
@@ -372,7 +416,7 @@ class GenerateMetadata(TypedDict):
     rollouts_per_example: int
     sampling_args: SamplingArgs
     date: str
-    time_ms: float
+    time: float  # whole-eval wall-clock seconds
     avg_reward: float
     avg_metrics: dict[str, float]
     avg_error: float

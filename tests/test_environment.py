@@ -46,7 +46,7 @@ class SimpleEnvironment(Environment):
             from verifiers.utils.response_utils import parse_response_message
 
             completion_messages = await parse_response_message(response)
-            from verifiers.types import StepTiming, TrajectoryStep
+            from verifiers.types import TrajectoryStep
             from verifiers.utils.response_utils import parse_response_tokens
 
             tokens = await parse_response_tokens(response)
@@ -60,7 +60,6 @@ class SimpleEnvironment(Environment):
                 is_truncated=False,
                 trajectory_id=state["trajectory_id"],
                 extras={},
-                timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
             )
             state["trajectory"].append(trajectory_step)
             state["is_completed"] = True
@@ -417,7 +416,7 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert results["metadata"]["time_ms"] > 0.0
+        assert results["metadata"]["time"] > 0.0
         assert results["metadata"]["avg_reward"] == 0.75
         assert len(results["metadata"]["avg_metrics"]) == 2
         assert "reward_a" in results["metadata"]["avg_metrics"]
@@ -451,7 +450,7 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert results["metadata"]["time_ms"] > 0.0
+        assert results["metadata"]["time"] > 0.0
         # Scoring always happens now, so rewards will be set by score_group
         # If score_group doesn't set rewards, they'll be None/0
         assert results["metadata"]["avg_reward"] >= 0.0

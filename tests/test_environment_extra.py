@@ -58,7 +58,7 @@ class DummyEnvironment(Environment):
         response = await self.get_model_response(state=state, prompt=prompt_messages)
         assert response is not None
 
-        from verifiers.types import StepTiming, TrajectoryStep
+        from verifiers.types import TrajectoryStep
         from verifiers.utils.response_utils import (
             parse_response_message,
             parse_response_tokens,
@@ -76,7 +76,6 @@ class DummyEnvironment(Environment):
             is_truncated=False,
             trajectory_id=state["trajectory_id"],
             extras={},
-            timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
         )
         state["trajectory"].append(trajectory_step)
         state["is_completed"] = True

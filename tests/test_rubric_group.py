@@ -156,9 +156,9 @@ class TestRubricGroup:
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
 
@@ -195,9 +195,9 @@ class TestRubricGroup:
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
 
@@ -235,9 +235,9 @@ class TestRubricGroup:
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
 
@@ -272,9 +272,9 @@ class TestRubricGroup:
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
 
@@ -356,9 +356,9 @@ class TestRubricGroup:
             state["completion"] = [{"role": "assistant", "content": state["answer"]}]
             state["trajectory"] = []
             state["timing"] = RolloutTiming(
-                generation_s=0.0,
-                scoring_s=0.0,
-                total_s=0.0,
+                generation=0.0,
+                scoring=0.0,
+                total=0.0,
                 start_time=0.0,
             )
 
@@ -404,21 +404,21 @@ class TestRubricGroup:
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.1,
-            scoring_s=0.0,
-            total_s=0.1,
+            generation=0.1,
+            scoring=0.0,
+            total=0.1,
             start_time=0.0,
         )
 
         await group.score_rollout(state)
 
-        assert state["timing"]["scoring_s"] >= 0.0
-        # total_s should equal generation_s plus the group's scoring_s
-        assert state["timing"]["total_s"] == pytest.approx(
-            0.1 + state["timing"]["scoring_s"], abs=0.001
+        assert state["timing"]["scoring"] >= 0.0
+        # total should equal generation plus the group's scoring
+        assert state["timing"]["total"] == pytest.approx(
+            0.1 + state["timing"]["scoring"], abs=0.001
         )
-        # scoring_s should not accumulate across rubrics (not N * per-rubric time)
-        assert state["timing"]["scoring_s"] < 1.0
+        # scoring should not accumulate across rubrics (not N * per-rubric time)
+        assert state["timing"]["scoring"] < 1.0
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_group_timing(self):
@@ -447,9 +447,9 @@ class TestRubricGroup:
             state["completion"] = [{"role": "assistant", "content": "2"}]
             state["trajectory"] = []
             state["timing"] = RolloutTiming(
-                generation_s=0.05,
-                scoring_s=0.0,
-                total_s=0.05,
+                generation=0.05,
+                scoring=0.0,
+                total=0.05,
                 start_time=0.0,
             )
             states.append(state)
@@ -457,10 +457,10 @@ class TestRubricGroup:
         await group.score_group(states)
 
         for state in states:
-            assert state["timing"]["scoring_s"] >= 0.0
-            # total_s should equal generation_s plus the group's scoring_s
-            assert state["timing"]["total_s"] == pytest.approx(
-                0.05 + state["timing"]["scoring_s"], abs=0.001
+            assert state["timing"]["scoring"] >= 0.0
+            # total should equal generation plus the group's scoring
+            assert state["timing"]["total"] == pytest.approx(
+                0.05 + state["timing"]["scoring"], abs=0.001
             )
 
     @pytest.mark.asyncio
@@ -491,9 +491,9 @@ class TestRubricGroup:
         ]
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
 

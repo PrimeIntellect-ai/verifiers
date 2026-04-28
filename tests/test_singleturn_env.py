@@ -7,7 +7,7 @@ from datasets import Dataset
 
 import verifiers as vf
 from verifiers import Parser, Rubric, SingleTurnEnv
-from verifiers.types import RolloutTiming, StepTiming
+from verifiers.types import RolloutTiming
 
 
 class TestSingleTurnEnv:
@@ -55,9 +55,9 @@ class TestSingleTurnEnv:
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Hello"}],
             "timing": RolloutTiming(
-                generation_s=0.0,
-                scoring_s=0.0,
-                total_s=0.0,
+                generation=0.0,
+                scoring=0.0,
+                total=0.0,
                 start_time=0.0,
             ),
         }
@@ -78,14 +78,13 @@ class TestSingleTurnEnv:
                     is_truncated=False,
                     trajectory_id="test_trajectory",
                     extras={},
-                    timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
                 )
             ],
             "prompt": [{"role": "user", "content": "Hello"}],
             "timing": RolloutTiming(
-                generation_s=0.0,
-                scoring_s=0.0,
-                total_s=0.0,
+                generation=0.0,
+                scoring=0.0,
+                total=0.0,
                 start_time=0.0,
             ),
         }
@@ -391,9 +390,9 @@ class TestSingleTurnEnv:
         state = State(input=make_input())
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
         assert not await env.is_completed(state)
@@ -413,13 +412,12 @@ class TestSingleTurnEnv:
                 is_truncated=False,
                 trajectory_id="test_trajectory",
                 extras={},
-                timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
             )
         ]
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
         assert await env.is_completed(state)
@@ -437,7 +435,6 @@ class TestSingleTurnEnv:
                 is_truncated=False,
                 trajectory_id="test_trajectory",
                 extras={},
-                timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
             ),
             TrajectoryStep(
                 prompt=[{"role": "user", "content": "Hello"}],
@@ -449,13 +446,12 @@ class TestSingleTurnEnv:
                 is_truncated=False,
                 trajectory_id="test_trajectory",
                 extras={},
-                timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
             ),
         ]
         state["timing"] = RolloutTiming(
-            generation_s=0.0,
-            scoring_s=0.0,
-            total_s=0.0,
+            generation=0.0,
+            scoring=0.0,
+            total=0.0,
             start_time=0.0,
         )
         assert await env.is_completed(state)

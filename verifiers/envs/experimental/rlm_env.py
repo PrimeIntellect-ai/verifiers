@@ -71,7 +71,6 @@ from verifiers.types import (
     Messages,
     Response,
     State,
-    StepTiming,
     SystemMessage,
     ToolMessage,
     TrajectoryStep,
@@ -3202,7 +3201,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     is_truncated=is_truncated,
                     trajectory_id=f"{batch_id}_{request_id}",
                     extras=extras,
-                    timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
                 )
                 await self.add_trajectory_step(state_ref, trajectory_step)
             else:
@@ -3216,7 +3214,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     is_truncated=False,
                     trajectory_id=f"{batch_id}_{request_id}",
                     extras=extras,
-                    timing=StepTiming(model_s=0.0, env_s=0.0, turn_s=0.0),
                 )
                 update_rlm_metrics_from_step(state_ref, trajectory_step)
 

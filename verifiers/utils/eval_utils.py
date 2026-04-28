@@ -643,21 +643,10 @@ def print_timing(results: GenerateOutputs):
     timing_list = [o["timing"] for o in outputs]
     timing_col = to_col_order(timing_list)
 
-    # Compute per-rollout model_s/env_s totals
-    model_s_totals: list[float] = []
-    env_s_totals: list[float] = []
-    for o in outputs:
-        trajectory = o.get("trajectory")
-        if not isinstance(trajectory, list):
-            continue
-        rl, re = 0.0, 0.0
-        for step in trajectory:
-            st = step.get("timing")
-            if isinstance(st, dict):
-                rl += float(st.get("model_s", 0.0))
-                re += float(st.get("env_s", 0.0))
-        model_s_totals.append(rl)
-        env_s_totals.append(re)
+    # Per-rollout model/env come straight from the rollout-level timing
+    # (derived from RolloutTiming.steps).
+    model_s_totals = [float(o["timing"].get("model", 0.0)) for o in outputs]
+    env_s_totals = [float(o["timing"].get("env", 0.0)) for o in outputs]
 
     def _mean(key: str) -> float:
         return float(np.mean(timing_col[key])) if key in timing_col else 0.0
@@ -668,13 +657,13 @@ def print_timing(results: GenerateOutputs):
     print(
         "Timing (avg): "
         + format_timing_line(
-            total_s=_mean("total_s"),
-            setup_s=_mean("setup_s"),
-            generation_s=_mean("generation_s"),
-            scoring_s=_mean("scoring_s"),
-            overhead_s=_mean("overhead_s"),
-            model_s=avg_model,
-            env_s=avg_env,
+            total=_mean("total"),
+            setup=_mean("setup"),
+            generation=_mean("generation"),
+            scoring=_mean("scoring"),
+            overhead=_mean("overhead"),
+            model=avg_model,
+            env=avg_env,
         )
     )
 
@@ -1010,13 +999,13 @@ async def run_evaluations_tui(
                     if not isinstance(t, dict):
                         continue
                     for key in (
-                        "setup_s",
-                        "generation_s",
-                        "scoring_s",
-                        "overhead_s",
-                        "total_s",
-                        "model_s",
-                        "env_s",
+                        "setup",
+                        "generation",
+                        "scoring",
+                        "overhead",
+                        "total",
+                        "model",
+                        "env",
                     ):
                         if key in t:
                             timing_sums[key] = timing_sums.get(key, 0.0) + float(t[key])

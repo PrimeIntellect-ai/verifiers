@@ -227,12 +227,12 @@ def print_time(time_s: float) -> str:
 
 
 def _timing_parts(
-    setup_s: float = 0.0,
-    generation_s: float = 0.0,
-    scoring_s: float = 0.0,
-    overhead_s: float = 0.0,
-    model_s: float | None = None,
-    env_s: float | None = None,
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
 ) -> list[tuple[str, str, list[tuple[str, str]]]]:
     """Return timing breakdown as structured parts.
 
@@ -241,58 +241,58 @@ def _timing_parts(
     inside generation).
     """
     parts: list[tuple[str, str, list[tuple[str, str]]]] = []
-    if setup_s > 0:
-        parts.append(("setup", print_time(setup_s), []))
-    if generation_s > 0:
+    if setup > 0:
+        parts.append(("setup", print_time(setup), []))
+    if generation > 0:
         subs: list[tuple[str, str]] = []
-        if model_s is not None and env_s is not None and env_s > 0:
-            subs = [("model", print_time(model_s)), ("env", print_time(env_s))]
-        elif model_s is not None:
-            subs = [("model", print_time(model_s))]
-        parts.append(("generation", print_time(generation_s), subs))
-    if scoring_s > 0:
-        parts.append(("scoring", print_time(scoring_s), []))
-    if overhead_s > 0:
-        parts.append(("overhead", print_time(overhead_s), []))
+        if model is not None and env is not None and env > 0:
+            subs = [("model", print_time(model)), ("env", print_time(env))]
+        elif model is not None:
+            subs = [("model", print_time(model))]
+        parts.append(("generation", print_time(generation), subs))
+    if scoring > 0:
+        parts.append(("scoring", print_time(scoring), []))
+    if overhead > 0:
+        parts.append(("overhead", print_time(overhead), []))
     return parts
 
 
 def format_timing_line(
-    total_s: float = 0.0,
-    setup_s: float = 0.0,
-    generation_s: float = 0.0,
-    scoring_s: float = 0.0,
-    overhead_s: float = 0.0,
-    model_s: float | None = None,
-    env_s: float | None = None,
+    total: float = 0.0,
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
 ) -> str:
     """Format a compact timing breakdown string.
 
     Example: setup 750ms + generation 30s (model 27s + tools 3s) + scoring 100ms + overhead 250ms
     """
-    parts = _timing_parts(setup_s, generation_s, scoring_s, overhead_s, model_s, env_s)
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
     strs: list[str] = []
     for label, value, subs in parts:
         s = f"{label} {value}"
         if subs:
             s += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
         strs.append(s)
-    return " + ".join(strs) if strs else f"total {print_time(total_s)}"
+    return " + ".join(strs) if strs else f"total {print_time(total)}"
 
 
 def format_timing_rich(
-    total_s: float = 0.0,
-    setup_s: float = 0.0,
-    generation_s: float = 0.0,
-    scoring_s: float = 0.0,
-    overhead_s: float = 0.0,
-    model_s: float | None = None,
-    env_s: float | None = None,
+    total: float = 0.0,
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float | None = None,
+    env: float | None = None,
     label_style: str = "dim",
     value_style: str = "white",
 ) -> Text:
     """Like :func:`format_timing_line` but returns a :class:`rich.text.Text` with styled labels and values."""
-    parts = _timing_parts(setup_s, generation_s, scoring_s, overhead_s, model_s, env_s)
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
     text = Text()
     for i, (label, value, subs) in enumerate(parts):
         if i > 0:
@@ -309,7 +309,7 @@ def format_timing_rich(
             text.append(")", style=label_style)
     if not parts:
         text.append("total ", style=label_style)
-        text.append(print_time(total_s), style=value_style)
+        text.append(print_time(total), style=value_style)
     return text
 
 

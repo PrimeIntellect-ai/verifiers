@@ -1,4 +1,4 @@
-"""Tests for per-turn StepTiming on TrajectoryStep."""
+"""Tests for per-turn StepTiming on RolloutTiming.steps."""
 
 import pytest
 from datasets import Dataset
@@ -9,7 +9,7 @@ from verifiers import Messages, MultiTurnEnv, Parser, Rubric, SingleTurnEnv, Sta
 class TestSingleTurnStepTiming:
     @pytest.mark.asyncio
     async def test_single_turn_has_step_timing(self, mock_client, make_input):
-        """SingleTurnEnv rollout produces a step with timing."""
+        """SingleTurnEnv rollout records one step in RolloutTiming.steps."""
         dataset = Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
         env = SingleTurnEnv(
             client=mock_client,
@@ -25,13 +25,12 @@ class TestSingleTurnStepTiming:
             model="test-model",
         )
 
-        assert len(state["trajectory"]) == 1
-        step = state["trajectory"][0]
-        assert "timing" in step
-        t = step["timing"]
-        assert t["model_s"] > 0
-        assert t["env_s"] == 0.0
-        assert t["turn_s"] == t["model_s"]
+        steps = state["timing"]["steps"]
+        assert len(steps) == 1
+        t = steps[0]
+        assert t.model > 0
+        assert t.env == 0.0
+        assert t.turn == t.model
 
     @pytest.mark.asyncio
     async def test_timing_values_are_seconds(self, mock_client, make_input):
@@ -51,15 +50,15 @@ class TestSingleTurnStepTiming:
             model="test-model",
         )
 
-        step = state["trajectory"][0]
-        assert step["timing"]["model_s"] < 10
-        assert step["timing"]["turn_s"] < 10
+        step = state["timing"]["steps"][0]
+        assert step.model < 10
+        assert step.turn < 10
 
 
 class TestMultiTurnStepTiming:
     @pytest.mark.asyncio
     async def test_multi_turn_backfills_env_timing(self, mock_client, make_input):
-        """In a 2-turn env, step 0 gets env_s backfilled > 0, last step has env_s == 0."""
+        """In a 2-turn env, step 0 gets env backfilled > 0, last step has env == 0."""
 
         class TwoTurnEnv(MultiTurnEnv):
             def __init__(self, **kwargs):
@@ -84,24 +83,20 @@ class TestMultiTurnStepTiming:
             model="test-model",
         )
 
-        assert len(state["trajectory"]) == 2
+        steps = state["timing"]["steps"]
+        assert len(steps) == 2
 
-        step0 = state["trajectory"][0]
-        step1 = state["trajectory"][1]
-
-        # step 0 should have env_s backfilled from the get_prompt_messages call
+        # step 0 should have env backfilled from the get_prompt_messages call
         # that produced step 1's prompt
-        assert "timing" in step0
-        assert step0["timing"]["env_s"] > 0
-        assert step0["timing"]["turn_s"] >= step0["timing"]["model_s"]
+        assert steps[0].env > 0
+        assert steps[0].turn >= steps[0].model
 
-        # last step should have env_s == 0 (no subsequent get_prompt_messages)
-        assert "timing" in step1
-        assert step1["timing"]["env_s"] == 0.0
-        assert step1["timing"]["turn_s"] == step1["timing"]["model_s"]
+        # last step should have env == 0 (no subsequent get_prompt_messages)
+        assert steps[1].env == 0.0
+        assert steps[1].turn == steps[1].model
 
         # All values should be seconds (small floats)
-        for step in state["trajectory"]:
-            assert step["timing"]["model_s"] < 10
-            assert step["timing"]["env_s"] < 10
-            assert step["timing"]["turn_s"] < 10
+        for s in steps:
+            assert s.model < 10
+            assert s.env < 10
+            assert s.turn < 10
