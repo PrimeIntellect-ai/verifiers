@@ -27,8 +27,8 @@ from verifiers.envs.experimental.composable import (
     ComposableEnv,
     SandboxSpec,
     SandboxTaskSet,
-    solve_harness,
 )
+from verifiers.envs.experimental.composable.harnesses.solve import solve_harness
 
 
 # ── Mock rubric / taskset ────────────────────────────────────────────────

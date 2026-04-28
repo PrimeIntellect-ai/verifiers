@@ -18,10 +18,8 @@ Example
 
 ::
 
-    from verifiers.envs.experimental.composable import (
-        ComposableEnv,
-        solve_harness,
-    )
+    from verifiers.envs.experimental.composable import ComposableEnv
+    from verifiers.envs.experimental.composable.harnesses import solve_harness
     from verifiers.envs.experimental.composable.tasksets.swe import (
         make_swe_taskset,
     )
