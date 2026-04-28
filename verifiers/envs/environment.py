@@ -705,12 +705,12 @@ class Environment(ABC):
                 sampling_args,
             )
 
-            state["timing"]["start_scoring"] = time.perf_counter()
+            state["timing"].scoring.start = time.perf_counter()
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
-            state["timing"]["end_scoring"] = time.perf_counter()
+            state["timing"].scoring.end = time.perf_counter()
 
             await self.rubric.cleanup(state)
 
@@ -769,14 +769,14 @@ class Environment(ABC):
 
             start_scoring = time.perf_counter()
             for state in group_states:
-                state["timing"]["start_scoring"] = start_scoring
+                state["timing"].scoring.start = start_scoring
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
             end_scoring = time.perf_counter()
             for state in group_states:
-                state["timing"]["end_scoring"] = end_scoring
+                state["timing"].scoring.end = end_scoring
 
             for state in group_states:
                 await self.rubric.cleanup(state)

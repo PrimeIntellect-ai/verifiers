@@ -368,12 +368,12 @@ class EvalDisplay(BaseDisplay):
         """Create a compact timing breakdown line with section label."""
         rich_line = format_timing_rich(
             total=timing.get("total", 0.0),
-            setup=timing.get("setup", 0.0),
-            generation=timing.get("generation", 0.0),
-            scoring=timing.get("scoring", 0.0),
+            setup=timing.get("setup", {}).get("duration", 0.0),
+            generation=timing.get("generation", {}).get("duration", 0.0),
+            scoring=timing.get("scoring", {}).get("duration", 0.0),
             overhead=timing.get("overhead", 0.0),
-            model=timing.get("model", 0.0),
-            env=timing.get("env", 0.0),
+            model=timing.get("model", {}).get("duration", 0.0),
+            env=timing.get("env", {}).get("duration", 0.0),
         )
         text = Text()
         text.append("╰─ ", style="dim")

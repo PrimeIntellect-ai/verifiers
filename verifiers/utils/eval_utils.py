@@ -641,11 +641,22 @@ def print_timing(results: GenerateOutputs):
     from verifiers.utils.logging_utils import print_time
 
     outputs = results["outputs"]
-    timing_list = [o["timing"] for o in outputs]
-    timing_col = to_col_order(timing_list)
+
+    def _values(key: str) -> list[float]:
+        out: list[float] = []
+        for o in outputs:
+            t = o.get("timing")
+            if not isinstance(t, dict) or key not in t:
+                continue
+            v = t[key]
+            if isinstance(v, dict):
+                v = v.get("duration", 0.0)
+            out.append(float(v))
+        return out
 
     def _stat(key: str, fn) -> float:
-        return float(fn(timing_col[key])) if key in timing_col else 0.0
+        vals = _values(key)
+        return float(fn(vals)) if vals else 0.0
 
     print(
         "Timing: "
@@ -660,11 +671,12 @@ def print_timing(results: GenerateOutputs):
         )
     )
     for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
-        if key not in timing_col:
+        vals = _values(key)
+        if not vals:
             continue
-        lo = _stat(key, np.min)
-        mean = _stat(key, np.mean)
-        hi = _stat(key, np.max)
+        lo = float(np.min(vals))
+        mean = float(np.mean(vals))
+        hi = float(np.max(vals))
         print(
             f"  {key:<10} min - {print_time(lo)}, mean - {print_time(mean)}, max - {print_time(hi)}"
         )
@@ -1010,9 +1022,13 @@ async def run_evaluations_tui(
                 if not isinstance(t, dict):
                     continue
                 for key in TIMING_KEYS:
-                    if key in t:
-                        timing_sums[key] = timing_sums.get(key, 0.0) + float(t[key])
-                        timing_counts[key] = timing_counts.get(key, 0) + 1
+                    if key not in t:
+                        continue
+                    val = t[key]
+                    if isinstance(val, dict):
+                        val = val.get("duration", 0.0)
+                    timing_sums[key] = timing_sums.get(key, 0.0) + float(val)
+                    timing_counts[key] = timing_counts.get(key, 0) + 1
             avg_timing = (
                 {k: timing_sums[k] / timing_counts[k] for k in timing_sums}
                 if timing_sums

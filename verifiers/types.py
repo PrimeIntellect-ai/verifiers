@@ -247,68 +247,71 @@ class RolloutInput(BaseRolloutInput, total=False):
     info: Info | str
 
 
-class TimingEntry(CustomBaseModel):
-    """Single measured slice of a rollout. All values in seconds."""
+class TimedSpan(CustomBaseModel):
+    """A timed span. ``duration`` derives from start/end perf_counter timestamps.
 
-    kind: Literal["model", "env"]
-    duration: float
+    All values in seconds. Used as the building block for every measured
+    slice of a rollout — phases (setup, generation, scoring) and individual
+    model/env steps share the same shape so downstream display code can
+    plot a timeline directly.
+    """
+
+    start: float = 0.0
+    end: float = 0.0
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        if self.end <= 0.0:
+            return 0.0
+        return self.end - self.start
+
+
+class TimedSpans(CustomBaseModel):
+    """A list of ``TimedSpan``s. ``duration`` is the sum over children."""
+
+    spans: list[TimedSpan] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        return sum(s.duration for s in self.spans)
 
 
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds.
 
-    Phase anchors are ``perf_counter()`` values (excluded from serialization);
-    durations and overhead are derived from them.
+    Each measured phase (``setup``, ``generation``, ``scoring``) is a
+    ``TimedSpan`` carrying perf_counter start/end timestamps. ``model`` and
+    ``env`` are ``TimedSpans`` collections of the corresponding step slices
+    (execution order is recoverable from each span's ``start`` timestamp).
     """
 
     start_time: float = Field(default_factory=time.time)
 
-    # Phase anchors — perf_counter values, only meaningful relative to each
-    # other. Excluded from serialization (the derived durations are what
-    # downstream readers care about).
-    start_generation: float = Field(default=0.0, exclude=True)
-    end_generation: float = Field(default=0.0, exclude=True)
-    start_scoring: float = Field(default=0.0, exclude=True)
-    end_scoring: float = Field(default=0.0, exclude=True)
-
-    setup: float = 0.0  # measured: setup_state()
-    steps: list[TimingEntry] = Field(default_factory=list)
-
-    @computed_field
-    @property
-    def model(self) -> float:
-        return sum(s.duration for s in self.steps if s.kind == "model")
-
-    @computed_field
-    @property
-    def env(self) -> float:
-        return sum(s.duration for s in self.steps if s.kind == "env")
-
-    @computed_field
-    @property
-    def generation(self) -> float:
-        if self.end_generation <= 0.0:
-            return 0.0
-        return self.end_generation - self.start_generation
-
-    @computed_field
-    @property
-    def scoring(self) -> float:
-        if self.end_scoring <= 0.0:
-            return 0.0
-        return self.end_scoring - self.start_scoring
+    setup: TimedSpan = Field(default_factory=TimedSpan)
+    generation: TimedSpan = Field(default_factory=TimedSpan)
+    scoring: TimedSpan = Field(default_factory=TimedSpan)
+    model: TimedSpans = Field(default_factory=TimedSpans)
+    env: TimedSpans = Field(default_factory=TimedSpans)
 
     @computed_field
     @property
     def total(self) -> float:
-        if self.end_scoring <= 0.0:
+        if self.scoring.end <= 0.0:
             return 0.0
-        return self.end_scoring - self.start_generation
+        return self.scoring.end - self.generation.start
 
     @computed_field
     @property
     def overhead(self) -> float:
-        return self.total - self.setup - self.model - self.env - self.scoring
+        return (
+            self.total
+            - self.setup.duration
+            - self.model.duration
+            - self.env.duration
+            - self.scoring.duration
+        )
 
 
 class ErrorInfo(TypedDict):

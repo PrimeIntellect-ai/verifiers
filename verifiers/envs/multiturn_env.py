@@ -12,7 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
-    TimingEntry,
+    TimedSpan,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import (
@@ -132,7 +132,7 @@ class MultiTurnEnv(vf.Environment):
     async def _finalize_rollout(self, state: State) -> None:
         """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
         await self._cleanup(state)
-        state["timing"]["end_generation"] = time.perf_counter()
+        state["timing"].generation.end = time.perf_counter()
         await self.render_completion(state)
 
     async def add_model_response(
@@ -171,26 +171,25 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
-            state["timing"]["start_generation"] = time.perf_counter()
-            start_time = time.perf_counter()
+            state["timing"].generation.start = time.perf_counter()
+            state["timing"].setup.start = time.perf_counter()
             try:
                 await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
             finally:
-                end_time = time.perf_counter()
-                state["timing"]["setup"] = end_time - start_time
+                state["timing"].setup.end = time.perf_counter()
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
-                    steps = state["timing"]["steps"]
+                    timing = state["timing"]
                     start_time = time.perf_counter()
                     prompt_messages = await self.get_prompt_messages(state)
                     end_time = time.perf_counter()
                     # First iteration has no preceding env_response; skip recording.
                     if state["trajectory"]:
-                        steps.append(
-                            TimingEntry(kind="env", duration=end_time - start_time)
+                        timing.env.spans.append(
+                            TimedSpan(start=start_time, end=end_time)
                         )
 
                     prompt_messages = maybe_normalize_messages(
@@ -202,9 +201,7 @@ class MultiTurnEnv(vf.Environment):
                     start_time = time.perf_counter()
                     response = await self.get_model_response(state, prompt_messages)
                     end_time = time.perf_counter()
-                    steps.append(
-                        TimingEntry(kind="model", duration=end_time - start_time)
-                    )
+                    timing.model.spans.append(TimedSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):

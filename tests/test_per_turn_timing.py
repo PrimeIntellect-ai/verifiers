@@ -1,4 +1,4 @@
-"""Tests for the flat RolloutTiming.steps timing list."""
+"""Tests for the per-rollout TimedSpans timing structure."""
 
 import pytest
 from datasets import Dataset
@@ -8,8 +8,8 @@ from verifiers import Messages, MultiTurnEnv, Parser, Rubric, SingleTurnEnv, Sta
 
 class TestSingleTurnTiming:
     @pytest.mark.asyncio
-    async def test_single_turn_records_one_model_entry(self, mock_client, make_input):
-        """SingleTurnEnv rollout records exactly one model entry, no env entry."""
+    async def test_single_turn_records_one_model_span(self, mock_client, make_input):
+        """SingleTurnEnv rollout records exactly one model span, no env span."""
         dataset = Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
         env = SingleTurnEnv(
             client=mock_client,
@@ -25,17 +25,18 @@ class TestSingleTurnTiming:
             model="test-model",
         )
 
-        steps = state["timing"]["steps"]
-        assert len(steps) == 1
-        assert steps[0].kind == "model"
-        assert steps[0].duration > 0
-        assert steps[0].duration < 10  # seconds, not ms
+        timing = state["timing"]
+        assert len(timing.model.spans) == 1
+        assert len(timing.env.spans) == 0
+        assert 0 < timing.model.spans[0].duration < 10  # seconds
 
 
 class TestMultiTurnTiming:
     @pytest.mark.asyncio
-    async def test_multi_turn_alternates_model_and_env(self, mock_client, make_input):
-        """A 2-turn env produces model, env, model entries in execution order."""
+    async def test_multi_turn_records_model_and_env_spans(
+        self, mock_client, make_input
+    ):
+        """A 2-turn env produces 2 model spans and 1 env span."""
 
         class TwoTurnEnv(MultiTurnEnv):
             def __init__(self, **kwargs):
@@ -60,10 +61,8 @@ class TestMultiTurnTiming:
             model="test-model",
         )
 
-        steps = state["timing"]["steps"]
-        kinds = [s.kind for s in steps]
-        assert kinds == ["model", "env", "model"]
-
-        # All durations are seconds (small floats)
-        for s in steps:
+        timing = state["timing"]
+        assert len(timing.model.spans) == 2
+        assert len(timing.env.spans) == 1
+        for s in [*timing.model.spans, *timing.env.spans]:
             assert s.duration < 10

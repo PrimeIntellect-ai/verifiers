@@ -155,12 +155,7 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -194,12 +189,7 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -234,12 +224,7 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -271,12 +256,7 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -355,12 +335,7 @@ class TestRubricGroup:
         for state in states:
             state["completion"] = [{"role": "assistant", "content": state["answer"]}]
             state["trajectory"] = []
-            state["timing"] = RolloutTiming(
-                generation=0.0,
-                scoring=0.0,
-                total=0.0,
-                start_time=0.0,
-            )
+            state["timing"] = RolloutTiming()
 
         await group.score_group(states)
 
@@ -403,20 +378,13 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.1,
-            scoring=0.0,
-            total=0.1,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_rollout(state)
 
-        assert state["timing"]["scoring"] >= 0.0
-        # total is one-shot (perf_counter delta from RolloutTiming creation)
-        assert state["timing"]["total"] >= state["timing"]["scoring"]
-        # scoring should not accumulate across rubrics (not N * per-rubric time)
-        assert state["timing"]["scoring"] < 1.0
+        # RubricGroup no longer touches timing (scoring anchors are stamped by
+        # the outer Environment). Scoring stays at default 0.0s.
+        assert state["timing"].scoring.duration == 0.0
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_group_timing(self):
@@ -444,20 +412,13 @@ class TestRubricGroup:
             )
             state["completion"] = [{"role": "assistant", "content": "2"}]
             state["trajectory"] = []
-            state["timing"] = RolloutTiming(
-                generation=0.05,
-                scoring=0.0,
-                total=0.05,
-                start_time=0.0,
-            )
+            state["timing"] = RolloutTiming()
             states.append(state)
 
         await group.score_group(states)
 
         for state in states:
-            assert state["timing"]["scoring"] >= 0.0
-            # total is one-shot (perf_counter delta from RolloutTiming creation)
-            assert state["timing"]["total"] >= state["timing"]["scoring"]
+            assert state["timing"].scoring.duration == 0.0
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_rollout_uses_rubric_parser(self):
@@ -486,12 +447,7 @@ class TestRubricGroup:
             {"role": "assistant", "content": "Let me think\n<answer>42</answer>"}
         ]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_rollout(state)
 

@@ -487,11 +487,7 @@ def make_state() -> Callable[..., State]:
         stop_condition: str | None = "max_turns_reached",
         tool_defs: list[Tool] | None = None,
         trajectory: list[TrajectoryStep] = [],
-        timing=RolloutTiming(
-            generation=0.0,
-            scoring=0.0,
-            total=0.0,
-        ),
+        timing=RolloutTiming(),
         foo: str = "bar",  # custom field
         **kwargs,
     ) -> State:

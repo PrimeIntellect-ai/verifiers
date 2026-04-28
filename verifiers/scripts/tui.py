@@ -4743,25 +4743,29 @@ class ViewRunScreen(Screen):
         if isinstance(timing, dict):
             line = format_timing_line(
                 total=float(timing.get("total", 0.0)),
-                setup=float(timing.get("setup", 0.0)),
-                generation=float(timing.get("generation", 0.0)),
-                scoring=float(timing.get("scoring", 0.0)),
+                setup=float(timing.get("setup", {}).get("duration", 0.0)),
+                generation=float(timing.get("generation", {}).get("duration", 0.0)),
+                scoring=float(timing.get("scoring", {}).get("duration", 0.0)),
                 overhead=float(timing.get("overhead", 0.0)),
-                model=float(timing.get("model", 0.0)),
-                env=float(timing.get("env", 0.0)),
+                model=float(timing.get("model", {}).get("duration", 0.0)),
+                env=float(timing.get("env", {}).get("duration", 0.0)),
             )
             self._append_context_section(out, "Timing", line)
 
-            steps = timing.get("steps") or []
+            model_spans = timing.get("model", {}).get("spans") or []
+            env_spans = timing.get("env", {}).get("spans") or []
+            interleaved = sorted(
+                [("model", s) for s in model_spans] + [("env", s) for s in env_spans],
+                key=lambda x: float(x[1].get("start", 0.0)),
+            )
             step_lines = []
             model_idx = 0
-            for s in steps:
-                kind = s.get("kind")
+            for kind, s in interleaved:
                 duration = float(s.get("duration", 0.0))
                 if kind == "model":
                     model_idx += 1
                     step_lines.append(f"turn {model_idx}: model {print_time(duration)}")
-                elif kind == "env":
+                else:
                     step_lines.append(f"         env   {print_time(duration)}")
             if step_lines:
                 self._append_context_section(
