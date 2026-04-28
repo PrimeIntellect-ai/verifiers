@@ -6,7 +6,6 @@ import json
 import logging
 import multiprocessing as mp
 import signal
-import time
 import uuid
 import warnings
 from abc import ABC, abstractmethod
@@ -654,11 +653,6 @@ class Environment(ABC):
                 self.logger.error(f"Aborted rollout due to {repr(err_chain)}")
             return True
         return False
-
-    async def _render_timing(self, state: State):
-        # Mark end of the rollout phase. scoring/total/overhead derive
-        # from this and the scoring anchors set later by the rubric.
-        state["timing"]["end_rollout"] = time.perf_counter()
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
