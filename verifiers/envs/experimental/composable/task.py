@@ -554,6 +554,11 @@ class TaskSet:
                     "answer": row.get("answer", ""),
                 }
                 spec = self.get_sandbox_spec(info)
+                # validate() runs without a SandboxMixin, so resolve
+                # spec.timeout_minutes=None (its "auto-derive at rollout
+                # time" sentinel) to a concrete fallback for both the
+                # SDK call and the in-test wall-clock cap.
+                timeout_minutes = spec.timeout_minutes or 60
                 sb = None
                 try:
                     sb = await client.create(
@@ -566,12 +571,12 @@ class TaskSet:
                             gpu_count=spec.gpu_count,
                             gpu_type=spec.gpu_type,
                             vm=spec.gpu_count > 0,
-                            timeout_minutes=spec.timeout_minutes,
+                            timeout_minutes=timeout_minutes,
                         )
                     )
                     state["sandbox_id"] = sb.id
                     state["sandbox_client"] = client
-                    state["test_timeout"] = (spec.timeout_minutes or 60) * 60
+                    state["test_timeout"] = timeout_minutes * 60
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
