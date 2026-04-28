@@ -1,19 +1,16 @@
-"""Qwen3-VL renderer.
+"""Qwen3-VL renderer (text-only).
 
-Mirrors the Qwen3-VL chat template: Qwen3 JSON tool calls plus multimodal
-placeholders for user/tool image and video content.
+Mirrors the Qwen3-VL chat template for text-only conversations. Image and
+video content parts are not supported — the renderer pipeline does not
+carry image payloads through to vLLM. Pass multimodal inputs through MITO
+(server-side templating) instead.
 """
 
 from __future__ import annotations
 
-import base64
 import json
-from io import BytesIO
-from pathlib import Path
 from typing import Any
 
-from PIL import Image
-from transformers import AutoProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import (
@@ -42,23 +39,12 @@ _TOOLS_FOOTER = (
     "</tool_call>"
 )
 
-_IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
-_VIDEO_PLACEHOLDER = "<|vision_start|><|video_pad|><|vision_end|>"
-
 
 class Qwen3VLRenderer:
-    """Deterministic message to token renderer for Qwen3-VL models."""
+    """Deterministic message to token renderer for Qwen3-VL models (text-only)."""
 
-    synthesize_close_on_truncation = True
-
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizer,
-        *,
-        add_vision_id: bool = False,
-    ):
+    def __init__(self, tokenizer: PreTrainedTokenizer):
         self._tokenizer = tokenizer
-        self._add_vision_id = add_vision_id
 
         self._im_start = self._token_id("<|im_start|>")
         self._im_end = self._token_id("<|im_end|>")
@@ -67,7 +53,6 @@ class Qwen3VLRenderer:
         self._tool_call_end = self._token_id("</tool_call>")
         self._tool_response = self._token_id("<tool_response>")
         self._tool_response_end = self._token_id("</tool_response>")
-        self._processor = None
 
     def _token_id(self, token: str) -> int:
         tid = self._tokenizer.convert_tokens_to_ids(token)
@@ -80,101 +65,6 @@ class Qwen3VLRenderer:
         if not text:
             return []
         return self._tokenizer.encode(text, add_special_tokens=False)
-
-    def _get_processor(self):
-        if self._processor is None:
-            self._processor = AutoProcessor.from_pretrained(
-                self._tokenizer.name_or_path,
-                trust_remote_code=True,
-                use_fast=True,
-            )
-        return self._processor
-
-    @staticmethod
-    def _is_multimodal_item(item: Any) -> bool:
-        if not isinstance(item, dict):
-            return False
-        item_type = item.get("type")
-        return item_type in {"image", "image_url", "video"} or any(
-            key in item for key in ("image", "image_url", "video")
-        )
-
-    @classmethod
-    def _has_multimodal_content(cls, messages: list[Message]) -> bool:
-        for message in messages:
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            if any(cls._is_multimodal_item(item) for item in content):
-                return True
-        return False
-
-    @staticmethod
-    def _load_image_from_item(item: dict[str, Any]) -> Image.Image | None:
-        if item.get("type") == "image":
-            image = item.get("image")
-            if image is not None and hasattr(image, "save"):
-                return image
-            return None
-
-        url = ""
-        if item.get("type") == "image_url":
-            url = (item.get("image_url") or {}).get("url", "")
-        elif "image_url" in item:
-            url = (item.get("image_url") or {}).get("url", "")
-
-        if not isinstance(url, str) or not url:
-            return None
-
-        if url.startswith("file://"):
-            return Image.open(Path(url.removeprefix("file://"))).convert("RGB")
-        if url.startswith("data:image"):
-            return Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).convert(
-                "RGB"
-            )
-        return None
-
-    @classmethod
-    def _prepare_messages_for_processor(
-        cls, messages: list[Message]
-    ) -> list[dict[str, Any]]:
-        prepared: list[dict[str, Any]] = []
-        for message in messages:
-            content = message.get("content")
-            if isinstance(content, str):
-                prepared.append(
-                    {**message, "content": [{"type": "text", "text": content}]}
-                )
-                continue
-
-            if not isinstance(content, list):
-                prepared.append(dict(message))
-                continue
-
-            new_content: list[dict[str, Any]] = []
-            for item in content:
-                if isinstance(item, str):
-                    new_content.append({"type": "text", "text": item})
-                    continue
-                if not isinstance(item, dict):
-                    raise TypeError(f"Unexpected content item type: {type(item)}")
-
-                if cls._is_multimodal_item(item):
-                    if image := cls._load_image_from_item(item):
-                        new_content.append({"type": "image", "image": image})
-                    else:
-                        new_content.append(dict(item))
-                    continue
-
-                if item.get("type") == "text" or "text" in item:
-                    new_content.append({"type": "text", "text": item.get("text", "")})
-                    continue
-
-                new_content.append(dict(item))
-
-            prepared.append({**message, "content": new_content})
-
-        return prepared
 
     @staticmethod
     def _render_text_content(content: Any) -> str:
@@ -189,46 +79,10 @@ class Qwen3VLRenderer:
                     parts.append(item)
                 elif isinstance(item, dict) and "text" in item:
                     parts.append(item["text"])
+                else:
+                    raise ValueError(f"Unexpected content item: {item}")
             return "".join(parts)
         raise TypeError(f"Unexpected content type: {type(content)}")
-
-    @staticmethod
-    def _render_multimodal_content(
-        content: Any,
-        *,
-        image_count: int,
-        video_count: int,
-        add_vision_id: bool,
-    ) -> tuple[str, int, int]:
-        if content is None:
-            return "", image_count, video_count
-        if isinstance(content, str):
-            return content, image_count, video_count
-        if not isinstance(content, list):
-            raise TypeError(f"Unexpected content type: {type(content)}")
-
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if not isinstance(item, dict):
-                raise TypeError(f"Unexpected content item type: {type(item)}")
-
-            if item.get("type") == "image" or "image" in item or "image_url" in item:
-                image_count += 1
-                if add_vision_id:
-                    parts.append(f"Picture {image_count}: ")
-                parts.append(_IMAGE_PLACEHOLDER)
-            elif item.get("type") == "video" or "video" in item:
-                video_count += 1
-                if add_vision_id:
-                    parts.append(f"Video {video_count}: ")
-                parts.append(_VIDEO_PLACEHOLDER)
-            elif "text" in item:
-                parts.append(item["text"])
-
-        return "".join(parts), image_count, video_count
 
     def render(
         self,
@@ -237,15 +91,6 @@ class Qwen3VLRenderer:
         tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> RenderedTokens:
-        if self._has_multimodal_content(messages):
-            token_ids = self.render_ids(
-                messages, tools=tools, add_generation_prompt=add_generation_prompt
-            )
-            return RenderedTokens(
-                token_ids=token_ids,
-                message_indices=[-1] * len(token_ids),
-            )
-
         if not messages:
             raise ValueError("No messages provided.")
 
@@ -286,22 +131,15 @@ class Qwen3VLRenderer:
             emit_special(self._im_end, 0)
             emit_text("\n", 0)
 
-        image_count = 0
-        video_count = 0
-
         for i, msg in enumerate(messages):
             role = msg["role"]
 
             if role == "system":
                 continue
 
+            content = self._render_text_content(msg.get("content"))
+
             if role == "user":
-                content, image_count, video_count = self._render_multimodal_content(
-                    msg.get("content"),
-                    image_count=image_count,
-                    video_count=video_count,
-                    add_vision_id=self._add_vision_id,
-                )
                 emit_special(self._im_start, i)
                 emit_text("user\n" + content, i)
                 emit_special(self._im_end, i)
@@ -313,12 +151,6 @@ class Qwen3VLRenderer:
                 )
 
             elif role == "tool":
-                content, image_count, video_count = self._render_multimodal_content(
-                    msg.get("content"),
-                    image_count=image_count,
-                    video_count=video_count,
-                    add_vision_id=self._add_vision_id,
-                )
                 self._render_tool(
                     messages,
                     i,
@@ -343,21 +175,6 @@ class Qwen3VLRenderer:
         tools: list[ToolSpec] | None = None,
         add_generation_prompt: bool = False,
     ) -> list[int]:
-        if self._has_multimodal_content(messages):
-            # Apply the chat template at the text level only. vLLM's
-            # /v1/generate expects one <|image_pad|> placeholder per image and
-            # performs the patch-grid expansion itself given multi_modal_data;
-            # using tokenize=True here would emit already-expanded placeholders
-            # and vLLM would double-expand, scrambling image embeddings on any
-            # turn with more than one image.
-            text = self._get_processor().apply_chat_template(
-                self._prepare_messages_for_processor(messages),
-                tokenize=False,
-                add_generation_prompt=add_generation_prompt,
-                **({} if tools is None else {"tools": tools}),
-            )
-            return self._tokenizer.encode(text, add_special_tokens=False)
-
         return self.render(
             messages, tools=tools, add_generation_prompt=add_generation_prompt
         ).token_ids
@@ -389,20 +206,11 @@ class Qwen3VLRenderer:
         ):
             return None
 
-        # Bridge stays text-only: multimodal content through the bridge would
-        # need to thread ``image_count`` / ``video_count`` from the prior
-        # render, which the token tape doesn't expose. Fall back to a fresh
-        # render when new_messages contain vision payloads.
-        if self._has_multimodal_content(new_messages):
-            return None
-
         previous_ids = trim_to_turn_close(
             previous_prompt_ids,
             previous_completion_ids,
             {self._im_end, self._endoftext},
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None

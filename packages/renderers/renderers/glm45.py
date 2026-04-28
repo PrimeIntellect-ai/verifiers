@@ -48,8 +48,6 @@ _TOOLS_FOOTER = (
 class GLM45Renderer:
     """Deterministic message → token renderer for GLM-4.5 Air models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -241,8 +239,6 @@ class GLM45Renderer:
             not previous_ids[len(previous_prompt_ids) :]
             or previous_ids[-1] not in stop_ids
         ):
-            if not self.synthesize_close_on_truncation:
-                return None
             previous_ids.append(self._endoftext)
 
         last_prev = previous_ids[-1]

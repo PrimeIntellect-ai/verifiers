@@ -117,8 +117,6 @@ def _arguments_to_str(arguments: Any) -> str:
 class GptOssRenderer:
     """Deterministic message → token renderer for OpenAI gpt-oss (harmony)."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -331,9 +329,7 @@ class GptOssRenderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._return, self._call},
-            synthesize_close=(
-                self._end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._end,
         )
         if previous_ids is None:
             return None

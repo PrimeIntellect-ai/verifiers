@@ -54,8 +54,6 @@ _TOOLS_INSTRUCTIONS = (
 class MiniMaxM2Renderer:
     """Deterministic message → token renderer for MiniMax M2 / M2.5 models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -242,9 +240,7 @@ class MiniMaxM2Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._eos},
-            synthesize_close=(
-                self._eos if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._eos,
         )
         if previous_ids is None:
             return None

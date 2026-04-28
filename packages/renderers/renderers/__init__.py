@@ -1,7 +1,6 @@
 from renderers.base import (
     Content,
     ContentPart,
-    ImagePart,
     Message,
     ParsedResponse,
     RenderedConversation,
@@ -42,7 +41,6 @@ __all__ = [
     "GLM45Renderer",
     "GLM5Renderer",
     "GptOssRenderer",
-    "ImagePart",
     "KimiK2Renderer",
     "KimiK25Renderer",
     "Message",

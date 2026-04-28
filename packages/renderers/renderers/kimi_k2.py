@@ -34,8 +34,6 @@ _DEFAULT_SYSTEM = "You are Kimi, an AI assistant created by Moonshot AI."
 class KimiK2Renderer:
     """Deterministic message → token renderer for Kimi K2 models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -325,9 +323,7 @@ class KimiK2Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._im_end},
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None

@@ -4,8 +4,7 @@ Verifies for every hand-coded renderer that ``bridge_to_next_turn``:
 
   1. Extends ``prev_prompt_ids + prev_completion_ids`` verbatim.
   2. Refuses assistant-role messages in ``new_messages``.
-  3. Synthesises the canonical turn close on truncation iff
-     ``synthesize_close_on_truncation`` is True.
+  3. Synthesises the canonical turn close on truncation.
   4. On clean stop, the extension is compatible with a fresh render:
      decoding the extension should contain the new-message content and a
      generation-prompt-looking tail.
@@ -161,14 +160,8 @@ def test_bridge_synthesises_close_on_truncation(br_renderer, br_model):
         prev_completion_trunc,
         [{"role": "user", "content": "What's 2+2?"}],
     )
-    if not getattr(br_renderer, "synthesize_close_on_truncation", False):
-        assert bridged is None, (
-            f"{br_model}: renderer opted out of synth-close but bridge returned tokens"
-        )
-        return
-
     assert bridged is not None, (
-        f"{br_model}: synth-close opt-in but bridge returned None on truncation"
+        f"{br_model}: bridge returned None on truncation; expected synth-close"
     )
     prev_trunc = prev_prompt + prev_completion_trunc
     assert bridged[: len(prev_trunc)] == prev_trunc, (

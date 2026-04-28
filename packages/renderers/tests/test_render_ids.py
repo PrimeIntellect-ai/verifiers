@@ -11,7 +11,7 @@ template. See ``test_gpt_oss_harmony_parity.py`` for harmony parity coverage.
 from functools import lru_cache
 
 from renderers import create_renderer
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import AutoTokenizer
 
 
 def _expected(tokenizer, messages, **kwargs):
@@ -332,7 +332,7 @@ def test_multi_step_tool_cycle(model_name, tokenizer, renderer):
     )
 
 
-# ── Qwen3-VL multimodal content ─────────────────────────────────────────
+# ── Qwen3-VL routing ────────────────────────────────────────────────────
 
 
 @lru_cache
@@ -344,96 +344,6 @@ def _qwen3_vl():
     return tokenizer, renderer
 
 
-@lru_cache
-def _qwen3_vl_processor():
-    return AutoProcessor.from_pretrained(
-        "Qwen/Qwen3-VL-4B-Instruct", trust_remote_code=True, use_fast=True
-    )
-
-
-_TINY_PNG = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO"
-    "a4e0cAAAAASUVORK5CYII="
-)
-
-
-def _qwen3_vl_expected(messages, **kwargs):
-    # Renderer emits un-expanded <|image_pad|> placeholders (one per image);
-    # vLLM expands them server-side from multi_modal_data. Render the expected
-    # output the same way — apply the chat template as text, then tokenize.
-    tokenizer, renderer = _qwen3_vl()
-    text = _qwen3_vl_processor().apply_chat_template(
-        renderer._prepare_messages_for_processor(messages),
-        tokenize=False,
-        **kwargs,
-    )
-    return tokenizer.encode(text, add_special_tokens=False)
-
-
 def test_qwen3_vl_auto_renderer():
     _, renderer = _qwen3_vl()
     assert type(renderer).__name__ == "Qwen3VLRenderer"
-
-
-def test_qwen3_vl_user_image_content():
-    _, renderer = _qwen3_vl()
-    msgs = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Look at this: "},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
-                },
-                {"type": "text", "text": " what color is it?"},
-            ],
-        }
-    ]
-    assert renderer.render_ids(msgs) == _qwen3_vl_expected(msgs)
-
-
-def test_qwen3_vl_image_generation_prompt():
-    _, renderer = _qwen3_vl()
-    msgs = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
-                },
-                {"type": "text", "text": "Describe it."},
-            ],
-        }
-    ]
-    assert renderer.render_ids(msgs, add_generation_prompt=True) == _qwen3_vl_expected(
-        msgs, add_generation_prompt=True
-    )
-
-
-def test_qwen3_vl_tool_image_content():
-    _, renderer = _qwen3_vl()
-    msgs = [
-        {"role": "user", "content": "Inspect the image."},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
-            ],
-        },
-        {
-            "role": "tool",
-            "content": [
-                {"type": "text", "text": "Tool returned image: "},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
-                },
-            ],
-        },
-    ]
-    assert renderer.render_ids(msgs, tools=TOOLS) == _qwen3_vl_expected(
-        msgs, tools=TOOLS
-    )

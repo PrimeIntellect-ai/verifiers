@@ -43,13 +43,6 @@ _TOOLS_FOOTER = (
 class Qwen3Renderer:
     """Deterministic message → token renderer for Qwen3 models."""
 
-    # Hand-coded renderers know their canonical turn-close (``<|im_end|>``)
-    # by construction, so bridging over a vLLM-truncated prior turn is safe:
-    # the synthetic close lands in the next step's prompt_ids as mask=False
-    # context, never in completion_ids, and the trainer's KL never weights
-    # it. DefaultRenderer overrides this to opt-in only.
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -231,9 +224,7 @@ class Qwen3Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._im_end, self._endoftext},
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None

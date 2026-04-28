@@ -93,7 +93,6 @@ class DefaultRenderer:
         *,
         tool_parser: str | ToolParser | None = None,
         reasoning_parser: str | ReasoningParser | None = None,
-        synthesize_close_on_truncation: bool = False,
         **chat_template_kwargs,
     ):
         self._tokenizer = tokenizer
@@ -102,7 +101,6 @@ class DefaultRenderer:
         self._reasoning_parser = _resolve_parser(
             reasoning_parser, tokenizer, get_reasoning_parser
         )
-        self.synthesize_close_on_truncation = synthesize_close_on_truncation
 
     @property
     def supports_tools(self) -> bool:

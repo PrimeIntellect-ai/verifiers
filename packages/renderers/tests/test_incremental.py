@@ -98,8 +98,6 @@ class _FakeRenderer:
     - ``<|im_end|>`` ≡ 99 is the canonical close.
     """
 
-    synthesize_close_on_truncation = True
-
     def __init__(self):
         self._im_end = 99
 
@@ -128,9 +126,7 @@ class _FakeRenderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._im_end},
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None
@@ -164,15 +160,6 @@ def test_fake_bridge_rejects_assistant_in_extension():
     renderer = _FakeRenderer()
     result = renderer.bridge_to_next_turn(
         [1], [99], [{"role": "assistant", "content": "x"}]
-    )
-    assert result is None
-
-
-def test_fake_bridge_returns_none_without_synth_opt_in():
-    renderer = _FakeRenderer()
-    renderer.synthesize_close_on_truncation = False
-    result = renderer.bridge_to_next_turn(
-        [1], [3, 4, 5], [{"role": "user", "content": "next"}]
     )
     assert result is None
 

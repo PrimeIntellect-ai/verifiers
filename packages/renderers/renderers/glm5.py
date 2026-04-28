@@ -46,8 +46,6 @@ _TOOLS_FOOTER = (
 class GLM5Renderer:
     """Deterministic message → token renderer for GLM-5 models."""
 
-    synthesize_close_on_truncation = True
-
     # GLM-5.1 flips this on: even when the most-recent assistant has no
     # reasoning content, the template wraps it with ``<think></think>``
     # instead of just emitting ``</think>`` as a separator. Subclassed in
@@ -258,10 +256,7 @@ class GLM5Renderer:
             not previous_ids[len(previous_prompt_ids) :]
             or previous_ids[-1] not in stop_ids
         ):
-            # Truncation: opt-in renderers synthesise <|endoftext|> as the
-            # canonical turn end.
-            if not self.synthesize_close_on_truncation:
-                return None
+            # Truncation: synthesise <|endoftext|> as the canonical turn end.
             previous_ids.append(self._endoftext)
 
         last_prev = previous_ids[-1]

@@ -74,8 +74,6 @@ def _render_extra_keys(obj: dict[str, Any], handled_keys: set[str]) -> list[str]
 class Nemotron3Renderer:
     """Deterministic message → token renderer for Nemotron 3 models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -131,15 +129,7 @@ class Nemotron3Renderer:
                 if isinstance(item, str):
                     parts.append(item)
                 elif isinstance(item, dict):
-                    if (
-                        item.get("type") == "image"
-                        or "image" in item
-                        or "image_url" in item
-                    ):
-                        parts.append("<|vision_start|><|image_pad|><|vision_end|>")
-                    elif item.get("type") == "video" or "video" in item:
-                        parts.append("<|vision_start|><|video_pad|><|vision_end|>")
-                    elif "text" in item:
+                    if "text" in item:
                         parts.append(item["text"])
                     else:
                         raise ValueError(f"Unexpected content item: {item}")
@@ -419,9 +409,7 @@ class Nemotron3Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             close_ids,
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None

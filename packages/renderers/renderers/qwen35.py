@@ -50,8 +50,6 @@ _TOOLS_INSTRUCTIONS = (
 class Qwen35Renderer:
     """Deterministic message → token renderer for Qwen3.5 models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -92,7 +90,7 @@ class Qwen35Renderer:
     def _render_content(content: Any) -> str:
         """Render message content to a text string (before tokenization).
 
-        Handles string, list (text/image/video items), and None.
+        Handles string, list of text parts, and None.
         """
         if content is None:
             return ""
@@ -104,15 +102,7 @@ class Qwen35Renderer:
                 if isinstance(item, str):
                     parts.append(item)
                 elif isinstance(item, dict):
-                    if (
-                        item.get("type") == "image"
-                        or "image" in item
-                        or "image_url" in item
-                    ):
-                        parts.append("<|vision_start|><|image_pad|><|vision_end|>")
-                    elif item.get("type") == "video" or "video" in item:
-                        parts.append("<|vision_start|><|video_pad|><|vision_end|>")
-                    elif "text" in item:
+                    if "text" in item:
                         parts.append(item["text"])
                     else:
                         raise ValueError(f"Unexpected content item: {item}")
@@ -308,9 +298,7 @@ class Qwen35Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._im_end, self._endoftext},
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None

@@ -28,7 +28,6 @@ from typing import Any
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from renderers.base import (
-    ImagePart,
     Message,
     ParsedResponse,
     RenderedTokens,
@@ -42,10 +41,6 @@ from renderers.base import (
 # ---------------------------------------------------------------------------
 
 _DEFAULT_SYSTEM_PROMPT = "You are Kimi, an AI assistant created by Moonshot AI."
-
-# Image wrapper tokens used by K2.5 multimodal format
-_IMAGE_PREFIX = "<|media_begin|>image<|media_content|>"
-_IMAGE_SUFFIX = "<|media_end|>\n"
 
 # ---------------------------------------------------------------------------
 # TypeScript-style tool declaration
@@ -512,8 +507,6 @@ class KimiK25Renderer:
     The tokenizer should be ``moonshotai/Kimi-K2-Instruct`` (same as K2).
     """
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -536,11 +529,6 @@ class KimiK25Renderer:
         self._tool_call_begin = self._token_id("<|tool_call_begin|>")
         self._tool_call_argument_begin = self._token_id("<|tool_call_argument_begin|>")
         self._tool_call_end = self._token_id("<|tool_call_end|>")
-
-        # Image tokens (optional — only required if image content is present)
-        self._media_begin: int | None = self._try_token_id("<|media_begin|>")
-        self._media_content: int | None = self._try_token_id("<|media_content|>")
-        self._media_end: int | None = self._try_token_id("<|media_end|>")
 
         # <think> / </think> may be multi-token in K2.5; we encode them as text.
         # We cache the encoded IDs for use in _normalize_response_tokens.
@@ -748,9 +736,7 @@ class KimiK25Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             close_ids,
-            synthesize_close=(
-                self._im_end if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._im_end,
         )
         if previous_ids is None:
             return None
@@ -832,39 +818,12 @@ class KimiK25Renderer:
                 ptype = part.get("type")
                 if ptype == "text":
                     emit_text(part.get("text", ""), msg_idx)
-                elif ptype == "image":
-                    self._emit_image(part, msg_idx, emit_special, emit_text, emit_ids)
                 elif ptype == "thinking":
                     # Thinking parts in non-assistant roles are rendered as text
                     thinking = part.get("thinking", "")
                     if thinking:
                         emit_text(f"<think>{thinking}</think>", msg_idx)
                 # Other part types are silently skipped
-
-    def _emit_image(
-        self,
-        part: ImagePart,
-        msg_idx: int,
-        emit_special,
-        emit_text,
-        emit_ids,
-    ) -> None:
-        """Emit an image content part using K2.5 media tokens."""
-        image_url: str = part.get("image", "")  # type: ignore[attr-defined]
-        if (
-            self._media_begin is not None
-            and self._media_content is not None
-            and self._media_end is not None
-        ):
-            # Use dedicated special tokens when available
-            emit_special(self._media_begin, msg_idx)
-            emit_text("image", msg_idx)
-            emit_special(self._media_content, msg_idx)
-            emit_text(image_url, msg_idx)
-            emit_special(self._media_end, msg_idx)
-        else:
-            # Fallback: encode the media markers as plain text
-            emit_text(f"{_IMAGE_PREFIX}{image_url}{_IMAGE_SUFFIX}", msg_idx)
 
     def _render_assistant_body(
         self,

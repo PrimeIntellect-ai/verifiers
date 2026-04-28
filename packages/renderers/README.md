@@ -173,7 +173,7 @@ That said, **prefer a hand-coded renderer** for any model you actually train on.
 
 ## 6. VLM support
 
-Renderers currently do not support the VLM (image) path. `Qwen3VLRenderer` exists and works for text-only conversations against Qwen3-VL checkpoints, but `ImagePart` is not plumbed through render / parse / bridge or the client. Adding real VLM support requires (a) carrying image payloads through the content-part model end-to-end and (b) deciding how image tokens interact with the extension invariant across multi-turn steps. Out of scope for this iteration.
+Renderers are text-only — `ContentPart` admits `TextPart` and `ThinkingPart`, no image or video parts. `Qwen3VLRenderer` is shipped only because the Qwen3-VL tokenizer's text-only chat template differs from Qwen3's; passing image content to any renderer raises. For multimodal training, route the model to MITO (server-side templating) instead.
 
 ---
 

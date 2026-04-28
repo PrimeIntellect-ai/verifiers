@@ -40,8 +40,6 @@ def _ds_token(name: str) -> str:
 class DeepSeekV3Renderer:
     """Deterministic message → token renderer for DeepSeek V3 models."""
 
-    synthesize_close_on_truncation = True
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -246,9 +244,7 @@ class DeepSeekV3Renderer:
             previous_prompt_ids,
             previous_completion_ids,
             {self._eos},
-            synthesize_close=(
-                self._eos if self.synthesize_close_on_truncation else None
-            ),
+            synthesize_close=self._eos,
         )
         if previous_ids is None:
             return None
