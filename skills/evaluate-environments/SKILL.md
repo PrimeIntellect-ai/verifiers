@@ -91,27 +91,31 @@ prime eval run my-env -a '{"difficulty":"hard"}'
 ```bash
 prime eval run my-env -x '{"max_turns":20,"timeout_seconds":600}'
 ```
-3. Save extra state columns:
+3. Bound per-rollout wall-clock time (preferred over `timeout_seconds` in `-x`; wins over both `-x` and TOML `[eval.extra_env_kwargs]`):
+```bash
+prime eval run my-env --timeout 600
+```
+4. Save extra state columns:
 ```bash
 prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
-4. Resume interrupted runs:
+5. Resume interrupted runs:
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Save results to a custom output directory:
+6. Save results to a custom output directory:
 ```bash
 prime eval run my-env -s -o /path/to/output
 ```
-6. Run multi-environment TOML suites:
+7. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-7. Pass extra HTTP headers via CLI (repeatable):
+8. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-8. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+9. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"

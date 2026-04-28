@@ -93,7 +93,12 @@ class MultiTurnEnv(vf.Environment):
         return state.get("final_env_response") is not None
 
     async def setup_state(self, state: State) -> State:
-        """Override to add environment-specific state fields."""
+        """Override to add environment-specific state fields.
+
+        Mutate ``state`` in place; the return is preserved for subclass-chaining
+        ergonomics but the rollout loop ignores it. Constructing a new dict and
+        returning it has no effect.
+        """
         return state
 
     async def get_prompt_messages(self, state: State) -> Messages:
@@ -169,11 +174,9 @@ class MultiTurnEnv(vf.Environment):
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
 
-        async def rollout_loop() -> State:
-            nonlocal state
-
+        async def rollout_loop() -> None:
             try:
-                state = await self.setup_state(state)
+                await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
@@ -193,7 +196,6 @@ class MultiTurnEnv(vf.Environment):
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
-            return state
 
         try:
             await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)

@@ -86,7 +86,7 @@ For per-rollout wall-clock timeouts, prefer the dedicated `--timeout` flag, whic
 prime eval run my-env --timeout 600
 ```
 
-When the timeout fires, the rollout is marked `timed_out=True` / `is_truncated=True` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
+When the timeout fires, the rollout is marked `timed_out=True` with `stop_condition="timeout_reached"` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). `is_truncated` is **not** set on timeout — that field tracks model-output truncation (token caps), not wall-clock pressure. Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
 
 The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
 
