@@ -150,11 +150,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.advanced_configs = advanced_configs
         self.labels = labels
 
-        # Pass 0 to let the OS assign a free port at bind time; resolved
-        # post-start via InterceptionServer.port. Picking the port up front
-        # via get_free_port() opens a TOCTOU race where the port can be
-        # taken between selection and aiohttp's bind, causing every rollout
-        # to fail with OSError(98, "address already in use").
         interception_port = 0 if interception_port is None else interception_port
         self.init_interception(interception_port, interception_url)
         self.add_rubric(SandboxMonitorRubric())
