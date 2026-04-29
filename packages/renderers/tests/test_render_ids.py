@@ -361,6 +361,25 @@ def _kimi_k25():
     return tokenizer, renderer
 
 
+def test_kimi_k2_inline_think_tags_render_verbatim():
+    """Kimi K2's chat template emits assistant ``content`` verbatim — including
+    any inline ``<think>...</think>`` tags. The renderer must not strip them.
+
+    Regression for a bug where ``_extract_thinking`` mutated content by
+    splitting out ``<think>...</think>`` and then discarded the extracted
+    reasoning, producing tokens that disagreed with ``apply_chat_template``.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        "moonshotai/Kimi-K2-Instruct", trust_remote_code=True
+    )
+    renderer = create_renderer(tokenizer, renderer="auto")
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "<think>secret</think>visible"},
+    ]
+    assert renderer.render_ids(msgs) == _expected(tokenizer, msgs)
+
+
 def test_kimi_k25_tool_declare_message_without_tools_param():
     """``role=tool_declare`` messages must be emitted from their content when
     no ``tools=`` arg is passed — not silently dropped.

@@ -99,27 +99,6 @@ class KimiK2Renderer:
 
         return messages, -1
 
-    @staticmethod
-    def _extract_thinking(msg: Message, content: str) -> tuple[str, str]:
-        """Return (reasoning_content, plain_content) extracted from message.
-
-        Checks msg['reasoning_content'] first, then falls back to parsing
-        <think>...</think> out of the content string.
-        """
-        if isinstance(msg.get("reasoning_content"), str):
-            return msg["reasoning_content"], content
-
-        if "</think>" in content:
-            before, after = content.split("</think>", 1)
-            if "<think>" in before:
-                reasoning = before.split("<think>")[-1].lstrip("\n")
-            else:
-                reasoning = before.lstrip("\n")
-            reasoning = reasoning.rstrip("\n")
-            return reasoning, after.lstrip("\n")
-
-        return "", content
-
     def render(
         self,
         messages: list[Message],
@@ -389,18 +368,16 @@ class KimiK2Renderer:
         emit_special,
         emit_text,
     ) -> None:
-        reasoning_content, content = self._extract_thinking(msg, content)
-
         emit_special(self._im_assistant, msg_idx)
         emit_text("assistant", msg_idx)
         emit_special(self._im_middle, msg_idx)
 
-        # Kimi K2's Jinja template has no reasoning-content support — the
-        # assistant turn renders just its content verbatim. Drop any
-        # reasoning_content to stay byte-identical with apply_chat_template;
-        # round-trip's reasoning assertion is guarded on non-None so this
-        # stays consistent across the matrix.
-        _ = reasoning_content, is_last_turn  # intentionally unused for K2
+        # Kimi K2's Jinja template has no reasoning-content support: the
+        # assistant turn renders its ``content`` verbatim, including any
+        # inline ``<think>...</think>`` tags. The separate
+        # ``reasoning_content`` field is dropped (the template never reads
+        # it). ``is_last_turn`` is unused here for the same reason.
+        _ = is_last_turn
         emit_text(content, msg_idx)
 
         # Tool calls
