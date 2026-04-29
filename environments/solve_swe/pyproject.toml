@@ -5,7 +5,7 @@ description = "Gold-patch validation of SWE tasksets (no agent, no LLM)"
 tags = ["swe", "validation", "sandbox", "no-llm", "eval"]
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.13.dev9",
+    "verifiers>=0.1.13.dev8",
 ]
 
 [build-system]

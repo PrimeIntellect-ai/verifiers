@@ -89,12 +89,13 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
         self._memory_gb = memory_gb
         self._disk_size_gb = disk_size_gb
         self.labels = labels or ["solve"]
-        self.timeout_seconds: float = timeout_seconds
         self.test_output_tail_chars: int = test_output_tail_chars
 
         dataset = dataset or taskset.get_dataset()
         rubric = SolveRubric()
-        super().__init__(dataset=dataset, rubric=rubric)
+        super().__init__(
+            dataset=dataset, rubric=rubric, timeout_seconds=timeout_seconds
+        )
         self.init_sandbox_client(**sandbox_kwargs)
 
     async def env_response(
