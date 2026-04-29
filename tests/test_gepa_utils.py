@@ -26,6 +26,23 @@ def test_save_gepa_results_writes_best_system_prompt_verbatim(tmp_path):
     assert not (tmp_path / "best_prompt.txt").exists()
 
 
+def test_save_gepa_results_handles_none_best_score(tmp_path):
+    prompt = "System prompt.\n"
+    result = SimpleNamespace(
+        best_idx=0,
+        best_candidate={"system_prompt": prompt},
+        val_aggregate_scores=[None],
+    )
+
+    save_gepa_results(tmp_path, result)
+
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    rows = _read_jsonl(tmp_path / "results.jsonl")
+    assert metadata["best_score"] is None
+    assert rows[0]["score"] is None
+    assert rows[0]["reward"] == 0.0
+
+
 def test_save_gepa_results_writes_upload_schema_without_task_fields(tmp_path):
     prompt = "Answer with one word.\n"
     result = SimpleNamespace(

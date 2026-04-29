@@ -289,6 +289,11 @@ def save_gepa_results(
     (run_dir / "system_prompt.txt").write_text(system_prompt, encoding="utf-8")
 
     # Build and save metadata
+    best_score = (
+        _to_float(val_scores[best_idx])
+        if val_scores and best_idx < len(val_scores)
+        else None
+    )
     metadata = {
         "schema_version": GEPA_SCHEMA_VERSION,
         "eval_kind": GEPA_EVAL_KIND,
@@ -300,9 +305,7 @@ def save_gepa_results(
         "reflection_model": config.get("reflection_model") if config else None,
         "num_candidates": len(candidates),
         "best_idx": best_idx,
-        "best_score": float(val_scores[best_idx])
-        if val_scores and best_idx < len(val_scores)
-        else None,
+        "best_score": best_score,
         "total_metric_calls": getattr(result, "total_metric_calls", None),
         "initial_prompt_sha256": _sha256_text(_prompt_from_candidate(candidates[0]))
         if candidates
