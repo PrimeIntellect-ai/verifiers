@@ -149,7 +149,7 @@ class MultiSWERubric(vf.Rubric):
         sandbox_id = state.get("sandbox_id")
         if not sandbox_client or not sandbox_id:
             return 0.0
-        timeout = state.get("test_timeout", 900)
+        timeout = state.get("test_timeout", 1800)
         try:
             test_output = await self.taskset._run_tests(
                 sandbox_client, sandbox_id, state, timeout
@@ -177,11 +177,14 @@ class MultiSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/Multi-SWE-RL",
         split: str = "train",
-        exclude_langs: tuple[str, ...] = ("c", "cpp"),
+        # Default empty: include every language in the dataset. Pass e.g.
+        # ``exclude_langs=("c", "cpp")`` to drop those buckets.
+        exclude_langs: tuple[str, ...] = (),
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
-        ds_keep_in_memory: bool = True,
+        ds_keep_in_memory: bool = False,
+        ds_load_from_cache: bool = True,
         timeout_minutes: int | None = None,
     ):
         """
@@ -198,6 +201,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
+        self.ds_load_from_cache = ds_load_from_cache
         self.timeout_minutes = timeout_minutes
         super().__init__(
             dataset=self._build_dataset,
@@ -211,7 +215,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         _kw = dict(
             num_proc=self.ds_num_proc,
             keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
+            load_from_cache_file=self.ds_load_from_cache,
         )
         dataset = load_dataset(
             self.dataset_name,
@@ -233,7 +237,7 @@ class MultiSWETaskSet(SandboxTaskSet):
             _process_example,
             remove_columns=dataset.column_names,
             keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
+            load_from_cache_file=self.ds_load_from_cache,
         )
 
     def get_instruction(self, info: dict) -> str:
@@ -406,12 +410,18 @@ class MultiSWETaskSet(SandboxTaskSet):
         which keeps its own try/except so a transient failure still scores
         0 rather than crashing the rollout.
         """
+        import time as _time
+
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
+        t0 = _time.monotonic()
         await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        state["gold_apply_s"] = _time.monotonic() - t0
+        t1 = _time.monotonic()
         test_output = await self._run_tests(
-            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 1800)
         )
+        state["test_run_s"] = _time.monotonic() - t1
         state["test_output"] = test_output
         info = state.get("info") or {}
         return float(self._calculate_reward(state.get("test_output", ""), info)) > 0

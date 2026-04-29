@@ -135,6 +135,15 @@ difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
 
+## Gold-Patch Validation (no LLM)
+For `SandboxTaskSet`-backed environments (e.g. `solve_swe`), validate the harness end-to-end without inference using `SolveEnv`: applies the gold patch, runs the test command, reports a binary reward. Use `-m none` and the matching state columns:
+```bash
+vf-eval solve_swe -a '{"task_type":"multiswe"}' \
+    --state-columns reason,attempts,elapsed_s,sandbox_create_s,gold_apply_s,test_run_s,test_output_tail \
+    -m none -s --resume
+```
+`reason` ∈ `{pass, test_failed, gold_apply_failed, setup_failed, sandbox_error, billing_error, timeout}`.
+
 ## Inspect Saved Results
 1. Browse locally saved runs:
 ```bash
