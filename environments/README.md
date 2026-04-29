@@ -50,6 +50,9 @@ This folder contains installable example environments that showcase common usage
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
+- **SolveEnv (gold-patch validation, no agent)**
+  - **solve_swe**: Applies the gold `fix_patch` and runs tests for any composable SWE `SandboxTaskSet` (`r2e`, `multiswe`, `swebench`, `openswe`); used to spot-check task integrity and establish reward upper bounds without an LLM.
+
 ### Composition
 - **EnvGroup**
   - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
