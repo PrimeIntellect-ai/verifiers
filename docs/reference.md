@@ -34,6 +34,19 @@ ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
 
 OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
 
+### SystemMessage
+
+```python
+class SystemMessage:
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage": ...
+```
+
+Provider-agnostic system message type. Use `vf.SystemMessage.from_path(...)` to load a system prompt from a UTF-8 text file while preserving the file contents verbatim.
+
 ### Info
 
 ```python

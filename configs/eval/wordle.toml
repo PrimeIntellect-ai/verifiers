@@ -1,0 +1,8 @@
+model = "openai/gpt-5.4"
+save_results = true
+
+[[eval]]
+env_id = "primeintellect/wordle"
+num_examples = 20
+rollouts_per_example = 1
+# env_args = { path_to_system_prompt = "/path/to/system_prompt.txt" }
