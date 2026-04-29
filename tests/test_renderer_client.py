@@ -151,6 +151,34 @@ async def test_renderer_client_rejects_empty_dict_native_response():
         await client.raise_from_native_response({})
 
 
+@pytest.mark.asyncio
+async def test_from_native_response_propagates_id_model_created():
+    """vLLM /generate returns id/model/created at the top of the response;
+    completions_request must thread them through so Response.id, .model,
+    and .created don't fall back to empty defaults.
+    """
+    client = object.__new__(RendererClient)
+    response_dict = {
+        "id": "resp-42",
+        "model": "Qwen/Qwen3-8B",
+        "created": 1700000000,
+        "content": "ok",
+        "reasoning_content": None,
+        "tool_calls": None,
+        "finish_reason": "stop",
+        "prompt_ids": [1, 2, 3],
+        "completion_ids": [4, 5],
+        "completion_logprobs": [-0.1, -0.2],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        "routed_experts": None,
+    }
+
+    response = await client.from_native_response(response_dict)
+    assert response.id == "resp-42"
+    assert response.model == "Qwen/Qwen3-8B"
+    assert response.created == 1700000000
+
+
 class _BridgeRenderer:
     supports_tools = True
 

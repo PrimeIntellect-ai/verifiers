@@ -181,6 +181,9 @@ async def completions_request(
         finish_reason = "tool_calls"
 
     return {
+        "id": data.get("id") or "",
+        "created": data.get("created") or 0,
+        "model": data.get("model") or "",
         "prompt_ids": list(prompt_ids),
         "completion_ids": list(completion_ids),
         "completion_logprobs": completion_logprobs,
