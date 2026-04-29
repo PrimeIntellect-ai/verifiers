@@ -471,7 +471,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Hook to normalize the model response before it is stored in the trajectory.
 
         Override in subclasses to align the stored step format with the agent's
-        own message history conventions, enabling TITO prefix cache hits.
+        own message history conventions.
         """
         return response
 
@@ -578,7 +578,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         error: BaseException | None = None
 
         try:
-            # Always use base class path (non-streaming, supports TITO)
+            # Always use the base-class path; streaming is synthesized afterward.
             response = await super().get_model_response(
                 state=state,
                 prompt=prompt,
