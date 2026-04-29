@@ -134,7 +134,6 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
         try:
             valid = await self.taskset.validate_instance(state)
             state["reward"] = float(valid)
-            state["completion"] = f"reward={float(valid)}"
         except Exception as e:
             exc = e
             state["error"] = vf.SandboxError(f"Validation failed: {repr(e)}")
