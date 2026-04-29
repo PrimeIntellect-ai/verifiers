@@ -420,5 +420,3 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
             assert len(this_prompt) > len(prev_combined), (
                 f"turn {turn_idx}: prompt didn't grow past previous combined for {model_name}"
             )
-
-
