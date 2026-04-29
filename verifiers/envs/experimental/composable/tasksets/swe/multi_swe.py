@@ -177,6 +177,8 @@ class MultiSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/Multi-SWE-RL",
         split: str = "train",
+        # Default empty: include every language in the dataset. Pass e.g.
+        # ``exclude_langs=("c", "cpp")`` to drop those buckets.
         exclude_langs: tuple[str, ...] = (),
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
