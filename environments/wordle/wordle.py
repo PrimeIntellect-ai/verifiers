@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 import verifiers as vf
 from verifiers.envs.integrations.textarena_env import TextArenaEnv
@@ -57,9 +58,15 @@ def load_environment(
     num_train_examples: int = 2000,
     num_eval_examples: int = 20,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    path_to_system_prompt: str | Path | None = None,
     seed: int = 0,
     **kwargs,
 ):
+    if path_to_system_prompt is not None:
+        system_prompt = (
+            Path(path_to_system_prompt).expanduser().read_text(encoding="utf-8")
+        )
+
     parser = vf.XMLParser(fields=["guess"], answer_field="guess")
 
     rubric = vf.Rubric(parser=parser)

@@ -109,6 +109,10 @@ class SystemMessage(CustomBaseModel):
     role: Literal["system"] = "system"
     content: MessageContent
 
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage":
+        return cls(content=Path(path).read_text(encoding="utf-8"))
+
 
 class UserMessage(CustomBaseModel):
     role: Literal["user"] = "user"
