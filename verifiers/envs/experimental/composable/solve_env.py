@@ -74,7 +74,7 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
         self,
         taskset: SandboxTaskSet,
         dataset: Any = None,
-        test_timeout: int = 900,
+        test_timeout: int = 1800,
         cpu_cores: int | None = None,
         memory_gb: int | None = None,
         disk_size_gb: int | None = None,
@@ -124,7 +124,9 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
             timeout_minutes=math.ceil(self.timeout_seconds / 60),
             labels=self.labels,
         )
+        t_sandbox = time.monotonic()
         await self.create_sandbox(state, request)
+        state["sandbox_create_s"] = time.monotonic() - t_sandbox
 
         t0 = time.monotonic()
         valid = False

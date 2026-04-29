@@ -485,12 +485,18 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
 
     async def validate_instance(self, state) -> bool:
         """Apply gold patch, run tests, check reward > 0."""
+        import time as _time
+
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
+        t0 = _time.monotonic()
         await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        state["gold_apply_s"] = _time.monotonic() - t0
+        t1 = _time.monotonic()
         test_output = await self._run_tests(
-            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 1800)
         )
+        state["test_run_s"] = _time.monotonic() - t1
         state["test_output"] = test_output
         info = state.get("info") or {}
         return self._calculate_reward(test_output, info) > 0
