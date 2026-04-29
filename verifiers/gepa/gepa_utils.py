@@ -203,8 +203,7 @@ def save_gepa_results(
         parents = _get_field(state, "parent_program_for_candidate", [])
         discovery_eval_counts = _get_field(state, "num_metric_calls_by_discovery", [])
 
-    # Fallback to result object if state file doesn't have data
-    # Clear val_subscores too since they reference state file candidate indices
+    # Fallback to result object if state file doesn't have data.
     if not candidates:
         candidates = getattr(result, "candidates", [])
         val_subscores = getattr(result, "val_subscores", [])
