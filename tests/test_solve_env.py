@@ -82,7 +82,8 @@ def test_classify_reasons():
 @pytest.mark.asyncio
 async def test_setup_state_populates_attempts_elapsed_and_reason():
     env = _build_env(validate_returns=True)
-    state = await env.setup_state({"info": {"id": 0}, "answer": ""})
+    state: dict = {"info": {"id": 0}, "answer": ""}
+    await env.setup_state(state)
     assert state["attempts"] == 1
     assert state["reward"] == 1.0
     assert state["reason"] == "pass"
