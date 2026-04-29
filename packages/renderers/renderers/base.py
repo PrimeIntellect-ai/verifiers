@@ -436,7 +436,6 @@ def build_training_sample(
     *,
     role_to_mask: Callable[[Message], bool],
     tools: list[ToolSpec] | None = None,
-    collapse_consecutive_tool_messages: bool = False,
 ) -> tuple[list[int], list[bool]]:
     """Build (token_ids, loss_mask) for supervised training.
 

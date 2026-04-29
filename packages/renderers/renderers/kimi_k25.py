@@ -627,9 +627,6 @@ class KimiK25Renderer:
         # ── Iterate messages ─────────────────────────────────────────
         for i, msg in enumerate(messages):
             role = msg.get("role", "")
-            if role == "tool_declare":
-                # Already emitted above (or will be emitted via tools= path)
-                continue
 
             # set_roles: role tag + role_name + <|im_middle|>
             if role == "user":

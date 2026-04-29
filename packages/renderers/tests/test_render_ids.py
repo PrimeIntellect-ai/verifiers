@@ -347,3 +347,32 @@ def _qwen3_vl():
 def test_qwen3_vl_auto_renderer():
     _, renderer = _qwen3_vl()
     assert type(renderer).__name__ == "Qwen3VLRenderer"
+
+
+# ── Kimi K2.5: tool_declare message handling ──────────────────────────
+
+
+@lru_cache
+def _kimi_k25():
+    tokenizer = AutoTokenizer.from_pretrained(
+        "moonshotai/Kimi-K2.5", trust_remote_code=True
+    )
+    renderer = create_renderer(tokenizer, renderer="auto")
+    return tokenizer, renderer
+
+
+def test_kimi_k25_tool_declare_message_without_tools_param():
+    """``role=tool_declare`` messages must be emitted from their content when
+    no ``tools=`` arg is passed — not silently dropped.
+
+    Regression for the Kimi K2.5 chat template: the template's per-message loop
+    sends every message (including ``tool_declare``) through ``set_roles`` +
+    ``render_content``, regardless of the ``tools`` parameter. The renderer
+    used to ``continue`` past ``tool_declare`` messages, dropping them.
+    """
+    tokenizer, renderer = _kimi_k25()
+    msgs = [
+        {"role": "tool_declare", "content": "function calc(x: number): number;"},
+        {"role": "user", "content": "use the calc tool"},
+    ]
+    assert renderer.render_ids(msgs) == _expected(tokenizer, msgs)
