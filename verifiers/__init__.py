@@ -68,6 +68,7 @@ __all__ = [
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",
     "OpenAICompletionsClient",
+    "OpenAIResponsesClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -104,6 +105,9 @@ _LAZY_IMPORTS = {
     ),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
+    "OpenAIResponsesClient": (
+        "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
@@ -173,6 +177,7 @@ if TYPE_CHECKING:
         OpenAIChatCompletionsTokenClient,
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
