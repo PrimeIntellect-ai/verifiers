@@ -32,7 +32,9 @@ class TestApiEnv:
         )
         assert env.agent_fn is noop_agent
         assert env.interception_port == 8765
-        assert env.timeout_seconds == 3600.0
+        # timeout_seconds default of None means no wall-clock cap, matching
+        # MultiTurnEnv. --timeout N (CLI) or kwarg sets it.
+        assert env.timeout_seconds is None
         assert env.poll_interval == 1.0
         assert env.use_tunnel is False
 
@@ -53,13 +55,15 @@ class TestApiEnv:
         assert env.use_tunnel is True
 
     def test_init_auto_port(self, sample_chat_dataset):
-        """Test that a free port is auto-assigned when not specified."""
+        """Test that port=0 is used when not specified (OS assigns at bind time)."""
         env = vf.ApiEnv(
             agent_fn=noop_agent,
             dataset=sample_chat_dataset,
             rubric=vf.Rubric(),
         )
-        assert env.interception_port > 0
+        # Port 0 means "let the OS pick a free port at server-start time".
+        # The actual assigned port is only known after interception_server.start().
+        assert env.interception_port == 0
 
     @pytest.mark.asyncio
     async def test_agent_completed_stop_condition(self, sample_chat_dataset):
@@ -75,24 +79,6 @@ class TestApiEnv:
 
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
-
-    @pytest.mark.asyncio
-    async def test_timeout_reached_stop_condition(self, sample_chat_dataset):
-        """Test the timeout_reached stop condition."""
-        env = vf.ApiEnv(
-            agent_fn=noop_agent,
-            dataset=sample_chat_dataset,
-            rubric=vf.Rubric(),
-            timeout_seconds=10.0,
-        )
-
-        state: dict = {"timing": {"start_time": time.time()}}
-        assert await env.timeout_reached(state) is False
-        assert state.get("agent_timed_out") is None
-
-        state = {"timing": {"start_time": time.time() - 20}}
-        assert await env.timeout_reached(state) is True
-        assert state["agent_timed_out"] is True
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_chat_dataset):
@@ -201,7 +187,7 @@ class TestApiEnv:
             client=mock_client,
             model="test-model",
         )
-        state = await env.setup_state(state)
+        await env.setup_state(state)
 
         try:
             assert "rollout_id" in state
@@ -437,25 +423,6 @@ class TestPollNextRequest:
             "request_id_queue": queue,
             "agent_completed": True,
             "timing": {"start_time": time.time()},
-        }
-        result = await env._poll_next_request(state)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_timeout(self, sample_chat_dataset):
-        """Test that None is returned when the rollout timeout elapses."""
-        env = vf.ApiEnv(
-            agent_fn=noop_agent,
-            dataset=sample_chat_dataset,
-            rubric=vf.Rubric(),
-            timeout_seconds=0.0,
-            poll_interval=0.05,
-        )
-        queue: asyncio.Queue = asyncio.Queue()
-        state = {
-            "request_id_queue": queue,
-            "agent_completed": False,
-            "timing": {"start_time": time.time() - 10},
         }
         result = await env._poll_next_request(state)
         assert result is None
@@ -700,5 +667,7 @@ class TestApiEnvMonitorRubric:
 
         rubric = ApiEnvMonitorRubric()
 
-        state: dict = {"agent_timed_out": True}
+        # MultiTurnEnv.mark_timed_out writes state["timed_out"]=True when
+        # asyncio.wait_for fires; the rubric mirrors that contract.
+        state: dict = {"timed_out": True}
         assert await rubric.agent_timeout(state) == 1.0

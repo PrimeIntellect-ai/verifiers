@@ -39,8 +39,8 @@ class ApiEnvMonitorRubric(vf.Rubric):
         self.add_metric(self.agent_timeout)
 
     async def agent_timeout(self, state: vf.State) -> float:
-        """Whether the agent timed out."""
-        return float(bool(state.get("agent_timed_out")))
+        """Whether the agent timed out (set by MultiTurnEnv.mark_timed_out)."""
+        return float(bool(state.get("timed_out")))
 
 
 class ApiEnv(vf.MultiTurnEnv):
@@ -58,14 +58,18 @@ class ApiEnv(vf.MultiTurnEnv):
         interception_url: str | None = None,
         use_tunnel: bool = False,
         max_turns: int = -1,
-        timeout_seconds: float = 3600.0,
+        timeout_seconds: float | None = None,
         poll_interval: float = 1.0,
         **kwargs,
     ):
-        super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
+        super().__init__(
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+            message_type="chat",
+            **kwargs,
+        )
         self.agent_fn = agent_fn
         self.poll_interval = poll_interval
-        self.timeout_seconds = timeout_seconds
         self.use_tunnel = use_tunnel
 
         interception_port = 0 if interception_port is None else interception_port
@@ -286,7 +290,9 @@ class ApiEnv(vf.MultiTurnEnv):
         """Poll for the next intercepted request, checking liveness in between.
 
         Returns a request_id when a request arrives, or None when the agent
-        has completed or the rollout has timed out.
+        has completed. Wall-clock rollout timeouts are enforced by
+        MultiTurnEnv.rollout via asyncio.wait_for; this loop only handles
+        per-poll liveness (tunnel death, agent completion).
         """
         request_id_queue = state["request_id_queue"]
         while True:
@@ -303,9 +309,6 @@ class ApiEnv(vf.MultiTurnEnv):
                     )
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    return None
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
-                    state["agent_timed_out"] = True
                     return None
 
     async def get_prompt_messages(self, state: State) -> Messages:
@@ -459,7 +462,7 @@ class ApiEnv(vf.MultiTurnEnv):
         )
         agent_error = state.get("agent_error")
         exit_code = state.get("agent_exit_code")
-        timed_out = state.get("agent_timed_out", False)
+        timed_out = state.get("timed_out", False)
         duration_s = state["timing"].get("total_ms", 0) / 1000
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
@@ -484,15 +487,6 @@ class ApiEnv(vf.MultiTurnEnv):
     async def agent_completed(self, state: State) -> bool:
         """Check if agent has completed."""
         return state.get("agent_completed", False)
-
-    @vf.stop
-    async def timeout_reached(self, state: State) -> bool:
-        """Check rollout timeout."""
-        elapsed = time.time() - state["timing"]["start_time"]
-        if elapsed > self.timeout_seconds:
-            state["agent_timed_out"] = True
-            return True
-        return False
 
     @vf.cleanup(priority=10)
     async def cleanup_rollout(self, state: State):
