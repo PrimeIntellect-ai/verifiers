@@ -119,7 +119,9 @@ class SolveEnv(SandboxMixin, vf.MultiTurnEnv):
             docker_image=spec.image,
             cpu_cores=spec.cpu_cores if self._cpu_cores is None else self._cpu_cores,
             memory_gb=spec.memory_gb if self._memory_gb is None else self._memory_gb,
-            disk_size_gb=spec.disk_size_gb if self._disk_size_gb is None else self._disk_size_gb,
+            disk_size_gb=spec.disk_size_gb
+            if self._disk_size_gb is None
+            else self._disk_size_gb,
             gpu_count=spec.gpu_count,
             gpu_type=spec.gpu_type,
             vm=spec.gpu_count > 0,
