@@ -63,9 +63,9 @@ def load_environment(
     **kwargs,
 ):
     if path_to_system_prompt is not None:
-        system_prompt = (
-            Path(path_to_system_prompt).expanduser().read_text(encoding="utf-8")
-        )
+        system_prompt = vf.SystemMessage.from_path(
+            Path(path_to_system_prompt).expanduser()
+        ).content
 
     parser = vf.XMLParser(fields=["guess"], answer_field="guess")
 
