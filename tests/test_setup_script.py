@@ -214,7 +214,7 @@ def test_run_setup_prints_post_setup_call_to_action(
     assert "prime env install my-env" not in output
     assert "prime eval run my-env -m openai/gpt-5-nano -n 5" in output
     assert "prime eval tui" in output
-    assert "prime rl run configs/rl/wiki-search.toml" in output
+    assert "prime rl run configs/rl/qwen-3-5.toml" in output
     assert "prime gepa run my-env -m openai/gpt-5-nano" in output
 
 
@@ -238,7 +238,7 @@ def test_run_setup_prints_prime_rl_post_setup_call_to_action(
     assert "example prompt" not in output
     assert "prime env install my-env" not in output
     assert "uv run prime-rl configs/prime-rl/wiki-search.toml" in output
-    assert "prime rl run configs/rl/wiki-search.toml" not in output
+    assert "prime rl run configs/rl/qwen-3-5.toml" not in output
 
 
 def test_run_setup_persists_lab_choices_metadata(tmp_path: Path, monkeypatch) -> None:

@@ -39,39 +39,41 @@ This will download example TOML configs for Hosted Training into `configs/rl/`, 
 configs/
 ├── endpoints.toml
 ├── eval/
-│   ├── minimal.toml
-│   ├── multi-env.toml
-│   └── wordle.toml
+│   ├── qwen-3-5.toml
+│   ├── qwen-3-5-moe.toml
+│   ├── nemotron-3.toml
+│   └── llama-3.toml
 ├── rl/
-│   ├── alphabet-sort.toml
-│   ├── gsm8k.toml
-│   ├── math-python.toml
-│   ├── reverse-text.toml
-│   ├── wiki-search.toml
-│   └── wordle.toml
+│   ├── qwen-3-5.toml
+│   ├── qwen-3-5-moe.toml
+│   ├── qwen-3-5-moe-advanced.toml
+│   ├── nemotron-3.toml
+│   └── llama-3.toml
 └── gepa/
-    ├── base.toml
-    └── wordle.toml
+    ├── qwen-3-5.toml
+    ├── qwen-3-5-moe.toml
+    ├── nemotron-3.toml
+    └── llama-3.toml
 ```
 
-Example configuration file for the `primeintellect/alphabet-sort` environment with `Qwen/Qwen3-30B-A3B-Instruct-2507`:
+Example configuration file for the `primeintellect/reverse-text` environment with `Qwen/Qwen3.5-4B`:
 
 ```toml
-model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-max_steps = 500
-batch_size = 256
+# Qwen3.5 dense models. Uncomment exactly one model.
+# model = "Qwen/Qwen3.5-0.8B"
+# model = "Qwen/Qwen3.5-2B"
+model = "Qwen/Qwen3.5-4B"
+# model = "Qwen/Qwen3.5-9B"
+
+max_steps = 100
+batch_size = 128
 rollouts_per_example = 8
 
 [sampling]
-max_tokens = 512
+max_tokens = 1024
 
 [[env]]
-id = "primeintellect/alphabet-sort"
-args = { min_turns = 3, max_turns = 5, power_per_turn = false }
-
-[wandb]
-project = "alphabet-sort"
-name = "qwen3-30b-i-alphabet-sort"
+id = "primeintellect/reverse-text"
 ```
 
 For v1 BYO Harness environments, put taskset/harness config under
@@ -108,13 +110,25 @@ See [BYO Harness](byo-harness.md#toml-config) for the matching eval config
 shape and v1 callable/toolset patterns.
 
 We currently support the following models for Hosted Training:
-- `Qwen/Qwen3-4B-Instruct-2507` 
+- `Qwen/Qwen3-30B-A3B-Instruct-2507`
+- `Qwen/Qwen3-30B-A3B-Thinking-2507`
+- `Qwen/Qwen3-4B-Instruct-2507`
 - `Qwen/Qwen3-4B-Thinking-2507`
-- `Qwen/Qwen3-30B-Instruct-2507`
-- `Qwen/Qwen3-30B-Thinking-2507`
-- `Qwen/Qwen3-235B-Instruct-2507`
-- `Qwen/Qwen3-235B-Thinking-2507`
-- `PrimeIntellect/INTELLECT-3`
+- `Qwen/Qwen3-VL-4B-Instruct`
+- `Qwen/Qwen3.5-0.8B`
+- `Qwen/Qwen3.5-2B`
+- `Qwen/Qwen3.5-4B`
+- `Qwen/Qwen3.5-9B`
+- `Qwen/Qwen3.5-35B-A3B`
+- `Qwen/Qwen3.5-122B-A10B`
+- `Qwen/Qwen3.5-397B-A17B`
+- `meta-llama/Llama-3.2-1B-Instruct`
+- `meta-llama/Llama-3.2-3B-Instruct`
+- `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`
+- `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16`
+- `openai/gpt-oss-20b`
+- `openai/gpt-oss-120b`
+- `zai-org/GLM-4.7`
 
 Hosted Training is currently in Private Beta. For access, please fill out [this form](https://form.typeform.com/to/iYn9UliG).
 

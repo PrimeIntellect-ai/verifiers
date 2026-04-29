@@ -1,0 +1,24 @@
+# Llama 3.2 models. Update both fields when switching sizes.
+model = "meta-llama/Llama-3.2-1B-Instruct"
+reflection_model = "meta-llama/Llama-3.2-1B-Instruct"
+# model = "meta-llama/Llama-3.2-3B-Instruct"
+# reflection_model = "meta-llama/Llama-3.2-3B-Instruct"
+
+[env]
+env_id = "primeintellect/reverse-text"
+# env_id = "primeintellect/wordle"
+# env_id = "primeintellect/wiki-search"
+# env_id = "primeintellect/dspy-flights"
+# env_id = "primeintellect/opencode-harbor"
+
+[gepa]
+max_calls = 500
+num_train = 100
+num_val = 50
+minibatch_size = 3
+
+[execution]
+max_concurrent = 32
+sampling_args = { max_tokens = 1024 }
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

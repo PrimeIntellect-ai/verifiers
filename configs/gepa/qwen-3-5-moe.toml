@@ -1,0 +1,26 @@
+# Qwen3.5 MoE models. Update both fields when switching sizes.
+model = "Qwen/Qwen3.5-35B-A3B"
+reflection_model = "Qwen/Qwen3.5-35B-A3B"
+# model = "Qwen/Qwen3.5-122B-A10B"
+# reflection_model = "Qwen/Qwen3.5-122B-A10B"
+# model = "Qwen/Qwen3.5-397B-A17B"
+# reflection_model = "Qwen/Qwen3.5-397B-A17B"
+
+[env]
+env_id = "primeintellect/wiki-search"
+# env_id = "primeintellect/reverse-text"
+# env_id = "primeintellect/wordle"
+# env_id = "primeintellect/dspy-flights"
+# env_id = "primeintellect/opencode-harbor"
+
+[gepa]
+max_calls = 500
+num_train = 100
+num_val = 50
+minibatch_size = 3
+
+[execution]
+max_concurrent = 32
+sampling_args = { max_tokens = 2048 }
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

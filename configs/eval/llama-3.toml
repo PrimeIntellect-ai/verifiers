@@ -1,0 +1,24 @@
+# Llama 3.2 models. Uncomment exactly one model.
+model = "meta-llama/Llama-3.2-1B-Instruct"
+# model = "meta-llama/Llama-3.2-3B-Instruct"
+
+num_examples = 20
+rollouts_per_example = 1
+max_tokens = 1024
+
+[[eval]]
+env_id = "primeintellect/reverse-text"
+
+# [[eval]]
+# env_id = "primeintellect/wordle"
+
+# [[eval]]
+# env_id = "primeintellect/wiki-search"
+
+# [[eval]]
+# env_id = "primeintellect/dspy-flights"
+
+# [[eval]]
+# env_id = "primeintellect/opencode-harbor"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

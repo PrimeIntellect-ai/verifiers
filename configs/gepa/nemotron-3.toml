@@ -1,0 +1,24 @@
+# Nemotron 3 models. Update both fields when switching sizes.
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+reflection_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+# model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+# reflection_model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+
+[env]
+env_id = "primeintellect/wiki-search"
+# env_id = "primeintellect/reverse-text"
+# env_id = "primeintellect/wordle"
+# env_id = "primeintellect/dspy-flights"
+# env_id = "primeintellect/opencode-harbor"
+
+[gepa]
+max_calls = 500
+num_train = 100
+num_val = 50
+minibatch_size = 3
+
+[execution]
+max_concurrent = 32
+sampling_args = { max_tokens = 2048 }
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training
