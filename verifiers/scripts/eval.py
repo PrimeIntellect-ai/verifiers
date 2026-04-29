@@ -443,6 +443,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-rollout wall-clock timeout in seconds. Overrides timeout_seconds in --extra-env-kwargs.",
+    )
+    parser.add_argument(
         "--fullscreen",
         "-f",
         default=False,
@@ -778,12 +784,16 @@ def main(argv: list[str] | None = None):
         else:
             raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
+        extra_env_kwargs = dict(raw.get("extra_env_kwargs", {}))
+        if raw.get("timeout") is not None:
+            extra_env_kwargs["timeout_seconds"] = raw["timeout"]
+
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),
-            extra_env_kwargs=raw.get("extra_env_kwargs", {}),
+            extra_env_kwargs=extra_env_kwargs,
             endpoint_id=resolved_endpoint_id,
             model=model,
             client_config=client_config,

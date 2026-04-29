@@ -183,7 +183,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = False,
         ds_load_from_cache: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
         """
         Args:

@@ -3460,9 +3460,9 @@ class RLMEnv(vf.StatefulToolEnv):
         }
         return state
 
-    async def setup_state(self, state: State, **kwargs) -> State:
+    async def setup_state(self, state: State, **kwargs) -> None:
         """Setup worker, filesystem context, and interception for sub-LLM calls."""
-        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -3471,7 +3471,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         try:
             # 1. Setup interception and register rollout
-            state = await self._setup_interception_and_register(state, rollout_id)
+            await self._setup_interception_and_register(state, rollout_id)
 
             # 2. Create rollout directories
             self._executor.create_rollout_dirs(state)
@@ -3528,8 +3528,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
-
-            return state
         except Exception:
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
             if rollout_id in self.active_rollouts:

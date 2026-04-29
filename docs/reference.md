@@ -34,6 +34,19 @@ ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
 
 OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
 
+### SystemMessage
+
+```python
+class SystemMessage:
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage": ...
+```
+
+Provider-agnostic system message type. Use `vf.SystemMessage.from_path(...)` to load a system prompt from a UTF-8 text file while preserving the file contents verbatim.
+
 ### Info
 
 ```python
@@ -349,7 +362,12 @@ Single-response Q&A tasks. Inherits from `Environment`.
 
 ```python
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = -1, **kwargs): ...
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ): ...
 ```
 
 Multi-turn interactions. Subclasses must implement `env_response`.
@@ -361,7 +379,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
     """Generate environment feedback after model turn."""
 ```
 
-**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
+**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `timeout_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
 
 **Hooks:**
 

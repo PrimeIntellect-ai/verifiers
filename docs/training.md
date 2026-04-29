@@ -40,7 +40,8 @@ configs/
 ├── endpoints.toml
 ├── eval/
 │   ├── minimal.toml
-│   └── multi-env.toml
+│   ├── multi-env.toml
+│   └── wordle.toml
 ├── rl/
 │   ├── alphabet-sort.toml
 │   ├── gsm8k.toml
@@ -130,8 +131,9 @@ Key options:
 ### Output
 
 After optimization, you'll find:
-- `best_prompt.txt` - The optimized system prompt
-- `pareto_frontier.jsonl` - Best prompts per validation example
+- `system_prompt.txt` - The optimized system prompt. Load it with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")`.
+- `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
+- `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary
 
 Use `prime eval run` to verify performance before and after optimization.
