@@ -67,6 +67,11 @@ class InterceptionServer:
         self.intercepts: dict[str, dict[str, Any]] = {}
 
     def register_route(self, method: str, path: str, handler: Any) -> None:
+        if self._app is not None:
+            raise RuntimeError(
+                "InterceptionServer.register_route() must be called before start(); "
+                f"got late registration for {method.upper()} {path}"
+            )
         self._custom_routes.append((method.upper(), path, handler))
 
     async def start(self) -> None:
