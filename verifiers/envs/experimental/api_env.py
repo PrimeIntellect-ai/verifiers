@@ -463,7 +463,13 @@ class ApiEnv(vf.MultiTurnEnv):
         agent_error = state.get("agent_error")
         exit_code = state.get("agent_exit_code")
         timed_out = state.get("timed_out", False)
-        duration_s = state["timing"].get("total_ms", 0) / 1000
+        # post_rollout runs during finalization, before Environment.run_rollout
+        # stamps scoring.end. timing.total is therefore still 0 here, so derive
+        # the live duration from the generation-phase start.
+        timing = state.get("timing")
+        gen = getattr(timing, "generation", None) if timing is not None else None
+        gen_start = getattr(gen, "start", 0.0) if gen is not None else 0.0
+        duration_s = time.time() - gen_start if gen_start > 0 else 0.0
         tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
         parts = [
             f"Finished rollout_id={state.get('rollout_id')}",

@@ -6,6 +6,7 @@ import pytest
 
 import verifiers as vf
 from verifiers.rubrics import math_rubric
+from verifiers.types import RolloutTiming
 
 
 class TestMathRubric:
@@ -49,12 +50,7 @@ class TestMathRubric:
         )
         state["completion"] = test_case["completion"]
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 
@@ -83,12 +79,7 @@ class TestMathRubric:
         )
         state["completion"] = test_case["completion"]
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 
@@ -116,12 +107,7 @@ class TestMathRubric:
         )
         state["completion"] = completion
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 

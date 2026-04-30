@@ -487,11 +487,7 @@ def make_state() -> Callable[..., State]:
         stop_condition: str | None = "max_turns_reached",
         tool_defs: list[Tool] | None = None,
         trajectory: list[TrajectoryStep] = [],
-        timing=RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-        ),
+        timing=RolloutTiming(),
         foo: str = "bar",  # custom field
         **kwargs,
     ) -> State:
@@ -550,7 +546,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
         rollouts_per_example: int = 1,
         sampling_args: SamplingArgs = {},
         date: str = "1970-01-01",
-        time_ms: float = 0.0,
+        time: float = 0.0,
         avg_reward: float = 0.0,
         avg_metrics: dict[str, float] = {},
         pass_at_k: dict[str, float] = {},
@@ -578,7 +574,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
             rollouts_per_example=rollouts_per_example,
             sampling_args=sampling_args,
             date=date,
-            time_ms=time_ms,
+            time=time,
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
             pass_at_k=pass_at_k,

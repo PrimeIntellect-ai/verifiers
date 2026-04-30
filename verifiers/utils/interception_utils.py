@@ -371,7 +371,7 @@ async def synthesize_stream(
 ) -> None:
     """Deliver a complete ChatCompletion as synthetic SSE chunks to the agent.
 
-    Allows the base-class get_model_response (non-streaming, TITO-aware) to be
+    Allows the base-class get_model_response (non-streaming) to be
     used for the vLLM call while still satisfying agents that request streaming.
 
     Protocol (must match _handle_streaming_response):

@@ -18,7 +18,7 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 if TYPE_CHECKING:
     from verifiers.types import State
 
-DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm.git"
+DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_RLM_EXEC_TIMEOUT = 300

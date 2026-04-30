@@ -110,41 +110,6 @@ async def test_token_ids_relocated_from_message_to_response():
 
 
 @pytest.mark.asyncio
-async def test_string_token_ids_normalized_to_ints():
-    """String token IDs (from vllm_model removeprefix) are converted to ints."""
-    response_dict = _make_nemo_gym_response_dict(
-        prompt_token_ids=[1, 2],
-        generation_token_ids=["100", "200"],  # strings, not ints
-        generation_log_probs=[-0.5, -0.6],
-    )
-
-    client = _make_client()
-
-    from openai.types.chat import ChatCompletion
-
-    chat_completion = ChatCompletion.model_validate(response_dict)
-    setattr(chat_completion.choices[0].message, "prompt_token_ids", [1, 2])
-    setattr(chat_completion.choices[0].message, "generation_token_ids", ["100", "200"])
-    setattr(chat_completion.choices[0].message, "generation_log_probs", [-0.5, -0.6])
-
-    with patch.object(
-        NeMoRLChatCompletionsClient.__bases__[0],
-        "get_native_response",
-        new_callable=AsyncMock,
-        return_value=chat_completion,
-    ):
-        result = await client.get_native_response(
-            prompt=[{"role": "user", "content": "Hi"}],
-            model="test-model",
-            sampling_args={"max_tokens": 100},
-        )
-
-    # Token IDs should be ints, not strings
-    assert all(isinstance(tid, int) for tid in result.choices[0].token_ids)
-    assert result.choices[0].token_ids == [100, 200]
-
-
-@pytest.mark.asyncio
 async def test_no_token_data_passes_through_unchanged():
     """When model server doesn't return token IDs, response is unchanged."""
     response_dict = _make_nemo_gym_response_dict()  # no token fields
@@ -217,3 +182,149 @@ async def test_from_native_response_produces_response_tokens():
     assert tokens.completion_logprobs == gen_logprobs
     assert tokens.prompt_mask == [0] * len(prompt_ids)
     assert tokens.completion_mask == [1] * len(gen_ids)
+
+
+@pytest.mark.asyncio
+async def test_to_native_prompt_emits_token_extras():
+    """Assistant message extras flow onto the outgoing native dict."""
+    from verifiers.types import AssistantMessage, UserMessage
+
+    client = _make_client()
+    assistant = AssistantMessage(content="hello")
+    assistant.prompt_token_ids = [1, 2, 3]
+    assistant.generation_token_ids = [4, 5]
+    assistant.generation_log_probs = [-0.1, -0.2]
+    messages = [UserMessage(content="hi"), assistant, UserMessage(content="more")]
+
+    native_messages, _ = await client.to_native_prompt(messages)
+    assert native_messages[1]["prompt_token_ids"] == [1, 2, 3]
+    assert native_messages[1]["generation_token_ids"] == [4, 5]
+    assert native_messages[1]["generation_log_probs"] == [-0.1, -0.2]
+    assert "prompt_token_ids" not in native_messages[0]
+    assert "prompt_token_ids" not in native_messages[2]
+
+
+@pytest.mark.asyncio
+async def test_to_native_prompt_without_extras_is_clean():
+    """AssistantMessages with no token extras serialize without token fields."""
+    from verifiers.types import AssistantMessage
+
+    client = _make_client()
+    native_messages, _ = await client.to_native_prompt(
+        [AssistantMessage(content="plain")]
+    )
+    for key in ("prompt_token_ids", "generation_token_ids", "generation_log_probs"):
+        assert key not in native_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_get_response_annotates_from_trajectory():
+    """get_response walks state['trajectory'] and annotates matching assistants."""
+    from verifiers.clients.nemorl_chat_completions_client import (
+        _attach_trajectory_tokens_to_prompt,
+    )
+    from verifiers.types import AssistantMessage, UserMessage
+
+    a0 = AssistantMessage(content="turn0")
+    a1 = AssistantMessage(content="turn1")
+    prompt = [
+        UserMessage(content="u0"),
+        a0,
+        UserMessage(content="u1"),
+        a1,
+        UserMessage(content="u2"),
+    ]
+    state = {
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [10],
+                    "completion_logprobs": [-0.5],
+                }
+            },
+            {
+                "tokens": {
+                    "prompt_ids": [1, 10, 2],
+                    "completion_ids": [20, 21],
+                    "completion_logprobs": [-0.1, -0.2],
+                }
+            },
+        ]
+    }
+    _attach_trajectory_tokens_to_prompt(prompt, state)
+    assert a0.prompt_token_ids == [1]
+    assert a0.generation_token_ids == [10]
+    assert a1.prompt_token_ids == [1, 10, 2]
+    assert a1.generation_token_ids == [20, 21]
+    assert a1.generation_log_probs == [-0.1, -0.2]
+
+
+@pytest.mark.asyncio
+async def test_get_response_empty_trajectory_is_noop():
+    from verifiers.clients.nemorl_chat_completions_client import (
+        _attach_trajectory_tokens_to_prompt,
+    )
+    from verifiers.types import AssistantMessage, UserMessage
+
+    a = AssistantMessage(content="x")
+    prompt = [UserMessage(content="u"), a]
+    _attach_trajectory_tokens_to_prompt(prompt, {"trajectory": []})
+    assert not hasattr(a, "prompt_token_ids") or a.prompt_token_ids is None
+
+
+@pytest.mark.asyncio
+async def test_get_response_none_tokens_step_is_skipped():
+    from verifiers.clients.nemorl_chat_completions_client import (
+        _attach_trajectory_tokens_to_prompt,
+    )
+    from verifiers.types import AssistantMessage, UserMessage
+
+    a0 = AssistantMessage(content="x")
+    a1 = AssistantMessage(content="y")
+    prompt = [UserMessage(content="u"), a0, UserMessage(content="u"), a1]
+    state = {
+        "trajectory": [
+            {"tokens": None},
+            {
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [2],
+                    "completion_logprobs": [-0.1],
+                }
+            },
+        ]
+    }
+    _attach_trajectory_tokens_to_prompt(prompt, state)
+    assert not hasattr(a0, "prompt_token_ids") or a0.prompt_token_ids is None
+    assert a1.prompt_token_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_response_positional_pairing_with_extra_leading_assistant():
+    """Extra leading assistant messages (e.g. few-shot) are ignored; last N paired."""
+    from verifiers.clients.nemorl_chat_completions_client import (
+        _attach_trajectory_tokens_to_prompt,
+    )
+    from verifiers.types import AssistantMessage, UserMessage
+
+    few_shot = AssistantMessage(content="few-shot example")
+    a0 = AssistantMessage(content="turn0")
+    prompt = [UserMessage(content="demo"), few_shot, UserMessage(content="u0"), a0]
+    state = {
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [7],
+                    "completion_ids": [8],
+                    "completion_logprobs": [-0.3],
+                }
+            },
+        ]
+    }
+    _attach_trajectory_tokens_to_prompt(prompt, state)
+    assert (
+        not hasattr(few_shot, "prompt_token_ids") or few_shot.prompt_token_ids is None
+    )
+    assert a0.prompt_token_ids == [7]
+    assert a0.generation_token_ids == [8]

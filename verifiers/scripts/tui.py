@@ -59,7 +59,8 @@ from textual.widgets._option_list import Option
 from textual.widgets._tabbed_content import ContentTabs
 from textual.widgets._tree import TreeNode
 
-from verifiers.utils.display_utils import format_numeric
+from verifiers.utils.display_utils import format_numeric, format_timing_line
+from verifiers.utils.logging_utils import print_time
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
@@ -1294,7 +1295,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
             category = "Flow"
         elif "error" in lowered:
             category = "Errors"
-        elif "time" in lowered or lowered.endswith("_ms"):
+        elif "time" in lowered:
             category = "Timing"
         elif "reward" in lowered or "score" in lowered or "task" in lowered:
             category = "Scores"
@@ -4740,12 +4741,34 @@ class ViewRunScreen(Screen):
 
         timing = record.get("timing")
         if isinstance(timing, dict):
-            timing_lines = []
-            for key in ("generation_ms", "scoring_ms", "total_ms"):
-                value = timing.get(key)
-                if value is not None:
-                    timing_lines.append(f"{key}: {_format_compact_metric(value)}")
-            self._append_context_section(out, "Timing", "\n".join(timing_lines))
+            line = format_timing_line(
+                setup=float(timing.get("setup", {}).get("duration", 0.0)),
+                generation=float(timing.get("generation", {}).get("duration", 0.0)),
+                scoring=float(timing.get("scoring", {}).get("duration", 0.0)),
+                overhead=float(timing.get("overhead", 0.0)),
+                model=float(timing.get("model", {}).get("duration", 0.0)),
+                env=float(timing.get("env", {}).get("duration", 0.0)),
+            )
+            self._append_context_section(out, "Timing", line)
+
+            model_spans = timing.get("model", {}).get("spans") or []
+            env_spans = timing.get("env", {}).get("spans") or []
+            # In a rollout the loop alternates model[i] -> env[i] -> model[i+1] ...
+            # (and the final turn has no trailing env), so we can render in
+            # execution order by zipping indices.
+            step_lines = []
+            for i, m in enumerate(model_spans):
+                step_lines.append(
+                    f"turn {i + 1}: model {print_time(float(m.get('duration', 0.0)))}"
+                )
+                if i < len(env_spans):
+                    step_lines.append(
+                        f"         env   {print_time(float(env_spans[i].get('duration', 0.0)))}"
+                    )
+            if step_lines:
+                self._append_context_section(
+                    out, "Per-turn timing", "\n".join(step_lines)
+                )
         return out
 
     def _build_info_text(self, record: Dict[str, Any]) -> Text:

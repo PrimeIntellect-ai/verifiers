@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "renderers"
+version = "0.1.0"
+description = "Chat template renderers — deterministic message-to-token conversion for LLM training"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "transformers>=4.50.0",
+    # Used by GptOssRenderer to render and parse harmony tokens. Vendoring
+    # OpenAI's reference implementation keeps us byte-identical with vLLM
+    # (which also uses it) and saves us mirroring a 330-line Jinja template.
+    "openai-harmony>=0.0.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["renderers"]
