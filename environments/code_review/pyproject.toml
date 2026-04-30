@@ -1,0 +1,20 @@
+[project]
+name = "code-review"
+description = "Code review environment for evaluating LLM's ability to identify bugs and improvements"
+tags = ["code-review", "coding", "analysis", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["code_review.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 1
