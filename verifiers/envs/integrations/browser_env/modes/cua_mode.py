@@ -55,7 +55,7 @@ class CUAMode:
 
     Sandbox sub-modes (when execution_mode="sandbox"):
     - Pre-built image (default, use_prebuilt_image=True):
-      Uses pre-built Docker image with server ready to start. Fastest startup.
+      Uses a pre-built Prime image with the server ready to start. Fastest startup.
     - Binary upload (use_prebuilt_image=False):
       Creates sandbox, uploads binary, installs deps, starts server.
       Useful for custom server versions.
@@ -98,7 +98,7 @@ class CUAMode:
         sandbox_timeout_per_command_seconds: int = 60,
         use_binary: bool = True,
         use_prebuilt_image: bool = True,
-        prebuilt_image: str = "deepdream19/cua-server:latest",
+        prebuilt_image: str = "browserbase/cua-server:latest",
     ):
         # Validate sandbox mode requirements
         if execution_mode == "sandbox" and not SANDBOX_AVAILABLE:

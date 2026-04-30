@@ -10,7 +10,7 @@
     "build:binary:docker": "docker build --platform linux/amd64 -f Dockerfile.build -t cua-builder . && docker run --rm --platform linux/amd64 -v $(pwd)/dist:/output cua-builder"
   },
   "dependencies": {
-    "@browserbasehq/stagehand": "^3.0.5",
+    "@browserbasehq/stagehand": "^3.2.0",
     "fastify": "^5.0.0",
     "dotenv": "^16.4.5",
     "deepmerge": "^4.3.1",
@@ -24,4 +24,3 @@
   },
   "packageManager": "pnpm@9.15.0"
 }
-

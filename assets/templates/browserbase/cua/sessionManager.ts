@@ -25,42 +25,45 @@ export class BrowserSessionManager {
     const sessionId = generateSessionId();
     const startTime = Date.now();
     const envType = options?.env ?? "LOCAL";
-    
+
     console.log(`[Session] Creating ${sessionId} with env: ${envType}, proxies: ${options?.proxies ?? false}`);
 
-    // TODO: Update to accept modelApiKey from client request (MODEL_API_KEY) instead of
-    // hardcoding OPENAI_API_KEY. This will allow using different model providers.
+    // TODO: Update to accept model configuration from client request instead of
+    // hardcoding Stagehand's default OpenAI model selection here.
     // See: SessionCreateRequest in types.ts, cua_mode.py session_config
+    const viewport = options?.viewport
+      ? {
+          width: options.viewport.width,
+          height: options.viewport.height,
+        }
+      : { width: 1024, height: 768 };
+
+    const browserbaseSessionCreateParams = envType === "BROWSERBASE"
+      ? {
+          proxies: options?.proxies ?? false,
+          browserSettings: {
+            viewport,
+          },
+          ...(options?.browserbaseProjectId
+            ? { projectId: options.browserbaseProjectId }
+            : {}),
+        }
+      : undefined;
+
     const stagehand = new Stagehand({
       env: envType,
       apiKey: options?.browserbaseApiKey,
-      projectId: options?.browserbaseProjectId,
-      modelApiKey: process.env.OPENAI_API_KEY,
+      ...(options?.browserbaseProjectId
+        ? { projectId: options.browserbaseProjectId }
+        : {}),
+      model: "openai/gpt-4.1-mini",
       verbose: 1,
       disablePino: true, // Disable pino logging to avoid pino-pretty transport issues in SEA binaries
-      browserbaseSessionCreateParams: envType === "BROWSERBASE"
-        ? {
-            projectId: options?.browserbaseProjectId,
-            proxies: options?.proxies ?? false,
-            browserSettings: {
-              viewport: options?.viewport
-                ? {
-                    width: options.viewport.width,
-                    height: options.viewport.height,
-                  }
-                : { width: 1024, height: 768 },
-            },
-          }
-        : undefined,
+      browserbaseSessionCreateParams,
       // Only provide localBrowserLaunchOptions for LOCAL mode to avoid Chrome validation in BROWSERBASE mode
       localBrowserLaunchOptions: envType === "LOCAL"
         ? {
-            viewport: options?.viewport
-              ? {
-                  width: options.viewport.width,
-                  height: options.viewport.height,
-                }
-              : { width: 1024, height: 768 },
+            viewport,
           }
         : undefined,
     });
@@ -77,7 +80,7 @@ export class BrowserSessionManager {
     };
 
     this.sessions.set(sessionId, session);
-    
+
     const duration = Date.now() - startTime;
     console.log(`[Session] Created ${sessionId} in ${duration}ms (env: ${envType}, active sessions: ${this.sessions.size})`);
 
@@ -118,10 +121,10 @@ export class BrowserSessionManager {
     }
 
     this.sessions.delete(sessionId);
-    
+
     const duration = Date.now() - startTime;
     console.log(`[Session] Destroyed ${sessionId} in ${duration}ms (remaining sessions: ${this.sessions.size})`);
-    
+
     return true;
   }
 
