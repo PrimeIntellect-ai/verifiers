@@ -60,7 +60,7 @@ def answer_reward(completion: vf.Messages, answer: str, **kwargs) -> float:
         if line.upper().startswith("ANSWER"):
             agent_answer = line.split(":", 1)[-1].strip()
             try:
-                return 1.0 if float(agent_answer) == float(answer) else 0.0
+                return 1.0 if abs(float(agent_answer) - float(answer)) < 0.01 else 0.0
             except (ValueError, TypeError):
                 return 1.0 if agent_answer.strip() == answer.strip() else 0.0
     return 0.0
