@@ -164,6 +164,7 @@ class CliAgentEnv(SandboxMixin, ApiEnv):
 
     async def cleanup_agent(self, state: State) -> None:
         """Cancel completion wait task and clean up background job."""
+        await super().cleanup_agent(state)
         task = state.get("completion_wait_task")
         if task and not task.done():
             task.cancel()
