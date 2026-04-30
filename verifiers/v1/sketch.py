@@ -106,9 +106,11 @@ class Env(vf.Environment):
         states = await self.score_group(tasks, states, controls)
         return states
 
-    async def init_group(self, task, num_rollouts, controls=None): ...
+    async def init_group(self, task, num_rollouts, controls=None):
+        return await self.taskset.init_group(task, num_rollouts, controls)
 
-    async def run_rollouts(self, tasks, states, controls=None): ...
+    async def run_rollouts(self, tasks, states, controls=None):
+        return [await self.rollout(task, state) for task, state in zip(tasks, states)]
 
     async def rollout(self, task, state):
         state = await self.harness.run(task, state)
