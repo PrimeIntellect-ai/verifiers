@@ -197,15 +197,45 @@ class TrajectoryStepTokens(TypedDict):
 
 Token-level data for training.
 
+### TimeSpan
+
+```python
+class TimeSpan(CustomBaseModel):
+    """A timed span. duration = end - start."""
+    start: float = 0.0   # Unix timestamp (seconds since epoch)
+    end: float = 0.0     # Unix timestamp (seconds since epoch)
+    # duration: float    (computed_field)
+```
+
+### TimeSpans
+
+```python
+class TimeSpans(CustomBaseModel):
+    """A list of TimeSpan with aggregate duration (sum)."""
+    spans: list[TimeSpan] = []
+    # duration: float    (computed_field)
+```
+
 ### RolloutTiming
 
 ```python
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+    start_time: float                       # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()            # setup_state() span
+    generation: TimeSpan = TimeSpan()       # full generation phase
+    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
+    model: TimeSpans = TimeSpans()          # all model-call spans
+    env: TimeSpans = TimeSpans()            # all env-response spans
+    # total, overhead: float                (computed_fields)
 ```
+
+Derivations:
+
+- `total    = scoring.end - generation.start`
+- `overhead = total - setup.duration - model.duration - env.duration - scoring.duration`
+
+`generation.start` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases.
 
 ### TokenUsage
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import (
@@ -12,7 +13,7 @@ from typing import (
     TypeAlias,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -50,6 +51,9 @@ class CustomBaseModel(BaseModel):
 
     def __getitem__(self, key):
         return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
 
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -248,12 +252,70 @@ class RolloutInput(BaseRolloutInput, total=False):
     info: Info | str
 
 
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    start_timer: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+class TimeSpan(CustomBaseModel):
+    """A timed span. ``duration`` derives from start/end Unix timestamps.
+
+    ``start`` and ``end`` are wall-clock seconds since the epoch (i.e.
+    ``time.time()``). Downstream display can convert directly to a
+    human-readable timestamp via ``datetime.fromtimestamp(span.start)``.
+    """
+
+    start: float = 0.0
+    end: float = 0.0
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        if self.end <= 0.0:
+            return 0.0
+        return self.end - self.start
+
+
+class TimeSpans(CustomBaseModel):
+    """A list of ``TimeSpan``s. ``duration`` is the sum over children."""
+
+    spans: list[TimeSpan] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        return sum(s.duration for s in self.spans)
+
+
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds (Unix timestamps).
+
+    Each measured phase (``setup``, ``generation``, ``scoring``) is a
+    ``TimeSpan`` carrying wall-clock start/end timestamps. ``model`` and
+    ``env`` are ``TimeSpans`` collections of the corresponding step slices
+    (each appended in execution order).
+    """
+
+    start_time: float = Field(default_factory=time.time)
+
+    setup: TimeSpan = Field(default_factory=TimeSpan)
+    generation: TimeSpan = Field(default_factory=TimeSpan)
+    scoring: TimeSpan = Field(default_factory=TimeSpan)
+    model: TimeSpans = Field(default_factory=TimeSpans)
+    env: TimeSpans = Field(default_factory=TimeSpans)
+
+    @computed_field
+    @property
+    def total(self) -> float:
+        if self.scoring.end <= 0.0:
+            return 0.0
+        return self.scoring.end - self.generation.start
+
+    @computed_field
+    @property
+    def overhead(self) -> float:
+        return (
+            self.total
+            - self.setup.duration
+            - self.model.duration
+            - self.env.duration
+            - self.scoring.duration
+        )
 
 
 class ErrorInfo(TypedDict):
@@ -366,7 +428,7 @@ class GenerateMetadata(TypedDict):
     rollouts_per_example: int
     sampling_args: SamplingArgs
     date: str
-    time_ms: float
+    time: float  # whole-eval wall-clock seconds
     avg_reward: float
     avg_metrics: dict[str, float]
     avg_error: float

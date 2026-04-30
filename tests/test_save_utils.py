@@ -119,7 +119,7 @@ class TestSavingMetadata:
             rollouts_per_example=2,
             sampling_args={"temperature": 0.7},
             date="2025-01-01",
-            time_ms=1000.0,
+            time=1.0,
             avg_reward=0.5,
             avg_metrics={"num_turns": 1.0},
             usage={"input_tokens": 12.0, "output_tokens": 7.0},
@@ -138,7 +138,7 @@ class TestSavingMetadata:
         assert result["rollouts_per_example"] == 2
         assert result["sampling_args"] == {"temperature": 0.7}
         assert result["date"] == "2025-01-01"
-        assert result["time_ms"] == 1000.0
+        assert result["time"] == 1.0
         assert result["avg_reward"] == 0.5
         assert result["avg_metrics"] == {"num_turns": 1.0}
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
