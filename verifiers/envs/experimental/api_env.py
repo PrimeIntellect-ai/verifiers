@@ -361,26 +361,32 @@ class ApiEnv(vf.MultiTurnEnv):
             # Always use the configured model from state, not the intercepted model
             model = state.get("model") or model
             intercept_tools = intercept.get("tools")
-            if intercept_tools:
-
-                def _tool_name(t: object) -> str:
-                    if isinstance(t, Tool):
-                        return t.name
-                    if isinstance(t, dict):
-                        td = cast(dict[str, Any], t)
-                        fn = td.get("function") or {}
-                        return fn.get("name", "")
-                    return ""
-
-                cache_key = tuple(sorted(_tool_name(t) for t in intercept_tools))
-                cached_key, cached_defs = state.get("_cached_tool_defs", (None, None))
-                if cached_key == cache_key and cached_defs is not None:
-                    tool_defs = cached_defs
+            if intercept_tools is not None:
+                if not intercept_tools:
+                    tool_defs = []
                 else:
-                    tool_defs = (
-                        self.normalize_intercepted_tools(intercept_tools) or tool_defs
+
+                    def _tool_name(t: object) -> str:
+                        if isinstance(t, Tool):
+                            return t.name
+                        if isinstance(t, dict):
+                            td = cast(dict[str, Any], t)
+                            fn = td.get("function") or {}
+                            return fn.get("name", "")
+                        return ""
+
+                    cache_key = tuple(sorted(_tool_name(t) for t in intercept_tools))
+                    cached_key, cached_defs = state.get(
+                        "_cached_tool_defs", (None, None)
                     )
-                    state["_cached_tool_defs"] = (cache_key, tool_defs)
+                    if cached_key == cache_key and cached_defs is not None:
+                        tool_defs = cached_defs
+                    else:
+                        tool_defs = (
+                            self.normalize_intercepted_tools(intercept_tools)
+                            or tool_defs
+                        )
+                        state["_cached_tool_defs"] = (cache_key, tool_defs)
 
         response: Response | None = None
         error: BaseException | None = None

@@ -172,6 +172,78 @@ class TestApiEnv:
         assert kwargs["tools"][0].name == "echo"
 
     @pytest.mark.asyncio
+    async def test_explicit_empty_intercept_tools_disables_state_tools(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """An explicit empty tools list overrides env-level state["tool_defs"]."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+        state["tool_defs"] = [
+            vf.Tool(name="env_tool", description="env-level tool", parameters={})
+        ]
+        request_id = "req-empty-tools"
+        state["current_request_id"] = request_id
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "tools": [],
+        }
+
+        response = await env.get_model_response(
+            state=state,
+            prompt=make_input()["prompt"],
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert isinstance(response, vf.Response)
+        kwargs = mock_client.last_call_kwargs
+        assert kwargs["tools"] is None
+
+    @pytest.mark.asyncio
+    async def test_absent_intercept_tools_falls_back_to_state_tools(
+        self, sample_chat_dataset, mock_client, make_input
+    ):
+        """An absent tools field falls back to env-level state["tool_defs"]."""
+        env = vf.ApiEnv(
+            agent_fn=noop_agent,
+            dataset=sample_chat_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=make_input(),
+            client=mock_client,
+            model="test-model",
+        )
+        state["tool_defs"] = [
+            vf.Tool(name="env_tool", description="env-level tool", parameters={})
+        ]
+        request_id = "req-no-tools-field"
+        state["current_request_id"] = request_id
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+        }
+
+        response = await env.get_model_response(
+            state=state,
+            prompt=make_input()["prompt"],
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert isinstance(response, vf.Response)
+        kwargs = mock_client.last_call_kwargs
+        assert kwargs["tools"] is not None
+        assert kwargs["tools"][0].name == "env_tool"
+
+    @pytest.mark.asyncio
     async def test_setup_state_local_base_url(
         self, sample_chat_dataset, mock_client, make_input
     ):
