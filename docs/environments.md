@@ -780,7 +780,25 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together. 
+The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together.
+
+Passing an unknown task name to `get_env_for_task` raises a `ValueError` listing the available task names, making misconfiguration immediately visible rather than silently misrouting to the first sub-environment.
+
+An `EnvGroup` can itself be used as a sub-environment inside another `EnvGroup`. The outer group automatically inherits the inner group's task names and routes through both levels, so each inner task name maps correctly to its environment:
+
+```python
+inner = vf.EnvGroup(
+    envs=[math_env, code_env],
+    env_names=["math", "code"],
+)
+
+# prime-rl wraps user envs this way; task names are preserved through both levels
+outer = vf.EnvGroup(envs=[inner], env_names=["my_env"])
+# outer.get_env_for_task("math") -> inner -> math_env
+# outer.get_env_for_task("code") -> inner -> code_env
+```
+
+Task names must be unique across all levels of nesting; a collision raises `ValueError` at construction time.
 
 ## Performance
 
