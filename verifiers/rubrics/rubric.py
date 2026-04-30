@@ -48,6 +48,10 @@ class Rubric:
 
         self.parser = parser or vf.Parser()
 
+        # Training context set by the orchestrator before scoring.
+        # Contains metadata like {"step": int, "ckpt_step": int}.
+        self.training_context: dict | None = None
+
         # class objects for reward functions
         self.class_objects = {}
         if self.parser:
