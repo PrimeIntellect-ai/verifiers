@@ -324,6 +324,23 @@ class ErrorInfo(TypedDict):
     error_chain_str: str
 
 
+class JudgeRecord(TypedDict, total=False):
+    """One LLM-as-judge call captured during rollout scoring.
+
+    Recorded by ``JudgeRubric.judge`` so the platform can render the exact
+    input/output of each judge invocation in the rollout view. Fields are all
+    optional except ``judge_input`` and ``judge_output`` so older callers can
+    omit metadata without breaking serialization.
+    """
+
+    judge_input: list[dict[str, Any]] | str
+    judge_output: str
+    rubric: str
+    model: str
+    score: float | None
+    timestamp: float
+
+
 class RolloutOutput(dict):
     """Serialized output from a rollout (mirrors RolloutInput).
 
@@ -334,7 +351,7 @@ class RolloutOutput(dict):
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, judges
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -356,6 +373,7 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    judges: list[JudgeRecord]
 
 
 class State(dict):
