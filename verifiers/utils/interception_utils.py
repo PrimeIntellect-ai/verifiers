@@ -5,6 +5,7 @@ import hmac
 import inspect
 import json
 import logging
+import os
 import secrets
 import time
 import uuid
@@ -33,7 +34,9 @@ from verifiers.utils.logging_utils import print_time, truncate
 logger = logging.getLogger(__name__)
 
 
-KEEPALIVE_INTERVAL_SECONDS = 10.0
+KEEPALIVE_INTERVAL_SECONDS = float(
+    os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
+)
 DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
 
 
