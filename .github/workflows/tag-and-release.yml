@@ -175,6 +175,18 @@ jobs:
           esac
 
           VERSION="${TAG#v}"
+
+          IS_DEV=false
+          case "$VERSION" in
+            *.dev*)
+              IS_DEV=true
+              if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$ ]]; then
+                echo "Dev tags must match 'vX.Y.Z.devN' (received '$TAG')" >&2
+                exit 1
+              fi
+              ;;
+          esac
+
           FILE_VERSION=$(python - <<'PY'
           from pathlib import Path
           import re
@@ -187,13 +199,16 @@ jobs:
           PY
           )
 
-          if [ "$FILE_VERSION" != "$VERSION" ]; then
+          if [ "$IS_DEV" = "true" ]; then
+            echo "Dev tag $TAG; verifiers/__init__.py declares '$FILE_VERSION' and will be overridden for the build."
+          elif [ "$FILE_VERSION" != "$VERSION" ]; then
             echo "Version mismatch: tag requests '$VERSION' but verifiers/__init__.py defines '$FILE_VERSION'" >&2
             exit 1
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_dev=$IS_DEV" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -202,6 +217,29 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+
+      - name: Override __version__ for dev build
+        if: steps.release.outputs.is_dev == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          path = Path("verifiers/__init__.py")
+          text = path.read_text()
+          new_text, count = re.subn(
+              r'__version__\s*=\s*"[^"]+"',
+              f'__version__ = "{version}"',
+              text,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected exactly one __version__ assignment, found {count}")
+          path.write_text(new_text)
+          PY
 
       - name: Build sdist and wheel
         run: uv build
@@ -212,6 +250,7 @@ jobs:
         run: uv publish --token "$PYPI_TOKEN"
 
       - name: Create GitHub Release
+        if: steps.release.outputs.is_dev != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}

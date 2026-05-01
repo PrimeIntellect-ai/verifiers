@@ -16,7 +16,20 @@ This directory contains automated workflows for the verifiers project.
 - Runs ty type checks with `uv run ty check verifiers`
 - Uses configuration from `pyproject.toml`
 
-### 2. Test (`test.yml`)
+### 2. DevX Tag (`devx_tag.yml`)
+**Purpose**: Auto-create rolling `vX.Y.Z.devN` pre-release tags from the latest stable release.
+
+**Triggers**:
+- Pushes to `main`
+- Manual `workflow_dispatch`
+
+**What it does**:
+- Reads the latest published GitHub Release tag (e.g. `v0.1.13`).
+- Bumps the patch number to form a base (e.g. `v0.1.14`).
+- Picks the next free `.devN` suffix and creates `vX.Y.Z.devN` at the current SHA.
+- The created tag fires `tag-and-release.yml`, which publishes the dev build to PyPI (no GitHub Release is cut for dev tags).
+
+### 3. Test (`test.yml`)
 **Purpose**: Comprehensive testing with coverage reports.
 
 **Triggers**:
