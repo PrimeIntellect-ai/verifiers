@@ -107,11 +107,19 @@ rl = [
 ]
 
 [tool.uv]
+exclude-newer = "7 days"
 preview = true
 required-version = ">=0.11.1"
 
 [tool.uv.sources]
 renderers = { path = "packages/renderers", editable = true }
+
+[tool.uv.exclude-newer-package]
+# PrimeIntellect-published on PyPI (trusted publisher)
+prime-tunnel = false
+prime-sandboxes = false
+# Local path source (defensive: belt-and-suspenders)
+renderers = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

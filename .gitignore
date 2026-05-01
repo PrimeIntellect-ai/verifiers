@@ -4,7 +4,6 @@ venv/
 env/
 .env
 .env.local
-uv.lock
 .claude/
 .cursorrules
 .ropeproject/
