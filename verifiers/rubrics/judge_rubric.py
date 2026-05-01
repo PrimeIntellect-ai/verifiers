@@ -1,10 +1,11 @@
+import time
 from typing import Any
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, State
+from verifiers.types import JudgeRecord, Messages, State
 from verifiers.utils.async_utils import maybe_await
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \
@@ -37,12 +38,14 @@ class JudgeRubric(Rubric):
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
+        name: str | None = None,
     ):
         super().__init__(parser=parser)
         self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
         self.judge_sampling_args = judge_sampling_args or {}
+        self.name = name or self.__class__.__name__
         self.class_objects = {
             "parser": self.parser,
             "judge": self.judge,
@@ -73,7 +76,9 @@ class JudgeRubric(Rubric):
         )
         cached = state.get("judge_response") if state else None
         if isinstance(cached, dict) and judge_prompt in cached:
-            return cached[judge_prompt]
+            cached_response = cached[judge_prompt]
+            self._record_judge_call(state, judge_prompt, cached_response)
+            return cached_response
         # Normalize judge sampling args for chat API
         judge_args = dict(self.judge_sampling_args or {})
         if "max_tokens" in judge_args:
@@ -138,4 +143,26 @@ class JudgeRubric(Rubric):
                 cached = {}
             cached[judge_prompt] = judge_response
             state["judge_response"] = cached
+            self._record_judge_call(state, judge_prompt, judge_response)
         return judge_response
+
+    def _record_judge_call(
+        self, state: State, judge_prompt: str, judge_response: str
+    ) -> None:
+        """Append a JudgeRecord to ``state["judges"]`` so the platform can render
+        it in the rollout view. Recorded on every call (including cache hits) so
+        that two rubrics sharing a prompt are still distinguishable downstream.
+        """
+        judges = state.get("judges")
+        if not isinstance(judges, list):
+            judges = []
+        record: JudgeRecord = {
+            "judge_input": [{"role": "user", "content": judge_prompt}],
+            "judge_output": judge_response,
+            "rubric": self.name,
+            "model": self.judge_model,
+            "score": None,
+            "timestamp": time.time(),
+        }
+        judges.append(record)
+        state["judges"] = judges
