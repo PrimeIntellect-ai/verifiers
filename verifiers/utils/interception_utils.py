@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any, cast
@@ -31,7 +32,9 @@ from verifiers.utils.logging_utils import print_time, truncate
 logger = logging.getLogger(__name__)
 
 
-KEEPALIVE_INTERVAL_SECONDS = 10.0
+KEEPALIVE_INTERVAL_SECONDS = float(
+    os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
+)
 
 
 class StreamInterrupted(InfraError):
