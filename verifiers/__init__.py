@@ -15,6 +15,7 @@ from .decorators import (  # noqa # isort: skip
 from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
+from .messages import add_image
 
 # main imports
 from .parsers.maybe_think_parser import MaybeThinkParser
@@ -38,6 +39,7 @@ from .utils.logging_utils import (
 setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
+    "add_image",
     "DatasetBuilder",
     "Parser",
     "ThinkParser",
