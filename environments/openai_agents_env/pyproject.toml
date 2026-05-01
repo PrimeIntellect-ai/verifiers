@@ -5,7 +5,7 @@ tags = ["api-env", "multi-turn", "tool-use", "openai-agents"]
 version = "0.1.0"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "verifiers>=0.1.12.dev3",
+    "verifiers>=0.1.13.dev8",
     "datasets",
     "openai-agents>=0.13.6",
 ]

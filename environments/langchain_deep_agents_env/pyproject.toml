@@ -1,0 +1,19 @@
+[project]
+name = "langchain-deep-agents-env"
+description = "ApiEnv environment using the LangChain Deep Agents SDK"
+tags = ["api-env", "multi-turn", "tool-use", "langchain", "deep-agents"]
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "verifiers>=0.1.13.dev8",
+    "datasets",
+    "deepagents>=0.5.5",
+    "langchain-openai>=1.2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["langchain_deep_agents_env.py", "pyproject.toml"]
