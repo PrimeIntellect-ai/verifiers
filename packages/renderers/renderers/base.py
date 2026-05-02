@@ -299,6 +299,11 @@ def _populate_registry():
     from renderers.kimi_k25 import KimiK25Renderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.nemotron3 import Nemotron3Renderer
+
+    class Nemotron3RendererKeepThinking(Nemotron3Renderer):
+        def __init__(self, tokenizer, **kwargs):
+            super().__init__(tokenizer, clear_thinking=False, **kwargs)
+
     from renderers.qwen3 import Qwen3Renderer
     from renderers.qwen3_vl import Qwen3VLRenderer
     from renderers.qwen35 import Qwen35Renderer
@@ -319,6 +324,7 @@ def _populate_registry():
             "kimi_k2": KimiK2Renderer,
             "kimi_k25": KimiK25Renderer,
             "nemotron3": Nemotron3Renderer,
+            "nemotron3_keep_thinking": Nemotron3RendererKeepThinking,
             "gpt_oss": GptOssRenderer,
         }
     )
