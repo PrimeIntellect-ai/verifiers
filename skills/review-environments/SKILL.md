@@ -16,7 +16,7 @@ Find correctness risks and regressions first, then assess maintainability and ec
 ## Review Workflow
 1. Identify environment contract:
 - `load_environment(...)`
-- base class and rollout behavior
+- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, `ApiEnv` for local Python `agent_fn` with LLM-API interception, `CliAgentEnv`/`ComposableEnv` for sandboxed agents — note that `CliAgentEnv` inherits from `ApiEnv` and shares its interception/proxy lifecycle)
 - rubric and metrics
 2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
 ```bash
@@ -39,6 +39,7 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 2. Environment self-containment:
 - Flag any requirement for user-managed background services before `load_environment()`.
 - Require environment-managed lifecycle for sandboxes/sessions.
+- For `ApiEnv`/`CliAgentEnv` agents, verify the interception proxy is provisioned by the environment (not the user) and that `agent_fn` consumes the injected `base_url` rather than hardcoding an upstream LLM endpoint — the proxy is what makes rollouts visible to the rubric.
 3. Migration fidelity:
 - For ports, verify one-to-one equivalence of prompts, tool traces, and scoring logic.
 - Flag any assumptions made without user decision.

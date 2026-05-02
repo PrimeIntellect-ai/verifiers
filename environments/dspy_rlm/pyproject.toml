@@ -1,0 +1,18 @@
+[project]
+name = "dspy-rlm"
+description = "ApiEnv environment using DSPy's RLM module"
+tags = ["api-env", "multi-turn", "dspy", "rlm"]
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "datasets",
+    "dspy>=3.2.0",
+    "verifiers>=0.1.13.dev8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["dspy_rlm.py", "pyproject.toml"]

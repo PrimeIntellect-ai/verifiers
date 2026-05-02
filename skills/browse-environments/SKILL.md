@@ -36,7 +36,7 @@ prime env pull owner/name -t ./tmp-env
 
 ## Compare Candidates
 For each candidate, collect:
-1. Task type and horizon: single-turn, multi-turn, tool, sandbox.
+1. Task type and horizon: single-turn, multi-turn, tool, sandbox, agent (`ApiEnv` for local Python `agent_fn`, `CliAgentEnv`/`ComposableEnv` for sandboxed agent binaries with LLM-API interception).
 2. Reward type: binary, continuous, judge-based, mixed.
 3. Dependencies and secrets requirements.
 4. Latest action status and version signal.

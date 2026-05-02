@@ -45,6 +45,11 @@ This folder contains installable example environments that showcase common usage
 - **RLMEnv (Recursive Language Model)**
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
 
+- **ApiEnv (local agent callable + LLM interception proxy)**
+  - **dspy_rlm**: DSPy RLM on GSM8K; the agent uses the proxy `base_url` and any OpenAI-compatible client (requires Deno for RLM’s WASM sandbox).
+  - **openai_agents_env**: OpenAI Agents SDK with a calculator tool on GSM8K; `AsyncOpenAI` targets the interception proxy.
+  - **langchain_deep_agents_env**: LangChain Deep Agents SDK (`create_deep_agent`) with a calculator tool on GSM8K; `langchain_openai.ChatOpenAI` targets the interception proxy.
+
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
@@ -76,6 +81,7 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
+- **ApiEnv (framework + interception proxy)**: `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_env`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

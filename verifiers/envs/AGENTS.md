@@ -67,6 +67,7 @@ For local development, set `use_sandbox=False` and start the server manually fro
 See `verifiers/envs/experimental/README.md` for documentation on:
 - `GymEnv` - Universal Gym-compatible environment runner
 - `MCPEnv` - MCP server integration
-- `CliAgentEnv` - Custom agent code in sandboxes
+- `ApiEnv` - Agent code with API call interception (base for CliAgentEnv)
+- `CliAgentEnv` - Agent code in sandboxes with API call interception
 - `HarborEnv` - Harbor-format task loading
 - `RLMEnv` - Recursive Language Models
