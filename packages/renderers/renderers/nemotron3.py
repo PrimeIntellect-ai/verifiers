@@ -6,6 +6,7 @@ Nemotron 3 uses the same <|im_start|>/<|im_end|> format as Qwen3.5 but differs i
 2. System message ordering: system prompt goes BEFORE tools block.
 3. Thinking block scope: <think></think> is prepended to ALL assistant messages
    that lack thinking content (not just those after the last user query).
+   Pass ``clear_thinking=False`` to preserve thinking on historical turns too.
 4. Think separator: single \\n after </think> (not \\n\\n like Qwen3.5).
 5. Empty system message: always prepends an empty system message if none exists.
 6. Disable-thinking generation suffix: <think></think> with no trailing newlines.
@@ -79,9 +80,11 @@ class Nemotron3Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        clear_thinking: bool = True,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._clear_thinking = clear_thinking
 
         # Look up special token IDs from the tokenizer (not hardcoded).
         # <|endoftext|> is optional: Nemotron-3 Nano / Super tokenizers ship
@@ -290,7 +293,7 @@ class Nemotron3Renderer:
 
         # Track the most-recent plain (non-tool-call) assistant so we can
         # preserve its reasoning while stripping reasoning from earlier
-        # assistants — the Nemotron-3 template matches this pattern.
+        # assistants when clear_thinking=True.
         last_plain_assistant_idx = -1
         for j in range(len(messages) - 1, -1, -1):
             if messages[j].get("role") == "assistant" and not messages[j].get(
@@ -507,16 +510,14 @@ class Nemotron3Renderer:
         # <tool_call>, whether the content is empty or not.
         content_suffix = "\n" if tool_calls else ""
 
-        if reasoning_content and is_last_turn:
+        if reasoning_content and (is_last_turn or not self._clear_thinking):
             emit_special(self._think, msg_idx)
             emit_text("\n" + reasoning_content + "\n", msg_idx)
             emit_special(self._think_end, msg_idx)
             # Single \n separator (not \n\n like Qwen3.5)
             emit_text("\n" + content + content_suffix, msg_idx)
         elif reasoning_content:
-            # Historical assistant whose reasoning got stripped — template
-            # keeps a single \n between the collapsed <think></think> and
-            # the content as a marker that reasoning existed.
+            # Historical assistant with clear_thinking=True — collapse to empty block.
             emit_special(self._think, msg_idx)
             emit_special(self._think_end, msg_idx)
             emit_text("\n" + content + content_suffix, msg_idx)
