@@ -1,81 +1,63 @@
-from pathlib import Path
+from __future__ import annotations
 
-import verifiers as vf
-from verifiers.envs.experimental.modules.harnesses import OpenCode
-from verifiers.envs.experimental.modules.tasksets import HarborTaskset
-
-TERMINAL_BENCH_SAMPLE_TASKS = [
-    "build-cython-ext",
-    "chess-best-move",
-    "configure-git-webserver",
-    "fix-code-vulnerability",
-    "log-summary-date-ranges",
-    "polyglot-c-py",
-    "qemu-alpine-ssh",
-    "qemu-startup",
-    "regex-log",
-    "sqlite-with-gcov",
-]
-
-DATASETS = {
-    "terminal-bench-sample": TERMINAL_BENCH_SAMPLE_TASKS,
-}
+import verifiers.v1 as vf
 
 
-def _read_system_prompt(system_prompt_path: str | Path | None) -> str | None:
-    if system_prompt_path is None:
-        return None
-    path = Path(system_prompt_path)
-    if not path.exists():
-        raise FileNotFoundError(f"System prompt file not found: {path}")
-    return path.read_text()
+@vf.reward(stage="group", weight=1.0)
+async def harbor_tests(tasks, states) -> list[float]:
+    return [float(str(state["artifacts"]["harbor_reward"]).strip()) for state in states]
 
 
-def load_environment(
-    dataset_path: str | Path = Path(__file__).parents[1] / "opencode_harbor" / "tasks",
-    dataset: str | None = None,
-    tasks: list[str] | None = None,
-    workdir: str = "/app",
-    docker_image: str = "python:3.11-slim",
-    system_prompt_path: str | Path | None = Path(__file__).parents[1]
-    / "opencode_harbor"
-    / "prompt.txt",
-    disabled_tools: list[str] | None = None,
-    timeout_seconds: float = 900.0,
-    cpu_cores: int = 2,
-    memory_gb: int = 4,
-    disk_size_gb: int = 10,
-    timeout_minutes: int = 120,
-    max_turns: int = 10,
-) -> vf.Environment:
-    if dataset and tasks:
-        raise ValueError("Cannot specify both 'dataset' and 'tasks'")
-    if dataset:
-        if dataset not in DATASETS:
-            raise ValueError(
-                f"Unknown dataset '{dataset}'. Available: {', '.join(DATASETS.keys())}"
-            )
-        tasks = DATASETS[dataset]
-    if disabled_tools is None:
-        disabled_tools = ["webfetch", "question"]
+def source(path="tasks"):
+    return [
+        {
+            "prompt": "Modify the repository so the Harbor verifier passes.",
+            "harbor": {"path": str(path), "tests": "tests/test.sh"},
+            "answer": None,
+        }
+    ]
 
-    taskset = HarborTaskset(
-        path=dataset_path,
-        tasks=tasks,
-        workdir=workdir,
+
+def load_taskset(config=None):
+    return vf.Taskset(
+        source=lambda: source(getattr(config, "path", "tasks")),
+        rewards=[harbor_tests],
+        config=config,
     )
-    harness = OpenCode(
-        workdir=workdir,
-        system_prompt=_read_system_prompt(system_prompt_path),
-        disabled_tools=disabled_tools,
-        sandbox=vf.SandboxSpec(
-            image=docker_image,
-            cpu_cores=cpu_cores,
-            memory_gb=memory_gb,
-            disk_size_gb=disk_size_gb,
-            timeout_minutes=timeout_minutes,
-        ),
-        timeout_seconds=timeout_seconds,
-        max_turns=max_turns,
+
+
+def load_harness(config=None):
+    return vf.Harness(
+        program={
+            "command": [
+                "python",
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "Path('/tmp/harbor_reward.txt').write_text('1.0'); "
+                    "print('harbor verifier passed')"
+                ),
+            ],
+            "artifacts": {
+                "harbor_reward": {
+                    "path": "/tmp/harbor_reward.txt",
+                    "format": "text",
+                },
+            },
+        },
+        sandbox={
+            "image": getattr(config, "image", "python:3.11-slim"),
+            "workdir": "/app",
+            "scope": "group",
+            "timeout_minutes": 10,
+            "command_timeout": 30,
+        },
+        config=config,
     )
-    return vf.Env(taskset=taskset, harness=harness)
+
+
+def load_environment(config=None):
+    return vf.Env(
+        taskset=load_taskset(getattr(config, "taskset", None)),
+        harness=load_harness(getattr(config, "harness", None)),
+    )

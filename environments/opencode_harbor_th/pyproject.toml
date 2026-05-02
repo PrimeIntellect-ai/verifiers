@@ -1,14 +1,12 @@
 [project]
 name = "opencode-harbor-th"
-description = "Taskset/harness migration of opencode-harbor."
+description = "v1 taskset/harness sketch for OpenCode on Harbor tasks."
 license = "MIT"
 tags = ["eval", "cli_agent", "harbor", "taskset-harness"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.10.dev4",
-    "prime-sandboxes>=0.2.10",
-    "tomli>=2.3.0",
+    "verifiers>=0.1.13.dev0",
 ]
 
 [build-system]

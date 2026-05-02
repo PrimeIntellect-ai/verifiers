@@ -683,7 +683,6 @@ class Environment(ABC):
                 return True
         return False
 
-    @final
     async def run_rollout(
         self,
         input: RolloutInput,
@@ -738,7 +737,6 @@ class Environment(ABC):
         output = state_to_output(state, state_columns or [])
         return output
 
-    @final
     async def run_group(
         self,
         group_inputs: list[RolloutInput],

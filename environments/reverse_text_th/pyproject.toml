@@ -3,10 +3,9 @@ name = "reverse-text-th"
 version = "0.1.0"
 tags = ["text", "transformation", "single-turn", "xml", "taskset-harness"]
 license = "Apache-2.0"
-description = "Taskset/harness migration of reverse-text."
+description = "v1 taskset/harness reverse-text example."
 dependencies = [
-    "verifiers>=0.1.5.post0",
-    "datasets",
+    "verifiers>=0.1.13.dev0",
 ]
 
 [build-system]
@@ -14,4 +13,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["reverse_text_th.py"]
+include = ["reverse_text_th.py", "pyproject.toml"]

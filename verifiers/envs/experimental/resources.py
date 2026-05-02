@@ -381,4 +381,4 @@ def sorted_handlers(
 def same_resource_object(name: str, existing: object, incoming: object) -> bool:
     if existing is incoming:
         return True
-    return name == "parser" and existing.__class__ is incoming.__class__
+    return False

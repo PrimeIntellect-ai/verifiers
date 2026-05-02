@@ -1,0 +1,17 @@
+[project]
+name = "nested-harness-th"
+version = "0.1.0"
+tags = ["nested", "harness", "taskset-harness"]
+license = "Apache-2.0"
+description = "Taskset/harness sketch for calling a child harness through a tool."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.13.dev0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["nested_harness_th.py", "pyproject.toml"]

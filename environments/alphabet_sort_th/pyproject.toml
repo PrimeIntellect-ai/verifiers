@@ -3,10 +3,9 @@ name = "alphabet-sort-th"
 version = "0.1.0"
 tags = ["sorting", "names", "multi-turn", "xml", "synthetic", "taskset-harness"]
 license = "Apache-2.0"
-description = "Taskset/harness migration of alphabet-sort using the user channel."
+description = "v1 taskset/harness alphabet-sort example."
 dependencies = [
-    "verifiers>=0.1.9",
-    "datasets",
+    "verifiers>=0.1.13.dev0",
 ]
 
 [build-system]

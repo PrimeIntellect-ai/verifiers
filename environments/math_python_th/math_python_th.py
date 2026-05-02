@@ -1,115 +1,94 @@
-import verifiers as vf
-from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
+from __future__ import annotations
+
+import verifiers.v1 as vf
+from verifiers.errors import SandboxError
+from verifiers.v1.utils.tool_utils import load_tools_from_state
 
 
-def load_taskset(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-) -> vf.Taskset:
-    def source():
-        return load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
+async def bash(command, sandbox):
+    result = await sandbox.execute(command)
+    return {
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
+        "returncode": result.exit_code,
+    }
 
-    parser = vf.Parser(extract_fn=extract_boxed_answer)
+
+async def python(expression, bash):
+    result = await bash(command=f"python - <<'PY'\nprint({expression})\nPY")
+    if result["returncode"]:
+        raise SandboxError(f"Python command failed: {result['stderr']}")
+    return result["stdout"].strip()
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(str(state["answer"]) == str(task["answer"]))
+
+
+@vf.cleanup(priority=10)
+async def collect_sandbox_commands(task, state):
+    state["commands"] = list(state.get("sandbox_commands", []))
+    state.pop("sandbox_commands", None)
+
+
+def source():
+    return [
+        {
+            "prompt": "Use Python to calculate 17 * 23.",
+            "expression": "17 * 23",
+            "answer": "391",
+        },
+        {
+            "prompt": "Use Python to calculate (144 / 12) + 9.",
+            "expression": "(144 / 12) + 9",
+            "answer": "21.0",
+        },
+    ]
+
+
+def load_toolset(config=None):
+    return vf.Toolset(
+        tools=[bash, python],
+        hide=["bash"],
+        write=True,
+        sandbox={
+            "image": "python:3.11-slim",
+            "scope": "group",
+        },
+        bindings={
+            "python.bash": "tools.bash",
+        },
+        cleanup=[collect_sandbox_commands],
+        config=config,
+    )
+
+
+async def math_program(task, state):
+    tools = load_tools_from_state(state)
+    state["answer"] = await tools["python"](expression=task["expression"])
+    state["completion"] = [{"role": "assistant", "content": state["answer"]}]
+    return state
+
+
+def load_taskset(config=None):
     return vf.Taskset(
         source=source,
-        rubric=vf.MathRubric(parser=parser),
-        name="math-python-th",
+        rewards=[exact_answer],
+        config=config,
     )
 
 
-def load_harness(
-    max_turns: int = 100,
-    max_startup_wait_seconds: int = 60,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 50,
-) -> vf.Harness:
-    pip_install_prompt = (
-        f"In addition to the Python standard library, you have access to: {pip_install_packages}."
-        if pip_install_packages.strip()
-        else "You may only use the Python standard library."
-    )
-    system_prompt = (
-        "Use Python for all calculations. Give your answer inside \\boxed{}."
-        "\n\n"
-        f"{pip_install_prompt}"
-    )
-
-    @vf.cleanup(priority=50)
-    async def cleanup_python_state(
-        _task: vf.Task, state: vf.State, _resources: vf.Resources
-    ) -> None:
-        if "python_state" in state:
-            state["python_cleanup"] = {
-                "execution_count": state["python_state"]["execution_count"],
-                "ready": state["python_state"]["ready"],
-            }
-
-    python = vf.SandboxPythonTool(
-        sandbox=vf.SandboxSpec(
-            image="python:3.11-slim",
-            cpu_cores=sandbox_cpu_cores,
-            memory_gb=sandbox_memory_gb,
-            disk_size_gb=sandbox_disk_size_gb,
-            gpu_count=sandbox_gpu_count,
-            timeout_minutes=sandbox_timeout_minutes,
-        ),
-        command_timeout=sandbox_timeout_per_command_seconds,
-        max_startup_wait_seconds=max_startup_wait_seconds,
-        pip_install_packages=pip_install_packages,
-        sandbox_key="math-python",
-        sandbox_runtime={"client_max_workers": sandbox_client_max_workers},
-    )
+def load_harness(config=None):
     return vf.Harness(
-        system_prompt=system_prompt,
-        tools=[
-            vf.Toolset(
-                tools=[python],
-                channels={"cleanup": {"harness": cleanup_python_state}},
-                name="math_python_tools",
-            )
-        ],
-        run=vf.RunConfig(max_turns=max_turns, stop_errors=(vf.SandboxError,)),
+        program=math_program,
+        toolsets=[load_toolset(getattr(config, "toolset", None))],
+        config=config,
     )
 
 
-def load_environment(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-    max_turns: int = 100,
-    max_startup_wait_seconds: int = 60,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 50,
-) -> vf.Environment:
+def load_environment(config=None):
     return vf.Env(
-        taskset=load_taskset(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            num_train_examples=num_train_examples,
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            max_startup_wait_seconds=max_startup_wait_seconds,
-            pip_install_packages=pip_install_packages,
-            sandbox_cpu_cores=sandbox_cpu_cores,
-            sandbox_memory_gb=sandbox_memory_gb,
-            sandbox_disk_size_gb=sandbox_disk_size_gb,
-            sandbox_gpu_count=sandbox_gpu_count,
-            sandbox_timeout_minutes=sandbox_timeout_minutes,
-            sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-            sandbox_client_max_workers=sandbox_client_max_workers,
-        ),
+        taskset=load_taskset(getattr(config, "taskset", None)),
+        harness=load_harness(getattr(config, "harness", None)),
     )

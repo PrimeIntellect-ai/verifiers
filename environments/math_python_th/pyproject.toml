@@ -1,13 +1,11 @@
 [project]
 name = "math-python-th"
-description = "Taskset/harness math environment with a sandbox-backed Python tool."
+description = "v1 taskset/harness math tool composition example."
 tags = ["tool-use", "math", "sandbox", "taskset-harness", "python"]
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.9",
-    "math-verify>=0.8.0",
-    "prime-sandboxes>=0.2.7",
+    "verifiers>=0.1.13.dev0",
 ]
 
 [build-system]

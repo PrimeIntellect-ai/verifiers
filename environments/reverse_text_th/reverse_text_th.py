@@ -1,35 +1,53 @@
-from datasets import load_dataset
+from __future__ import annotations
 
-import verifiers as vf
+from difflib import SequenceMatcher
+
+import verifiers.v1 as vf
 
 
-def load_environment(
-    dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
-    dataset_split: str = "train",
-    system_prompt: str
-    | None = "Reverse the text character-by-character. Put your answer in <reversed_text> tags.",
-) -> vf.Environment:
-    parser = vf.XMLParser(["reversed_text"], answer_field="reversed_text")
+@vf.reward(weight=1.0)
+async def lcs_reward(task, state) -> float:
+    return SequenceMatcher(None, state["prediction"], task["answer"]).ratio()
 
-    def lcs_reward_func(completion, answer, **kwargs) -> float:
-        from difflib import SequenceMatcher
 
-        response = parser.parse_answer(completion) or ""
-        return SequenceMatcher(None, response, answer).ratio()
+def source():
+    return [
+        {
+            "prompt": [{"role": "user", "content": "Reverse this text: stressed"}],
+            "text": "stressed",
+            "answer": "desserts",
+        },
+        {
+            "prompt": [{"role": "user", "content": "Reverse this text: drawer"}],
+            "text": "drawer",
+            "answer": "reward",
+        },
+    ]
 
-    def source():
-        dataset = load_dataset(dataset_name, split=dataset_split).map(
-            lambda x: {
-                "question": x["prompt"],
-                "answer": x["prompt"][::-1],
-                "info": {},
-            }
-        )
-        return dataset.remove_columns(["prompt"])
 
-    taskset = vf.Taskset(
+async def reverse_program(task, state):
+    state["prediction"] = task["text"][::-1]
+    state["completion"] = [{"role": "assistant", "content": state["prediction"]}]
+    return state
+
+
+def load_taskset(config=None):
+    return vf.Taskset(
         source=source,
-        rubric=vf.Rubric(funcs=[lcs_reward_func], weights=[1.0], parser=parser),
+        rewards=[lcs_reward],
+        config=config,
     )
-    harness = vf.Harness(system_prompt=system_prompt)
-    return vf.Env(taskset=taskset, harness=harness)
+
+
+def load_harness(config=None):
+    return vf.Harness(
+        program=reverse_program,
+        config=config,
+    )
+
+
+def load_environment(config=None):
+    return vf.Env(
+        taskset=load_taskset(getattr(config, "taskset", None)),
+        harness=load_harness(getattr(config, "harness", None)),
+    )

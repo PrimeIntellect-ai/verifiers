@@ -101,6 +101,18 @@ or a cleaner `run_and_score_group` pipeline. The important constraint is that
 trainer-provided runtime controls such as client/model/sampling can be bridged
 into the v1 flow without making task rows carry runtime control data.
 
+The current ownership assumption is that `Harness` owns runtime resolution.
+`Env` attaches a taskset to a harness, adapts the existing trainer/eval request
+shape, and copies trainer controls into serializable state before dispatch.
+Tasksets contribute task rows, signals, toolsets, and task-level runtime
+selection info; they do not own model/client routing.
+
+Harness programs should not accept the runtime object. Tool access goes through
+`load_tools_from_state(state)`, which resolves exposed tool handles from the
+active harness run. Program signatures should stay close to `(task, state)`,
+with the endpoint client available only for programs that explicitly ask for
+`client`.
+
 ### Decorator-In-Class Pattern
 
 Decorated functions defined on a `Taskset` class belong to that taskset.
@@ -232,6 +244,14 @@ class MyHarness(vf.Harness):
 The shared runner machinery should stay in the base implementation.
 Subclasses describe what to run, not a new way to run it.
 
+The base harness is endpoint-backed. The default program and custom programs
+share the same interception server path, so model request capture and trajectory
+construction have one implementation.
+
+Toolset sandboxes have rollout, group, or global scope. Global scope means
+env-worker-global: one sandbox per harness runtime, reused across rollouts in
+that process and released at teardown.
+
 ### Harnesses Do Not Hardcode Models
 
 Harness packages should not hardcode concrete model IDs. Running model X in
@@ -324,12 +344,24 @@ Not settled:
 Not settled:
 
 - exact runner interface under `Harness`;
-- whether harness execution is always endpoint-backed in the first slice;
 - how CLI, sandboxed CLI, and in-process execution share one runner;
 - how custom execute logic is expressed without allowing arbitrary `run`
   overrides;
 - how multiple model uses are declared;
 - which top-level class fields are allowed.
+
+Working assumption: the harness owns its runtime, and independent
+`harness.run(task)` should work without constructing an `Env`. When an `Env` is
+present, it should attach the taskset to the harness rather than introducing a
+second runtime owner.
+
+The runtime object should remain internal. Harness programs use
+`load_tools_from_state(state)` when they need callable tool handles, but
+runtime/resource resolution should stay in the background.
+
+`Harness.run` should finish rollout-scope scoring and cleanup before returning.
+Handled verifier errors are part of the returned rollout state; non-verifier
+exceptions are implementation failures and should raise.
 
 ### Config And TOML
 

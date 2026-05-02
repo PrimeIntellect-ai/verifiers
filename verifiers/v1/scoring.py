@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import time
 from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from typing import Any, Literal, cast
 
@@ -60,6 +61,7 @@ def add_reward(
 async def score_rollout(
     signals: Iterable[SignalRecord], task: Mapping[str, Any], state: dict[str, Any]
 ) -> dict[str, Any]:
+    start_time = time.time()
     reward = float(state.get("reward", 0.0) or 0.0)
     metrics = dict(cast(dict[str, float], state.get("metrics") or {}))
     for signal in sorted(signals, key=signal_sort_key):
@@ -71,6 +73,7 @@ async def score_rollout(
             reward += value * cast(float, signal["weight"])
     state["metrics"] = metrics
     state["reward"] = reward
+    record_scoring_timing(state, start_time)
     return state
 
 
@@ -79,6 +82,7 @@ async def score_group(
     tasks: list[Mapping[str, Any]],
     states: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    start_time = time.time()
     rewards = [float(state.get("reward", 0.0) or 0.0) for state in states]
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "group":
@@ -92,7 +96,23 @@ async def score_group(
                 rewards[index] += value * cast(float, signal["weight"])
     for index, state in enumerate(states):
         state["reward"] = rewards[index]
+        record_scoring_timing(state, start_time)
     return states
+
+
+def record_scoring_timing(state: dict[str, Any], start_time: float) -> None:
+    timing = state.setdefault(
+        "timing",
+        {
+            "generation_ms": 0.0,
+            "scoring_ms": 0.0,
+            "total_ms": 0.0,
+            "start_time": start_time,
+        },
+    )
+    scoring_ms = (time.time() - start_time) * 1000
+    timing["scoring_ms"] = float(timing.get("scoring_ms", 0.0)) + scoring_ms
+    timing["total_ms"] = float(timing.get("total_ms", 0.0)) + scoring_ms
 
 
 def add_signal(signals: MutableSequence[SignalRecord], signal: SignalRecord) -> None:

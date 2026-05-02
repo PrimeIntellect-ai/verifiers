@@ -1,0 +1,17 @@
+[project]
+name = "hello-rlm-th"
+version = "0.1.0"
+tags = ["rlm", "sandbox", "taskset-harness"]
+license = "Apache-2.0"
+description = "Taskset/harness sketch for an RLM-backed harness."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.13.dev0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["hello_rlm_th.py", "pyproject.toml"]

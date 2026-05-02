@@ -17,7 +17,8 @@ The core user-facing objects are:
 - `State`: mutable, serializable rollout record.
 - `TasksetConfig`: how tasks are loaded, shaped, and scored.
 - `HarnessConfig`: how a runner executes a task into a state.
-- `Env`: the resolved product of a taskset and harness.
+- `Harness`: the owner of runtime resolution and rollout execution.
+- `Env`: the trainer/eval adapter that attaches a taskset to a harness.
 
 The core user-facing extension mechanism is a small set of functions with
 strict signatures:
@@ -56,17 +57,29 @@ The public boundary should be serializable config plus serializable
 those objects should be reachable only through framework-managed runners and
 tool handles.
 
+The harness owns the resolved runtime. A taskset may contribute task rows,
+signals, toolsets, handles, and runtime selection info, but `Env` only connects
+the taskset to the harness and bridges trainer/eval controls into serializable
+state.
+
+Users should not receive the runtime object. If a harness program needs tools,
+it calls `load_tools_from_state(state)` from `verifiers.v1.utils.tool_utils`.
+That helper resolves the exposed tool handles for the active harness run. Hidden
+tools remain available for tool-to-tool bindings but are not part of the
+program's public tool surface.
+
 ## Resolution Model
 
 The v1 resolution path should be:
 
 ```text
-TasksetConfig
-  + HarnessConfig
-  + signal/function configs
+TasksetConfig + HarnessConfig
         |
         v
-strict, sorted function lists
+Harness-owned runtime
+        |
+        v
+strict tool, signal, cleanup, and teardown lists
 ```
 
 The first implementation slice should prefer simple functions over consolidated
@@ -96,6 +109,21 @@ functions receive `tasks` and `states`. Group-stage functions should require an
 explicit `stage="group"` declaration so a single-rollout function cannot
 accidentally become group-aware.
 
+`Harness.run(task, state=None)` resolves the harness runtime in the background.
+If no taskset has been attached, the harness runs with its own defaults.
+
+`Harness.run(task, state)` completes the rollout-scope lifecycle before it
+returns: program execution, artifact collection, timing render, rollout metrics
+and rewards, rollout cleanup, and serialization validation. Group metrics,
+group rewards, and group cleanup run from the environment/group adapter after
+all rollout states are available.
+
+Verifier errors (`vf.Error`) are handled rollout outcomes. They are rendered
+into serializable `state["error"]` records and then continue through rollout
+scoring and cleanup, matching the ComposableEnv/MultiTurn pattern where error
+states are visible to metrics, rewards, and retry logic. Non-verifier
+exceptions are implementation failures and propagate.
+
 Teardown is process-level cleanup for framework-managed services such as atexit
 handlers, local servers, endpoint proxies, and long-lived sandbox resources. It
 is distinct from rollout or group cleanup, which prepares serializable states
@@ -104,13 +132,21 @@ and releases resources tied to a completed rollout or group.
 ## Harness And Runner Boundary
 
 `Harness` is endpoint-backed by definition. Model calls go through the standard
-endpoint/interception boundary; v1 should not maintain a separate no-intercept
-generation path.
+endpoint/interception boundary; v1 does not maintain a separate no-intercept
+generation path. The default harness program makes OpenAI-compatible calls to
+that endpoint, and user programs may do the same through the injected endpoint
+client when they ask for a `client` argument.
 
-The base `Harness` owns the shared endpoint loop, tool exposure, scoring, and
-lifecycle machinery. Opinionated subclasses such as `OpenCode(Harness)` are
-fully instantiable harness packages that add defaults and config fields, but
-they should not introduce a separate lifecycle layer.
+The base `Harness` owns runtime resolution, the shared endpoint loop, tool
+exposure, scoring, and lifecycle machinery. Opinionated subclasses such as
+`OpenCode(Harness)` are fully instantiable harness packages that add defaults
+and config fields, but they should not introduce a separate lifecycle layer.
+
+The harness may declare one primary `sandbox`; that sandbox is where the
+harness program itself lives when the program is command-based. Toolsets can
+declare additional sandbox requirements for their own tools. This keeps the
+main execution placement distinct from sub-object placement without turning the
+harness constructor into a list of sandboxes.
 
 The placement/runtime config for Python, CLI, sandboxed CLI, and remote workers
 is still open. The first v1 pass should not force a generic config object before
@@ -134,6 +170,13 @@ Harnesses declare what tool transports they can consume. Tool resolution should
 choose the best compatible representation, including adapting callable tools
 behind framework-managed MCP/server handles when needed.
 
+`Toolset(sandbox={...})` declares that tools in that toolset need an isolated
+sandbox handle. The runtime creates that sandbox lazily on first tool call,
+passes it as a hidden `sandbox` argument, stores only the serializable sandbox
+reference in state, and releases it at rollout or group cleanup based on
+`sandbox.scope`. `scope="global"` creates one sandbox per harness/env-worker
+runtime before program execution and releases it only at teardown.
+
 ## Signals
 
 Metrics and rewards are signals. Metrics are always single-rollout unless
@@ -148,6 +191,11 @@ Harnesses can contribute rollout metrics about their own execution. Tasksets
 own correctness rewards. Both may contribute rollout cleanup. Group rewards,
 group metrics, advantages, and group cleanup are resolved at the
 environment/group stage.
+
+Python constructor arguments such as `metrics=[...]` and `rewards=[...]` define
+available signal functions. `config.scoring` is metadata for overriding,
+skipping, or importing those functions by name. Owners do not need a separate
+`scoring_config` attribute.
 
 ## Config Requirements
 

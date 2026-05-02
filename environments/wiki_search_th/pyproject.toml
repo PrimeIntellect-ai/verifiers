@@ -1,15 +1,11 @@
 [project]
 name = "wiki-search-th"
-description = "Taskset/harness migration of wiki-search."
-tags = ["wikipedia", "multi-turn", "agentic-search", "rag", "train", "eval", "llm-judge", "taskset-harness"]
+description = "v1 taskset/harness wiki-search toolset example."
+tags = ["wikipedia", "toolset", "rag", "taskset-harness"]
 requires-python = ">=3.11"
 version = "0.1.0"
 dependencies = [
-    "verifiers>=0.1.9",
-    "chromadb",
-    "datasets",
-    "openai",
-    "opentelemetry-api>=1.41.1",
+    "verifiers>=0.1.13.dev0",
 ]
 
 [build-system]
