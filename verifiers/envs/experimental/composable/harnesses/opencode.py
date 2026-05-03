@@ -160,7 +160,23 @@ def build_opencode_run_command(
     model_display_name: str | None = None,
     provider_timeout_ms: int = 3_600_000,
 ) -> str:
-    """Build the shell command that configures and runs OpenCode."""
+    """Build the shell command that configures and runs OpenCode.
+
+    The script reads the working directory from the ``AGENT_WORKDIR`` env
+    var at runtime so callers that vary the workdir per rollout (e.g.
+    SWE-rebench-V2's per-repo ``/{repo-name}`` workdir, exported by
+    ``ComposableEnv.build_env_vars`` from ``taskset.get_workdir(info)``)
+    land opencode's ``cwd`` in the right place. The ``agent_workdir``
+    parameter is a build-time fallback used only when ``AGENT_WORKDIR``
+    is not set in the runtime environment, so single-workdir tasksets
+    keep working unchanged.
+
+    The system prompt file (uploaded by ``ComposableEnv`` to
+    ``system_prompt_path``) has ``{agent_workdir}`` placeholders
+    substituted with the runtime ``AGENT_WORKDIR`` value before opencode
+    reads it, so prompts that reference the working directory stay in
+    sync with the actual cwd.
+    """
     config_json = build_opencode_config(
         disabled_tools=disabled_tools,
         system_prompt_path=system_prompt_path,
@@ -173,6 +189,15 @@ def build_opencode_run_command(
         provider_timeout_ms=provider_timeout_ms,
     )
 
+    system_prompt_substitution = (
+        f"if [[ -f {shlex.quote(system_prompt_path)} ]]; then\n"
+        f'    sed -i "s|{{agent_workdir}}|$AGENT_WORKDIR|g" '
+        f"{shlex.quote(system_prompt_path)}\n"
+        f"fi\n"
+        if system_prompt_path
+        else ""
+    )
+
     script = f"""\
 set -eo pipefail
 
@@ -180,7 +205,11 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
-mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
+# Per-rollout workdir, exported by ComposableEnv from taskset.get_workdir(info).
+# Falls back to the harness's build-time default for callers that don't set it.
+export AGENT_WORKDIR="${{AGENT_WORKDIR:-{agent_workdir}}}"
+
+mkdir -p ~/.config/opencode /logs/agent "$AGENT_WORKDIR"
 
 # Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
 # LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
@@ -194,7 +223,10 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 
-cd {agent_workdir}
+# Substitute {{agent_workdir}} in the (already-uploaded) system prompt so
+# prompts that reference the working directory match the actual cwd.
+{system_prompt_substitution}
+cd "$AGENT_WORKDIR"
 cat {prompt_path} | opencode run 2>&1 | tee {log_path}
 """
     return f"bash -lc {shlex.quote(script)}"
@@ -229,6 +261,18 @@ def opencode_harness(
     provider_timeout_ms: int = 3_600_000,
 ):
     """Create a Harness configured for OpenCode.
+
+    The agent's working directory is read at runtime from the
+    ``AGENT_WORKDIR`` env var, which ``ComposableEnv`` exports per
+    rollout from ``taskset.get_workdir(info)``. The ``agent_workdir``
+    parameter is a build-time fallback used only when ``AGENT_WORKDIR``
+    is not set, so single-workdir tasksets keep working unchanged while
+    tasksets with per-instance workdirs (e.g. SWE-rebench-V2's
+    ``/{repo-name}``) route the runtime value through.
+
+    System prompts may include the literal token ``{agent_workdir}``;
+    the harness substitutes it with the runtime ``AGENT_WORKDIR`` value
+    before opencode reads the prompt file.
 
     Usage::
 
