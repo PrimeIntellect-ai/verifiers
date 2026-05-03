@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
@@ -173,6 +173,8 @@ def build_opencode_run_command(
         provider_timeout_ms=provider_timeout_ms,
     )
 
+    log_dir = str(PurePosixPath(log_path).parent)
+
     script = f"""\
 set -eo pipefail
 
@@ -180,7 +182,15 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
-mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
+# ComposableEnv exports AGENT_WORKDIR from taskset.get_workdir(info) for each
+# rollout. Prefer that runtime value; agent_workdir is only the static fallback
+# for direct callers that do not run through ComposableEnv.
+OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
+if [[ -z "$OPENCODE_WORKDIR" ]]; then
+    OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
+fi
+
+mkdir -p ~/.config/opencode {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
 
 # Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
 # LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
@@ -194,8 +204,8 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 
-cd {agent_workdir}
-cat {prompt_path} | opencode run 2>&1 | tee {log_path}
+cd "$OPENCODE_WORKDIR"
+cat {shlex.quote(prompt_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
     return f"bash -lc {shlex.quote(script)}"
 
