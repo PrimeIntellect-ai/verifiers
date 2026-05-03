@@ -16,10 +16,12 @@ from renderers import (
     GLM45Renderer,
     KimiK25Renderer,
     MiniMaxM2Renderer,
+    Nemotron3KeepThinkingRenderer,
     Nemotron3Renderer,
     Qwen3Renderer,
     Qwen35Renderer,
     Qwen36Renderer,
+    create_renderer,
 )
 
 # Renderer class + canonical HF model id.
@@ -72,3 +74,20 @@ def test_keep_thinking_retains_prior_turn_reasoning(renderer_cls, hf_model):
     # keep_thinking=True must additionally retain the prior turn's marker.
     assert "PRIORTHINK_MARKER" not in default_text
     assert "PRIORTHINK_MARKER" in keep_text
+
+
+@pytest.mark.parametrize(
+    "renderer_name",
+    ["nemotron3-keep-thinking", "nemotron3_keep_thinking"],
+)
+def test_nemotron_keep_thinking_renderer_aliases(renderer_name):
+    tokenizer = AutoTokenizer.from_pretrained(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", trust_remote_code=True
+    )
+
+    renderer = create_renderer(tokenizer, renderer=renderer_name)
+    rendered_text = tokenizer.decode(renderer.render_ids(_multi_turn_messages()))
+
+    assert isinstance(renderer, Nemotron3KeepThinkingRenderer)
+    assert "PRIORTHINK_MARKER" in rendered_text
+    assert "LATERTHINK_MARKER" in rendered_text
