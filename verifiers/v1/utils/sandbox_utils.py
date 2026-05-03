@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import importlib.resources as resources
 import json
 import shlex
+import tarfile
+import tempfile
 import uuid
 from collections.abc import Mapping
+from importlib.abc import Traversable
+from pathlib import Path
 from typing import Any, cast
 
 from verifiers.errors import SandboxError
@@ -145,7 +151,7 @@ async def create_scoped_sandbox_lease(
         raise
     lease = SandboxLease(client, sandbox_id, scope, key)
     try:
-        await setup_tool_sandbox(lease, sandbox_config)
+        await setup_sandbox(lease, sandbox_config)
     except BaseException:
         await lease.delete()
         raise
@@ -169,7 +175,12 @@ async def run_sandbox_command(
         state["sandbox_id"] = sandbox_id
         state.setdefault("runtime", {})
         state["runtime"]["sandbox"] = {"id": sandbox_id, "scope": scope}
+        await setup_sandbox(
+            SandboxLease(client, sandbox_id, scope, "program"), sandbox_config
+        )
         await upload_program_files(client, sandbox_id, program, task, state, runtime)
+        await upload_program_dirs(client, sandbox_id, program, task, state, runtime)
+        await run_program_setup(client, sandbox_id, program, task, state, runtime)
         workdir = cast(str | None, sandbox_config.get("workdir"))
         if workdir:
             await client.execute_command(sandbox_id, f"mkdir -p {shlex.quote(workdir)}")
@@ -257,7 +268,7 @@ async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -
     return sandbox_id
 
 
-async def setup_tool_sandbox(
+async def setup_sandbox(
     handle: SandboxLease, sandbox_config: Mapping[str, object]
 ) -> None:
     packages = sandbox_config.get("packages") or []
@@ -377,6 +388,104 @@ async def upload_program_files(
         )
 
 
+async def upload_program_dirs(
+    client: object,
+    sandbox_id: str,
+    program: Mapping[str, object],
+    task: Task,
+    state: State,
+    runtime: Runtime,
+) -> None:
+    dirs = program.get("dirs", {})
+    if not isinstance(dirs, Mapping):
+        raise TypeError("program.dirs must be a mapping.")
+    for path, source in dirs.items():
+        if not isinstance(path, str):
+            raise TypeError("program.dirs keys must be strings.")
+        from .program_utils import resolve_program_value
+
+        local_source = await resolve_program_value(source, task, state, runtime)
+        await upload_program_dir(client, sandbox_id, path, local_source)
+
+
+async def upload_program_dir(
+    client: object, sandbox_id: str, remote_path: str, local_source: object
+) -> None:
+    if isinstance(local_source, str):
+        local_source = Path(local_source)
+    if not isinstance(local_source, (Path, Traversable)):
+        raise TypeError("program.dirs values must resolve to paths.")
+    remote_tar = f"/tmp/_vf_upload_{remote_path.strip('/').replace('/', '_')}.tar.gz"
+    tmp_path = await asyncio.to_thread(build_dir_archive, local_source, remote_path)
+    try:
+        await cast(Any, client).upload_file(sandbox_id, remote_tar, str(tmp_path))
+        result = await maybe_call_with_named_args(
+            getattr(client, "execute_command"),
+            sandbox_id=sandbox_id,
+            command=(
+                f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && "
+                f"tar -xzf {shlex.quote(remote_tar)} -C / && "
+                f"rm -f {shlex.quote(remote_tar)}"
+            ),
+        )
+        if result.exit_code:
+            raise SandboxError(f"Program dir upload failed: {result.stderr}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def build_dir_archive(local_source: Path | Traversable, remote_path: str) -> Path:
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+        tar_path = Path(tmp_file.name)
+    arcname = remote_path.lstrip("/")
+    with tarfile.open(tar_path, "w:gz") as tar:
+        if isinstance(local_source, Path):
+            tar.add(local_source, arcname=arcname, filter=upload_tar_filter)
+        else:
+            with resources.as_file(local_source) as local_path:
+                tar.add(local_path, arcname=arcname, filter=upload_tar_filter)
+    return tar_path
+
+
+def upload_tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    if Path(tarinfo.name).name in {
+        ".git",
+        ".venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "node_modules",
+    }:
+        return None
+    return tarinfo
+
+
+async def run_program_setup(
+    client: object,
+    sandbox_id: str,
+    program: Mapping[str, object],
+    task: Task,
+    state: State,
+    runtime: Runtime,
+) -> None:
+    setup = program.get("setup") or []
+    if isinstance(setup, str):
+        setup = [setup]
+    if not isinstance(setup, list):
+        raise TypeError("program.setup must be a string or list.")
+    env = await command_env(program, task, state, runtime, include_base=False)
+    for command in setup:
+        result = await maybe_call_with_named_args(
+            getattr(client, "execute_command"),
+            sandbox_id=sandbox_id,
+            command=str(command),
+            env=env,
+        )
+        if result.exit_code:
+            raise SandboxError(f"Program setup failed: {result.stderr}")
+
+
 async def collect_sandbox_artifacts(
     client: object, sandbox_id: str, program: Mapping[str, object], state: State
 ) -> None:
@@ -395,14 +504,7 @@ async def collect_sandbox_artifacts(
         path = spec.get("path")
         if not isinstance(path, str):
             raise TypeError("program artifact path must be a string.")
-        result = await maybe_call_with_named_args(
-            getattr(client, "execute_command"),
-            sandbox_id=sandbox_id,
-            command=f"cat {shlex.quote(path)}",
-        )
-        if result.exit_code:
-            raise FileNotFoundError(f"Sandbox artifact not found: {path}")
-        content = result.stdout or ""
+        content = await read_sandbox_artifact(client, sandbox_id, path.format(**state))
         artifact_format = spec.get("format", "text")
         if artifact_format == "json":
             value: object = json.loads(content)
@@ -410,4 +512,27 @@ async def collect_sandbox_artifacts(
             value = content
         else:
             raise ValueError(f"Unsupported artifact format: {artifact_format!r}")
+        key = spec.get("key")
+        if key is not None:
+            if not isinstance(key, str):
+                raise TypeError("program artifact key must be a string.")
+            value = cast(Mapping[str, object], value)[key]
         state["artifacts"][name] = value
+
+
+async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> str:
+    script = (
+        "import glob, pathlib, sys\n"
+        f"matches = sorted(glob.glob({path!r}))\n"
+        "if not matches:\n"
+        "    sys.exit(2)\n"
+        "sys.stdout.write(pathlib.Path(matches[0]).read_text())\n"
+    )
+    result = await maybe_call_with_named_args(
+        getattr(client, "execute_command"),
+        sandbox_id=sandbox_id,
+        command=f"python -c {shlex.quote(script)}",
+    )
+    if result.exit_code:
+        raise FileNotFoundError(f"Sandbox artifact not found: {path}")
+    return result.stdout or ""

@@ -286,19 +286,28 @@ class Runtime:
         is_truncated = response.message.is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
-        state["trajectory"].append(
-            {
-                "prompt": serializable(prompt),
-                "completion": serializable(completion),
-                "response": serializable(response),
-                "tokens": serializable(tokens),
-                "reward": None,
-                "advantage": None,
-                "is_truncated": bool(is_truncated),
-                "trajectory_id": str(state["trajectory_id"]),
-                "extras": extras or {},
-            }
-        )
+        step = {
+            "prompt": serializable(prompt),
+            "completion": serializable(completion),
+            "response": serializable(response),
+            "tokens": serializable(tokens),
+            "reward": None,
+            "advantage": None,
+            "is_truncated": bool(is_truncated),
+            "trajectory_id": str(state["trajectory_id"]),
+            "extras": extras or {},
+        }
+        keep_step = getattr(self.harness, "keep_trajectory_step", None)
+        if keep_step is not None:
+            headers = {}
+            if extras is not None and isinstance(extras.get("headers"), Mapping):
+                headers = dict(cast(Mapping[str, object], extras["headers"]))
+            keep = await maybe_call_with_named_args(
+                keep_step, step=step, state=state, headers=headers
+            )
+            if not keep:
+                return response
+        state["trajectory"].append(step)
         return response
 
     async def score_rollout(self, task: Task, state: State) -> State:

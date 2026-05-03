@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+import inspect
 import json
 import logging
 import time
@@ -91,6 +92,10 @@ class InterceptionServer:
                 "/rollout/{rollout_id}/v1/messages",
                 self._handle_request,
             )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/tools/{tool_name}",
+                self._handle_tool_request,
+            )
             app.router.add_get(
                 "/health",
                 lambda _: web.json_response({"status": "ok"}),
@@ -145,12 +150,16 @@ class InterceptionServer:
         state["error"] = error
 
     def register_rollout(
-        self, rollout_id: str, state: dict[str, Any] | None = None
+        self,
+        rollout_id: str,
+        state: dict[str, Any] | None = None,
+        tool_handler: Any | None = None,
     ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
             "state": state,
+            "tool_handler": tool_handler,
         }
         return request_queue
 
@@ -242,6 +251,39 @@ class InterceptionServer:
 
             _log_response(rollout_id, response_dict)
             return web.json_response(response_dict)
+
+    async def _handle_tool_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        tool_handler = context.get("tool_handler")
+        if tool_handler is None:
+            return web.json_response({"error": "Tool proxy unavailable"}, status=404)
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+        arguments = request_body.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            return web.json_response(
+                {"error": "Tool arguments must be an object"}, status=400
+            )
+
+        try:
+            result = tool_handler(request.match_info["tool_name"], arguments)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        result = json.loads(json.dumps(result, default=str))
+        return web.json_response({"result": result})
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict

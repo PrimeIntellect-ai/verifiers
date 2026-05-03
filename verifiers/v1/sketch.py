@@ -381,7 +381,7 @@ def load_harness(config=None) -> vf.Harness:
 
 def load_harness(config=None) -> vf.Harness:
     return vf.Harness(
-        program={"entrypoint": "pkg.module:run"},
+        program={"entrypoint": "pkg.module:run", "sandbox": True},
         sandbox={...},
         toolsets=[wiki_tools],
         metrics=[num_tool_calls],
@@ -392,6 +392,7 @@ def load_harness(config=None) -> vf.Harness:
 def load_harness(config=None) -> vf.Harness:
     return vf.Harness(
         program={
+            "sandbox": True,
             "command": ["opencode", "run"],
             "args": ["--task", {"state": "paths.task"}],
         },
@@ -407,6 +408,15 @@ async def library_program(task, state): ...
 def load_harness(config=None) -> vf.Harness:
     return vf.Harness(
         program={"entrypoint": "pkg.library:run"},
+        metrics=[num_tool_calls],
+        config=config,
+    )
+
+
+def load_harness(config=None) -> vf.Harness:
+    return vf.Harness(
+        program={"base": True, "sandbox": True},
+        sandbox={...},
         metrics=[num_tool_calls],
         config=config,
     )

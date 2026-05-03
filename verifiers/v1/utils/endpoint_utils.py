@@ -60,10 +60,14 @@ class Endpoint:
     async def start(self) -> None:
         await self.server.start()
 
-    async def register_rollout(self, state: State) -> str:
+    async def register_rollout(
+        self, state: State, tool_handler: object | None = None
+    ) -> str:
         await self.start()
         request_key = f"rollout_{uuid.uuid4().hex[:8]}"
-        request_queue = self.server.register_rollout(request_key, state=state)
+        request_queue = self.server.register_rollout(
+            request_key, state=state, tool_handler=tool_handler
+        )
         self._request_queues[request_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{request_key}"
         state["endpoint_request_key"] = request_key
@@ -149,7 +153,10 @@ async def run_intercepted_program(
     task: Task,
     state: State,
 ) -> object:
-    await endpoint.register_rollout(state)
+    async def call_tool(name: str, arguments: Mapping[str, object]) -> object:
+        return await runtime.call_tool(name, task, state, **dict(arguments))
+
+    await endpoint.register_rollout(state, tool_handler=call_tool)
     client = endpoint.client(state)
     execution = asyncio.create_task(
         maybe_call_with_named_args(program, task=task, state=state, client=client)
@@ -256,7 +263,11 @@ async def forward_request(
             task,
             state,
             tool_defs=tool_defs,
-            extras={"endpoint": True, "endpoint_request_id": request_id},
+            extras={
+                "endpoint": True,
+                "endpoint_request_id": request_id,
+                "headers": request.get("headers") or {},
+            },
         )
     except BaseException as e:
         error = e

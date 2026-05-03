@@ -15,6 +15,7 @@ from .config import (
     merge_config_items,
     merge_config_value,
     resolve_config_object,
+    string_mapping,
 )
 from .utils.endpoint_utils import (
     Endpoint,
@@ -29,6 +30,7 @@ from .utils.sandbox_utils import (
     release_rollout_sandboxes,
     run_sandbox_command,
 )
+from .utils.sandbox_program_utils import run_sandbox_python_program
 from .utils.trajectory_utils import sync_trajectory
 from .state import State
 from .task import Task
@@ -50,6 +52,7 @@ class Harness:
         rewards: list[Callable[..., object]] | None = None,
         cleanup: list[Callable[..., object]] | None = None,
         max_turns: int | None = None,
+        keep_trajectory_step: Callable[..., object] | None = None,
         config: HarnessConfig | Mapping[str, object] | None = None,
     ):
         self.config = type(self).config_type.model_validate(config or {})
@@ -78,9 +81,15 @@ class Harness:
             list[Callable[..., object]],
             merge_config_items(cleanup or (), self.config.cleanup),
         )
+        keep_step_value = resolve_config_object(
+            merge_config_value(keep_trajectory_step, self.config.keep_trajectory_step)
+        )
+        if keep_step_value is not None and not callable(keep_step_value):
+            raise TypeError("keep_trajectory_step must be callable.")
+        self.keep_trajectory_step = cast(Callable[..., object] | None, keep_step_value)
         self.taskset: object | None = None
         self.runtime = self.resolve_runtime()
-        self.endpoint = Endpoint(use_tunnel=self.sandbox is not None)
+        self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
 
     @classmethod
@@ -224,10 +233,20 @@ class Harness:
             return program
         if not isinstance(program, Mapping):
             raise TypeError("program must be None, callable, or a mapping.")
+        if bool(program.get("base")):
+            sandbox_config = self.program_sandbox_config(program)
+            if sandbox_config is not None:
+                return self.sandbox_base_program(program, sandbox_config)
+            return self.base_program
         if "entrypoint" in program:
             entrypoint = program["entrypoint"]
             if not isinstance(entrypoint, str):
                 raise TypeError("program.entrypoint must be a string ref.")
+            sandbox_config = self.program_sandbox_config(program)
+            if sandbox_config is not None:
+                return self.sandbox_entrypoint_program(
+                    program, sandbox_config, entrypoint
+                )
             fn = import_config_ref(entrypoint)
             if not callable(fn):
                 raise TypeError("program.entrypoint did not resolve to a callable.")
@@ -301,16 +320,11 @@ class Harness:
     def command_program(self, program: Mapping[str, object]) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
             runtime = self.runtime
-            if self.sandbox is not None:
-                if not isinstance(self.sandbox, Mapping):
-                    raise TypeError("sandbox must be a mapping.")
-                sandbox_config = dict(self.sandbox)
-                task_sandbox = task.get("sandbox")
-                if isinstance(task_sandbox, Mapping):
-                    sandbox_config.update(task_sandbox)
+            sandbox_config = self.program_sandbox_config(program)
+            if sandbox_config is not None:
                 return await run_sandbox_command(
                     program,
-                    sandbox_config,
+                    self.task_merged_sandbox(sandbox_config, task),
                     task,
                     state,
                     runtime,
@@ -318,3 +332,81 @@ class Harness:
             return await run_local_command(program, task, state, runtime)
 
         return run
+
+    def sandbox_base_program(
+        self, program: Mapping[str, object], sandbox_config: Mapping[str, object]
+    ) -> Callable[..., object]:
+        async def run(task: Task, state: State) -> State:
+            return await run_sandbox_python_program(
+                program=program,
+                sandbox_config=self.task_merged_sandbox(sandbox_config, task),
+                task=task,
+                state=state,
+                runtime=self.runtime,
+                mode="base",
+                entrypoint=None,
+                max_turns=self.config.max_turns,
+            )
+
+        return run
+
+    def sandbox_entrypoint_program(
+        self,
+        program: Mapping[str, object],
+        sandbox_config: Mapping[str, object],
+        entrypoint: str,
+    ) -> Callable[..., object]:
+        async def run(task: Task, state: State) -> State:
+            return await run_sandbox_python_program(
+                program=program,
+                sandbox_config=self.task_merged_sandbox(sandbox_config, task),
+                task=task,
+                state=state,
+                runtime=self.runtime,
+                mode="entrypoint",
+                entrypoint=entrypoint,
+                max_turns=self.config.max_turns,
+            )
+
+        return run
+
+    def program_uses_sandbox(self) -> bool:
+        if not isinstance(self.program, Mapping):
+            return False
+        return (
+            self.program_sandbox_config(cast(Mapping[str, object], self.program))
+            is not None
+        )
+
+    def program_sandbox_config(
+        self, program: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        sandbox = program.get("sandbox")
+        if sandbox is None or sandbox is False:
+            return None
+        if sandbox is True:
+            if self.sandbox is None:
+                raise ValueError("program.sandbox=true requires Harness.sandbox.")
+            if not isinstance(self.sandbox, Mapping):
+                raise TypeError("Harness.sandbox must be a mapping.")
+            return cast(Mapping[str, object], self.sandbox)
+        if not isinstance(sandbox, Mapping):
+            raise TypeError("program.sandbox must be true, false, or a mapping.")
+        sandbox_config = {}
+        if self.sandbox is not None:
+            if not isinstance(self.sandbox, Mapping):
+                raise TypeError("Harness.sandbox must be a mapping.")
+            sandbox_config.update(
+                string_mapping(cast(Mapping[object, object], self.sandbox))
+            )
+        sandbox_config.update(string_mapping(cast(Mapping[object, object], sandbox)))
+        return sandbox_config
+
+    def task_merged_sandbox(
+        self, sandbox_config: Mapping[str, object], task: Task
+    ) -> Mapping[str, object]:
+        config = dict(sandbox_config)
+        task_sandbox = task.get("sandbox")
+        if isinstance(task_sandbox, Mapping):
+            config.update(string_mapping(cast(Mapping[object, object], task_sandbox)))
+        return config

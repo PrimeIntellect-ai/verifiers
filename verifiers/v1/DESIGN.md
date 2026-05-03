@@ -63,7 +63,9 @@ The base `Harness` supports:
 
 - default OpenAI-compatible tool loop;
 - Python callable program;
-- command program, with optional primary sandbox.
+- command program;
+- explicit base program;
+- sandbox placement for command, entrypoint, and base programs.
 
 All model calls go through the interception endpoint so trajectory capture has
 one implementation path.
@@ -164,7 +166,8 @@ sync.
 - `opencode_harbor_v1`: sandboxed command harness plus rollout reward that runs
   Harbor tests before sandbox cleanup.
 - `nested_harness_v1`: tool binding that calls another harness.
-- `hello_rlm_v1`: command-program harness sketch.
+- `hello_rlm_v1`: sandboxed RLM CLI command harness with checkout upload,
+  install, endpoint interception, metrics collection, and trajectory filtering.
 - `tau2_bench`: taskset-owned tools and user simulator backed by a
   rollout-scoped session object.
 

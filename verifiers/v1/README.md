@@ -94,6 +94,49 @@ The supported program forms are:
 - `program=None`: default tool loop using the selected client protocol.
 - `program=callable`: Python function called through the interception endpoint.
 - `program={"command": [...], ...}`: local or sandboxed command.
+- `program={"base": true, ...}`: explicit default loop, useful when the default
+  loop needs program-level options such as sandbox execution.
+
+Program placement is explicit. A program runs locally/in-process unless its
+mapping contains `sandbox = true` or an inline sandbox mapping. `Harness.sandbox`
+is the default primary sandbox config; it does not by itself move the program.
+This lets harnesses use sandbox-backed tools while keeping the main program
+local.
+
+```python
+# Local command.
+vf.Harness(program={"command": ["python", "run.py"]})
+
+# Sandboxed command using the harness sandbox config.
+vf.Harness(
+    sandbox={"image": "python:3.11-slim"},
+    program={"sandbox": True, "command": ["python", "run.py"]},
+)
+
+# Sandboxed default loop.
+vf.Harness(
+    sandbox={"image": "python:3.11-slim"},
+    program={"base": True, "sandbox": True},
+)
+
+# Sandboxed importable Python program.
+vf.Harness(
+    program={
+        "entrypoint": "my_env.program:run",
+        "sandbox": {"image": "python:3.11-slim"},
+    }
+)
+```
+
+Sandboxed programs support `env`, `files`, `dirs`, `setup`, and `artifacts`.
+`files` and `dirs` map sandbox paths to literal values, `task.*` / `state.*`
+paths, runtime paths, or callables. `setup` runs after uploads and before the
+main program. `artifacts` reads text or JSON from sandbox paths or globs into
+`state["artifacts"]`.
+
+The sandboxed base loop uses the rollout endpoint for model calls and a sibling
+tool proxy for resolved callable/MCP tools, so the tool registry still lives in
+the host runtime while the loop itself runs in the sandbox.
 
 The default loop is controlled by `HarnessConfig.max_turns`.
 

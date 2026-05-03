@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from verifiers.errors import InfraError
+from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from ..runtime import Runtime, _read_path
 from ..state import State
@@ -96,6 +97,10 @@ async def command_env(
 async def resolve_program_value(
     value: object, task: Task, state: State, runtime: Runtime
 ) -> object:
+    if callable(value):
+        return await maybe_call_with_named_args(
+            value, task=task, state=state, runtime=runtime
+        )
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":

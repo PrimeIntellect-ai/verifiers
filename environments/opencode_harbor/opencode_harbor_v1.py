@@ -265,7 +265,7 @@ def load_harness(
     prompt_text = None
     if system_prompt_path is not None:
         prompt_text = Path(system_prompt_path).read_text()
-    files = {
+    files: dict[str, object] = {
         "/task/instruction.md": {"task": "instruction"},
         "/task/task.toml": {"task": "task_toml"},
     }
@@ -273,6 +273,7 @@ def load_harness(
         files["/opencode/prompt.txt"] = prompt_text
     return vf.Harness(
         program={
+            "sandbox": True,
             "command": [
                 "bash",
                 "-lc",

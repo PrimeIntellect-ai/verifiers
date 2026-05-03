@@ -3,7 +3,7 @@ name = "hello-rlm-v1"
 version = "0.1.0"
 tags = ["rlm", "sandbox", "v1"]
 license = "Apache-2.0"
-description = "Taskset/harness sketch for an RLM-backed harness."
+description = "Minimal v1 environment that runs the RLM CLI through a sandboxed command harness."
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.13.dev0",

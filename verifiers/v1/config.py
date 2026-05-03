@@ -52,6 +52,7 @@ class TasksetConfig(Config):
 class HarnessConfig(Config):
     program: object | None = None
     sandbox: object | None = None
+    keep_trajectory_step: object | None = None
     toolsets: list[object] = Field(default_factory=list)
     user: object | None = None
     metrics: list[object] = Field(default_factory=list)
