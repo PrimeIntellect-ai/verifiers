@@ -9,7 +9,7 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from verifiers.envs.experimental.composable import Harness
+from verifiers.envs.experimental.composable import GitPatchCollector, Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
@@ -203,7 +203,7 @@ def rlm_harness(
         tool_names=tool_names,
         environment_vars=env_vars_for_rollout,
         keep_trajectory_step=keep_trajectory_step,
-        agent_patch_state_key="agent_patch",
+        state_collectors=[GitPatchCollector()],
     )
 
 

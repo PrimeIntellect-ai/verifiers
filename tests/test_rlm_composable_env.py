@@ -20,6 +20,7 @@ from verifiers.envs.experimental.composable import (
 )
 from verifiers.envs.experimental.composable import (
     ComposableEnv,
+    GitPatchCollector,
     Harness,
     SandboxSpec,
     SandboxTaskSet,
@@ -206,6 +207,10 @@ def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
     assert harness.metrics_key == "metrics"
     assert harness.metrics_prefix == "rlm_"
     assert harness.skills_path == "/task/rlm-skills"
+    assert harness.state_collectors is not None
+    assert len(harness.state_collectors) == 1
+    assert isinstance(harness.state_collectors[0], GitPatchCollector)
+    assert harness.state_collectors[0].state_key == "agent_patch"
 
 
 def test_resolve_local_checkout_rejects_missing_explicit_path(tmp_path):

@@ -59,11 +59,6 @@ from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
 
-_AGENT_PATCH_BASE_REF_KEY = "_agent_patch_base_ref"
-_AGENT_PATCH_WORKDIR_KEY = "_agent_patch_workdir"
-_AGENT_PATCH_TIMEOUT_SECONDS = 120
-_AGENT_PATCH_GIT = "/usr/bin/git"
-
 
 # Directory/file names that are never useful inside the sandbox: VCS metadata,
 # host-side virtualenvs, language tool caches. Skipping them shrinks the tar
@@ -92,33 +87,6 @@ def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
     if base in _UPLOAD_EXCLUDE_NAMES or base.endswith(_UPLOAD_EXCLUDE_SUFFIXES):
         return None
     return info
-
-
-def _agent_patch_baseline_command() -> str:
-    script = f"""\
-set -e
-git={shlex.quote(_AGENT_PATCH_GIT)}
-[ -x "$git" ] || exit 0
-"$git" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
-"$git" add -A .
-"$git" -c user.email=setup@verifiers.local -c user.name=verifiers \\
-  -c core.hooksPath=/dev/null commit --allow-empty -m vf-agent-patch-baseline >/dev/null
-"$git" rev-parse HEAD
-"""
-    return f"bash -lc {shlex.quote(script)}"
-
-
-def _agent_patch_diff_command(base_ref: str) -> str:
-    script = f"""\
-set -e
-git={shlex.quote(_AGENT_PATCH_GIT)}
-[ -x "$git" ] || exit 0
-"$git" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
-"$git" add -A .
-"$git" diff --cached --binary --full-index --text {shlex.quote(base_ref)}
-"$git" reset -q || true
-"""
-    return f"bash -lc {shlex.quote(script)}"
 
 
 class HarnessMetricsRubricGroup(vf.RubricGroup):
@@ -288,7 +256,7 @@ class ComposableEnv(CliAgentEnv):
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
         await self._run_post_install(sandbox_id)
-        await self._capture_agent_patch_baseline(state)
+        await self._run_state_collectors("post_sandbox_setup", state)
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.
@@ -298,8 +266,8 @@ class ComposableEnv(CliAgentEnv):
         stays alive for the rubric to run tests / read files.
         """
         sandbox_id = state.get("sandbox_id")
-        if sandbox_id and self.harness.agent_patch_state_key:
-            await self._collect_agent_patch(sandbox_id, state)
+        if sandbox_id:
+            await self._run_state_collectors("post_rollout", state)
 
         if sandbox_id and self.harness.log_path and "agent_logs" not in state:
             try:
@@ -318,65 +286,14 @@ class ComposableEnv(CliAgentEnv):
 
         await super().post_rollout(state)
 
-    async def _capture_agent_patch_baseline(self, state: State) -> None:
-        """Create a post-setup git baseline for later agent patch extraction."""
-        if not self.harness.agent_patch_state_key:
-            return
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return
-        info = state.get("info") or {}
-        workdir = self.taskset.get_workdir(info)
-        try:
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                _agent_patch_baseline_command(),
-                working_dir=workdir,
-                timeout=_AGENT_PATCH_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            self.logger.warning(f"Failed to capture agent patch baseline: {e}")
-            return
-        if result.exit_code != 0:
-            output = ((result.stderr or "") + (result.stdout or ""))[:500]
-            self.logger.warning(
-                "Failed to capture agent patch baseline "
-                f"(exit={result.exit_code}): {output}"
-            )
-            return
-        base_ref = (result.stdout or "").strip()
-        if base_ref:
-            state[_AGENT_PATCH_BASE_REF_KEY] = base_ref
-            state[_AGENT_PATCH_WORKDIR_KEY] = workdir
-
-    async def _collect_agent_patch(self, sandbox_id: str, state: State) -> None:
-        """Store the post-rollout git diff under the harness's configured key."""
-        state_key = self.harness.agent_patch_state_key
-        if not state_key:
-            return
-        state.setdefault(state_key, "")
-        base_ref = state.get(_AGENT_PATCH_BASE_REF_KEY)
-        if not isinstance(base_ref, str) or not base_ref:
-            return
-        info = state.get("info") or {}
-        workdir = state.get(_AGENT_PATCH_WORKDIR_KEY) or self.taskset.get_workdir(info)
-        try:
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                _agent_patch_diff_command(base_ref),
-                working_dir=workdir,
-                timeout=_AGENT_PATCH_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            self.logger.warning(f"Failed to collect agent patch: {e}")
-            return
-        if result.exit_code != 0:
-            output = ((result.stderr or "") + (result.stdout or ""))[:500]
-            self.logger.warning(
-                f"Failed to collect agent patch (exit={result.exit_code}): {output}"
-            )
-            return
-        state[state_key] = result.stdout or ""
+    async def _run_state_collectors(self, hook: str, state: State) -> None:
+        collectors = self.harness.state_collectors or []
+        for collector in collectors:
+            try:
+                await getattr(collector, hook)(self, state)
+            except Exception as e:
+                name = type(collector).__name__
+                self.logger.warning(f"{name}.{hook} failed: {e}")
 
     async def _populate_sandbox_context(self, state: State) -> None:
         """Populate sandbox-specific context used by setup/evaluate hooks."""

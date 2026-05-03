@@ -19,11 +19,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Protocol
 
 if TYPE_CHECKING:
+    from verifiers.envs.experimental.composable.composable_env import ComposableEnv
     from verifiers.envs.experimental.composable.task import SandboxSpec
     from verifiers.types import State, TrajectoryStep
+
+
+class StateCollector(Protocol):
+    """Harness-owned lifecycle hook for writing rollout artifacts into state."""
+
+    async def post_sandbox_setup(self, env: ComposableEnv, state: State) -> None: ...
+
+    async def post_rollout(self, env: ComposableEnv, state: State) -> None: ...
 
 
 @dataclass
@@ -123,14 +132,10 @@ class Harness:
         trajectory the trainer sees — e.g. rlm_harness uses it to drop
         sub-agent calls (``X-RLM-Depth`` header > 0) so only the
         parent agent's turns contribute to the policy gradient.
-    agent_patch_state_key:
-        Optional state key that receives a git patch of the agent's
-        repository edits. When set, ``ComposableEnv`` creates a local
-        baseline commit after task setup and harness install, then
-        stores the post-rollout diff relative to that baseline under
-        this key.
-        Intended for git-backed coding agents; ignored for non-git
-        workdirs.
+    state_collectors:
+        Optional harness-owned artifact collectors. ``ComposableEnv``
+        runs each collector after sandbox setup and after rollout, before
+        scoring mutates the task sandbox.
     """
 
     install_script: str | None = None
@@ -155,7 +160,7 @@ class Harness:
     keep_trajectory_step: (
         Callable[[TrajectoryStep, State, dict[str, str]], bool] | None
     ) = None
-    agent_patch_state_key: str | None = None
+    state_collectors: list[StateCollector] | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""
