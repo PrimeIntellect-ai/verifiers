@@ -26,7 +26,6 @@ class SimpleEnvironment(Environment):
 
     async def setup_state(self, state):
         """Setup state for SimpleEnvironment."""
-        return state
 
     async def rollout(
         self,
@@ -38,7 +37,7 @@ class SimpleEnvironment(Environment):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)
         try:
-            state = await self.setup_state(state)
+            await self.setup_state(state)
 
             prompt_messages = state["prompt"]
             response = await self.get_model_response(state, prompt_messages)
@@ -415,7 +414,7 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert results["metadata"]["time_ms"] > 0.0
+        assert results["metadata"]["time"] > 0.0
         assert results["metadata"]["avg_reward"] == 0.75
         assert len(results["metadata"]["avg_metrics"]) == 2
         assert "reward_a" in results["metadata"]["avg_metrics"]
@@ -449,7 +448,7 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert results["metadata"]["time_ms"] > 0.0
+        assert results["metadata"]["time"] > 0.0
         # Scoring always happens now, so rewards will be set by score_group
         # If score_group doesn't set rewards, they'll be None/0
         assert results["metadata"]["avg_reward"] >= 0.0
@@ -549,8 +548,6 @@ class RetryCounterEnv(SimpleEnvironment):
             raise self.error_type(
                 f"Simulated failure {self.call_counts[example_id]}/{self.fail_count}"
             )
-
-        return state
 
 
 class TestMaybeRetry:

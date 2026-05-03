@@ -232,7 +232,7 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
         self.language = language
         self.dataset_name = dataset_name
@@ -243,7 +243,7 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         self.timeout_minutes = timeout_minutes
         suffix = f"-{language}" if language else ""
         super().__init__(
-            dataset=self._build_dataset(),
+            dataset=self._build_dataset,
             name=f"swe/swerebench-v2{suffix}",
             filter_fn=filter_fn,
         )

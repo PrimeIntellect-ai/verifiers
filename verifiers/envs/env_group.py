@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, final
 
@@ -129,7 +128,6 @@ class EnvGroupRubric(vf.Rubric):
         environment's rubric. Ensures all states have metrics for all reward function names
         across all environments.
         """
-        start_time = time.time()
         num_states = len(states)
         route = _normalize_route((states[0].get("info") or {}).get(ENV_GROUP_INFO_KEY))
         env_name = route[0] if route else None
@@ -139,7 +137,6 @@ class EnvGroupRubric(vf.Rubric):
             for state in states:
                 state["reward"] = 0.0
                 state["metrics"] = {name: 0.0 for name in self.all_reward_names}
-                state["timing"]["scoring_ms"] = 0.0
             return
 
         # Score all states using the environment's rubric
@@ -157,15 +154,10 @@ class EnvGroupRubric(vf.Rubric):
                 if reward_name in aggregated_metrics:
                     aggregated_metrics[reward_name][i] = score
 
-        # Update all states with aggregated metrics (ensuring all reward names are present)
-        end_time = time.time()
-        scoring_ms = (end_time - start_time) * 1000
         for i, state in enumerate(states):
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["scoring_ms"] = scoring_ms
-            state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
 
     async def cleanup(self, state: vf.State) -> None:
         route = _normalize_route((state.get("info") or {}).get(ENV_GROUP_INFO_KEY))

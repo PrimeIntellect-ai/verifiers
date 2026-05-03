@@ -100,11 +100,10 @@ class TextArenaEnv(vf.MultiTurnEnv):
             memo[id(word_list)] = word_list
         return memo
 
-    async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
+    async def setup_state(self, state: vf.State, **kwargs) -> None:
         ta_env = await asyncio.to_thread(deepcopy, self.ta_env, self.shared_memo.copy())
         ta_env.state.game_state["secret_word"] = state["answer"]  # type: ignore[unresolved-attribute]
         state["ta_env"] = ta_env
-        return state
 
     @vf.cleanup
     async def cleanup_ta_env(self, state: vf.State):
@@ -136,6 +135,12 @@ class TextArenaEnv(vf.MultiTurnEnv):
         eval_dataset_rows = []
         _, user_prompt = self.ta_env.get_observation()
         words = self.ta_env.word_list
+        if isinstance(words, dict):
+            words = [
+                w
+                for values in words.values()
+                for w in (values if isinstance(values, (list, tuple)) else [values])
+            ]
         # set seed
         random.seed(self.seed)
         for i in range(self.num_train_examples + self.num_eval_examples):

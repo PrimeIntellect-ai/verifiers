@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
-from .config import config_items, resolve_config_object
+from .config import config_items, resolve_config_object, string_mapping
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,10 @@ class Toolset:
             config_bindings = config_map.get("bindings") or {}
             if not isinstance(config_bindings, Mapping):
                 raise TypeError("Toolset bindings must be a mapping.")
-            bindings = {**config_bindings, **dict(bindings or {})}
+            bindings = {
+                **string_mapping(cast(Mapping[object, object], config_bindings)),
+                **dict(bindings or {}),
+            }
             config_objects = config_map.get("objects") or {}
             if not isinstance(config_objects, Mapping):
                 raise TypeError("Toolset objects must be a mapping.")

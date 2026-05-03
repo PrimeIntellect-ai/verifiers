@@ -200,5 +200,6 @@ def rows_from_source(
     if source is None:
         return []
     if callable(source):
-        return [dict(row) for row in source()]
+        source_loader = cast(Callable[[], Iterable[Mapping[str, Any]]], source)
+        return [dict(row) for row in source_loader()]
     return [dict(row) for row in source]

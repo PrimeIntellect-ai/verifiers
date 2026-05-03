@@ -40,7 +40,8 @@ configs/
 ├── endpoints.toml
 ├── eval/
 │   ├── minimal.toml
-│   └── multi-env.toml
+│   ├── multi-env.toml
+│   └── wordle.toml
 ├── rl/
 │   ├── alphabet-sort.toml
 │   ├── gsm8k.toml
@@ -130,8 +131,9 @@ Key options:
 ### Output
 
 After optimization, you'll find:
-- `best_prompt.txt` - The optimized system prompt
-- `pareto_frontier.jsonl` - Best prompts per validation example
+- `system_prompt.txt` - The optimized system prompt. Load it with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")`.
+- `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
+- `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary
 
 Use `prime eval run` to verify performance before and after optimization.
@@ -158,6 +160,16 @@ RL training can be sensitive to implementation details and hyperparameters. Some
 - Use larger models (14B+)
 
 The best way to improve training is to ensure appropriate task difficulty for your model. When using Hosted Training or `prime-rl`, you can enable online difficulty filtering to ensure that rollout groups used for training always contain a diversity of rewards.
+
+### Inference Client Types
+
+The rollout client's `client_type` controls how prompt assembly and token state flow between the inference server and the trainer. For RL the trainer must see the exact tokens the server sampled — re-tokenization across turns drifts under BPE round-trip and fragments multi-turn rollouts into multiple training samples.
+
+- **`openai_chat_completions`** (MITO, *messages-in*): standard OpenAI-compatible path. Server-side chat templating, returns text. The trainer re-tokenizes — fine for eval and short single-turn training, but can fragment multi-turn rollouts.
+- **`openai_chat_completions_token`** (TITO, *token-in*): server-side templating, but returns prompt and completion token IDs alongside text so the trainer doesn't re-tokenize. Use when you trust the server's chat template to be stable across turns.
+- **`renderer`** *(experimental)*: client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). The trainer renders messages to token IDs locally and sends those to vLLM's `/v1/generate` endpoint. The renderer's `bridge_to_next_turn` extends prior-turn tokens verbatim across multi-turn boundaries (the *extension property*) and synthesizes the canonical turn-close on mid-completion truncation, so multi-turn rollouts merge into one training sample with one clean loss mask.
+
+For production RL training, use `openai_chat_completions_token` — it's the tried-and-tested path with broad model coverage. The `renderer` client is newer and offers stronger token-preservation guarantees in theory, but is experimental: hand-coded renderers exist only for a subset of models, and corner cases are still being shaken out. See [reference § Built-in Clients](reference.md#built-in-client-implementations) for the full list.
 
 ### Common Issues
 

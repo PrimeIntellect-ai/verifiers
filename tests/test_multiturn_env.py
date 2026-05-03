@@ -1,5 +1,7 @@
 """Tests for the MultiTurnEnv class."""
 
+import asyncio
+
 import pytest
 from datasets import Dataset
 
@@ -12,6 +14,7 @@ class TestMultiTurnEnv:
     def test_multiturn_env_initialization(self, mock_multiturn_env):
         """Test MultiTurnEnv initialization."""
         assert mock_multiturn_env.max_turns == 3
+        assert mock_multiturn_env.timeout_seconds is None
         assert mock_multiturn_env.message_type == "chat"  # Default from parent
 
     def test_multiturn_env_default_max_turns(self, mock_client, sample_chat_dataset):
@@ -26,6 +29,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
         assert env.max_turns == -1  # Default value
+        assert env.timeout_seconds is None
 
     @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env, make_input):
@@ -102,6 +106,83 @@ class TestMultiTurnEnv:
         assert completion[0]["role"] == "assistant"
         assert completion[1]["role"] == "user"
         assert completion[2]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_limits_rollout(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        """Test that rollout stops when the wall-clock timeout is reached."""
+
+        class SlowMultiTurnEnv(MultiTurnEnv):
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+            async def add_model_response(self, state, prompt_messages, response):  # type: ignore[override]
+                await super().add_model_response(state, prompt_messages, response)
+                await asyncio.sleep(0.05)
+
+        env = SlowMultiTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+            timeout_seconds=0.01,
+        )
+        mock_client.set_default_response("Still going")
+
+        prompt = [{"role": "user", "content": "Start conversation"}]
+        state = await env.rollout(
+            input=make_input(prompt=prompt, answer="target_answer"),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert len(state["trajectory"]) == 1
+        assert state["timed_out"] is True
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "timeout_reached"
+        completion = state["completion"]
+        assert len(completion) == 1
+        assert completion[0]["role"] == "assistant"
+        assert completion[0]["content"] == "Still going"
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_limits_setup(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        """Test that the rollout timeout applies while setup is in flight."""
+
+        class SlowSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state):  # type: ignore[override]
+                await asyncio.sleep(1)
+
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+        env = SlowSetupEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+            timeout_seconds=0.01,
+        )
+
+        state = await env.rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start conversation"}],
+                answer="target_answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert state["timed_out"] is True
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "timeout_reached"
+        assert state["trajectory"] == []
+        assert state["completion"] == []
 
     @pytest.mark.asyncio
     async def test_override_is_completed_respects_max_turns(

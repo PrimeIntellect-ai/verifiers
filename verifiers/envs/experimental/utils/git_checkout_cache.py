@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import logging
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from typing import IO
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from verifiers.envs.experimental.utils.file_locks import (
@@ -14,6 +16,12 @@ from verifiers.envs.experimental.utils.file_locks import (
     exclusive_path_lock,
     sibling_lock_path,
 )
+
+_IN_USE_LOCK_SUFFIX = ".in-use.lock"
+
+# Open file handles that hold a process-lifetime shared lock on each
+# resolved checkout's in-use lock file. See ``_acquire_in_use_lock``.
+_held_in_use_locks: dict[Path, IO] = {}
 
 DEFAULT_GIT_CHECKOUT_CACHE_ROOT = Path.home() / ".cache" / "verifiers" / "git-checkouts"
 _FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -292,6 +300,40 @@ def _materialize_worktree(
     return validate_git_checkout(checkout_dir, required_files=required_files)
 
 
+def _acquire_in_use_lock(checkout: Path) -> None:
+    """Hold a process-lifetime shared lock on the checkout's in-use lock.
+
+    The file handle is stashed in ``_held_in_use_locks`` and never closed
+    until the process exits, so the kernel keeps the shared lock alive
+    for the entire eval lifetime — including the gaps between uploads.
+    ``_prune_stale_worktrees`` takes an exclusive non-blocking lock on
+    the same file and skips the candidate when that fails, which is what
+    keeps a concurrent ``resolve_git_checkout`` for a different ref from
+    nuking this process's active worktree.
+    """
+    lock_path = sibling_lock_path(checkout, _IN_USE_LOCK_SUFFIX)
+    if lock_path in _held_in_use_locks:
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+    except Exception:
+        fh.close()
+        raise
+    _held_in_use_locks[lock_path] = fh
+
+
+def _release_all_in_use_locks() -> None:
+    """Release every process-lifetime in-use lock. For tests."""
+    for fh in _held_in_use_locks.values():
+        try:
+            fh.close()
+        except Exception:
+            pass
+    _held_in_use_locks.clear()
+
+
 def _prune_stale_worktrees(repo_cache_dir: Path, keep_checkout: Path) -> None:
     mirror_dir = _mirror_dir(repo_cache_dir)
     worktrees_dir = _worktrees_dir(repo_cache_dir)
@@ -303,7 +345,7 @@ def _prune_stale_worktrees(repo_cache_dir: Path, keep_checkout: Path) -> None:
         try:
             with exclusive_path_lock(
                 candidate,
-                suffix=".upload.lock",
+                suffix=_IN_USE_LOCK_SUFFIX,
                 nonblocking=True,
             ):
                 _run_git(
@@ -323,7 +365,7 @@ def _prune_stale_worktrees(repo_cache_dir: Path, keep_checkout: Path) -> None:
         except RuntimeError as exc:
             logger.warning(str(exc))
             continue
-        sibling_lock_path(candidate, ".upload.lock").unlink(missing_ok=True)
+        sibling_lock_path(candidate, _IN_USE_LOCK_SUFFIX).unlink(missing_ok=True)
     try:
         _run_git(
             ["git", "--git-dir", str(mirror_dir), "worktree", "prune"],
@@ -366,5 +408,6 @@ def resolve_git_checkout(
             commit_sha=resolved_commit,
             required_files=required_files,
         )
+        _acquire_in_use_lock(checkout)
         _prune_stale_worktrees(repo_cache_dir, checkout)
         return checkout

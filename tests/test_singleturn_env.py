@@ -54,12 +54,7 @@ class TestSingleTurnEnv:
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Hello"}],
-            "timing": RolloutTiming(
-                generation_ms=0.0,
-                scoring_ms=0.0,
-                total_ms=0.0,
-                start_time=0.0,
-            ),
+            "timing": RolloutTiming(),
         }
         assert not await mock_singleturn_env.is_completed(state)
 
@@ -81,12 +76,7 @@ class TestSingleTurnEnv:
                 )
             ],
             "prompt": [{"role": "user", "content": "Hello"}],
-            "timing": RolloutTiming(
-                generation_ms=0.0,
-                scoring_ms=0.0,
-                total_ms=0.0,
-                start_time=0.0,
-            ),
+            "timing": RolloutTiming(),
         }
         assert await mock_singleturn_env.is_completed(state)
 
@@ -386,12 +376,7 @@ class TestSingleTurnEnv:
 
         state = State(input=make_input())
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert not await env.is_completed(state)
 
         # After one trajectory step
@@ -411,12 +396,7 @@ class TestSingleTurnEnv:
                 extras={},
             )
         ]
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert await env.is_completed(state)
 
         # Even with multiple trajectory steps (shouldn't happen), it's still completed
@@ -445,10 +425,5 @@ class TestSingleTurnEnv:
                 extras={},
             ),
         ]
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert await env.is_completed(state)

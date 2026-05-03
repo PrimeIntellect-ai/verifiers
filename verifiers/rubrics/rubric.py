@@ -1,7 +1,6 @@
 import asyncio
 import inspect
 import logging
-import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast, get_origin
 
@@ -347,7 +346,6 @@ class Rubric:
         assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
         )
-        start_time = time.time()
         reward_scores = []
         for func in reward_funcs:
             reward_scores.append(
@@ -370,9 +368,6 @@ class Rubric:
                 ]
             ),
         )
-        end_time = time.time()
-        state["timing"]["scoring_ms"] = (end_time - start_time) * 1000
-        state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
 
@@ -387,7 +382,6 @@ class Rubric:
 
         All reward functions are executed in order, parallelizing across states.
         """
-        start_time = time.time()
         num_states = len(states)
         if num_states == 0:
             self.logger.warning("No states to score")
@@ -425,9 +419,6 @@ class Rubric:
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
 
-        # update states with aggregated results
-        end_time = time.time()
-        scoring_ms = (end_time - start_time) * 1000
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
@@ -440,5 +431,3 @@ class Rubric:
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            state["timing"]["scoring_ms"] = scoring_ms
-            state["timing"]["total_ms"] += state["timing"]["scoring_ms"]

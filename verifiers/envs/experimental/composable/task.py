@@ -35,7 +35,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
-from verifiers.types import Messages, State
+from verifiers.types import DatasetBuilder, Messages, State
 
 
 def _module_package_name(module: ModuleType) -> str | None:
@@ -84,7 +84,8 @@ class SandboxSpec:
     disk_size_gb: int = 10
     gpu_count: int = 0
     gpu_type: str | None = None
-    timeout_minutes: int = 60
+    # If None, lifetime is derived by SandboxMixin.compute_sandbox_timeout_minutes.
+    timeout_minutes: int | None = None
 
 
 class Task:
@@ -142,13 +143,14 @@ class TaskSet:
 
     def __init__(
         self,
-        dataset: Any,
+        dataset: Any | DatasetBuilder,
         name: str = "",
         filter_fn: str | None = None,
     ):
         """
         Args:
-            dataset: The (already processed) dataset backing this taskset.
+            dataset: The dataset backing this taskset, or a ``DatasetBuilder``
+                (zero-arg callable returning the dataset).
             name: Human-readable taskset name.
             filter_fn: Optional Python expression string (e.g. a lambda) that
                 evaluates to a ``Callable[[dict], bool]`` and is applied to
@@ -159,15 +161,28 @@ class TaskSet:
                 but it is still ``eval`` of user input — intended for local
                 ``vf-eval`` runs, not untrusted inputs.
         """
-        self._dataset = dataset
         self.name = name
         # Cache the raw expression (not the callable) for reproducibility /
-        # debugging; the resolved predicate isn't pickle-safe and
-        # ``self._dataset`` already carries the filtered state.
+        # debugging; the resolved predicate isn't pickle-safe and the
+        # realized dataset already carries the filtered state.
         self._filter_fn_src = filter_fn
-        if filter_fn is not None:
-            predicate = _resolve_filter_fn(filter_fn)
-            self._dataset = self._dataset.filter(predicate)
+        self.dataset_source: DatasetBuilder = (
+            dataset if callable(dataset) else (lambda ds=dataset: ds)
+        )
+        self._built_dataset: Any = None
+
+    @property
+    def dataset(self) -> Any:
+        if self._built_dataset is None:
+            ds = self.dataset_source()
+            if self._filter_fn_src is not None:
+                ds = ds.filter(_resolve_filter_fn(self._filter_fn_src))
+            self._built_dataset = ds
+        return self._built_dataset
+
+    @dataset.setter
+    def dataset(self, value: Any) -> None:
+        self._built_dataset = value
 
     # -- Override these ------------------------------------------------------
 
@@ -246,7 +261,7 @@ class TaskSet:
         This pre-builds the prompt so the base Environment doesn't need a
         ``question`` column.
         """
-        ds = self._dataset
+        ds = self.dataset
         if "prompt" not in ds.column_names:
 
             def add_prompt(row: dict) -> dict:
@@ -258,14 +273,14 @@ class TaskSet:
         return ds
 
     def __len__(self) -> int:
-        return len(self._dataset)
+        return len(self.dataset)
 
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
 
     def __getitem__(self, i: int) -> Task:
-        row = self._dataset[i]
+        row = self.dataset[i]
         info = row.get("info") or {}
         from verifiers.types import UserMessage
 
@@ -282,13 +297,13 @@ class TaskSet:
     def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
-        clone._dataset = self._dataset.filter(predicate)
+        clone.dataset = self.dataset.filter(predicate)
         return clone
 
     def take(self, n: int) -> TaskSet:
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
-        clone._dataset = self._dataset.select(range(min(n, len(self._dataset))))
+        clone.dataset = self.dataset.select(range(min(n, len(self.dataset))))
         return clone
 
     # -- Validation ----------------------------------------------------------
@@ -539,6 +554,11 @@ class TaskSet:
                     "answer": row.get("answer", ""),
                 }
                 spec = self.get_sandbox_spec(info)
+                # validate() runs without a SandboxMixin, so resolve
+                # spec.timeout_minutes=None (its "auto-derive at rollout
+                # time" sentinel) to a concrete fallback for both the
+                # SDK call and the in-test wall-clock cap.
+                timeout_minutes = spec.timeout_minutes or 60
                 sb = None
                 try:
                     sb = await client.create(
@@ -551,12 +571,12 @@ class TaskSet:
                             gpu_count=spec.gpu_count,
                             gpu_type=spec.gpu_type,
                             vm=spec.gpu_count > 0,
-                            timeout_minutes=spec.timeout_minutes,
+                            timeout_minutes=timeout_minutes,
                         )
                     )
                     state["sandbox_id"] = sb.id
                     state["sandbox_client"] = client
-                    state["test_timeout"] = spec.timeout_minutes * 60
+                    state["test_timeout"] = timeout_minutes * 60
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
@@ -577,7 +597,7 @@ class TaskSet:
         async def validate_one(i: int) -> dict:
             async with sem:
                 info, instance_id, repo = _row_info(i)
-                t0 = time.time()
+                start_time = time.perf_counter()
                 attempts = 0
                 last_valid = False
                 last_exc: BaseException | None = None
@@ -593,7 +613,8 @@ class TaskSet:
                     if valid or reason != "sandbox_error":
                         break  # only InfraError triggers retry
 
-                elapsed = time.time() - t0
+                end_time = time.perf_counter()
+                elapsed = end_time - start_time
                 result = {
                     "index": i,
                     "instance_id": instance_id,
@@ -617,7 +638,7 @@ class TaskSet:
             f"(concurrency={concurrency}, max_retries={max_retries}, "
             f"skipped={skipped} from prior run)"
         )
-        t0 = time.time()
+        start_time = time.perf_counter()
         results: list[dict] = list(prior_rows)
         tasks = [asyncio.create_task(validate_one(i)) for i in todo_indices]
         passed = sum(1 for r in prior_rows if r.get("valid"))
@@ -687,9 +708,10 @@ class TaskSet:
             raise
         finally:
             if is_sandbox:
-                client.teardown()  # type: ignore[name-defined]
+                client.teardown()
 
-        elapsed = time.time() - t0
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
         denom = len(results) or 1
         rate = passed / denom
         logger.info(

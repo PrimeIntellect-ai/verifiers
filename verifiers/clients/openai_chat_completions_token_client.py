@@ -117,6 +117,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
         if prompt_ids is None:
+            # Reaching this branch means we have a non-empty trajectory but
+            # could not stitch — surface it loudly so ops catches regressions.
+            self.logger.warning(
+                f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
+            )
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
@@ -159,10 +164,18 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if hasattr(value, "model_dump"):
                 return normalize_for_comparison(value.model_dump())
             if isinstance(value, Mapping):
-                return {
+                normalized = {
                     str(key): normalize_for_comparison(val)
                     for key, val in value.items()
                 }
+                # Treat content=None and content="" as equivalent: tool-call-only
+                # assistant messages can be serialized either way depending on the
+                # upstream pipeline (e.g., reasoning parsers strip text content
+                # to "" while other paths leave it as None). Coerce to None so
+                # prefix-match equality is unaffected.
+                if normalized.get("content") == "":
+                    normalized["content"] = None
+                return normalized
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]
             return value
@@ -322,10 +335,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         messages: str | OpenAIChatMessages,
         tools: list[OpenAITool] | None,
         model: str,
-        extra_kwargs: dict = {},
+        extra_kwargs: dict | None = None,
         **kwargs,
     ) -> list[int]:
         """Tokenize messages using the vLLM /tokenize API."""
+        if extra_kwargs is None:
+            extra_kwargs = {}
         if isinstance(messages, str):
             body = dict(
                 model=model,

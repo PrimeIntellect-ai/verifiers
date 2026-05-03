@@ -177,7 +177,7 @@ def state_to_output(
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=state.get("timing", {}),
+        timing=state["timing"].model_dump(),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -216,7 +216,7 @@ def state_to_output(
             from verifiers.utils.usage_utils import compute_context_token_metrics
 
             token_usage.update(compute_context_token_metrics(trajectory))
-        output["token_usage"] = token_usage  # type: ignore[assignment]
+        output["token_usage"] = token_usage
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
@@ -406,7 +406,7 @@ class GenerateOutputsBuilder:
             rollouts_per_example=self.rollouts_per_example,
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
-            time_ms=(time.time() - self.start_time) * 1000.0,
+            time=time.time() - self.start_time,
             avg_reward=self.reward.compute(),
             avg_metrics=self.env_metrics.compute(),
             avg_error=self.error_rate.compute(),
