@@ -182,6 +182,9 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
+# ComposableEnv exports AGENT_WORKDIR from taskset.get_workdir(info) for each
+# rollout. Prefer that runtime value; agent_workdir is only the static fallback
+# for direct callers that do not run through ComposableEnv.
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
 if [[ -z "$OPENCODE_WORKDIR" ]]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
