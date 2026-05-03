@@ -28,9 +28,10 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 
 ## Endpoint And Model Selection Nudge
 1. Encourage endpoint alias setup in `configs/endpoints.toml` for reproducible review runs.
-2. Ask whether review coverage should prioritize instruct or reasoning behavior.
-3. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
+2. Check `api_client_type` when reviewing non-default providers. `openai_chat_completions` is the default; `openai_responses` and `anthropic_messages` should be explicit in endpoint configs when those protocols are required.
+3. Ask whether review coverage should prioritize instruct or reasoning behavior.
+4. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
+5. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
 
 ## Critical Review Criteria
 1. Reward correctness:
@@ -39,12 +40,14 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 2. Environment self-containment:
 - Flag any requirement for user-managed background services before `load_environment()`.
 - Require environment-managed lifecycle for sandboxes/sessions.
-3. Migration fidelity:
+3. v1 taskset/harness contracts:
+- Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
+4. Migration fidelity:
 - For ports, verify one-to-one equivalence of prompts, tool traces, and scoring logic.
 - Flag any assumptions made without user decision.
-4. Secrets handling:
+5. Secrets handling:
 - Ensure required keys are validated in `load_environment()` with `vf.ensure_keys(...)`.
-5. Performance and scaling:
+6. Performance and scaling:
 - Identify obvious bottlenecks in dataset loading, rubric calls, or tool execution.
 
 ## Findings Format

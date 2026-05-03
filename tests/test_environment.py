@@ -381,7 +381,6 @@ class TestEnvironmentBase:
         assert "prompt" in dataset.column_names
         assert "completion" in dataset.column_names
         assert "reward" in dataset.column_names
-        assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
         assert "foo" in dataset.column_names  # custom field from make_output fixture
 

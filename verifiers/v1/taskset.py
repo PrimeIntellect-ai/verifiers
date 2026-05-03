@@ -1,0 +1,221 @@
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import Callable, Iterable, Mapping
+from copy import deepcopy
+from typing import Any, ClassVar, cast
+
+from datasets import Dataset
+from verifiers.types import task_payload_from_info
+
+from .config import (
+    TasksetConfig,
+    merge_config_items,
+    merge_config_value,
+    resolve_config_object,
+)
+from .state import State
+from .task import Task
+from .toolset import normalize_toolsets
+from .user import normalize_user
+
+
+class Taskset:
+    config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
+
+    def __init__(
+        self,
+        source: Iterable[Mapping[str, Any]]
+        | Callable[[], Iterable[Mapping[str, Any]]]
+        | None = None,
+        eval_source: Iterable[Mapping[str, Any]]
+        | Callable[[], Iterable[Mapping[str, Any]]]
+        | None = None,
+        taskset_id: str | None = None,
+        metrics: Iterable[Callable[..., object]] = (),
+        rewards: Iterable[Callable[..., object]] = (),
+        advantages: Iterable[Callable[..., object]] = (),
+        toolsets: Iterable[object] = (),
+        user: object | None = None,
+        stop: Iterable[Callable[..., object]] = (),
+        cleanup: Iterable[Callable[..., object]] = (),
+        config: TasksetConfig | Mapping[str, object] | None = None,
+    ):
+        self.config = type(self).config_type.model_validate(config or {})
+        source_value = resolve_config_object(
+            merge_config_value(source, self.config.source)
+        )
+        self.source = cast(
+            Iterable[Mapping[str, Any]]
+            | Callable[[], Iterable[Mapping[str, Any]]]
+            | None,
+            source_value,
+        )
+        eval_source_value = resolve_config_object(
+            merge_config_value(eval_source, self.config.eval_source)
+        )
+        self.eval_source = cast(
+            Iterable[Mapping[str, Any]]
+            | Callable[[], Iterable[Mapping[str, Any]]]
+            | None,
+            eval_source_value,
+        )
+        resolved_taskset_id = merge_config_value(taskset_id, self.config.taskset_id)
+        if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
+            raise TypeError("taskset_id must be a string.")
+        self.taskset_id = resolved_taskset_id or type(self).__name__
+        self.metrics = cast(
+            list[Callable[..., object]],
+            merge_config_items(metrics, self.config.metrics),
+        )
+        self.rewards = cast(
+            list[Callable[..., object]],
+            merge_config_items(rewards, self.config.rewards),
+        )
+        self.advantages = cast(
+            list[Callable[..., object]],
+            merge_config_items(advantages, self.config.advantages),
+        )
+        self.toolsets = normalize_toolsets(
+            merge_config_items(toolsets, self.config.toolsets)
+        )
+        self.user = normalize_user(merge_config_value(user, self.config.user))
+        self.stop = cast(
+            list[Callable[..., object]],
+            merge_config_items(stop, self.config.stop),
+        )
+        self.cleanup = cast(
+            list[Callable[..., object]],
+            merge_config_items(cleanup, self.config.cleanup),
+        )
+        self._rows: list[dict[str, Any]] | None = None
+        self._eval_rows: list[dict[str, Any]] | None = None
+        self._dataset: Dataset | None = None
+        self._eval_dataset: Dataset | None = None
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return cls.config_type.schema_text()
+
+    def add_metric(self, fn: Callable[..., object]) -> None:
+        self.metrics.append(fn)
+
+    def add_reward(self, fn: Callable[..., object]) -> None:
+        self.rewards.append(fn)
+
+    def add_advantage(self, fn: Callable[..., object]) -> None:
+        self.advantages.append(fn)
+
+    def add_toolset(self, toolset: object) -> None:
+        self.toolsets.extend(normalize_toolsets([toolset]))
+
+    def add_stop(self, fn: Callable[..., object]) -> None:
+        self.stop.append(fn)
+
+    def add_cleanup(self, fn: Callable[..., object]) -> None:
+        self.cleanup.append(fn)
+
+    def rows(self) -> list[dict[str, Any]]:
+        if self._rows is None:
+            self._rows = rows_from_source(self.source)
+        return self._rows
+
+    def eval_rows(self) -> list[dict[str, Any]]:
+        if self.eval_source is None:
+            return self.rows()
+        if self._eval_rows is None:
+            self._eval_rows = rows_from_source(self.eval_source)
+        return self._eval_rows
+
+    def task(self, row: Mapping[str, Any]) -> Task:
+        task = Task(row)
+        task["taskset_id"] = self.taskset_id
+        task_id = task.get("task_id")
+        if task_id is None:
+            task_id = task.get("id")
+        if task_id is None:
+            task_id = task.get("example_id")
+        task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
+        return task.freeze()
+
+    def to_task(self, value: Mapping[str, Any] | Task | str) -> Task:
+        if isinstance(value, Task):
+            return value
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, Mapping):
+            raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
+        serialized_task = task_payload_from_info(value.get("info"))
+        if serialized_task is not None:
+            return self.task(serialized_task)
+        return self.task(value)
+
+    async def init_group(
+        self, task: Task, num_rollouts: int
+    ) -> tuple[list[Task], list[State]]:
+        tasks = [task for _ in range(num_rollouts)]
+        return tasks, [State.for_task(task) for task in tasks]
+
+    def get_dataset(self) -> Dataset:
+        if self._dataset is None:
+            self._dataset = Dataset.from_list(
+                [self._dataset_row(row, index) for index, row in enumerate(self.rows())]
+            )
+        return self._dataset
+
+    def get_eval_dataset(self) -> Dataset:
+        if self.eval_source is None:
+            return self.get_dataset()
+        if self._eval_dataset is None:
+            self._eval_dataset = Dataset.from_list(
+                [
+                    self._dataset_row(row, index)
+                    for index, row in enumerate(self.eval_rows())
+                ]
+            )
+        return self._eval_dataset
+
+    def __iter__(self):
+        for row in self.rows():
+            yield self.task(row)
+
+    def __len__(self) -> int:
+        return len(self.rows())
+
+    def _dataset_row(self, row: Mapping[str, Any], index: int) -> dict[str, Any]:
+        normalized = deepcopy(dict(row))
+        normalized.setdefault("example_id", index)
+        if "prompt" not in normalized:
+            question = normalized.get("question")
+            normalized["prompt"] = (
+                [{"role": "user", "content": str(question)}]
+                if question is not None
+                else []
+            )
+        task_payload = dict(self.task(normalized))
+        dataset_row: dict[str, Any] = {
+            "prompt": normalized["prompt"],
+            "example_id": normalized["example_id"],
+            "info": dataset_info_with_task(task_payload),
+        }
+        if "answer" in normalized:
+            dataset_row["answer"] = normalized["answer"]
+        return dataset_row
+
+
+def dataset_info_with_task(task: Mapping[str, Any]) -> dict[str, Any]:
+    return {"task": json.dumps(task)}
+
+
+def rows_from_source(
+    source: Iterable[Mapping[str, Any]]
+    | Callable[[], Iterable[Mapping[str, Any]]]
+    | None,
+) -> list[dict[str, Any]]:
+    if source is None:
+        return []
+    if callable(source):
+        source_loader = cast(Callable[[], Iterable[Mapping[str, Any]]], source)
+        return [dict(row) for row in source_loader()]
+    return [dict(row) for row in source]

@@ -279,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-e",
         type=str,
         default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints registry (.toml preferred, .py supported)",
+        help="Path to API endpoints TOML registry",
     )
     parser.add_argument(
         "--model",
@@ -292,12 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-client-type",
         type=str,
         default=None,
-        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'renderer', 'anthropic_messages')",
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'renderer', 'anthropic_messages', 'nemorl_chat_completions')",
         choices=[
             "openai_completions",
             "openai_chat_completions",
+            "openai_chat_completions_token",
+            "openai_responses",
             "renderer",
             "anthropic_messages",
+            "nemorl_chat_completions",
         ],
     )
     parser.add_argument(

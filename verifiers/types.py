@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
+import uuid
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -11,6 +14,7 @@ from typing import (
     Callable,
     Literal,
     TypeAlias,
+    cast,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
@@ -36,6 +40,7 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
     "renderer",
     "anthropic_messages",
     "nemorl_chat_completions",
@@ -242,11 +247,10 @@ class TrajectoryStep(TypedDict):
 class BaseRolloutInput(TypedDict):
     prompt: Messages
     example_id: int
-    task: str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
-    # required: prompt, example_id, task
+    # required: prompt, example_id
     # optional: answer, info
     answer: str
     info: Info | str
@@ -331,7 +335,7 @@ class RolloutOutput(dict):
     arbitrary additional fields from state_columns. All values must be
     JSON-serializable.
 
-    Required fields: example_id, task, prompt, completion, reward, timing,
+    Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage
@@ -340,7 +344,6 @@ class RolloutOutput(dict):
 
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -359,9 +362,10 @@ class RolloutOutput(dict):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
+    task: dict[str, Any]
     client: Client
     model: str
     sampling_args: SamplingArgs | None
@@ -376,7 +380,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: Error | ErrorInfo | None
     usage: TokenUsage | None
     usage_tracker: object
 
@@ -388,6 +392,12 @@ class State(dict):
                 return input_obj[key]
         return super().__getitem__(key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
         if key in self.INPUT_FIELDS and "input" in self:
@@ -397,11 +407,76 @@ class State(dict):
                 return
         super().__setitem__(key, value)
 
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
+    @classmethod
+    def for_task(cls, task: Mapping[str, Any]) -> State:
+        state = cls(
+            {
+                "task": dict(task),
+                "runtime": dict(task.get("runtime", {})),
+                "trajectory": [],
+                "trajectory_id": uuid.uuid4().hex,
+                "artifacts": {},
+                "metrics": {},
+                "reward": 0.0,
+                "is_completed": False,
+                "is_truncated": False,
+                "stop_condition": None,
+                "completion": None,
+                "error": None,
+                "timing": {
+                    "generation_ms": 0.0,
+                    "scoring_ms": 0.0,
+                    "total_ms": 0.0,
+                    "start_time": time.time(),
+                },
+            }
+        )
+        for key in ("prompt", "answer", "info", "example_id"):
+            if key in task:
+                state[key] = deepcopy(task[key])
+        return state
+
+    def assert_serializable(self) -> None:
+        assert_json_serializable(self)
+
+
+def assert_json_serializable(value: object) -> None:
+    try:
+        json.dumps(value)
+    except TypeError as e:
+        raise TypeError("Task and State values must be JSON-serializable.") from e
+
+
+TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id"}
+
+
+def normalize_task_payload(value: object) -> dict[str, Any]:
+    """Normalize a serialized task payload attached to rollout info."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, Mapping):
+        raise TypeError("info.task must be a mapping.")
+    return dict(cast(Mapping[str, Any], value))
+
+
+def task_payload_from_info(info: object) -> dict[str, Any] | None:
+    """Return the canonical task payload from info.task if one is present."""
+    if isinstance(info, str):
+        info = json.loads(info)
+    if not isinstance(info, Mapping):
+        return None
+    task_payload = cast(Mapping[str, Any], info).get("task")
+    if task_payload is None:
+        return None
+    return normalize_task_payload(task_payload)
+
+
+def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the canonical task payload for a rollout input."""
+    task_payload = task_payload_from_info(input_data.get("info"))
+    if task_payload is not None:
+        return task_payload
+    return dict(input_data)
 
 
 # oai tools

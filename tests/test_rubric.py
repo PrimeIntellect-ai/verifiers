@@ -158,7 +158,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test prompt",
                 answer="test",
-                task="test_task",
                 example_id=0,
             )
         )
@@ -192,7 +191,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
@@ -222,7 +220,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt1",
                     answer="answer1",
-                    task="task1",
                     example_id=0,
                 )
             ),
@@ -230,7 +227,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt2",
                     answer="answer2",
-                    task="task2",
                     example_id=1,
                 )
             ),
@@ -238,7 +234,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt3",
                     answer="answer3",
-                    task="task3",
                     example_id=2,
                 )
             ),
@@ -273,7 +268,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
@@ -311,7 +305,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
@@ -344,7 +337,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
@@ -374,7 +366,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "q"}],
                 answer="ans",
-                task="default",
                 example_id=0,
                 info={"extra": 123},
             )
@@ -408,7 +399,6 @@ class TestRubric:
             input=RolloutInput(
                 prompt="q",
                 answer="ans",
-                task="default",
                 example_id=0,
             )
         )

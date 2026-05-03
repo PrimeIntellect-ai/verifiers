@@ -786,7 +786,9 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together. 
+The group concatenates all sub-environment datasets and injects
+`info["env_id"]` as internal routing metadata. It is not a top-level input,
+state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 

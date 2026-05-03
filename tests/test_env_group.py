@@ -76,9 +76,13 @@ class TestEnvGroupRubric:
         env_map = {"math": env1, "code": env2}
         rubric = EnvGroupRubric(env_map)
 
-        # Test scoring for "math" task
+        # Test scoring for the "math" route
         state = State(
-            input=make_input(prompt="Test prompt", answer="Test answer", task="math")
+            input=make_input(
+                prompt="Test prompt",
+                answer="Test answer",
+                info={"env_id": "math"},
+            )
         )
         state["completion"] = "Test completion"
         state["trajectory"] = []
@@ -98,8 +102,8 @@ class TestEnvGroupRubric:
         assert state["reward"] == 0.8
 
     @pytest.mark.asyncio
-    async def test_env_group_rubric_unknown_task(self, mock_client, make_input):
-        """Test scoring with unknown task returns zeros."""
+    async def test_env_group_rubric_unknown_route(self, mock_client, make_input):
+        """Test scoring with unknown route returns zeros."""
         env1 = SingleTurnEnv(
             client=mock_client,
             model="test-model",
@@ -107,10 +111,10 @@ class TestEnvGroupRubric:
             rubric=Rubric(),
         )
 
-        env_map = {"known_task": env1}
+        env_map = {"known-env": env1}
         rubric = EnvGroupRubric(env_map)
 
-        state = State(input=make_input(prompt="Test", task="unknown_task"))
+        state = State(input=make_input(prompt="Test", info={"env_id": "unknown-env"}))
         state["completion"] = "Test"
         state["trajectory"] = []
         state["timing"] = RolloutTiming()
@@ -216,7 +220,7 @@ class TestEnvGroup:
             EnvGroup(envs=[env1], env_names=["math", "code"])
 
     def test_env_group_dataset_concatenation(self, mock_client):
-        """Test that EnvGroup properly concatenates datasets with task labels."""
+        """Test that EnvGroup adds routing labels under info."""
         env1 = SingleTurnEnv(
             client=mock_client,
             model="test-model",
@@ -238,13 +242,14 @@ class TestEnvGroup:
         # Check concatenated dataset
         dataset = env_group.get_dataset()
         assert len(dataset) == 3
-        assert "task" in dataset.column_names
+        assert "env_id" not in dataset.column_names
+        assert "info" in dataset.column_names
 
-        # Check task labels
-        tasks = dataset["task"]
-        assert tasks[0] == "math"
-        assert tasks[1] == "math"
-        assert tasks[2] == "code"
+        # Check info routing labels
+        env_ids = [info["env_id"] for info in dataset["info"]]
+        assert env_ids[0] == "math"
+        assert env_ids[1] == "math"
+        assert env_ids[2] == "code"
 
     def test_env_group_rubric_type(self, mock_client):
         """Test that EnvGroup creates EnvGroupRubric."""
@@ -280,12 +285,16 @@ class TestEnvGroup:
 
         # Mock the rollout methods to return different values
         async def env1_rollout(*args, **kwargs):
-            state = State(input=make_input(prompt="Test prompt", task="math"))
+            state = State(
+                input=make_input(prompt="Test prompt", info={"env_id": "math"})
+            )
             state["env"] = "env1"
             return state
 
         async def env2_rollout(*args, **kwargs):
-            state = State(input=make_input(prompt="Test prompt", task="code"))
+            state = State(
+                input=make_input(prompt="Test prompt", info={"env_id": "code"})
+            )
             state["env"] = "env2"
             return state
 
@@ -299,7 +308,7 @@ class TestEnvGroup:
 
         # Test routing to math environment
         state1 = await env_group.rollout(
-            input=make_input(prompt="Test prompt", task="math"),
+            input=make_input(prompt="Test prompt", info={"env_id": "math"}),
             client=mock_client,
             model="test-model",
         )
@@ -314,7 +323,7 @@ class TestEnvGroup:
 
         # Test routing to code environment
         state2 = await env_group.rollout(
-            input=make_input(prompt="Test prompt", task="code"),
+            input=make_input(prompt="Test prompt", info={"env_id": "code"}),
             client=mock_client,
             model="test-model",
         )
@@ -323,8 +332,8 @@ class TestEnvGroup:
         env1_rollout_mock.assert_not_called()
         env2_rollout_mock.assert_called_once()
 
-    def test_get_env_for_task(self, mock_client):
-        """Test getting environment for a specific task."""
+    def test_get_env_for_name(self, mock_client):
+        """Test getting environment for a specific EnvGroup route."""
         env1 = SingleTurnEnv(
             client=mock_client,
             model="test-model",
@@ -341,10 +350,10 @@ class TestEnvGroup:
 
         env_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
 
-        assert env_group.get_env_for_task("math") == env1
-        assert env_group.get_env_for_task("code") == env2
-        # Unknown task returns first environment as fallback
-        assert env_group.get_env_for_task("unknown") == env1
+        assert env_group.get_env_for_name("math") == env1
+        assert env_group.get_env_for_name("code") == env2
+        with pytest.raises(ValueError, match="No environment found"):
+            env_group.get_env_for_name("unknown")
 
     @pytest.mark.asyncio
     async def test_env_group_generate(self, mock_client, make_input):
@@ -370,7 +379,7 @@ class TestEnvGroup:
 
         async def mock_score_group(states):
             for state in states:
-                state["reward"] = 0.8 if state["task"] == "math" else 0.9
+                state["reward"] = 0.8 if state["info"]["env_id"] == "math" else 0.9
                 state["metrics"] = {}
 
         cast(Any, env_group.rubric).score_group = mock_score_group
@@ -379,12 +388,12 @@ class TestEnvGroup:
             make_input(
                 prompt=[{"role": "user", "content": "Math question"}],
                 answer="math_answer",
-                task="math",
+                info={"env_id": "math"},
             ),
             make_input(
                 prompt=[{"role": "user", "content": "Code question"}],
                 answer="code_answer",
-                task="code",
+                info={"env_id": "code"},
                 example_id=1,
             ),
         ]
@@ -424,15 +433,15 @@ class TestEnvGroup:
         # Should have concatenated train dataset from both envs
         train_dataset = env_group.get_dataset()
         assert len(train_dataset) == 2
-        assert train_dataset["task"][0] == "task1"
-        assert train_dataset["task"][1] == "task2"
+        assert train_dataset["info"][0]["env_id"] == "task1"
+        assert train_dataset["info"][1]["env_id"] == "task2"
 
         # Should have concatenated eval datasets from both
         eval_dataset = env_group.get_eval_dataset()
         assert eval_dataset is not None
         assert len(eval_dataset) == 2
-        assert eval_dataset["task"][0] == "task1"
-        assert eval_dataset["task"][1] == "task2"
+        assert eval_dataset["info"][0]["env_id"] == "task1"
+        assert eval_dataset["info"][1]["env_id"] == "task2"
 
     def test_env_group_with_only_eval_datasets(self, mock_client):
         """Test EnvGroup with environments that only have eval datasets (no train datasets)."""
@@ -461,11 +470,11 @@ class TestEnvGroup:
         eval_dataset = env_group.eval_dataset
         assert eval_dataset is not None
         assert len(eval_dataset) == 2
-        assert eval_dataset["task"][0] == "task1"
-        assert eval_dataset["task"][1] == "task2"
+        assert eval_dataset["info"][0]["env_id"] == "task1"
+        assert eval_dataset["info"][1]["env_id"] == "task2"
 
-    def test_env_group_task_assignment_on_iteration(self, mock_client):
-        """Test that task values are correct when iterating over dataset rows.
+    def test_env_group_info_route_assignment_on_iteration(self, mock_client):
+        """Test that info route values are correct when iterating over dataset rows.
 
         This catches closure bugs where loop variables are captured by reference
         instead of by value, which only manifests during row iteration due to
@@ -493,9 +502,9 @@ class TestEnvGroup:
         dataset = env_group.get_dataset()
 
         # Iterate over rows to trigger lazy evaluation
-        tasks_from_iteration = [row["task"] for row in dataset]
+        env_ids_from_iteration = [row["info"]["env_id"] for row in dataset]
 
-        assert tasks_from_iteration[0] == "math"
-        assert tasks_from_iteration[1] == "math"
-        assert tasks_from_iteration[2] == "code"
-        assert tasks_from_iteration[3] == "code"
+        assert env_ids_from_iteration[0] == "math"
+        assert env_ids_from_iteration[1] == "math"
+        assert env_ids_from_iteration[2] == "code"
+        assert env_ids_from_iteration[3] == "code"

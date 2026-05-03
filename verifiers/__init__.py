@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
+    advantage,
     cleanup,
+    metric,
+    reward,
     stop,
     teardown,
 )
@@ -55,6 +58,15 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Env",
+    "Task",
+    "Taskset",
+    "TasksetConfig",
+    "Harness",
+    "HarnessConfig",
+    "MCPTool",
+    "Toolset",
+    "User",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -68,6 +80,7 @@ __all__ = [
     "OpenAIChatCompletionsClient",
     "RendererClient",
     "OpenAICompletionsClient",
+    "OpenAIResponsesClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -77,6 +90,9 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "cleanup",
+    "metric",
+    "reward",
+    "advantage",
     "stop",
     "teardown",
     "ensure_keys",
@@ -102,6 +118,9 @@ _LAZY_IMPORTS = {
     "RendererClient": ("verifiers.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
+    "OpenAIResponsesClient": (
+        "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
@@ -130,6 +149,15 @@ _LAZY_IMPORTS = {
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Env": "verifiers.v1:Env",
+    "Task": "verifiers.v1:Task",
+    "Taskset": "verifiers.v1:Taskset",
+    "TasksetConfig": "verifiers.v1:TasksetConfig",
+    "Harness": "verifiers.v1:Harness",
+    "HarnessConfig": "verifiers.v1:HarnessConfig",
+    "MCPTool": "verifiers.v1:MCPTool",
+    "Toolset": "verifiers.v1:Toolset",
+    "User": "verifiers.v1:User",
 }
 
 
@@ -168,6 +196,7 @@ if TYPE_CHECKING:
         OpenAIChatCompletionsClient,
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
     from .clients.renderer_client import RendererClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
@@ -188,6 +217,17 @@ if TYPE_CHECKING:
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .utils.env_utils import load_environment  # noqa: F401
+    from .v1 import (  # noqa: F401
+        Env,
+        Harness,
+        HarnessConfig,
+        MCPTool,
+        Task,
+        Taskset,
+        TasksetConfig,
+        Toolset,
+        User,
+    )
 
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any
