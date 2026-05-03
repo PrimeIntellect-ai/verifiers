@@ -608,20 +608,3 @@ class Nemotron3Renderer:
         if not next_is_tool:
             emit_special(self._im_end, oi)
             emit_text("\n", oi)
-
-
-class Nemotron3KeepThinkingRenderer(Nemotron3Renderer):
-    """Nemotron 3 variant that retains prior-turn ``<think>`` blocks by default."""
-
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizer,
-        *,
-        enable_thinking: bool = True,
-        keep_thinking: bool = True,
-    ):
-        super().__init__(
-            tokenizer,
-            enable_thinking=enable_thinking,
-            keep_thinking=keep_thinking,
-        )

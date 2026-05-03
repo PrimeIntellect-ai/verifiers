@@ -27,7 +27,7 @@ from renderers.gpt_oss import GptOssRenderer
 from renderers.kimi_k2 import KimiK2Renderer
 from renderers.kimi_k25 import KimiK25Renderer
 from renderers.minimax_m2 import MiniMaxM2Renderer
-from renderers.nemotron3 import Nemotron3KeepThinkingRenderer, Nemotron3Renderer
+from renderers.nemotron3 import Nemotron3Renderer
 from renderers.qwen3 import Qwen3KeepThinkingRenderer, Qwen3Renderer
 from renderers.qwen3_vl import Qwen3VLRenderer
 from renderers.qwen35 import Qwen35Renderer
@@ -45,7 +45,6 @@ __all__ = [
     "KimiK25Renderer",
     "Message",
     "MiniMaxM2Renderer",
-    "Nemotron3KeepThinkingRenderer",
     "Nemotron3Renderer",
     "ParsedResponse",
     "Qwen3KeepThinkingRenderer",
