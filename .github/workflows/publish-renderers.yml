@@ -73,5 +73,5 @@ jobs:
 
       - name: Publish to PyPI
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token "$PYPI_TOKEN" packages/renderers/dist/*
+          PYPI_RENDERERS_TOKEN: ${{ secrets.PYPI_RENDERERS_TOKEN }}
+        run: uv publish --token "$PYPI_RENDERERS_TOKEN" packages/renderers/dist/*
