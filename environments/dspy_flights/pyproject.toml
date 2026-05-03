@@ -1,0 +1,18 @@
+[project]
+name = "dspy-flights"
+version = "0.1.0"
+tags = ["dspy", "entrypoint", "v1"]
+license = "Apache-2.0"
+description = "v1 entrypoint environment that runs a DSPy flight-support program through the interception endpoint."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.13.dev0",
+    "dspy>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["dspy_flights.py", "pyproject.toml"]

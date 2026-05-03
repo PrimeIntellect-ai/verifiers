@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.resources as resources
 import json
 import shlex
@@ -34,6 +35,7 @@ class SandboxLease:
         self.scope = scope
         self.key = key
         self.deleted = False
+        self.lock = asyncio.Lock()
 
     async def execute(
         self,
@@ -131,13 +133,9 @@ async def create_tool_sandbox_lease(toolset: object) -> SandboxLease:
     return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset))
 
 
-async def create_scoped_sandbox_lease(
-    owner: object, key: str | None = None
+async def create_sandbox_lease(
+    sandbox_config: Mapping[str, object], key: str
 ) -> SandboxLease:
-    sandbox_config = getattr(owner, "sandbox", None)
-    if not isinstance(sandbox_config, Mapping):
-        raise TypeError("Sandbox owner must define a sandbox mapping.")
-    key = key or sandbox_owner_key(owner)
     from prime_sandboxes import AsyncSandboxClient
 
     scope = sandbox_scope(sandbox_config)
@@ -158,6 +156,15 @@ async def create_scoped_sandbox_lease(
     return lease
 
 
+async def create_scoped_sandbox_lease(
+    owner: object, key: str | None = None
+) -> SandboxLease:
+    sandbox_config = getattr(owner, "sandbox", None)
+    if not isinstance(sandbox_config, Mapping):
+        raise TypeError("Sandbox owner must define a sandbox mapping.")
+    return await create_sandbox_lease(sandbox_config, key or sandbox_owner_key(owner))
+
+
 async def run_sandbox_command(
     program: Mapping[str, object],
     sandbox_config: Mapping[str, object],
@@ -165,29 +172,31 @@ async def run_sandbox_command(
     state: State,
     runtime: Runtime,
 ) -> State:
-    from prime_sandboxes import AsyncSandboxClient
-
-    scope = sandbox_scope(sandbox_config)
-    client = AsyncSandboxClient()
-    sandbox_id: str | None = None
-    try:
-        sandbox_id = await create_sandbox(client, sandbox_config)
-        state["sandbox_id"] = sandbox_id
+    lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
+    async with lease.lock:
+        state["sandbox_id"] = lease.id
         state.setdefault("runtime", {})
-        state["runtime"]["sandbox"] = {"id": sandbox_id, "scope": scope}
-        await setup_sandbox(
-            SandboxLease(client, sandbox_id, scope, "program"), sandbox_config
+        lease_scope_key = runtime.scope_key(lease.scope, state)
+        state["runtime"]["sandbox"] = {
+            "id": lease.id,
+            "scope": lease.scope,
+            "key": lease.key,
+            "lease_key": [lease_scope_key, lease.key],
+        }
+        await upload_program_files(
+            lease.client, lease.id, program, task, state, runtime
         )
-        await upload_program_files(client, sandbox_id, program, task, state, runtime)
-        await upload_program_dirs(client, sandbox_id, program, task, state, runtime)
-        await run_program_setup(client, sandbox_id, program, task, state, runtime)
+        await upload_program_dirs(lease.client, lease.id, program, task, state, runtime)
+        await run_program_setup(lease.client, lease.id, program, task, state, runtime)
         workdir = cast(str | None, sandbox_config.get("workdir"))
         if workdir:
-            await client.execute_command(sandbox_id, f"mkdir -p {shlex.quote(workdir)}")
+            await lease.client.execute_command(
+                lease.id, f"mkdir -p {shlex.quote(workdir)}"
+            )
         argv = await command_argv(program, task, state, runtime)
         env = await command_env(program, task, state, runtime, include_base=False)
-        result = await client.execute_command(
-            sandbox_id,
+        result = await lease.client.execute_command(
+            lease.id,
             shlex.join(argv),
             working_dir=workdir,
             env=env,
@@ -207,41 +216,8 @@ async def run_sandbox_command(
                 f"Sandbox command exited with {result.exit_code}: {result.stderr}"
             )
         state["stop_condition"] = state.get("stop_condition") or "command_completed"
-        await collect_sandbox_artifacts(client, sandbox_id, program, state)
+        await collect_sandbox_artifacts(lease.client, lease.id, program, state)
         return state
-    finally:
-        await client.aclose()
-
-
-async def release_group_sandboxes(states: list[State]) -> None:
-    await release_sandboxes(states, "group")
-
-
-async def release_rollout_sandboxes(states: list[State]) -> None:
-    await release_sandboxes(states, "rollout")
-
-
-async def release_sandboxes(states: list[State], scope: str) -> None:
-    from prime_sandboxes import AsyncSandboxClient
-
-    sandbox_ids: set[str] = set()
-    for state in states:
-        sandbox = state.get("runtime", {}).get("sandbox")
-        if not isinstance(sandbox, Mapping):
-            continue
-        if sandbox.get("scope") != scope:
-            continue
-        sandbox_id = sandbox.get("id")
-        if isinstance(sandbox_id, str):
-            sandbox_ids.add(sandbox_id)
-    if not sandbox_ids:
-        return
-    client = AsyncSandboxClient()
-    try:
-        for sandbox_id in sandbox_ids:
-            await client.delete(sandbox_id)
-    finally:
-        await client.aclose()
 
 
 async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -> str:
@@ -281,7 +257,7 @@ async def setup_sandbox(
         result = cast(
             Any,
             await handle.execute(
-                f"python -m pip install --disable-pip-version-check {package_args}",
+                python_package_install_command(package_args),
                 timeout=int_config(sandbox_config, "install_timeout", 300),
             ),
         )
@@ -308,6 +284,49 @@ def sandbox_scope(sandbox_config: Mapping[str, object]) -> str:
     if scope not in {"rollout", "group", "global"}:
         raise ValueError("sandbox.scope must be 'rollout', 'group', or 'global'.")
     return scope
+
+
+def python_package_install_command(package_args: str) -> str:
+    return (
+        "set -e\n"
+        "if command -v python3 >/dev/null 2>&1; then PYTHON=python3; "
+        "elif command -v python >/dev/null 2>&1; then PYTHON=python; "
+        "elif command -v apt-get >/dev/null 2>&1; then "
+        "apt-get update && apt-get install -y python3 python3-pip && PYTHON=python3; "
+        "else echo 'python is required to install sandbox packages' >&2; exit 127; fi\n"
+        "$PYTHON -m pip --version >/dev/null 2>&1 || "
+        "$PYTHON -m ensurepip --upgrade || "
+        "(command -v apt-get >/dev/null 2>&1 && apt-get update && apt-get install -y python3-pip)\n"
+        "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
+        f"{package_args} || "
+        "$PYTHON -m pip install --disable-pip-version-check "
+        f"{package_args}"
+    )
+
+
+def python_runtime_setup_command() -> str:
+    return (
+        "set -e\n"
+        "if command -v python3 >/dev/null 2>&1; then exit 0; fi\n"
+        "if command -v python >/dev/null 2>&1; then exit 0; fi\n"
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "apt-get update && apt-get install -y python3; exit 0; fi\n"
+        "echo 'python is required for sandbox Python programs' >&2\n"
+        "exit 127"
+    )
+
+
+def python_runtime_command(script_path: str, *args: str) -> list[str]:
+    command = (
+        "PYTHON=$(command -v python3 || command -v python || true); "
+        'if [ -z "$PYTHON" ]; then '
+        "echo 'python is required for sandbox Python programs' >&2; exit 127; "
+        "fi; "
+        f'exec "$PYTHON" {shlex.quote(script_path)}'
+    )
+    for arg in args:
+        command += f" {shlex.quote(arg)}"
+    return ["/bin/sh", "-lc", command]
 
 
 def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
@@ -350,6 +369,15 @@ def tool_sandbox_key(toolset: object) -> str:
     if names:
         return "tools:" + ",".join(sorted(names))
     return f"toolset:{id(toolset)}"
+
+
+def program_sandbox_key(sandbox_config: Mapping[str, object]) -> str:
+    try:
+        fingerprint = json.dumps(sandbox_config, sort_keys=True)
+    except TypeError as exc:
+        raise TypeError("Program sandbox config must be JSON-serializable.") from exc
+    digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+    return f"program:{digest}"
 
 
 def sandbox_owner_key(owner: object) -> str:
@@ -504,7 +532,15 @@ async def collect_sandbox_artifacts(
         path = spec.get("path")
         if not isinstance(path, str):
             raise TypeError("program artifact path must be a string.")
-        content = await read_sandbox_artifact(client, sandbox_id, path.format(**state))
+        try:
+            content = await read_sandbox_artifact(
+                client, sandbox_id, path.format(**state)
+            )
+        except FileNotFoundError:
+            if bool(spec.get("optional", False)):
+                state["artifacts"][name] = None
+                continue
+            raise
         artifact_format = spec.get("format", "text")
         if artifact_format == "json":
             value: object = json.loads(content)
@@ -528,11 +564,23 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
         "    sys.exit(2)\n"
         "sys.stdout.write(pathlib.Path(matches[0]).read_text())\n"
     )
+    command = (
+        "PYTHON=$(command -v python3 || command -v python || true); "
+        'if [ -z "$PYTHON" ]; then '
+        "echo 'python is required to read sandbox artifacts' >&2; exit 127; "
+        "fi; "
+        f'exec "$PYTHON" -c {shlex.quote(script)}'
+    )
     result = await maybe_call_with_named_args(
         getattr(client, "execute_command"),
         sandbox_id=sandbox_id,
-        command=f"python -c {shlex.quote(script)}",
+        command=command,
     )
-    if result.exit_code:
+    if result.exit_code == 2:
         raise FileNotFoundError(f"Sandbox artifact not found: {path}")
+    if result.exit_code:
+        raise SandboxError(
+            "Sandbox artifact reader failed: "
+            f"{getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+        )
     return result.stdout or ""

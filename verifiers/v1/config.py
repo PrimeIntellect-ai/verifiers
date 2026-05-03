@@ -43,8 +43,10 @@ class TasksetConfig(Config):
     taskset_id: str | None = None
     toolsets: list[object] = Field(default_factory=list)
     user: object | None = None
+    stop: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
+    advantages: list[object] = Field(default_factory=list)
     cleanup: list[object] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
 
@@ -52,11 +54,17 @@ class TasksetConfig(Config):
 class HarnessConfig(Config):
     program: object | None = None
     sandbox: object | None = None
+    tool_protocol: str = "callable"
+    client: object | None = None
+    model: str | None = None
+    sampling_args: dict[str, object] = Field(default_factory=dict)
     keep_trajectory_step: object | None = None
     toolsets: list[object] = Field(default_factory=list)
     user: object | None = None
+    stop: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
+    advantages: list[object] = Field(default_factory=list)
     cleanup: list[object] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
     max_turns: int = 10

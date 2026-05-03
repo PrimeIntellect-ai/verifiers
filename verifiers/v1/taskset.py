@@ -35,8 +35,10 @@ class Taskset:
         taskset_id: str | None = None,
         metrics: Iterable[Callable[..., object]] = (),
         rewards: Iterable[Callable[..., object]] = (),
+        advantages: Iterable[Callable[..., object]] = (),
         toolsets: Iterable[object] = (),
         user: object | None = None,
+        stop: Iterable[Callable[..., object]] = (),
         cleanup: Iterable[Callable[..., object]] = (),
         config: TasksetConfig | Mapping[str, object] | None = None,
     ):
@@ -71,10 +73,18 @@ class Taskset:
             list[Callable[..., object]],
             merge_config_items(rewards, self.config.rewards),
         )
+        self.advantages = cast(
+            list[Callable[..., object]],
+            merge_config_items(advantages, self.config.advantages),
+        )
         self.toolsets = normalize_toolsets(
             merge_config_items(toolsets, self.config.toolsets)
         )
         self.user = normalize_user(merge_config_value(user, self.config.user))
+        self.stop = cast(
+            list[Callable[..., object]],
+            merge_config_items(stop, self.config.stop),
+        )
         self.cleanup = cast(
             list[Callable[..., object]],
             merge_config_items(cleanup, self.config.cleanup),
@@ -94,8 +104,14 @@ class Taskset:
     def add_reward(self, fn: Callable[..., object]) -> None:
         self.rewards.append(fn)
 
+    def add_advantage(self, fn: Callable[..., object]) -> None:
+        self.advantages.append(fn)
+
     def add_toolset(self, toolset: object) -> None:
         self.toolsets.extend(normalize_toolsets([toolset]))
+
+    def add_stop(self, fn: Callable[..., object]) -> None:
+        self.stop.append(fn)
 
     def add_cleanup(self, fn: Callable[..., object]) -> None:
         self.cleanup.append(fn)

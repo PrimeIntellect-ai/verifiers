@@ -415,7 +415,7 @@ def load_harness(config=None) -> vf.Harness:
 
 def load_harness(config=None) -> vf.Harness:
     return vf.Harness(
-        program={"base": True, "sandbox": True},
+        program={"sandbox": True},
         sandbox={...},
         metrics=[num_tool_calls],
         config=config,

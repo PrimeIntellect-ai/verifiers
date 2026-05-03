@@ -445,19 +445,25 @@ class Tau2Harness(vf.Harness):
 
 def assistant_from_openai_message(message: Mapping[str, object]) -> AssistantMessage:
     tool_calls = []
-    for raw_tool_call in cast(
-        list[Mapping[str, object]], message.get("tool_calls") or []
-    ):
-        function = cast(Mapping[str, object], raw_tool_call.get("function") or {})
-        arguments = function.get("arguments") or "{}"
+    for raw_tool_call in cast(list[object], message.get("tool_calls") or []):
+        if isinstance(raw_tool_call, str):
+            raw_tool_call = json.loads(raw_tool_call)
+        if not isinstance(raw_tool_call, Mapping):
+            raise TypeError("tau2 tool calls must be mappings.")
+        function = raw_tool_call.get("function") or {}
+        if function is not None and not isinstance(function, Mapping):
+            raise TypeError("tau2 tool call function payload must be a mapping.")
+        function = cast(Mapping[str, object], function)
+        arguments = function.get("arguments", raw_tool_call.get("arguments", "{}"))
         if isinstance(arguments, str):
             parsed_arguments = json.loads(arguments or "{}")
         else:
             parsed_arguments = arguments
+        name = function.get("name") or raw_tool_call.get("name") or ""
         tool_calls.append(
             ToolCall(
                 id=str(raw_tool_call.get("id") or f"call_{uuid.uuid4().hex[:8]}"),
-                name=str(function.get("name") or raw_tool_call.get("name") or ""),
+                name=str(name),
                 arguments=cast(dict[str, object], parsed_arguments),
                 requestor="assistant",
             )

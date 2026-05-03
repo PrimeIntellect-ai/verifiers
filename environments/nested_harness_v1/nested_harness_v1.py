@@ -10,10 +10,12 @@ async def child_program(task, state):
     return state
 
 
-async def call_harness(prompt, harness):
+async def call_harness(prompt, harness, state):
     task = vf.Task({"prompt": prompt}).freeze()
-    state = await harness.run(task)
-    return state["answer"]
+    child_state = await vf.current_runtime().run_harness(
+        harness, task, parent_state=state
+    )
+    return child_state["answer"]
 
 
 @vf.metric

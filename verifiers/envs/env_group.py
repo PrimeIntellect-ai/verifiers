@@ -12,6 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
 )
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.serve import EnvClient
 
 if TYPE_CHECKING:
@@ -319,9 +320,23 @@ class EnvGroup(vf.Environment):
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
+        target_env_client = env_client or self.env_client
+        if target_env_client is not None:
+            if not isinstance(client, ClientConfig):
+                raise ValueError(
+                    f"client must have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await target_env_client.run_rollout(
+                input,
+                resolve_client_config(client),
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+            )
+
         env_name, child_input, route = self._route_child_input(input)
         env = self.get_env_for_name(env_name)
-        env_client = env_client or env.env_client or self.env_client
         output = await env.run_rollout(
             child_input,
             client,
@@ -329,7 +344,7 @@ class EnvGroup(vf.Environment):
             sampling_args,
             max_retries,
             state_columns,
-            env_client,
+            env.env_client,
         )
         return _set_info_route(output, route)  # type: ignore[return-value]
 
@@ -344,6 +359,21 @@ class EnvGroup(vf.Environment):
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
+        target_env_client = env_client or self.env_client
+        if target_env_client is not None:
+            if not isinstance(client, ClientConfig):
+                raise ValueError(
+                    f"client must have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await target_env_client.run_group(
+                group_inputs,
+                resolve_client_config(client),
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+            )
+
         env_name, first_child_input, route = self._route_child_input(group_inputs[0])
         child_inputs = [first_child_input]
         for group_input in group_inputs[1:]:
@@ -360,7 +390,6 @@ class EnvGroup(vf.Environment):
                 )
             child_inputs.append(child_input)
         env = self.get_env_for_name(env_name)
-        env_client = env_client or env.env_client or self.env_client
         outputs = await env.run_group(
             child_inputs,
             client,
@@ -368,7 +397,7 @@ class EnvGroup(vf.Environment):
             sampling_args,
             max_retries,
             state_columns,
-            env_client,
+            env.env_client,
         )
         return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]
 

@@ -177,7 +177,7 @@ def state_to_output(
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=state["timing"].model_dump(),
+        timing=serialize_timing(state["timing"]),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -271,6 +271,15 @@ def state_to_output(
         output[col] = value
 
     return output
+
+
+def serialize_timing(timing: object) -> dict[str, Any]:
+    model_dump = getattr(timing, "model_dump", None)
+    if callable(model_dump):
+        return cast(dict[str, Any], model_dump())
+    if isinstance(timing, Mapping):
+        return dict(cast(Mapping[str, Any], timing))
+    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(

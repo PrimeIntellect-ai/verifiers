@@ -70,8 +70,12 @@ class Env(vf.Environment):
         model: str,
         sampling_args: SamplingArgs,
     ) -> list[State]:
-        tasks = [self.taskset.to_task(input) for input in group_inputs]
-        states = [State.for_task(task) for task in tasks]
+        base_task = self.taskset.to_task(group_inputs[0])
+        tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
+        if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):
+            raise ValueError(
+                "Taskset.init_group must return one task/state per rollout."
+            )
         group_key = uuid.uuid4().hex
         for state in states:
             state.setdefault("runtime", {})

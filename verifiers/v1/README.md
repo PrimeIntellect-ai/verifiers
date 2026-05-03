@@ -10,9 +10,9 @@ The stable boundary is:
 - `Task`: immutable JSON-serializable dataset row.
 - `State`: mutable JSON-serializable rollout record.
 - `Taskset`: task source plus task-owned tools, user behavior, metrics, rewards,
-  and cleanup.
+  stop conditions, and cleanup.
 - `Harness`: endpoint-backed runner plus harness-owned tools, user behavior,
-  metrics, rewards, cleanup, and teardown.
+  stop conditions, metrics, rewards, cleanup, and teardown.
 - `Env`: `vf.Environment` adapter for eval/training workers.
 
 ## Opinionated Choices
@@ -36,6 +36,9 @@ The stable boundary is:
   closures, toolset objects, user objects, or config refs.
 - Treat metrics and rewards as signals. Rollout signals run inside
   `harness.run`; group signals run from `Env` group scoring.
+- Treat `done` / `is_completed` as the generic finish-tool escape hatch. Custom
+  stop functions should normally be contributed by the taskset, harness, or a
+  toolset.
 - Use cleanup for user-extensible end-of-rollout or end-of-group state/resource
   finalization. Framework-owned timing, completion rendering, trajectory sync,
   and sandbox destruction are automatic.
@@ -97,6 +100,11 @@ The supported program forms are:
 - `program={"base": true, ...}`: explicit default loop, useful when the default
   loop needs program-level options such as sandbox execution.
 
+Mapping programs must specify exactly one kind: `base=true`, `entrypoint`, or
+`command`. If a mapping only contains program options such as `sandbox`, `files`,
+`dirs`, `setup`, `env`, or `artifacts`, it resolves to the base loop. Use
+`program=None` for the ordinary local base loop.
+
 Program placement is explicit. A program runs locally/in-process unless its
 mapping contains `sandbox = true` or an inline sandbox mapping. `Harness.sandbox`
 is the default primary sandbox config; it does not by itself move the program.
@@ -116,7 +124,7 @@ vf.Harness(
 # Sandboxed default loop.
 vf.Harness(
     sandbox={"image": "python:3.11-slim"},
-    program={"base": True, "sandbox": True},
+    program={"sandbox": True},
 )
 
 # Sandboxed importable Python program.
@@ -143,6 +151,30 @@ The default loop is controlled by `HarnessConfig.max_turns`.
 The selected client protocol is carried in runtime state. OpenAI Chat
 Completions is the default; Anthropic Messages and OpenAI Responses are selected
 through `ClientConfig.client_type` / endpoint registry `type`.
+
+Third-party Python programs should configure their own libraries against the
+interception endpoint passed in state. For example, a DSPy entrypoint can build
+`dspy.LM(..., api_base=state["endpoint_base_url"], api_key="intercepted")` and
+use `dspy.context(lm=...)` inside the program call. Avoid global library
+configuration in async entrypoints.
+
+Standalone harnesses can receive model controls directly:
+
+```python
+harness = vf.Harness(
+    client=vf.ClientConfig(
+        client_type="openai_chat_completions",
+        api_base_url="https://api.openai.com/v1",
+        api_key_var="OPENAI_API_KEY",
+    ),
+    model="gpt-5.4-mini",
+)
+
+state = await harness.run(vf.Task({"prompt": [{"role": "user", "content": "2+2?"}]}))
+```
+
+When a harness is used through `Env`, the eval/training worker supplies the
+client, model, and sampling args for each rollout/group invocation.
 
 ## Tools
 
@@ -180,13 +212,59 @@ async def program(task, state):
 ```
 
 Toolsets can declare `sandbox={...}` for tools that need isolated execution.
-Sandbox scope can be `rollout`, `group`, or `global`.
+Sandbox scope can be `rollout`, `group`, or `global`. A toolset can also use
+`sandbox="program"` when its tools should operate against the primary program
+sandbox for the current rollout/group.
 
 Lazy `objects` are scoped as well. Read-only toolsets default to global objects;
 `write=True` toolsets default to rollout-scoped objects unless `scope` is set.
 
 Tasks can narrow the exposed tools for a rollout by setting
-`task["runtime"]["tools"] = ["tool_name", ...]`. Unknown tool names hard fail.
+`task["runtime"]["tools"] = ["tool_name", ...]`. They can also use
+`{"show": [...]}` or `{"hide": [...]}`. Unknown tool names hard fail.
+
+Programs running through the interception endpoint can discover and call the
+same resolved tools over HTTP:
+
+- `GET {state["endpoint_root_url"]}/vf/tools` returns provider-agnostic tool
+  schemas.
+- `GET {state["endpoint_root_url"]}/vf/tools?protocol=openai_chat_completions`
+  returns OpenAI Chat Completions tool payloads. `openai_responses` and
+  `anthropic_messages` are also supported.
+- `POST {state["endpoint_root_url"]}/vf/tools/{name}` with
+  `{"arguments": {...}}` calls the tool.
+- command and sandbox programs receive `VF_TOOLS_JSON`, `VF_TOOL_BASE_URL`,
+  `VF_TOOL_API_KEY`, and `VF_ENDPOINT_API_KEY`. `VF_TOOLS_JSON` matches the
+  selected client protocol; `VF_TOOL_DEFS_JSON` preserves the provider-agnostic
+  schema.
+- harness builders choose how programs accept tools with `tool_protocol`.
+  `tool_protocol="callable"` is the default for Python programs and the base
+  tool loop. `tool_protocol="mcp"` exposes the same resolved tools through an
+  official stdio MCP proxy, with `VF_MCP_TOOL_COMMAND_JSON` and
+  `VF_MCP_TOOL_COMMAND` available to command programs.
+
+MCP tools are normalized into callable tool handles before programs see them.
+Callable tools can also be presented as MCP tools when the harness selects MCP.
+
+## Nested Harnesses
+
+A tool or program can launch a child harness through the active runtime:
+
+```python
+async def ask_child(prompt: str, harness, state):
+    task = vf.Task({"prompt": prompt}).freeze()
+    child_state = await vf.current_runtime().run_harness(
+        harness,
+        task,
+        parent_state=state,
+    )
+    return child_state["answer"]
+```
+
+The child rollout receives its own `trajectory_id` and rollout-local state. It
+inherits the parent group key, model, sampling args, and model client unless the
+child state overrides them. The parent should store only serializable child
+outputs in its own state.
 
 ## Users
 
@@ -241,15 +319,34 @@ async def format_reward(task, state) -> float: ...
 
 @vf.reward(stage="group")
 async def best_of_n(tasks, states) -> list[float]: ...
+
+
+@vf.advantage
+async def center_advantages(tasks, states) -> list[float]: ...
 ```
 
 Rollout signals accept exactly `task, state`. Group signals opt in with
-`stage="group"` and accept exactly `tasks, states`.
+`stage="group"` and accept exactly `tasks, states`. `@vf.advantage` is always a
+group signal. If no advantage signal is configured, group scoring uses
+`reward - mean(group_reward)` and writes the value to each state and trajectory
+step with an unset advantage.
 
 Cleanup functions use `@vf.cleanup`; teardown functions use `@vf.teardown`.
 There is no public render decorator. State rendering that the framework owns,
 such as timing, completion, and trajectory sync, is part of the harness run
 contract.
+
+Stop functions use `@vf.stop` or `stop=[...]` on tasksets, harnesses, or
+toolsets:
+
+```python
+@vf.stop
+async def submitted(task, state) -> bool:
+    return bool(state.get("submitted"))
+
+
+toolset = vf.Toolset(tools=[submit], stop=[submitted])
+```
 
 ## Config
 
@@ -445,6 +542,30 @@ toolset = vf.Toolset(
 The sandbox handle is hidden from the model and recorded in
 `state["runtime"]["sandboxes"]`.
 
+### Use The Program Sandbox From A Tool
+
+```python
+async def inspect_workspace(command: str, sandbox) -> str:
+    result = await sandbox.execute(command)
+    return result.stdout
+
+
+harness = vf.Harness(
+    sandbox={"image": "python:3.11-slim", "scope": "group"},
+    program={"sandbox": True},
+    toolsets=[
+        vf.Toolset(
+            tools=[inspect_workspace],
+            sandbox="program",
+            write=True,
+        )
+    ],
+)
+```
+
+`sandbox="program"` hard-fails if the program is not currently running with a
+primary sandbox. This keeps same-sandbox coupling explicit.
+
 ### Configure A Harness Program
 
 ```toml
@@ -461,6 +582,24 @@ async def run(task, state):
 
 `program=None` uses the default endpoint-backed tool loop.
 
+### Call A Nested Harness
+
+```python
+async def solve_subtask(prompt: str, state):
+    child = vf.Harness(program="my_env.child:run")
+    task = vf.Task({"prompt": [{"role": "user", "content": prompt}]}).freeze()
+    child_state = await vf.current_runtime().run_harness(
+        child,
+        task,
+        parent_state=state,
+    )
+    return child_state["answer"]
+```
+
+The child rollout gets its own `trajectory_id` and rollout-scoped resources. It
+inherits the parent `group_key`, model, sampling args, and model client unless
+the child state overrides them.
+
 ## FAQ
 
 ### Where Do Model And Client Settings Live?
@@ -468,6 +607,10 @@ async def run(task, state):
 Eval/training runners pass `client`, `model`, and `sampling_args` into the
 `Env` boundary. v1 stores the serializable parts in `state["runtime"]` and keeps
 live clients inside the harness runtime.
+
+Standalone harnesses may pass `client=...`, `model=...`, and
+`sampling_args=...` at construction. State runtime values take precedence for a
+specific rollout.
 
 ### How Do I Use Multiple Models?
 
@@ -487,6 +630,8 @@ best-of-N preference, relative advantage, or a group-level judge.
 Use `rollout` when each attempt must be isolated. Use `group` when scoring or
 comparison may need artifacts after rollout completion. Use `global` for
 read-only or reusable services that are safe to share for the harness lifetime.
+Primary program sandboxes, tool sandboxes, and user sandboxes all use the same
+scoped lease cleanup path.
 
 ### How Do MCP Tools Fit?
 

@@ -8,24 +8,33 @@ from typing import Any, cast
 
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.interception_utils import serialize_tool_defs
 
-from ..runtime import Runtime, _read_path
+from ..runtime import Runtime, _read_path, serializable
 from ..state import State
 from ..task import Task
+from .mcp_proxy_utils import local_proxy_program, validate_tool_protocol
 
 
 async def run_local_command(
     program: Mapping[str, object], task: Task, state: State, runtime: Runtime
 ) -> State:
+    cleanup_path = None
+    if runtime_tool_protocol(runtime) == "mcp":
+        program, cleanup_path = local_proxy_program(program)
     argv = await command_argv(program, task, state, runtime)
-    env = await command_env(program, task, state, runtime, include_base=True)
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
+    try:
+        env = await command_env(program, task, state, runtime, include_base=True)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await proc.communicate()
+    finally:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
     state["command"] = {
         "argv": argv,
         "returncode": proc.returncode,
@@ -80,10 +89,27 @@ async def command_env(
         endpoint_root_url = state.get("endpoint_root_url")
         env.setdefault("OPENAI_BASE_URL", endpoint_base_url)
         env.setdefault("OPENAI_API_KEY", api_key)
+        env.setdefault("VF_ENDPOINT_API_KEY", api_key)
         if isinstance(endpoint_root_url, str):
             env.setdefault("ANTHROPIC_BASE_URL", endpoint_root_url)
             env.setdefault("ANTHROPIC_API_KEY", api_key)
+            env.setdefault("VF_TOOL_BASE_URL", f"{endpoint_root_url}/vf/tools")
+            env.setdefault("VF_TOOL_API_KEY", api_key)
         env.setdefault("VF_ENDPOINT_BASE_URL", endpoint_base_url)
+        client_type = str(
+            state.get("runtime", {}).get("client_type") or "openai_chat_completions"
+        )
+        tool_defs = runtime.tool_defs(state) or []
+        env.setdefault("VF_CLIENT_TYPE", client_type)
+        env.setdefault("VF_TOOL_PROTOCOL", runtime_tool_protocol(runtime))
+        env.setdefault(
+            "VF_TOOLS_JSON",
+            json_dumps(serialize_tool_defs(tool_defs, client_type)),
+        )
+        env.setdefault(
+            "VF_TOOL_DEFS_JSON",
+            json_dumps(serialize_tool_defs(tool_defs, "vf")),
+        )
     raw_env = program.get("env", {})
     if not isinstance(raw_env, Mapping):
         raise TypeError("program.env must be a mapping.")
@@ -138,3 +164,15 @@ def endpoint_api_key(runtime: Runtime) -> str:
     endpoint = getattr(harness, "endpoint", None)
     secret = getattr(endpoint, "secret", None)
     return str(secret or "intercepted")
+
+
+def runtime_tool_protocol(runtime: Runtime) -> str:
+    return validate_tool_protocol(
+        getattr(getattr(runtime, "harness", None), "tool_protocol", "callable")
+    )
+
+
+def json_dumps(value: object) -> str:
+    import json
+
+    return json.dumps(serializable(value))

@@ -26,7 +26,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from verifiers.errors import InfraError
-from verifiers.types import Response
+from verifiers.types import Response, Tool
 from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,18 @@ class InterceptionServer:
                 self._handle_tool_request,
             )
             app.router.add_get(
+                "/rollout/{rollout_id}/vf/tools",
+                self._handle_tools_list_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/user",
+                self._handle_user_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/stop",
+                self._handle_stop_request,
+            )
+            app.router.add_get(
                 "/health",
                 lambda _: web.json_response({"status": "ok"}),
             )
@@ -154,12 +166,18 @@ class InterceptionServer:
         rollout_id: str,
         state: dict[str, Any] | None = None,
         tool_handler: Any | None = None,
+        tool_defs: Any | None = None,
+        user_handler: Any | None = None,
+        stop_handler: Any | None = None,
     ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
             "state": state,
             "tool_handler": tool_handler,
+            "tool_defs": tool_defs,
+            "user_handler": user_handler,
+            "stop_handler": stop_handler,
         }
         return request_queue
 
@@ -280,10 +298,82 @@ class InterceptionServer:
             result = tool_handler(request.match_info["tool_name"], arguments)
             if inspect.isawaitable(result):
                 result = await result
+            result = jsonable(result)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-        result = json.loads(json.dumps(result, default=str))
         return web.json_response({"result": result})
+
+    async def _handle_tools_list_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+
+        protocol = request.query.get("protocol")
+        try:
+            tools = serialize_tool_defs(context.get("tool_defs") or [], protocol)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"tools": tools})
+
+    async def _handle_user_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        user_handler = context.get("user_handler")
+        if user_handler is None:
+            return web.json_response({"messages": []})
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+        transcript = request_body.get("transcript") or []
+        if not isinstance(transcript, list):
+            return web.json_response({"error": "Transcript must be a list"}, status=400)
+
+        try:
+            result = user_handler(transcript)
+            if inspect.isawaitable(result):
+                result = await result
+            messages = jsonable(result or [])
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"messages": messages})
+
+    async def _handle_stop_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        stop_handler = context.get("stop_handler")
+        if stop_handler is None:
+            return web.json_response({"done": False, "stop_condition": None})
+
+        try:
+            result = stop_handler()
+            if inspect.isawaitable(result):
+                result = await result
+            result = jsonable(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response(result)
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict
@@ -624,6 +714,62 @@ def serialize_intercept_response(
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return dict(response)
+
+
+def jsonable(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return jsonable(model_dump(exclude_none=True))
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    return json.loads(json.dumps(value))
+
+
+def serialize_tool_defs(
+    tools: Any, protocol: str | None = None
+) -> list[dict[str, Any]]:
+    """Serialize provider-agnostic vf.Tool definitions for an endpoint protocol."""
+    if not isinstance(tools, list):
+        tools = list(tools)
+    serialized: list[dict[str, Any]] = []
+    for raw_tool in tools:
+        tool = raw_tool if isinstance(raw_tool, Tool) else Tool.model_validate(raw_tool)
+        if protocol == "openai_chat_completions":
+            function: dict[str, Any] = {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            if tool.strict is not None:
+                function["strict"] = tool.strict
+            serialized.append({"type": "function", "function": function})
+        elif protocol == "openai_responses":
+            payload: dict[str, Any] = {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            if tool.strict is not None:
+                payload["strict"] = tool.strict
+            serialized.append(payload)
+        elif protocol == "anthropic_messages":
+            serialized.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
+                }
+            )
+        elif protocol is None or protocol == "vf":
+            serialized.append(jsonable(tool))
+        else:
+            raise ValueError(f"Unsupported tool serialization protocol: {protocol!r}")
+    return serialized
 
 
 def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:

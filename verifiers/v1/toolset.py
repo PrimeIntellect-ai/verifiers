@@ -16,7 +16,8 @@ class Toolset:
     objects: Mapping[str, object] = field(default_factory=dict)
     write: bool = False
     scope: str | None = None
-    sandbox: Mapping[str, object] | None = None
+    sandbox: Mapping[str, object] | str | None = None
+    stop: tuple[object, ...] = ()
     cleanup: tuple[object, ...] = ()
     teardown: tuple[object, ...] = ()
     config: object | None = None
@@ -30,7 +31,8 @@ class Toolset:
         objects: Mapping[str, object] | None = None,
         write: bool | None = None,
         scope: str | None = None,
-        sandbox: Mapping[str, object] | None = None,
+        sandbox: Mapping[str, object] | str | None = None,
+        stop: Iterable[object] = (),
         cleanup: Iterable[object] = (),
         teardown: Iterable[object] = (),
         config: object | None = None,
@@ -66,13 +68,16 @@ class Toolset:
                 scope if scope is not None else optional_string(config_map.get("scope"))
             )
             config_sandbox = config_map.get("sandbox")
-            if config_sandbox is not None and not isinstance(config_sandbox, Mapping):
-                raise TypeError("Toolset sandbox must be a mapping.")
+            if config_sandbox is not None and not isinstance(
+                config_sandbox, Mapping | str
+            ):
+                raise TypeError("Toolset sandbox must be a mapping or 'program'.")
             sandbox = (
                 sandbox
                 if sandbox is not None
-                else cast(Mapping[str, object] | None, config_sandbox)
+                else cast(Mapping[str, object] | str | None, config_sandbox)
             )
+            stop = [*stop, *config_items(config_map.get("stop"))]
             cleanup = [*cleanup, *config_items(config_map.get("cleanup"))]
             teardown = [*teardown, *config_items(config_map.get("teardown"))]
         if show is not None and hide is not None:
@@ -86,7 +91,10 @@ class Toolset:
         if scope is not None and scope not in {"rollout", "group", "global"}:
             raise ValueError("Toolset scope must be 'rollout', 'group', or 'global'.")
         object.__setattr__(self, "scope", scope)
+        if isinstance(sandbox, str) and sandbox != "program":
+            raise ValueError("Toolset sandbox string must be 'program'.")
         object.__setattr__(self, "sandbox", sandbox)
+        object.__setattr__(self, "stop", tuple(stop))
         object.__setattr__(self, "cleanup", tuple(cleanup))
         object.__setattr__(self, "teardown", tuple(teardown))
         object.__setattr__(self, "config", config)
@@ -171,6 +179,7 @@ def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
         "write",
         "scope",
         "sandbox",
+        "stop",
         "cleanup",
         "teardown",
     }

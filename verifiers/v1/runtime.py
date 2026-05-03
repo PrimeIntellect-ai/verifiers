@@ -52,6 +52,11 @@ class Runtime:
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
         self.mcp_tools: dict[str, dict[str, object]] = {}
         self.exposed_mcp_tools: dict[str, dict[str, object]] = {}
+        self.stop_conditions = collect_handlers(
+            (taskset, harness, *self.toolsets),
+            "stop",
+            self._extra_stop(),
+        )
         signals = self._build_signals()
         self.rollout_signals = [
             signal for signal in signals if signal["stage"] == "rollout"
@@ -80,6 +85,10 @@ class Runtime:
         state.setdefault("runtime", {})
         state["runtime"].setdefault(
             "tools", sorted(self.unfiltered_exposed_tools(state))
+        )
+        state["runtime"].setdefault(
+            "tool_protocol",
+            getattr(getattr(self, "harness", None), "tool_protocol", "callable"),
         )
         state["tools"] = sorted(self.all_exposed_tools(state))
 
@@ -111,6 +120,37 @@ class Runtime:
         state["runtime"]["client_key"] = key
         state["runtime"]["client_type"] = client_type
 
+    def inherit_model_controls(
+        self, parent_state: State, child_runtime: Runtime, child_state: State
+    ) -> None:
+        parent = parent_state.get("runtime", {})
+        child_state.setdefault("runtime", {})
+        for key in ("model", "sampling_args", "client_type", "score_rollout"):
+            if key in parent and key not in child_state["runtime"]:
+                child_state["runtime"][key] = parent[key]
+        if "group_key" in parent and "group_key" not in child_state["runtime"]:
+            child_state["runtime"]["group_key"] = parent["group_key"]
+        client_key = parent.get("client_key")
+        if isinstance(client_key, str) and client_key in self.model_clients:
+            child_runtime.model_clients[client_key] = self.model_clients[client_key]
+            child_state["runtime"]["client_key"] = client_key
+
+    async def run_harness(
+        self,
+        harness: object,
+        task: Task | Mapping[str, Any],
+        parent_state: State,
+        state: State | None = None,
+    ) -> State:
+        from .harness import Harness
+
+        if not isinstance(harness, Harness):
+            raise TypeError("run_harness expects a verifiers.v1.Harness.")
+        task = task if isinstance(task, Task) else Task(task).freeze()
+        child_state = State.for_task(task) if state is None else state
+        self.inherit_model_controls(parent_state, harness.runtime, child_state)
+        return await harness.run(task, child_state)
+
     def model_client(self, state: State) -> Client:
         key = str(state.get("runtime", {}).get("client_key") or "default")
         client = self.model_clients.get(key)
@@ -127,7 +167,7 @@ class Runtime:
         return cast(ClientType, raw_client_type)
 
     def model(self, state: State) -> str:
-        model = state.get("runtime", {}).get("model") or state.get("model")
+        model = state.get("runtime", {}).get("model")
         if not isinstance(model, str) or not model:
             raise RuntimeError("Harness has no model for intercepted requests.")
         return model
@@ -211,9 +251,27 @@ class Runtime:
         )
 
     async def call_tool(
-        self, name: str, task: Task, state: State, **kwargs: object
+        self, tool_name: str, task: Task, state: State, **kwargs: object
     ) -> object:
-        return await self._call_tool(name, task, state, True, **kwargs)
+        return await self._call_tool(tool_name, task, state, True, **kwargs)
+
+    async def is_completed(self, task: Task, state: State) -> bool:
+        for condition in self.stop_conditions:
+            completed = await maybe_call_with_named_args(
+                condition, task=task, state=state, runtime=self
+            )
+            if completed:
+                state["is_completed"] = True
+                state["is_truncated"] = state.get("is_truncated", False) or any(
+                    step.get("is_truncated", False)
+                    for step in state.get("trajectory", [])
+                    if isinstance(step, Mapping)
+                )
+                state["stop_condition"] = state.get("stop_condition") or getattr(
+                    condition, "__name__", type(condition).__name__
+                )
+                return True
+        return False
 
     def tool_calls(
         self, task: Task, state: State
@@ -224,27 +282,27 @@ class Runtime:
         return calls
 
     def _tool_call(
-        self, name: str, task: Task, state: State, exposed: bool
+        self, tool_name: str, task: Task, state: State, exposed: bool
     ) -> Callable[..., Awaitable[object]]:
         async def call(**kwargs: object) -> object:
-            return await self._call_tool(name, task, state, exposed, **kwargs)
+            return await self._call_tool(tool_name, task, state, exposed, **kwargs)
 
         return call
 
     async def _call_tool(
         self,
-        name: str,
+        tool_name: str,
         task: Task,
         state: State,
         exposed: bool,
         **kwargs: object,
     ) -> object:
         tools = self.all_exposed_tools(state) if exposed else self.all_tools(state)
-        if name not in tools:
+        if tool_name not in tools:
             kind = "exposed tool" if exposed else "tool"
-            raise KeyError(f"Unknown {kind} {name!r}.")
+            raise KeyError(f"Unknown {kind} {tool_name!r}.")
         tool_kwargs = dict(kwargs)
-        owner = self.tool_owners.get(name)
+        owner = self.tool_owners.get(tool_name)
         if owner is not None and owner.sandbox is not None:
             tool_kwargs.setdefault(
                 "sandbox", await self.resolve_tool_sandbox(owner, task, state)
@@ -253,13 +311,13 @@ class Runtime:
             tool_name_prefix, separator, arg_name = binding_key.partition(".")
             if separator != ".":
                 raise ValueError(f"Tool binding {binding_key!r} must be 'tool.arg'.")
-            if tool_name_prefix != name:
+            if tool_name_prefix != tool_name:
                 continue
             if arg_name in tool_kwargs:
-                raise ValueError(f"Tool arg {name}.{arg_name} is already set.")
+                raise ValueError(f"Tool arg {tool_name}.{arg_name} is already set.")
             tool_kwargs[arg_name] = await self.resolve_binding(source, task, state)
         return await maybe_call_with_named_args(
-            cast(Callable[..., object], tools[name]),
+            cast(Callable[..., object], tools[tool_name]),
             task=task,
             state=state,
             **tool_kwargs,
@@ -514,6 +572,7 @@ class Runtime:
             scoring=getattr(config, "scoring", {}),
             metrics=getattr(owner, "metrics", ()),
             rewards=getattr(owner, "rewards", ()),
+            advantages=getattr(owner, "advantages", ()),
         )
 
     def _extra_cleanup(self) -> list[Callable[..., object]]:
@@ -524,6 +583,17 @@ class Runtime:
             for handler in getattr(owner, "__dict__", {}).get("cleanup", ()):
                 if not callable(handler):
                     raise TypeError("cleanup entries must be callable.")
+                handlers.append(cast(Callable[..., object], handler))
+        return handlers
+
+    def _extra_stop(self) -> list[Callable[..., object]]:
+        handlers: list[Callable[..., object]] = [state_done]
+        for owner in (self.taskset, self.harness, *self.toolsets):
+            if owner is None:
+                continue
+            for handler in getattr(owner, "__dict__", {}).get("stop", ()):
+                if not callable(handler):
+                    raise TypeError("stop entries must be callable.")
                 handlers.append(cast(Callable[..., object], handler))
         return handlers
 
@@ -665,6 +735,27 @@ class Runtime:
 
         _ = task
         sandbox = toolset.sandbox
+        if isinstance(sandbox, str):
+            if sandbox != "program":
+                raise ValueError("Toolset sandbox string must be 'program'.")
+            sandbox_record = state.get("runtime", {}).get("sandbox")
+            if not isinstance(sandbox_record, Mapping):
+                raise RuntimeError(
+                    "Toolset sandbox='program' requires an active program sandbox."
+                )
+            lease_key = sandbox_record.get("lease_key")
+            if (
+                not isinstance(lease_key, list)
+                or len(lease_key) != 2
+                or not all(isinstance(item, str) for item in lease_key)
+            ):
+                raise RuntimeError(
+                    "Program sandbox state is missing a runtime lease key."
+                )
+            lease = self.sandbox_leases.get((lease_key[0], lease_key[1]))
+            if lease is None:
+                raise RuntimeError("Program sandbox lease is no longer active.")
+            return SandboxHandle(cast(Any, lease), state)
         if not isinstance(sandbox, Mapping):
             raise TypeError("Toolset sandbox must be a mapping.")
         scope = sandbox_scope(sandbox)
@@ -675,6 +766,25 @@ class Runtime:
                 lease = await create_tool_sandbox_lease(toolset)
                 self.sandbox_leases[key] = lease
         return SandboxHandle(cast(Any, lease), state)
+
+    async def resolve_program_sandbox(
+        self, sandbox_config: Mapping[str, object], task: Task, state: State
+    ) -> Any:
+        from .utils.sandbox_utils import (
+            create_sandbox_lease,
+            program_sandbox_key,
+            sandbox_scope,
+        )
+
+        _ = task
+        scope = sandbox_scope(sandbox_config)
+        key = (self.scope_key(scope, state), program_sandbox_key(sandbox_config))
+        async with self.sandbox_lock:
+            lease = self.sandbox_leases.get(key)
+            if lease is None:
+                lease = await create_sandbox_lease(sandbox_config, key[1])
+                self.sandbox_leases[key] = lease
+        return lease
 
     async def resolve_user_sandbox(
         self, user: User, task: Task, state: State
@@ -860,6 +970,31 @@ class Runtime:
         selected = state.get("runtime", {}).get("tools")
         if selected is None:
             return tools
+        if isinstance(selected, Mapping):
+            unknown_keys = set(selected) - {"show", "hide"}
+            if unknown_keys:
+                raise ValueError(
+                    f"state.runtime.tools has unknown keys: {sorted(unknown_keys)}."
+                )
+            if selected.get("show") is not None and selected.get("hide") is not None:
+                raise ValueError("state.runtime.tools accepts show or hide, not both.")
+            if selected.get("show") is not None:
+                selected = selected["show"]
+            elif selected.get("hide") is not None:
+                hidden = selected["hide"]
+                if not isinstance(hidden, Sequence) or isinstance(hidden, str | bytes):
+                    raise TypeError("state.runtime.tools.hide must be a list of names.")
+                hidden_names = {str(name) for name in hidden}
+                unknown = sorted(hidden_names - set(tools))
+                if unknown:
+                    raise KeyError(f"Unknown hidden tools: {unknown}.")
+                return {
+                    name: tool
+                    for name, tool in tools.items()
+                    if name not in hidden_names
+                }
+            else:
+                return tools
         if not isinstance(selected, Sequence) or isinstance(selected, str | bytes):
             raise TypeError("state.runtime.tools must be a list of tool names.")
         selected_names = [str(name) for name in selected]
@@ -916,6 +1051,11 @@ def toolset_object_scope(toolset: Toolset) -> str:
     if toolset.scope is not None:
         return toolset.scope
     return "rollout" if toolset.write else "global"
+
+
+async def state_done(task: Task, state: State) -> bool:
+    _ = task
+    return bool(state.get("done") or state.get("is_completed"))
 
 
 def _read_path(value: object, path: str) -> object:

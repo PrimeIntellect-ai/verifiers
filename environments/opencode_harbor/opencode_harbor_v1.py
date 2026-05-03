@@ -32,6 +32,7 @@ DEFAULT_DISABLED_TOOLS = ["webfetch", "question"]
 def _build_opencode_config(
     disabled_tools: list[str] | None = None,
     system_prompt_path: str | None = None,
+    tool_protocol: str = "mcp",
 ) -> str:
     config: dict[str, Any] = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
@@ -54,6 +55,14 @@ def _build_opencode_config(
         },
         "model": "intercepted/model",
     }
+    if tool_protocol == "mcp":
+        config["mcp"] = {
+            "verifiers-tools": {
+                "type": "local",
+                "command": ["python3", "/tmp/vf_mcp_tools.py"],
+                "enabled": True,
+            }
+        }
     if system_prompt_path or disabled_tools:
         build_config: dict[str, Any] = {}
         if system_prompt_path:
@@ -68,9 +77,12 @@ def _build_run_command(
     agent_workdir: str,
     disabled_tools: list[str] | None = None,
     has_system_prompt: bool = False,
+    tool_protocol: str = "mcp",
 ) -> str:
     system_prompt_sandbox_path = "/opencode/prompt.txt" if has_system_prompt else None
-    config_json = _build_opencode_config(disabled_tools, system_prompt_sandbox_path)
+    config_json = _build_opencode_config(
+        disabled_tools, system_prompt_sandbox_path, tool_protocol=tool_protocol
+    )
     return f"""
 set -e
 apt-get update && apt-get install -y curl
@@ -260,6 +272,7 @@ def load_harness(
     system_prompt_path: str | Path | None = None,
     disabled_tools: list[str] | None = None,
     max_turns: int = 4,
+    tool_protocol: str = "mcp",
     config=None,
 ):
     prompt_text = None
@@ -281,11 +294,16 @@ def load_harness(
                     agent_workdir=agent_workdir,
                     disabled_tools=disabled_tools,
                     has_system_prompt=prompt_text is not None,
+                    tool_protocol=tool_protocol,
                 ),
             ],
             "files": files,
             "artifacts": {
-                "opencode_log": {"path": "/logs/agent/opencode.txt", "format": "text"}
+                "opencode_log": {
+                    "path": "/logs/agent/opencode.txt",
+                    "format": "text",
+                    "optional": True,
+                }
             },
         },
         sandbox={
@@ -296,6 +314,7 @@ def load_harness(
             "command_timeout": 900,
             "network_access": True,
         },
+        tool_protocol=tool_protocol,
         max_turns=max_turns,
         config=config,
     )
@@ -315,6 +334,7 @@ def load_v1_environment(
     disk_size_gb: int = 10,
     timeout_minutes: int = 120,
     max_turns: int = 4,
+    tool_protocol: str = "mcp",
 ) -> vf.Env:
     _ = timeout_seconds
     if dataset and tasks:
@@ -350,5 +370,6 @@ def load_v1_environment(
             system_prompt_path=system_prompt_path,
             disabled_tools=disabled_tools,
             max_turns=max_turns,
+            tool_protocol=tool_protocol,
         ),
     )

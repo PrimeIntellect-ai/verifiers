@@ -61,12 +61,22 @@ class Endpoint:
         await self.server.start()
 
     async def register_rollout(
-        self, state: State, tool_handler: object | None = None
+        self,
+        state: State,
+        tool_handler: object | None = None,
+        tool_defs: object | None = None,
+        user_handler: object | None = None,
+        stop_handler: object | None = None,
     ) -> str:
         await self.start()
         request_key = f"rollout_{uuid.uuid4().hex[:8]}"
         request_queue = self.server.register_rollout(
-            request_key, state=state, tool_handler=tool_handler
+            request_key,
+            state=state,
+            tool_handler=tool_handler,
+            tool_defs=tool_defs,
+            user_handler=user_handler,
+            stop_handler=stop_handler,
         )
         self._request_queues[request_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{request_key}"
@@ -156,7 +166,22 @@ async def run_intercepted_program(
     async def call_tool(name: str, arguments: Mapping[str, object]) -> object:
         return await runtime.call_tool(name, task, state, **dict(arguments))
 
-    await endpoint.register_rollout(state, tool_handler=call_tool)
+    async def call_user(transcript: list[object]) -> object:
+        return await runtime.user_messages(task, state, transcript=transcript)
+
+    async def check_stop() -> object:
+        return {
+            "done": await runtime.is_completed(task, state),
+            "stop_condition": state.get("stop_condition"),
+        }
+
+    await endpoint.register_rollout(
+        state,
+        tool_handler=call_tool,
+        tool_defs=runtime.tool_defs(state),
+        user_handler=call_user,
+        stop_handler=check_stop,
+    )
     client = endpoint.client(state)
     execution = asyncio.create_task(
         maybe_call_with_named_args(program, task=task, state=state, client=client)

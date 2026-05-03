@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from verifiers.utils.async_utils import maybe_await
 
-SignalKind = Literal["metric", "reward"]
+SignalKind = Literal["metric", "reward", "advantage"]
 SignalStage = Literal["rollout", "group"]
 SignalRecord = dict[str, object]
 SignalConfigMap = Mapping[str, Mapping[str, object]]
@@ -20,6 +20,7 @@ def build_signals(
     scoring: SignalConfigMap | None = None,
     metrics: Iterable[Callable[..., object]] | None = None,
     rewards: Iterable[Callable[..., object]] | None = None,
+    advantages: Iterable[Callable[..., object]] | None = None,
 ) -> list[SignalRecord]:
     signals: list[SignalRecord] = []
     if owner is not None:
@@ -29,6 +30,8 @@ def build_signals(
         add_metric(signals, fn)
     for fn in rewards or ():
         add_reward(signals, fn)
+    for fn in advantages or ():
+        add_advantage(signals, fn)
     apply_scoring_config(signals, scoring or {})
     return sorted(signals, key=signal_sort_key)
 
@@ -58,6 +61,12 @@ def add_reward(
     add_signal(signals, signal_from_function(fn, "reward"))
 
 
+def add_advantage(
+    signals: MutableSequence[SignalRecord], fn: Callable[..., object]
+) -> None:
+    add_signal(signals, signal_from_function(fn, "advantage"))
+
+
 async def score_rollout(
     signals: Iterable[SignalRecord], task: Mapping[str, Any], state: dict[str, Any]
 ) -> dict[str, Any]:
@@ -84,8 +93,12 @@ async def score_group(
 ) -> list[dict[str, Any]]:
     start_time = time.time()
     rewards = [float(state.get("reward", 0.0) or 0.0) for state in states]
+    advantage_signals: list[SignalRecord] = []
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "group":
+            continue
+        if signal["kind"] == "advantage":
+            advantage_signals.append(signal)
             continue
         values = await call_group_signal(signal, tasks, states)
         for index, value in enumerate(values):
@@ -94,8 +107,13 @@ async def score_group(
             states[index]["metrics"] = metrics
             if signal["kind"] == "reward":
                 rewards[index] += value * cast(float, signal["weight"])
+    advantages = default_advantages(rewards)
+    for signal in advantage_signals:
+        advantages = await call_group_signal(signal, tasks, states)
     for index, state in enumerate(states):
         state["reward"] = rewards[index]
+        state["advantage"] = advantages[index]
+        apply_advantage_to_trajectory(state, advantages[index])
         record_scoring_timing(state, start_time)
     return states
 
@@ -151,6 +169,8 @@ def decorated_signals(owner: object) -> list[SignalRecord]:
             signals.append(signal_from_function(method, "metric"))
         if getattr(method, "reward", False):
             signals.append(signal_from_function(method, "reward"))
+        if getattr(method, "advantage", False):
+            signals.append(signal_from_function(method, "advantage"))
     return signals
 
 
@@ -192,7 +212,7 @@ def apply_signal_config(
     if priority_value is not None:
         priority = int(priority_value)
     weight = cast(float, signal["weight"])
-    if kind == "metric":
+    if kind in {"metric", "advantage"}:
         weight = 0.0
     else:
         weight_value = get_optional_number(config, "weight")
@@ -211,12 +231,15 @@ def apply_signal_config(
 def decorated_kind(fn: Callable[..., object]) -> SignalKind | None:
     has_metric = bool(getattr(fn, "metric", False))
     has_reward = bool(getattr(fn, "reward", False))
-    if has_metric and has_reward:
+    has_advantage = bool(getattr(fn, "advantage", False))
+    if sum([has_metric, has_reward, has_advantage]) > 1:
         raise ValueError(f"Signal function {function_name(fn)!r} has two kinds.")
     if has_metric:
         return "metric"
     if has_reward:
         return "reward"
+    if has_advantage:
+        return "advantage"
     return None
 
 
@@ -224,6 +247,10 @@ def validate_signal(signal: SignalRecord) -> None:
     fn = cast(Callable[..., object], signal["fn"])
     names = set(inspect.signature(fn).parameters)
     if signal["stage"] == "rollout":
+        if signal["kind"] == "advantage":
+            raise ValueError(
+                f"Advantage signal {signal['name']!r} must use stage='group'."
+            )
         if names != {"task", "state"}:
             raise ValueError(
                 f"Rollout signal {signal['name']!r} must accept exactly task and state."
@@ -315,6 +342,19 @@ def bool_config(config: Mapping[str, object], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"Signal config key {key!r} must be a boolean.")
     return value
+
+
+def default_advantages(rewards: Sequence[float]) -> list[float]:
+    if not rewards:
+        return []
+    mean_reward = sum(rewards) / len(rewards)
+    return [reward - mean_reward for reward in rewards]
+
+
+def apply_advantage_to_trajectory(state: dict[str, Any], advantage: float) -> None:
+    for step in state.get("trajectory", []):
+        if isinstance(step, dict) and step.get("advantage") is None:
+            step["advantage"] = advantage
 
 
 def function_name(fn: Callable[..., object]) -> str:

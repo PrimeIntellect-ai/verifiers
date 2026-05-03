@@ -52,6 +52,14 @@ async def config_reward(task: Mapping[str, object], state: dict[str, object]) ->
     return float(task.get("answer") == state.get("answer"))
 
 
+@vf.advantage
+async def config_advantage(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]]
+) -> list[float]:
+    _ = tasks
+    return [float(index) for index, _ in enumerate(states)]
+
+
 @vf.cleanup(priority=5)
 async def config_cleanup(task: Mapping[str, object], state: dict[str, object]) -> None:
     state["cleaned"] = True
@@ -125,6 +133,7 @@ setattr(ref_module, "source_loader", source_loader)
 setattr(ref_module, "eval_source_loader", eval_source_loader)
 setattr(ref_module, "config_metric", config_metric)
 setattr(ref_module, "config_reward", config_reward)
+setattr(ref_module, "config_advantage", config_advantage)
 setattr(ref_module, "config_cleanup", config_cleanup)
 setattr(ref_module, "config_group_cleanup", config_group_cleanup)
 setattr(ref_module, "config_tool", config_tool)
@@ -150,6 +159,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
             "taskset_id": "configured",
             "metrics": [ref("config_metric")],
             "rewards": [ref("config_reward")],
+            "advantages": [ref("config_advantage")],
             "cleanup": [ref("config_cleanup")],
             "toolsets": [
                 {
@@ -170,6 +180,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
     assert eval_rows[0]["answer"] == "eval ok"
     assert taskset.metrics == [config_metric]
     assert taskset.rewards == [config_reward]
+    assert taskset.advantages == [config_advantage]
     assert taskset.cleanup == [config_cleanup]
     assert taskset.user is not None
     assert len(taskset.toolsets) == 1
@@ -203,6 +214,7 @@ def test_harness_config_extends_constructor_surface() -> None:
             "program": ref("config_program"),
             "metrics": [],
             "rewards": [ref("config_reward")],
+            "advantages": [ref("config_advantage")],
             "cleanup": [ref("config_cleanup")],
             "toolsets": [
                 {
@@ -212,13 +224,16 @@ def test_harness_config_extends_constructor_surface() -> None:
             ],
             "user": ref("config_user"),
             "max_turns": 3,
+            "tool_protocol": "mcp",
         },
     )
 
     assert harness.program is config_program
     assert harness.config.max_turns == 3
+    assert harness.tool_protocol == "mcp"
     assert harness.metrics == [config_metric]
     assert harness.rewards == [config_reward]
+    assert harness.advantages == [config_advantage]
     assert harness.cleanup == [config_cleanup]
     assert harness.user is not None
     assert len(harness.toolsets) == 2
@@ -230,6 +245,13 @@ def test_harness_max_turns_arg_overrides_config() -> None:
     harness = Harness(max_turns=9, config={"max_turns": 3})
 
     assert harness.config.max_turns == 9
+
+
+def test_option_only_program_requires_sandbox_placement() -> None:
+    with pytest.raises(ValueError, match="require sandbox placement"):
+        Harness(program={"sandbox": False})
+
+    Harness(program={"sandbox": True}, sandbox={"image": "python:3.11-slim"})
 
 
 def test_constructor_mapping_args_override_config_mapping_values() -> None:
@@ -358,7 +380,7 @@ def test_subclasses_can_define_new_config_surface() -> None:
 
     harness = CustomHarness(config={"custom_flag": True})
 
-    assert harness.config.custom_flag is True
+    assert getattr(harness.config, "custom_flag") is True
     assert "custom_flag" in CustomHarness.config_schema()
 
 

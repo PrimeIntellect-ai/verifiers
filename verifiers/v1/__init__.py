@@ -1,13 +1,15 @@
 """v1 workspace for the next verifier environment architecture."""
 
-from verifiers.decorators import cleanup, metric, reward, teardown
+from verifiers.decorators import advantage, cleanup, metric, reward, stop, teardown
 
 from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
+from .runtime import current_runtime
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
+    add_advantage,
     build_signals,
     collect_signals,
     score_group,
@@ -33,12 +35,16 @@ __all__ = [
     "User",
     "add_metric",
     "add_reward",
+    "add_advantage",
+    "advantage",
     "build_signals",
     "cleanup",
     "collect_signals",
+    "current_runtime",
     "metric",
     "reward",
     "score_group",
     "score_rollout",
+    "stop",
     "teardown",
 ]

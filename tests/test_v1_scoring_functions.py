@@ -6,6 +6,7 @@ import pytest
 
 import verifiers as vf
 from verifiers.v1 import (
+    add_advantage,
     add_metric,
     add_reward,
     build_signals,
@@ -36,6 +37,12 @@ async def best_answer_bonus(tasks: list[dict], states: list[dict]) -> list[float
         float(state.get("answer") == task["answer"])
         for task, state in zip(tasks, states)
     ]
+
+
+@vf.advantage
+async def explicit_advantage(tasks: list[dict], states: list[dict]) -> list[float]:
+    _ = tasks
+    return [float(index) for index, _ in enumerate(states)]
 
 
 @pytest.mark.asyncio
@@ -104,9 +111,40 @@ def test_group_signal_requires_plural_args_only() -> None:
 async def test_group_reward_scores_each_state() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
     tasks = [{"answer": "a"}, {"answer": "b"}]
-    states = [{"answer": "a"}, {"answer": "c"}]
+    states = [
+        {
+            "answer": "a",
+            "trajectory": [{"advantage": None}, {"advantage": 9.0}],
+        },
+        {"answer": "c", "trajectory": [{"advantage": None}]},
+    ]
 
     await score_group(signals, tasks, states)
 
     assert states[0]["reward"] == 1.0
     assert states[1]["reward"] == 0.0
+    assert states[0]["advantage"] == 0.5
+    assert states[1]["advantage"] == -0.5
+    assert states[0]["trajectory"][0]["advantage"] == 0.5
+    assert states[0]["trajectory"][1]["advantage"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_advantage_signal_overrides_default_group_advantage() -> None:
+    signals = build_signals(rewards=[best_answer_bonus])
+    add_advantage(signals, explicit_advantage)
+    tasks = [{"answer": "a"}, {"answer": "b"}]
+    states = [{"answer": "a"}, {"answer": "c"}]
+
+    await score_group(signals, tasks, states)
+
+    assert states[0]["advantage"] == 0.0
+    assert states[1]["advantage"] == 1.0
+
+
+def test_advantage_requires_group_plural_args() -> None:
+    async def bad_advantage(task: dict, state: dict) -> float:
+        return 0.0
+
+    with pytest.raises(ValueError, match="stage='group'"):
+        build_signals(advantages=[bad_advantage])

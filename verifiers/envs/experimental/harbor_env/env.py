@@ -81,9 +81,9 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
 
             task_entry = {
                 "example_id": len(tasks),
-                "task": task_dir.name,
                 "prompt": messages,
                 "info": {
+                    "task_name": task_dir.name,
                     "task_dir": str(task_dir),
                     "docker_image": config.get("environment", {}).get("docker_image"),
                     "config": config,
@@ -106,13 +106,14 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build env vars with Harbor-specific additions."""
         env_vars = await super().build_env_vars(state)
-        env_vars.setdefault("HARBOR_TASK_NAME", state.get("task", ""))
+        task_info: dict[str, Any] = state.get("info") or {}
+        env_vars.setdefault("HARBOR_TASK_NAME", task_info.get("task_name", ""))
         env_vars.setdefault("HARBOR_TASK_DIR", "/task")
         env_vars.setdefault("HARBOR_INSTRUCTION_PATH", "/task/instruction.md")
         if self.agent_workdir:
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
 
-        config: dict[str, Any] = (state.get("info") or {}).get("config", {}) or {}
+        config: dict[str, Any] = task_info.get("config", {}) or {}
         for key, value in (await self.mcp_agent_env_vars(config, state)).items():
             env_vars.setdefault(key, value)
         return env_vars

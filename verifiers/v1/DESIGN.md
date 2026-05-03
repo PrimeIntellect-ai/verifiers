@@ -42,6 +42,10 @@ state = await harness.run(task, state=None)
 Handled `vf.Error` instances are serialized into `state["error"]` and still flow
 through scoring and cleanup. Other exceptions raise.
 
+Standalone harnesses can bind a client/model at construction. `Env` still owns
+the eval/training boundary and writes per-invocation model controls into state.
+State runtime controls take precedence for a specific rollout.
+
 ### Env Group Contract
 
 `Env` subclasses `vf.Environment`. It accepts the current worker inputs
@@ -56,6 +60,10 @@ mapping or JSON string and hydrate `Task` from that payload when present.
 
 `run_group` scores by default. It is the convenience path for eval/training
 workers and lightweight callers that do not need custom rollout dispatch.
+
+`Taskset.init_group(task, num_rollouts)` is the customization point for
+group-consistent prompt/task/state setup. It returns one task and one state per
+rollout.
 
 ### Program Forms
 
@@ -101,12 +109,31 @@ Rollout-scoped sandboxes are released after rollout scoring and cleanup.
 Group-scoped sandboxes survive until group scoring and cleanup. Global sandboxes
 live for the harness runtime and are released at teardown.
 
+Primary program sandboxes use the same scoped lease mechanism. A sandboxed
+program with `scope="group"` reuses one primary sandbox for compatible rollouts
+in the same group; `scope="global"` keeps the primary sandbox until harness
+teardown. Toolsets can declare `sandbox="program"` to receive the active primary
+program sandbox handle as a hidden tool argument.
+
 MCP server sessions follow the same scope vocabulary as their owning toolset.
 
 Toolset lazy objects use the same scope vocabulary. Read-only toolsets default
 to global objects. `write=True` toolsets default to rollout-scoped objects, so
 mutable task simulators and databases can stay out of `State` while remaining
 isolated per rollout.
+
+Programs can discover and call resolved tools through the interception endpoint:
+`GET /vf/tools` returns provider-agnostic tool schemas.
+`GET /vf/tools?protocol=...` renders the same tools for OpenAI Chat
+Completions, OpenAI Responses, or Anthropic Messages. `POST /vf/tools/{name}`
+calls a tool with hidden bindings resolved by the host runtime. Command/sandbox
+programs also receive `VF_TOOLS_JSON`, `VF_TOOL_DEFS_JSON`, `VF_TOOL_BASE_URL`,
+and endpoint auth env vars.
+
+MCP tools are normalized into callable handles for the runtime. Callable tools
+can also be exposed to external programs as stdio MCP tools when a harness uses
+`tool_protocol="mcp"`. The generated MCP server is official MCP plumbing around
+the runtime's resolved tool surface, not a separate user-facing tool type.
 
 ### Users
 
@@ -120,7 +147,7 @@ completion when available, falling back to trajectory-derived completion.
 
 ### Signals
 
-Metrics and rewards are signal functions.
+Metrics, rewards, and advantages are signal functions.
 
 Rollout signals:
 
@@ -138,14 +165,27 @@ Group signals:
 ```python
 @vf.reward(stage="group")
 async def group_reward_name(tasks, states) -> list[float]: ...
+
+
+@vf.advantage
+async def advantage_name(tasks, states) -> list[float]: ...
 ```
 
-Function names are signal names. Name collisions hard fail. Metrics and rewards
-are added through taskset/harness config fields or constructor args; `scoring`
-config only skips or overrides metadata for existing names.
+Function names are signal names. Name collisions hard fail. Metrics, rewards,
+and advantages are added through taskset/harness config fields or constructor
+args; `scoring` config only skips or overrides metadata for existing names.
+Absent an explicit advantage signal, group scoring writes
+`reward - mean(group_reward)`.
 
 `Rubric` is not part of the v1 authoring path. Compatibility adapters can be
 added around the v1 signal runner where needed.
+
+### Stop Conditions
+
+Stop handlers can be contributed by tasksets, harnesses, or toolsets via
+decorators or constructor/config lists. The built-in state stop condition treats
+`state["done"]` / `state["is_completed"]` as a generic finish-tool signal and
+sets `stop_condition` from the handler name.
 
 ### Cleanup And Teardown
 
@@ -155,6 +195,13 @@ program execution and scoring. It can target rollout or group stage.
 `@vf.teardown` is process/runtime cleanup for long-lived services. There is no
 public `render` decorator; framework-owned rendering is part of harness state
 sync.
+
+### Nested Harness Runs
+
+`current_runtime().run_harness(child, task, parent_state=state)` starts a child
+rollout from inside a program/tool. The child receives a fresh `trajectory_id`
+and rollout-scoped resources, while inheriting the parent `group_key`, model,
+sampling args, and model client unless its state overrides them.
 
 ## Current Examples
 
@@ -166,8 +213,12 @@ sync.
 - `opencode_harbor_v1`: sandboxed command harness plus rollout reward that runs
   Harbor tests before sandbox cleanup.
 - `nested_harness_v1`: tool binding that calls another harness.
+- `hello_subagent_v1`: deterministic parent harness that must call child
+  harnesses through a tool to solve the task.
 - `hello_rlm_v1`: sandboxed RLM CLI command harness with checkout upload,
   install, endpoint interception, metrics collection, and trajectory filtering.
+- `dspy_flights`: importable DSPy entrypoint configured against the v1
+  interception endpoint.
 - `tau2_bench`: taskset-owned tools and user simulator backed by a
   rollout-scoped session object.
 
@@ -185,9 +236,7 @@ sync.
   Completions, Anthropic Messages, and OpenAI Responses.
 - How group setup should work for prompt randomization, dynamic tasks, and
   stateful tasksets.
-- Whether stop conditions should become public v1 decorators, or remain an
-  implementation detail of framework-owned loops.
-- How much callable-to-MCP adaptation should be automatic for sandboxed
-  programs and remote workers.
+- How far runtime context inheritance should go for deeply nested harness calls
+  beyond model controls and group membership.
 - Whether cleanup names need sharper semantics as more resources participate in
   rollout and group stages.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from typing import Any, cast
 
@@ -20,27 +21,88 @@ class MCPToolHandle:
         return mcp_result_value(result)
 
 
+class MCPToolSession:
+    def __init__(self, spec: MCPTool):
+        self.spec = spec
+        self.handles: list[MCPToolHandle] = []
+        self._queue: asyncio.Queue[tuple[str, str, dict[str, object], object]] = (
+            asyncio.Queue()
+        )
+        self._ready: asyncio.Future[list[MCPToolHandle]] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> MCPToolSession:
+        loop = asyncio.get_running_loop()
+        self._ready = loop.create_future()
+        self._task = loop.create_task(self._run())
+        self.handles = await self._ready
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
+    async def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        await self._queue.put(("call", name, arguments, future))
+        return await future
+
+    async def close(self) -> None:
+        task = self._task
+        if task is None or task.done():
+            return
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        await self._queue.put(("close", "", {}, future))
+        await future
+        await task
+
+    async def _run(self) -> None:
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server = StdioServerParameters(
+            command=self.spec.command,
+            args=list(self.spec.args),
+            env=dict(self.spec.env) if self.spec.env is not None else None,
+            cwd=self.spec.cwd,
+        )
+        ready = self._ready
+        if ready is None:
+            raise RuntimeError("MCPToolSession started without a ready future.")
+        try:
+            async with stdio_client(server) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    self.handles = [
+                        MCPToolHandle(self, mcp_tool_def(tool))
+                        for tool in tools_result.tools
+                    ]
+                    ready.set_result(self.handles)
+                    while True:
+                        action, name, arguments, future = await self._queue.get()
+                        try:
+                            if action == "close":
+                                cast(asyncio.Future[None], future).set_result(None)
+                                return
+                            if action != "call":
+                                raise RuntimeError(f"Unknown MCP action: {action}")
+                            result = await session.call_tool(name, arguments)
+                            cast(asyncio.Future[object], future).set_result(result)
+                        except BaseException as exc:
+                            cast(asyncio.Future[object], future).set_exception(exc)
+        except BaseException as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            raise
+
+
 async def connect_mcp_tool(
     spec: MCPTool, exit_stack: AsyncExitStack
 ) -> list[MCPToolHandle]:
-    from mcp import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
-
-    server = StdioServerParameters(
-        command=spec.command,
-        args=list(spec.args),
-        env=dict(spec.env) if spec.env is not None else None,
-        cwd=spec.cwd,
-    )
-    read_stream, write_stream = await exit_stack.enter_async_context(
-        stdio_client(server)
-    )
-    session = await exit_stack.enter_async_context(
-        ClientSession(read_stream, write_stream)
-    )
-    await session.initialize()
-    tools_result = await session.list_tools()
-    return [MCPToolHandle(session, mcp_tool_def(tool)) for tool in tools_result.tools]
+    session = await exit_stack.enter_async_context(MCPToolSession(spec))
+    return session.handles
 
 
 def mcp_tool_def(tool: object) -> Tool:
