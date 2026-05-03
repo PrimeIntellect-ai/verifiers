@@ -331,7 +331,7 @@ def create_renderer_pool(
     renderer: str = "auto",
     size: int = 16,
     *,
-    keep_thinking: bool = False,
+    keep_thinking: bool | None = None,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
 ) -> RendererPool:
@@ -341,8 +341,9 @@ def create_renderer_pool(
     HuggingFace fast tokenizers release the GIL during Rust encoding, so
     threads achieve real parallelism.
 
-    ``keep_thinking=True`` forces compatible renderers to preserve historical
-    thinking blocks. ``tool_parser`` and ``reasoning_parser`` are forwarded to
+    ``keep_thinking`` overrides compatible renderer defaults when set to
+    ``True`` or ``False``. ``None`` preserves the selected renderer's default.
+    ``tool_parser`` and ``reasoning_parser`` are forwarded to
     ``create_renderer`` for each renderer slot.
     """
 
@@ -367,7 +368,7 @@ def create_renderer(
     tokenizer,
     renderer: str = "auto",
     *,
-    keep_thinking: bool = False,
+    keep_thinking: bool | None = None,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
 ) -> Renderer:
@@ -380,7 +381,8 @@ def create_renderer(
                   'gpt_oss', 'default') or 'auto' to detect from model name.
         keep_thinking: When True, preserve historical assistant reasoning
                   blocks for renderers that support that behavior. When False,
-                  use the selected renderer's default.
+                  disable it for compatible renderers. When None, use the
+                  selected renderer's default.
         tool_parser: Name of a tool parser registered in ``renderers.parsers``.
                   Only consumed by DefaultRenderer. Model-specific renderers
                   have their own parsing wired in.
@@ -408,9 +410,9 @@ def create_renderer(
             )
 
         supports_keep_thinking = "keep_thinking" in inspect.signature(cls).parameters
-        if keep_thinking and supports_keep_thinking:
+        if keep_thinking is not None and supports_keep_thinking:
             kwargs["keep_thinking"] = keep_thinking
-        elif keep_thinking:
+        elif keep_thinking is True:
             raise ValueError(f"Renderer {name!r} does not support keep_thinking=True")
 
         return cls(tokenizer, **kwargs)

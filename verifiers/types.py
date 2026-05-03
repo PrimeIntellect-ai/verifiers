@@ -496,7 +496,7 @@ class ClientConfig(BaseModel):
     client_type: ClientType = "openai_chat_completions"
     renderer: str = "auto"
     renderer_model_name: str | None = None
-    renderer_keep_thinking: bool = False
+    renderer_keep_thinking: bool | None = None
     renderer_pool_size: int | None = None
     tool_parser: str | None = None
     reasoning_parser: str | None = None

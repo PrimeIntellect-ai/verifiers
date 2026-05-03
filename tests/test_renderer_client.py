@@ -44,7 +44,7 @@ def test_renderer_client_honors_configured_renderer_name():
         "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
         size=1,
-        keep_thinking=False,
+        keep_thinking=None,
         tool_parser=None,
         reasoning_parser=None,
     )
@@ -74,7 +74,7 @@ def test_renderer_client_uses_renderer_model_name_override():
         "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
         size=1,
-        keep_thinking=False,
+        keep_thinking=None,
         tool_parser=None,
         reasoning_parser=None,
     )
