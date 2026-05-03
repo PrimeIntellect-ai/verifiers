@@ -90,6 +90,15 @@ def test_create_renderer_forwards_keep_thinking_to_model_renderer():
     assert "PRIORTHINK_MARKER" in keep_text
 
 
+def test_create_renderer_preserves_keep_thinking_renderer_default():
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B", trust_remote_code=True)
+
+    renderer = create_renderer(tokenizer, renderer="qwen3-keep-thinking")
+
+    text = tokenizer.decode(renderer.render_ids(_multi_turn_messages()))
+    assert "PRIORTHINK_MARKER" in text
+
+
 def test_create_renderer_rejects_keep_thinking_for_unsupported_renderer():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B", trust_remote_code=True)
 

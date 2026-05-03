@@ -341,8 +341,9 @@ def create_renderer_pool(
     HuggingFace fast tokenizers release the GIL during Rust encoding, so
     threads achieve real parallelism.
 
-    ``keep_thinking``, ``tool_parser``, and ``reasoning_parser`` are forwarded
-    to ``create_renderer`` for each renderer slot.
+    ``keep_thinking=True`` forces compatible renderers to preserve historical
+    thinking blocks. ``tool_parser`` and ``reasoning_parser`` are forwarded to
+    ``create_renderer`` for each renderer slot.
     """
 
     def factory() -> Renderer:
@@ -377,8 +378,9 @@ def create_renderer(
         renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5',
                   'minimax-m2', 'deepseek_v3', 'kimi_k2', 'kimi_k25', 'nemotron3',
                   'gpt_oss', 'default') or 'auto' to detect from model name.
-        keep_thinking: Preserve historical assistant reasoning blocks for
-                  renderers that support that behavior.
+        keep_thinking: When True, preserve historical assistant reasoning
+                  blocks for renderers that support that behavior. When False,
+                  use the selected renderer's default.
         tool_parser: Name of a tool parser registered in ``renderers.parsers``.
                   Only consumed by DefaultRenderer. Model-specific renderers
                   have their own parsing wired in.
@@ -406,7 +408,7 @@ def create_renderer(
             )
 
         supports_keep_thinking = "keep_thinking" in inspect.signature(cls).parameters
-        if supports_keep_thinking:
+        if keep_thinking and supports_keep_thinking:
             kwargs["keep_thinking"] = keep_thinking
         elif keep_thinking:
             raise ValueError(f"Renderer {name!r} does not support keep_thinking=True")
