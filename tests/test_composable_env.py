@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
@@ -10,6 +11,7 @@ import pytest
 import verifiers as vf
 from verifiers.envs.experimental.composable import (
     ComposableEnv,
+    GitPatchCollector,
     Harness,
     SandboxSpec,
     SandboxTaskSet,
@@ -70,6 +72,21 @@ class MockTaskSet(TaskSet):
 
     def get_rubric(self):
         return MockMathRubric()
+
+
+class RecordingStateCollector:
+    def __init__(self):
+        self.events = []
+
+    async def post_sandbox_setup(self, env, state):
+        self.events.append(
+            ("post_sandbox_setup", env.taskset.get_workdir(state["info"]))
+        )
+        state["collector_setup"] = True
+
+    async def post_rollout(self, env, state):
+        self.events.append(("post_rollout", env.taskset.get_workdir(state["info"])))
+        state["collector_rollout"] = True
 
 
 def _make_dataset(n=3):
@@ -261,6 +278,185 @@ async def test_composable_env_quotes_log_path_when_collecting_logs():
         working_dir=None,
     )
     assert state["agent_logs"] == "agent log"
+
+
+@pytest.mark.asyncio
+async def test_composable_env_runs_state_collectors():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    collector = RecordingStateCollector()
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true", state_collectors=[collector]),
+    )
+    env.sandbox_client = SimpleNamespace(
+        execute_command=AsyncMock(
+            return_value=SimpleNamespace(stdout="", stderr="", exit_code=0)
+        ),
+        teardown=lambda: None,
+    )
+    env.taskset.setup = AsyncMock()
+    env.upload_content = AsyncMock()
+
+    state = {"sandbox_id": "sbx", "info": {"id": 0}, "timing": {"total_ms": 0}}
+
+    await env.post_sandbox_setup(state)
+    await env.post_rollout(state)
+
+    assert state["collector_setup"] is True
+    assert state["collector_rollout"] is True
+    assert collector.events == [
+        ("post_sandbox_setup", "/testbed"),
+        ("post_rollout", "/testbed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_git_patch_collector_snapshots_and_collects_patch_state():
+    taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
+    diff = """diff --git a/tests/test_bug.py b/tests/test_bug.py
+index 1111111..2222222 100644
+--- a/tests/test_bug.py
++++ b/tests/test_bug.py
+@@ -1 +1 @@
+-old
++new
+"""
+    collector = GitPatchCollector()
+    env = SimpleNamespace(
+        taskset=taskset,
+        sandbox_client=SimpleNamespace(
+            execute_command=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(stdout="tree123\n", stderr="", exit_code=0),
+                    SimpleNamespace(stdout=diff, stderr="", exit_code=0),
+                ]
+            )
+        ),
+    )
+
+    state = {"sandbox_id": "sbx", "info": {"id": 0}}
+
+    await collector.post_sandbox_setup(env, state)
+    await collector.post_rollout(env, state)
+
+    assert state[collector._base_tree_key] == "tree123"
+    assert state[collector._workdir_key] == "/testbed"
+    assert state["agent_patch"] == diff
+    snapshot_call, patch_call = env.sandbox_client.execute_command.await_args_list
+    assert "GIT_INDEX_FILE" in snapshot_call.args[1]
+    assert "GIT_INDEX_FILE" in patch_call.args[1]
+    assert "commit" not in snapshot_call.args[1]
+    assert "commit" not in patch_call.args[1]
+    assert (
+        'diff --binary --full-index --text tree123 "$current_tree"'
+        in patch_call.args[1]
+    )
+    assert snapshot_call.kwargs == {"working_dir": "/testbed", "timeout": 120}
+    assert patch_call.kwargs == {"working_dir": "/testbed", "timeout": 120}
+
+
+def test_git_patch_collector_commands_diff_against_post_setup_tree(tmp_path):
+    collector = GitPatchCollector()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pkg.py").write_text("VALUE = 'base'\n")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_pkg.py").write_text("def test_base():\n    assert True\n")
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.com",
+            "commit",
+            "-m",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Task setup may apply benchmark tests before the agent starts. The
+    # baseline tree must include these so they do not appear as agent edits.
+    (repo / "tests" / "test_pkg.py").write_text(
+        "def test_base():\n    assert True\n\n"
+        "def test_setup_patch():\n    assert True\n"
+    )
+    base_tree = subprocess.run(
+        collector.snapshot_command(),
+        cwd=repo,
+        shell=True,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head_after == head_before
+    subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=True)
+
+    # Capture a committed source change, an unstaged test edit, and a new
+    # untracked test file. All are agent edits relative to the setup tree.
+    (repo / "pkg.py").write_text("VALUE = 'agent'\n")
+    subprocess.run(["git", "add", "pkg.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.com",
+            "commit",
+            "-m",
+            "agent source edit",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "tests" / "test_pkg.py").write_text(
+        "def test_base():\n    assert True\n\n"
+        "def test_setup_patch():\n    assert True\n\n"
+        "def test_agent_patch():\n    assert False\n"
+    )
+    (repo / "tests" / "test_new.py").write_text(
+        "def test_new_agent_file():\n    assert False\n"
+    )
+
+    patch = subprocess.run(
+        collector.diff_command(base_tree),
+        cwd=repo,
+        shell=True,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "diff --git a/pkg.py b/pkg.py" in patch
+    assert "+VALUE = 'agent'" in patch
+    assert "diff --git a/tests/test_pkg.py b/tests/test_pkg.py" in patch
+    assert "+def test_agent_patch():" in patch
+    assert "diff --git a/tests/test_new.py b/tests/test_new.py" in patch
+    assert "+def test_new_agent_file():" in patch
+    assert "+def test_setup_patch():" not in patch
+
+    subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=True)
 
 
 # ── install_env ──────────────────────────────────────────────────────────

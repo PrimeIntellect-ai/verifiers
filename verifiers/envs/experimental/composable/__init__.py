@@ -5,7 +5,8 @@ from verifiers.envs.experimental.composable.task import (
     SandboxTaskSet,
     discover_sibling_dir,
 )
-from verifiers.envs.experimental.composable.harness import Harness
+from verifiers.envs.experimental.composable.harness import Harness, StateCollector
+from verifiers.envs.experimental.composable.state_collectors import GitPatchCollector
 from verifiers.envs.experimental.composable.composable_env import ComposableEnv
 
 __all__ = [
@@ -14,6 +15,8 @@ __all__ = [
     "TaskSet",
     "SandboxTaskSet",
     "Harness",
+    "StateCollector",
+    "GitPatchCollector",
     "ComposableEnv",
     "discover_sibling_dir",
 ]
