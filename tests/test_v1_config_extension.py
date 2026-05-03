@@ -205,6 +205,15 @@ def test_env_passes_taskset_eval_dataset_to_environment() -> None:
     assert env.get_eval_dataset()[0]["answer"] == "eval ok"
 
 
+def test_env_defaults_to_base_harness() -> None:
+    taskset = Taskset(source=source_loader)
+    env = Env(taskset=taskset)
+
+    assert isinstance(env.harness, Harness)
+    assert env.harness.taskset is taskset
+    assert env.get_dataset()[0]["answer"] == "ok"
+
+
 def test_harness_config_extends_constructor_surface() -> None:
     direct_toolset = Toolset(tools=[direct_tool])
     harness = Harness(

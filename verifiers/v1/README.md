@@ -95,6 +95,12 @@ across local Python programs, command programs, and sandboxed programs.
 env = vf.Env(taskset=taskset, harness=harness)
 ```
 
+If `harness` is omitted, `Env` uses the base endpoint-backed `Harness`:
+
+```python
+env = vf.Env(taskset=taskset)
+```
+
 Normal v1 environment packages should not subclass `Env`. Define or configure a
 taskset and harness, then compose them.
 
@@ -125,8 +131,11 @@ def load_harness(config=None):
 
 
 def load_environment(taskset_config=None, harness_config=None):
+    taskset = load_taskset(taskset_config)
+    if harness_config is None:
+        return vf.Env(taskset=taskset)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
+        taskset=taskset,
         harness=load_harness(harness_config),
     )
 ```
@@ -153,23 +162,42 @@ state = await harness.run(
 ## Tasksets And Datasets
 
 `Taskset(source=...)` accepts an iterable of rows or a zero-argument loader
-function. Use a loader for datasets that should not be loaded at import time.
+function. A direct iterable is useful for tiny examples. A zero-argument loader
+is the preferred path for real tasksets because it keeps imports and
+constructors cheap.
+
+The source loading contract is:
+
+- source rows are plain JSON-serializable mappings;
+- source loaders take no arguments;
+- `Taskset` calls the loader on first access and caches the rows;
+- config is resolved before source loading, then closed over by the loader;
+- trainers and harnesses do not pass runtime values into source.
+
+This keeps dataset loading lazy without reintroducing dynamic loader kwargs.
+Use `load_taskset(...)` or a config-backed `Taskset` subclass to resolve names,
+splits, paths, credentials, or package-specific options before defining the
+loader.
 
 ```python
 from datasets import load_dataset
 
 
-def source():
-    dataset = load_dataset("gsm8k", "main", split="train")
-    for index, row in enumerate(dataset):
-        yield {
-            "example_id": index,
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-        }
+def load_taskset(config=None):
+    config = config or {}
+    dataset_name = config.get("dataset_name", "gsm8k")
+    split = config.get("split", "train")
 
+    def source():
+        dataset = load_dataset(dataset_name, "main", split=split)
+        for index, row in enumerate(dataset):
+            yield {
+                "example_id": index,
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+            }
 
-taskset = vf.Taskset(source=source)
+    return vf.Taskset(source=source)
 ```
 
 `eval_source` is optional. If it is omitted, `get_eval_dataset()` uses the same

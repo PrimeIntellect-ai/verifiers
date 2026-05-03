@@ -19,8 +19,9 @@ class Env(vf.Environment):
     def __init__(
         self,
         taskset: Taskset,
-        harness: Harness,
+        harness: Harness | None = None,
     ):
+        harness = Harness() if harness is None else harness
         self.taskset = taskset
         self.harness = harness
         self.harness.attach_taskset(taskset)
