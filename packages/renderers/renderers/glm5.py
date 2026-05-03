@@ -57,11 +57,11 @@ class GLM5Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
-        clear_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
-        self._clear_thinking = clear_thinking
+        self._keep_thinking = keep_thinking
 
         self._gmask = self._token_id("[gMASK]")
         self._sop = self._token_id("<sop>")
@@ -320,7 +320,7 @@ class GLM5Renderer:
         emit_special(self._assistant, msg_idx)
 
         include_thinking = (
-            not self._clear_thinking or msg_idx > last_user_index
+            self._keep_thinking or msg_idx > last_user_index
         ) and reasoning_content
 
         if include_thinking:

@@ -79,9 +79,11 @@ class Nemotron3Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         # Look up special token IDs from the tokenizer (not hardcoded).
         # <|endoftext|> is optional: Nemotron-3 Nano / Super tokenizers ship
@@ -317,7 +319,7 @@ class Nemotron3Renderer:
                 emit_text("\n", msg_orig_idx)
 
             elif role == "assistant":
-                is_last_turn = i >= last_plain_assistant_idx
+                is_last_turn = self._keep_thinking or i >= last_plain_assistant_idx
                 self._render_assistant(
                     msg,
                     msg_orig_idx,

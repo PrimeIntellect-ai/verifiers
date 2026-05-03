@@ -59,9 +59,11 @@ class MiniMaxM2Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         default_system: str = _DEFAULT_SYSTEM,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._default_system = default_system
+        self._keep_thinking = keep_thinking
 
         self._bos = self._token_id("]~!b[")
         self._role = self._token_id("]~b]")
@@ -311,7 +313,7 @@ class MiniMaxM2Renderer:
         # interspersed. Keep text segments contiguous to preserve BPE merges.
         tool_calls = msg.get("tool_calls") or []
 
-        if reasoning_content and conv_idx > last_user_index:
+        if reasoning_content and (self._keep_thinking or conv_idx > last_user_index):
             emit_text("ai\n", orig_idx)
             emit_special(self._think, orig_idx)
             emit_text("\n" + reasoning_content + "\n", orig_idx)

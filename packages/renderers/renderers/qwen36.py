@@ -2,7 +2,7 @@
 
 Delta vs Qwen3.5 (template lines 100 and 122):
 
-1. Optional ``preserve_thinking`` flag retains historical ``<think>`` blocks
+1. Optional ``keep_thinking`` flag retains historical ``<think>`` blocks
    for assistant turns before the last user query. The template default
    (flag unset) matches Qwen3.5's "thinking only after last query" behaviour,
    so the renderer keeps that as the default.
@@ -25,21 +25,6 @@ from renderers.qwen35 import Qwen35Renderer
 
 class Qwen36Renderer(Qwen35Renderer):
     """Deterministic message → token renderer for Qwen3.6 models."""
-
-    def __init__(
-        self,
-        tokenizer,
-        *,
-        enable_thinking: bool = True,
-        preserve_thinking: bool = False,
-    ):
-        super().__init__(tokenizer, enable_thinking=enable_thinking)
-        self._preserve_thinking = preserve_thinking
-
-    def _should_render_thinking(self, msg_idx: int, last_query_index: int) -> bool:
-        if self._preserve_thinking:
-            return True
-        return msg_idx > last_query_index
 
     @staticmethod
     def _render_arg_value(arg_value: Any) -> str:

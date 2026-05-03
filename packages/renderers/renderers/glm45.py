@@ -53,9 +53,11 @@ class GLM45Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         self._gmask = self._token_id("[gMASK]")
         self._sop = self._token_id("<sop>")
@@ -300,7 +302,7 @@ class GLM45Renderer:
 
         emit_special(self._assistant, msg_idx)
 
-        if msg_idx > last_user_index and reasoning_content:
+        if (self._keep_thinking or msg_idx > last_user_index) and reasoning_content:
             emit_text("\n", msg_idx)
             emit_special(self._think, msg_idx)
             emit_text(reasoning_content.strip(), msg_idx)

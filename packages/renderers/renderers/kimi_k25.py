@@ -512,9 +512,11 @@ class KimiK25Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         # Core structural tokens — all must be single special tokens in the vocab
         self._im_user = self._token_id("<|im_user|>")
@@ -641,7 +643,7 @@ class KimiK25Renderer:
 
             # Body
             if role == "assistant":
-                is_suffix = i > last_non_tc_assistant
+                is_suffix = self._keep_thinking or i > last_non_tc_assistant
                 self._render_assistant_body(
                     msg,
                     i,

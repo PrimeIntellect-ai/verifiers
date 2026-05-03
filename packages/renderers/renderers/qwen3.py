@@ -48,9 +48,11 @@ class Qwen3Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         self._im_start = self._token_id("<|im_start|>")
         self._im_end = self._token_id("<|im_end|>")
@@ -303,7 +305,10 @@ class Qwen3Renderer:
         # preserve BPE merges (e.g., ".\n" is a single token in Qwen3).
         tool_calls = msg.get("tool_calls") or []
 
-        if msg_idx > last_query_index and (is_last or reasoning_content):
+        render_thinking = (self._keep_thinking and reasoning_content) or (
+            msg_idx > last_query_index and (is_last or reasoning_content)
+        )
+        if render_thinking:
             prefix = (
                 "assistant\n<think>\n"
                 + reasoning_content.strip("\n")
@@ -369,3 +374,25 @@ class Qwen3Renderer:
         if not next_is_tool:
             emit_special(self._im_end, msg_idx)
             emit_text("\n", msg_idx)
+
+
+class Qwen3KeepThinkingRenderer(Qwen3Renderer):
+    """Qwen3 variant that retains prior-turn ``<think>`` blocks by default.
+
+    Intended for the Qwen3 thinking family (e.g. ``Qwen3-30B-A3B-Thinking-2507``)
+    where reasoning from earlier assistant turns should remain in the rendered
+    context across user turns.
+    """
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        *,
+        enable_thinking: bool = True,
+        keep_thinking: bool = True,
+    ):
+        super().__init__(
+            tokenizer,
+            enable_thinking=enable_thinking,
+            keep_thinking=keep_thinking,
+        )
