@@ -169,7 +169,7 @@ ComposableEnv subclasses `CliAgentEnv` without modifying it. It overrides these 
 - **`post_sandbox_setup(state)`** — runs task setup, uploads instruction + system prompt, installs agent
 - **`post_rollout(state)`** — collects agent logs (scoring is done by the rubric)
 
-Everything else — tunnel, HTTP interception, background job polling, streaming, TITO caching — is inherited from `CliAgentEnv` unchanged.
+Everything else — tunnel, HTTP interception, background job polling, and streaming — is inherited from `CliAgentEnv` unchanged.
 
 ## Limitations and future work
 

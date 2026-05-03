@@ -269,7 +269,8 @@ class OpenCodeEnv(CliAgentEnv):
         - Compact JSON arguments
         - Strip trailing newlines from assistant content
 
-        Applying the same normalization to the stored step enables TITO prefix hits.
+        Applying the same normalization to the stored step keeps the trajectory
+        aligned with OpenCode's own history format.
         """
 
         def _normalize() -> vf.Response:

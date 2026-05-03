@@ -136,7 +136,6 @@ class MathTaskSet(SandboxTaskSet):
             cpu_cores=1,
             memory_gb=2,
             disk_size_gb=4,
-            timeout_minutes=60,
         )
 
     def get_rubric(self):

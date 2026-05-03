@@ -84,7 +84,8 @@ class SandboxSpec:
     disk_size_gb: int = 10
     gpu_count: int = 0
     gpu_type: str | None = None
-    timeout_minutes: int = 60
+    # If None, lifetime is derived by SandboxMixin.compute_sandbox_timeout_minutes.
+    timeout_minutes: int | None = None
 
 
 class Task:
@@ -553,6 +554,11 @@ class TaskSet:
                     "answer": row.get("answer", ""),
                 }
                 spec = self.get_sandbox_spec(info)
+                # validate() runs without a SandboxMixin, so resolve
+                # spec.timeout_minutes=None (its "auto-derive at rollout
+                # time" sentinel) to a concrete fallback for both the
+                # SDK call and the in-test wall-clock cap.
+                timeout_minutes = spec.timeout_minutes or 60
                 sb = None
                 try:
                     sb = await client.create(
@@ -565,12 +571,12 @@ class TaskSet:
                             gpu_count=spec.gpu_count,
                             gpu_type=spec.gpu_type,
                             vm=spec.gpu_count > 0,
-                            timeout_minutes=spec.timeout_minutes,
+                            timeout_minutes=timeout_minutes,
                         )
                     )
                     state["sandbox_id"] = sb.id
                     state["sandbox_client"] = client
-                    state["test_timeout"] = spec.timeout_minutes * 60
+                    state["test_timeout"] = timeout_minutes * 60
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
@@ -591,7 +597,7 @@ class TaskSet:
         async def validate_one(i: int) -> dict:
             async with sem:
                 info, instance_id, repo = _row_info(i)
-                t0 = time.time()
+                start_time = time.perf_counter()
                 attempts = 0
                 last_valid = False
                 last_exc: BaseException | None = None
@@ -607,7 +613,8 @@ class TaskSet:
                     if valid or reason != "sandbox_error":
                         break  # only InfraError triggers retry
 
-                elapsed = time.time() - t0
+                end_time = time.perf_counter()
+                elapsed = end_time - start_time
                 result = {
                     "index": i,
                     "instance_id": instance_id,
@@ -631,7 +638,7 @@ class TaskSet:
             f"(concurrency={concurrency}, max_retries={max_retries}, "
             f"skipped={skipped} from prior run)"
         )
-        t0 = time.time()
+        start_time = time.perf_counter()
         results: list[dict] = list(prior_rows)
         tasks = [asyncio.create_task(validate_one(i)) for i in todo_indices]
         passed = sum(1 for r in prior_rows if r.get("valid"))
@@ -701,9 +708,10 @@ class TaskSet:
             raise
         finally:
             if is_sandbox:
-                client.teardown()  # type: ignore[name-defined]
+                client.teardown()
 
-        elapsed = time.time() - t0
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
         denom = len(results) or 1
         rate = passed / denom
         logger.info(

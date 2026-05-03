@@ -99,11 +99,11 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         if client_type not in (
             "openai_completions",
             "openai_chat_completions",
-            "openai_chat_completions_token",
+            "renderer",
             "anthropic_messages",
         ):
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'renderer' or 'anthropic_messages' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 
@@ -453,6 +453,7 @@ def load_toml_config(
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "timeout",
         # logging
         "verbose",
         "disable_tui",
@@ -636,25 +637,33 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    print("Timing:")
-    timing = [o["timing"] for o in results["outputs"]]
-    timing_col = to_col_order(timing)
-    generation_ms_arr = np.array(timing_col["generation_ms"])
-    scoring_ms_arr = np.array(timing_col["scoring_ms"])
-    total_ms_arr = np.array(timing_col["total_ms"])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
+    from verifiers.utils.logging_utils import print_time
 
-    print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
-    )
+    outputs = results["outputs"]
+
+    def _values(key: str) -> list[float]:
+        out: list[float] = []
+        for o in outputs:
+            t = o.get("timing")
+            if not isinstance(t, dict) or key not in t:
+                continue
+            v = t[key]
+            if isinstance(v, dict):
+                v = v.get("duration", 0.0)
+            out.append(float(v))
+        return out
+
+    print("Timing:")
+    for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
+        vals = _values(key)
+        if not vals:
+            continue
+        lo = float(np.min(vals))
+        mean = float(np.mean(vals))
+        hi = float(np.max(vals))
+        print(
+            f"  {key:<10} min - {print_time(lo)}, mean - {print_time(mean)}, max - {print_time(hi)}"
+        )
 
 
 def print_usage(results: GenerateOutputs):
@@ -965,6 +974,20 @@ async def run_evaluations_tui(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
+        # Running sums for live timing average — only walk new outputs each
+        # progress event (O(M) per update, O(N) total across the run).
+        timing_sums: dict[str, float] = {}
+        timing_counts: dict[str, int] = {}
+        TIMING_KEYS = (
+            "setup",
+            "generation",
+            "scoring",
+            "overhead",
+            "total",
+            "model",
+            "env",
+        )
+
         def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
@@ -977,6 +1000,25 @@ async def run_evaluations_tui(
             pass_all_k = metadata.get("pass_all_k") or {}
             for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
+
+            for o in new_outputs:
+                t = o.get("timing")
+                if not isinstance(t, dict):
+                    continue
+                for key in TIMING_KEYS:
+                    if key not in t:
+                        continue
+                    val = t[key]
+                    if isinstance(val, dict):
+                        val = val.get("duration", 0.0)
+                    timing_sums[key] = timing_sums.get(key, 0.0) + float(val)
+                    timing_counts[key] = timing_counts.get(key, 0) + 1
+            avg_timing = (
+                {k: timing_sums[k] / timing_counts[k] for k in timing_sums}
+                if timing_sums
+                else None
+            )
+
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
@@ -984,6 +1026,7 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                avg_timing=avg_timing,
             )
 
         on_progress: list[ProgressCallback] = [on_display_progress]

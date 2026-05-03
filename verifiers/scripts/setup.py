@@ -96,6 +96,7 @@ EVAL_CONFIGS = _mirror_repo_configs(
     [
         "configs/eval/minimal.toml",
         "configs/eval/multi-env.toml",
+        "configs/eval/wordle.toml",
     ],
 )
 

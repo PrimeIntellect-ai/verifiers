@@ -103,15 +103,18 @@ class Harness:
     post_install_uploads:
         Optional mapping from sandbox path → file content. Uploaded via
         the single-file upload path (same as instruction / system
-        prompt) AFTER ``install_script`` finishes. Use for small
-        harness-computed assets — e.g. RLM's git refusal shim staged
-        into ``$HOME/.local/bin/git``. For large directories use
-        ``upload_dir_mapping`` instead.
+        prompt) AFTER ``install_script`` finishes. General post-install
+        hook for layering small harness-computed assets onto a fully
+        installed agent; for large directories use
+        ``upload_dir_mapping`` instead. Not tied to any specific
+        feature — left as a generic extension point.
     post_install_script:
         Optional shell snippet run AFTER ``post_install_uploads`` land in
-        the sandbox. Typical use: ``chmod +x`` on the uploaded files, or
-        any other wiring that needs them in place first. Failure is
-        fatal, same as ``install_script``.
+        the sandbox. General post-install wiring hook (e.g.
+        ``chmod +x`` on uploaded files, symlinks, anything that needs
+        the uploads in place first). Failure is fatal, same as
+        ``install_script``. Not tied to any specific feature — left as
+        a generic extension point.
     keep_trajectory_step:
         Optional per-step filter. Called once per intercepted API
         response with ``(step, state, request_headers)``; return

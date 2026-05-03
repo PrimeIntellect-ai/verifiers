@@ -99,12 +99,11 @@ class DOMMode:
         )
         return session
 
-    async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
+    async def setup_state(self, state: vf.State, **kwargs: Any) -> None:
         """Create per-rollout Stagehand session."""
         session = await self._create_session(state)
         state["stagehand_session"] = session
         state["stagehand_session_id"] = session.id
-        return state
 
     def _get_llm_config(self, state: vf.State) -> dict[str, Any] | None:
         """Extract model configuration from verifiers state to route LLM calls."""

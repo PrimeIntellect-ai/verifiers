@@ -255,7 +255,7 @@ async def test_composable_env_quotes_log_path_when_collecting_logs():
         teardown=lambda: None,
     )
 
-    state = {"sandbox_id": "sbx", "timing": {"total_ms": 0}}
+    state = {"sandbox_id": "sbx", "timing": {"total": 0}}
 
     await env.post_rollout(state)
 
@@ -754,7 +754,7 @@ async def test_composable_env_collects_harness_metrics():
     state = {
         "sandbox_id": "sbx",
         "info": {"id": 0},
-        "timing": {"total_ms": 0},
+        "timing": {"total": 0},
         "trajectory": [],
     }
 
@@ -793,7 +793,7 @@ async def test_composable_env_metrics_with_key_whitelist():
     state = {
         "sandbox_id": "sbx",
         "info": {"id": 0},
-        "timing": {"total_ms": 0},
+        "timing": {"total": 0},
         "trajectory": [],
     }
 
@@ -819,7 +819,7 @@ async def test_composable_env_no_metrics_when_path_not_set():
     state = {
         "sandbox_id": "sbx",
         "info": {"id": 0},
-        "timing": {"total_ms": 0},
+        "timing": {"total": 0},
         "trajectory": [],
     }
 

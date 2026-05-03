@@ -59,6 +59,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
@@ -77,6 +78,22 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 
 ```bash
 prime eval run my-env -x '{"max_turns": 20}'
+```
+
+For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+
+```bash
+prime eval run my-env --timeout 600
+```
+
+When the timeout fires, the rollout is marked `timed_out=True` with `stop_condition="timeout_reached"` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). `is_truncated` is **not** set on timeout — that field tracks model-output truncation (token caps), not wall-clock pressure. Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
+
+The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
+
+```toml
+[[eval]]
+env_id = "my-env"
+timeout = 600
 ```
 
 #### Executor autoscaling
@@ -102,7 +119,7 @@ env.set_concurrency(256)
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `openai_chat_completions_token`, or `anthropic_messages` |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |

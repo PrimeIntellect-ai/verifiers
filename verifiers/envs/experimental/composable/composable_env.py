@@ -206,6 +206,11 @@ class ComposableEnv(CliAgentEnv):
         """Per-instance resources from SandboxSpec, or harness defaults."""
         spec = self._get_spec(state) or self.harness.sandbox_spec
         if spec:
+            timeout_minutes = (
+                spec.timeout_minutes
+                if spec.timeout_minutes is not None
+                else self.compute_sandbox_timeout_minutes()
+            )
             return {
                 "cpu_cores": spec.cpu_cores,
                 "memory_gb": spec.memory_gb,
@@ -213,7 +218,7 @@ class ComposableEnv(CliAgentEnv):
                 "gpu_count": spec.gpu_count,
                 "gpu_type": spec.gpu_type,
                 "vm": spec.gpu_count > 0,
-                "timeout_minutes": spec.timeout_minutes,
+                "timeout_minutes": timeout_minutes,
             }
         return super().get_sandbox_resources(state)
 
@@ -272,9 +277,8 @@ class ComposableEnv(CliAgentEnv):
 
         The post-install step runs ``Harness.post_install_uploads`` and
         ``Harness.post_install_script`` after the agent is fully
-        installed — harnesses use it to layer small assets onto the
-        installed agent (e.g. RLM's ``/usr/local/bin/git`` refusal
-        shim)."""
+        installed — a generic hook harnesses use to layer small assets
+        onto the installed agent."""
         sandbox_id = state["sandbox_id"]
 
         await self._populate_sandbox_context(state)
@@ -377,13 +381,11 @@ class ComposableEnv(CliAgentEnv):
     async def _populate_sandbox_context(self, state: State) -> None:
         """Populate sandbox-specific context used by setup/evaluate hooks."""
         state["sandbox_client"] = self.sandbox_client
-        spec = self._get_spec(state)
-        if spec:
+        spec = self._get_spec(state) or self.harness.sandbox_spec
+        if spec and spec.timeout_minutes is not None:
             state["test_timeout"] = spec.timeout_minutes * 60
-        elif self.harness.sandbox_spec:
-            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
         else:
-            state["test_timeout"] = 900
+            state["test_timeout"] = self.compute_sandbox_timeout_minutes() * 60
 
     async def _create_harness_input_dirs(self, sandbox_id: str) -> None:
         """Create parent directories for harness-managed task assets."""
@@ -477,11 +479,10 @@ class ComposableEnv(CliAgentEnv):
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
 
         Runs after ``_install_agent`` so harnesses can layer small assets
-        on top of a fully-installed agent (e.g. RLM stages its git refusal
-        shim into ``$HOME/.local/bin/git`` and chmods it executable).
-        Uses the single-file upload path — not ``_upload_dir`` — because
-        these are small, harness-computed blobs of content rather than
-        local directories on disk.
+        on top of a fully-installed agent. Uses the single-file upload
+        path — not ``_upload_dir`` — because these are small,
+        harness-computed blobs of content rather than local directories
+        on disk.
         """
         uploads = self.harness.post_install_uploads
         if uploads:
