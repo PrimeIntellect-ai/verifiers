@@ -99,9 +99,11 @@ stdio servers. It can carry:
 - `sandbox` requirements;
 - cleanup/teardown functions.
 
-Harness programs use `load_tools_from_state(state, runtime=runtime)`. Tool
-handles do not live in state; state stores only serializable refs such as tool
-names and sandbox ids.
+Harness programs use `state.tools()` to load callable tool handles from the
+active process-local runtime. Tool handles do not live in state; active state
+carries only serializable refs such as tool names, sandbox ids, and the
+process-local runtime id needed to find live handles while the rollout is still
+running.
 
 MCP tools can be passed as `MCPTool(...)` objects in code, or as `{command=...,
 args=[...]}` specs inside toolset config.
@@ -200,13 +202,12 @@ sync.
 
 ### Nested Harness Runs
 
-`runtime.run_harness(child, task, parent_state=state)` starts a child rollout
-from inside a program/tool. The child receives a fresh `trajectory_id` and
-rollout-scoped resources, while inheriting the parent `group_key`, model,
-sampling args, and model client unless the child harness or child state overrides
-them. The parent records each child call in `state["child_rollouts"]`; child
-metrics remain namespaced inside the child state rather than being merged into
-parent metrics.
+`state.run_harness(child, task)` starts a child rollout from inside a
+program/tool. The child receives a fresh `trajectory_id` and rollout-scoped
+resources, while inheriting the parent `group_key`, model, sampling args, and
+model client unless the child harness or child state overrides them. The parent
+records each child call in `state["child_rollouts"]`; child metrics remain
+namespaced inside the child state rather than being merged into parent metrics.
 
 ## Current Examples
 

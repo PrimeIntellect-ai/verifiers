@@ -3,7 +3,7 @@ from __future__ import annotations
 import verifiers.v1 as vf
 
 
-async def ask_subagent(name: str, harness, runtime, state) -> str:
+async def ask_subagent(name: str, harness, state) -> str:
     """Ask a child language-model harness to produce the greeting for one name."""
     task = vf.Task(
         {
@@ -20,10 +20,9 @@ async def ask_subagent(name: str, harness, runtime, state) -> str:
             ],
         }
     ).freeze()
-    child_state = await runtime.run_harness(
+    child_state = await state.run_harness(
         harness,
         task,
-        parent_state=state,
     )
     return completion_text(child_state.get("completion")).strip()
 

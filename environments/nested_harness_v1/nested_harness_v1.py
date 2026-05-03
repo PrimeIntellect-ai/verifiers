@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.tool_utils import load_tools_from_state
 
 
 async def child_program(task, state):
@@ -10,9 +9,9 @@ async def child_program(task, state):
     return state
 
 
-async def call_harness(prompt, harness, runtime, state):
+async def call_harness(prompt, harness, state):
     task = vf.Task({"prompt": prompt}).freeze()
-    child_state = await runtime.run_harness(harness, task, parent_state=state)
+    child_state = await state.run_harness(harness, task)
     return child_state["answer"]
 
 
@@ -56,8 +55,8 @@ def load_toolset(config=None):
     )
 
 
-async def parent_program(task, state, runtime):
-    tools = load_tools_from_state(state, runtime=runtime)
+async def parent_program(task, state):
+    tools = state.tools()
     answers = []
     for prompt in task["child_prompts"]:
         answer = await tools["call_harness"](prompt=prompt)

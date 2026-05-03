@@ -38,7 +38,6 @@ from .state import State
 from .task import Task
 from .toolset import normalize_toolsets
 from .user import normalize_user
-from .utils.tool_utils import load_tools_from_state
 
 
 PROGRAM_KIND_KEYS = {"base", "entrypoint", "command"}
@@ -193,6 +192,7 @@ class Harness:
             await self.runtime.cleanup_rollout(task, state)
             if not self.has_group_boundary(state):
                 await self.runtime.cleanup_group([task], [state])
+                state.strip_runtime_handles()
             if completed:
                 state.assert_serializable()
         return state
@@ -395,7 +395,7 @@ class Harness:
                     continue
                 state["stop_condition"] = state.get("stop_condition") or "no_tools"
                 return state
-            callable_tools = load_tools_from_state(state, runtime=self.runtime)
+            callable_tools = state.tools()
             for tool_call in tool_calls:
                 name = tool_call.name
                 result = await callable_tools[name](**json_args(tool_call.arguments))

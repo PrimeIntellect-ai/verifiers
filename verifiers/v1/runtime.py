@@ -4,6 +4,7 @@ import asyncio
 import glob
 import json
 import uuid
+import weakref
 from contextlib import AsyncExitStack
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast, get_args
@@ -26,9 +27,15 @@ from .task import Task
 from .toolset import MCPTool, Toolset, flatten_toolsets, iter_toolsets, tool_name
 from .user import User
 
+_RUNTIME_REGISTRY: weakref.WeakValueDictionary[str, Runtime] = (
+    weakref.WeakValueDictionary()
+)
+
 
 class Runtime:
     def __init__(self, taskset: object | None = None, harness: object | None = None):
+        self.runtime_id = uuid.uuid4().hex
+        _RUNTIME_REGISTRY[self.runtime_id] = self
         self.taskset = taskset
         self.harness = harness
         self.toolsets = self._collect_toolsets()
@@ -77,6 +84,7 @@ class Runtime:
     def prepare_state(self, task: Task, state: State) -> None:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})
+        state["runtime"]["runtime_id"] = self.runtime_id
         state["runtime"].setdefault(
             "tools", sorted(self.unfiltered_exposed_tools(state))
         )
@@ -165,11 +173,13 @@ class Runtime:
     def record_child_rollout(
         self, parent_state: State, task: Task, child_state: State
     ) -> None:
+        child_record = State(cast(Mapping[str, Any], serializable(child_state)))
+        child_record.strip_runtime_handles()
         parent_state.setdefault("child_rollouts", [])
         parent_state["child_rollouts"].append(
             {
                 "task": serializable(task),
-                "state": serializable(child_state),
+                "state": serializable(child_record),
             }
         )
 
@@ -280,7 +290,7 @@ class Runtime:
     async def is_completed(self, task: Task, state: State) -> bool:
         for condition in self.stop_conditions:
             completed = await maybe_call_with_named_args(
-                condition, task=task, state=state, runtime=self
+                condition, task=task, state=state
             )
             if completed:
                 state["is_completed"] = True
@@ -343,7 +353,6 @@ class Runtime:
             tool_kwargs[arg_name] = await self.resolve_binding(source, task, state)
         return await maybe_call_with_named_args(
             cast(Callable[..., object], tools[tool_name]),
-            runtime=self,
             task=task,
             state=state,
             **tool_kwargs,
@@ -407,7 +416,7 @@ class Runtime:
         return states
 
     async def cleanup_rollout(self, task: Task, state: State) -> None:
-        await run_handlers(self.rollout_cleanup, task=task, state=state, runtime=self)
+        await run_handlers(self.rollout_cleanup, task=task, state=state)
         await self.release_objects("rollout", state)
         await self.release_user_objects("rollout", state)
         await self.release_sandboxes(scope="rollout", state=state)
@@ -415,7 +424,7 @@ class Runtime:
         await self.release_model_client(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
-        await run_handlers(self.group_cleanup, tasks=tasks, states=states, runtime=self)
+        await run_handlers(self.group_cleanup, tasks=tasks, states=states)
         for state in states:
             await self.release_objects("group", state)
             await self.release_user_objects("group", state)
@@ -440,7 +449,7 @@ class Runtime:
             state["artifacts"][name] = await self._collect_artifact(spec, task, state)
 
     async def teardown(self) -> None:
-        await run_handlers(self.teardown_handlers, runtime=self)
+        await run_handlers(self.teardown_handlers)
         await self.release_objects("global")
         await self.release_user_objects("global")
         for handle in list(self.sandbox_leases.values()):
@@ -448,14 +457,13 @@ class Runtime:
         self.sandbox_leases.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
+        _RUNTIME_REGISTRY.pop(self.runtime_id, None)
 
     async def resolve_binding(self, source: object, task: Task, state: State) -> object:
         if isinstance(source, str):
             return await self._resolve_path(source, task, state)
         if callable(source):
-            return await maybe_call_with_named_args(
-                source, task=task, state=state, runtime=self
-            )
+            return await maybe_call_with_named_args(source, task=task, state=state)
         return source
 
     async def resolve_user_binding(
@@ -479,7 +487,7 @@ class Runtime:
                 return value
         if callable(source):
             return await maybe_call_with_named_args(
-                source, task=task, state=state, runtime=self, transcript=transcript
+                source, task=task, state=state, transcript=transcript
             )
         return await self.resolve_binding(source, task, state)
 
@@ -672,9 +680,7 @@ class Runtime:
         if key in self.objects:
             return self.objects[key]
         if callable(spec):
-            obj = await maybe_call_with_named_args(
-                spec, task=task, state=state, runtime=self
-            )
+            obj = await maybe_call_with_named_args(spec, task=task, state=state)
         else:
             obj = spec
         self.objects[key] = obj
@@ -1090,3 +1096,21 @@ async def close_object(obj: object) -> None:
         if callable(fn):
             await maybe_call_with_named_args(fn)
             return
+
+
+def load_runtime(runtime_id: str) -> Runtime:
+    runtime = _RUNTIME_REGISTRY.get(runtime_id)
+    if runtime is None:
+        raise RuntimeError(f"No live v1 runtime registered for id {runtime_id!r}.")
+    return runtime
+
+
+def load_runtime_from_state(state: Mapping[str, object]) -> Runtime:
+    runtime_state = state.get("runtime")
+    if not isinstance(runtime_state, Mapping):
+        raise RuntimeError("State has no runtime metadata.")
+    runtime_state = cast(Mapping[str, object], runtime_state)
+    runtime_id = runtime_state.get("runtime_id")
+    if not isinstance(runtime_id, str) or not runtime_id:
+        raise RuntimeError("State has no live runtime id.")
+    return load_runtime(runtime_id)

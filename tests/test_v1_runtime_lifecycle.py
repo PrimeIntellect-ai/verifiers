@@ -260,12 +260,11 @@ async def child_program(task, state):
     }
 
 
-async def parent_program(task, state, runtime):
+async def parent_program(task, state):
     child = vf.Harness(program=child_program)
-    child_state = await runtime.run_harness(
+    child_state = await state.run_harness(
         child,
         vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
-        parent_state=state,
     )
     return {"child_state": child_state}
 
@@ -276,14 +275,13 @@ async def mark_submitted(task, state):
     return state
 
 
-async def parent_calls_owned_child_program(task, state, runtime):
+async def parent_calls_owned_child_program(task, state):
     child = vf.Harness(
         program=child_program, client=cast(Client, FakeClient()), model="child-model"
     )
-    child_state = await runtime.run_harness(
+    child_state = await state.run_harness(
         child,
         vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
-        parent_state=state,
     )
     return {"child_state": child_state}
 
@@ -291,6 +289,13 @@ async def parent_calls_owned_child_program(task, state, runtime):
 async def submitted(task, state) -> bool:
     _ = task
     return bool(state.get("submitted"))
+
+
+async def state_tools_program(task, state):
+    _ = task
+    tools = state.tools()
+    state["tool_result"] = await tools["echo_tool"](query="state")
+    return state
 
 
 def test_model_client_default_keys_are_rollout_local() -> None:
@@ -327,6 +332,22 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     assert state["endpoint_user_messages"] == [{"role": "user", "content": "continue"}]
     assert state["endpoint_stop"]["done"] is True
     assert state["endpoint_stop"]["stop_condition"] == "state_done"
+    assert "runtime_id" not in state["runtime"]
+    assert "endpoint_root_url" not in state
+
+
+@pytest.mark.asyncio
+async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> None:
+    harness = vf.Harness(
+        program=state_tools_program,
+        toolsets=[vf.Toolset(tools=[echo_tool])],
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["tool_result"] == "echo:state"
+    assert "runtime_id" not in state["runtime"]
 
 
 @pytest.mark.asyncio
@@ -481,6 +502,28 @@ async def test_nested_harness_inherits_model_controls_with_new_rollout_scope() -
         == child_state["trajectory_id"]
     )
     assert state["child_rollouts"][0]["state"]["metrics"] == child_state["metrics"]
+    assert "runtime_id" not in state["child_rollouts"][0]["state"]["runtime"]
+    assert "client_key" not in state["child_rollouts"][0]["state"]["runtime"]
+    assert "client_key" not in state["child_rollouts"][0]["state"]["child_runtime"]
+
+
+@pytest.mark.asyncio
+async def test_state_finalize_strips_nested_runtime_handles() -> None:
+    harness = vf.Harness(program=parent_program)
+    task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
+    state = vf.State.for_task(task)
+    state["runtime"]["model"] = "model-a"
+    state["runtime"]["group_key"] = "group-a"
+    harness.runtime.bind_model_client(state, cast(Client, FakeClient()))
+
+    state = await harness.run(task, state)
+    state.finalize()
+
+    assert "runtime_id" not in state["runtime"]
+    assert "client_key" not in state["runtime"]
+    assert "runtime_id" not in state["child_state"]["runtime"]
+    assert "client_key" not in state["child_state"]["runtime"]
+    assert "client_key" not in state["child_state"]["child_runtime"]
 
 
 @pytest.mark.asyncio
@@ -496,7 +539,8 @@ async def test_nested_harness_can_use_own_model_controls() -> None:
 
     child_state = state["child_state"]
     assert child_state["child_runtime"]["model"] == "child-model"
-    assert child_state["child_runtime"]["client_key"] != state["runtime"]["client_key"]
+    assert "client_key" not in child_state["child_runtime"]
+    assert "client_key" not in state["runtime"]
 
 
 @pytest.mark.asyncio

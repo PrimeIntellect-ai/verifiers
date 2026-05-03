@@ -69,7 +69,7 @@ class Env(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
-    ) -> list[State]:
+    ) -> list[vf.State]:
         base_task = self.taskset.to_task(group_inputs[0])
         tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
         if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):
@@ -97,7 +97,10 @@ class Env(vf.Environment):
                 await self.harness.score_group(tasks, states)
         finally:
             await self.harness.cleanup_group(tasks, states)
-        return states
+        for state in states:
+            state.strip_runtime_handles()
+            state.assert_serializable()
+        return cast(list[vf.State], states)
 
     def apply_controls(
         self, states: list[State], controls: Mapping[str, object] | None = None

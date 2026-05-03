@@ -203,14 +203,11 @@ by default; `show=[...]` or `hide=[...]` can narrow the exposed surface.
 In config/TOML, MCP tools can be written as command specs inside `tools`.
 
 Hidden bindings can read from `task`, `state`, runtime `objects`, or other
-tools. Programs that need callable tools use:
+tools. Programs that need callable tools use state helpers:
 
 ```python
-from verifiers.v1.utils.tool_utils import load_tools_from_state
-
-
-async def program(task, state, runtime):
-    tools = load_tools_from_state(state, runtime=runtime)
+async def program(task, state):
+    tools = state.tools()
     result = await tools["search"](query=task["question"])
     state["answer"] = result
     return state
@@ -221,10 +218,12 @@ Sandbox scope can be `rollout`, `group`, or `global`. A toolset can also use
 `sandbox="program"` when its tools should operate against the primary program
 sandbox for the current rollout/group.
 
-Tool arguments named `task`, `state`, and `runtime` are reserved and injected by
-the runtime when requested by a callable. `sandbox` is also reserved for tools
-owned by a sandboxed toolset. Binding targets such as `search.index` are hidden
-from model-visible schemas and cannot be supplied by model/tool-call arguments.
+Tool arguments named `task`, `state`, and `runtime` are reserved. `task` and
+`state` are injected by the runtime when requested by a callable; runtime access
+is intentionally routed through state helpers. `sandbox` is also reserved for
+tools owned by a sandboxed toolset. Binding targets such as `search.index` are
+hidden from model-visible schemas and cannot be supplied by model/tool-call
+arguments.
 
 Lazy `objects` are scoped as well. Read-only toolsets default to global objects;
 `write=True` toolsets default to rollout-scoped objects unless `scope` is set.
@@ -258,16 +257,12 @@ Callable tools can also be presented as MCP tools when the harness selects MCP.
 
 ## Nested Harnesses
 
-A tool or program can launch a child harness through the active runtime:
+A tool or program can launch a child harness through state:
 
 ```python
-async def ask_child(prompt: str, harness, runtime, state):
+async def ask_child(prompt: str, harness, state):
     task = vf.Task({"prompt": prompt}).freeze()
-    child_state = await runtime.run_harness(
-        harness,
-        task,
-        parent_state=state,
-    )
+    child_state = await state.run_harness(harness, task)
     return child_state["answer"]
 ```
 
@@ -277,6 +272,13 @@ child harness or child state overrides them. Each child call is also recorded in
 `state["child_rollouts"]` as a serializable `{task, state}` record. Parent
 metrics are not merged with child metrics by default, so duplicate signal names
 remain namespaced to the child call that produced them.
+
+`state.runtime()`, `state.tools()`, and `state.run_harness(...)` resolve through
+a process-local runtime registry while the rollout is active. Runtime IDs,
+client handles, endpoint URLs, and sandbox lease handles are stripped at the
+standalone rollout boundary and before `Env` returns a completed group.
+Group-scoped harness states keep runtime handles until group scoring and cleanup
+finish.
 
 ## Users
 
@@ -597,14 +599,10 @@ async def run(task, state):
 ### Call A Nested Harness
 
 ```python
-async def solve_subtask(prompt: str, runtime, state):
+async def solve_subtask(prompt: str, state):
     child = vf.Harness(program="my_env.child:run")
     task = vf.Task({"prompt": [{"role": "user", "content": prompt}]}).freeze()
-    child_state = await runtime.run_harness(
-        child,
-        task,
-        parent_state=state,
-    )
+    child_state = await state.run_harness(child, task)
     return child_state["answer"]
 ```
 

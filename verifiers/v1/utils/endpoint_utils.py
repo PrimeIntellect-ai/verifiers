@@ -200,7 +200,6 @@ async def run_intercepted_program(
             task=task,
             state=state,
             client=client,
-            runtime=runtime,
         )
     )
     request_key = str(state["endpoint_request_key"])

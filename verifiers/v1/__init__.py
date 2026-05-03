@@ -5,6 +5,7 @@ from verifiers.decorators import advantage, cleanup, metric, reward, stop, teard
 from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
+from .runtime import load_runtime_from_state
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -40,6 +41,7 @@ __all__ = [
     "cleanup",
     "collect_signals",
     "metric",
+    "load_runtime_from_state",
     "reward",
     "score_group",
     "score_rollout",

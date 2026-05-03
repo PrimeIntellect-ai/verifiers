@@ -123,10 +123,9 @@ async def command_env(
 async def resolve_program_value(
     value: object, task: Task, state: State, runtime: Runtime
 ) -> object:
+    _ = runtime
     if callable(value):
-        return await maybe_call_with_named_args(
-            value, task=task, state=state, runtime=runtime
-        )
+        return await maybe_call_with_named_args(value, task=task, state=state)
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":
