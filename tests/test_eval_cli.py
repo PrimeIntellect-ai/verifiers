@@ -37,6 +37,7 @@ def run_cli(make_metadata, make_state, make_input):
             "env_dir_path": "./environments",
             "endpoints_path": "./configs/endpoints.toml",
             "model": "gpt-4.1-mini",
+            "renderer_keep_thinking": None,
             "api_key_var": "OPENAI_API_KEY",
             "api_base_url": "https://api.openai.com/v1",
             "header": None,
@@ -448,6 +449,46 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     assert config.model == "my/custom-model"
     assert config.client_config.api_key_var == "CUSTOM_API_KEY"
     assert config.client_config.api_base_url == "https://custom.example/v1"
+
+
+@pytest.mark.parametrize("renderer_keep_thinking", [True, False])
+def test_cli_renderer_keep_thinking_sets_client_config(
+    monkeypatch, run_cli, renderer_keep_thinking
+):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "api_client_type": "renderer",
+            "renderer_keep_thinking": renderer_keep_thinking,
+        },
+        endpoints={},
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "renderer"
+    assert config.client_config.renderer_keep_thinking is renderer_keep_thinking
+
+
+def test_toml_renderer_keep_thinking_sets_client_config(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\n'
+            'env_id = "env1"\n'
+            'api_client_type = "renderer"\n'
+            'renderer_keep_thinking = true\n'
+        )
+        f.flush()
+        captured = run_cli(
+            monkeypatch,
+            {
+                "env_id_or_config": f.name,
+            },
+            endpoints={},
+        )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "renderer"
+    assert config.client_config.renderer_keep_thinking is True
 
 
 def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_cli):

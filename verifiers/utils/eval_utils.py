@@ -435,6 +435,7 @@ def load_toml_config(
         "endpoint_id",
         "model",
         "api_client_type",
+        "renderer_keep_thinking",
         "api_key_var",
         "api_base_url",
         "header",

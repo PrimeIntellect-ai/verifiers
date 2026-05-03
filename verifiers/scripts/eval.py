@@ -301,6 +301,15 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     parser.add_argument(
+        "--renderer-keep-thinking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "For renderer clients that support it, preserve historical assistant "
+            "thinking blocks. Use --no-renderer-keep-thinking to explicitly disable."
+        ),
+    )
+    parser.add_argument(
         "--api-key-var",
         "-k",
         type=str,
@@ -744,6 +753,7 @@ def main(argv: list[str] | None = None):
             client_type=cast(ClientType, client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
+            renderer_keep_thinking=raw.get("renderer_keep_thinking"),
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
             extra_headers_from_state=eval_headers_from_state,
