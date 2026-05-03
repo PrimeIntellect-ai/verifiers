@@ -374,3 +374,25 @@ class Qwen3Renderer:
         if not next_is_tool:
             emit_special(self._im_end, msg_idx)
             emit_text("\n", msg_idx)
+
+
+class Qwen3KeepThinkingRenderer(Qwen3Renderer):
+    """Qwen3 variant that retains prior-turn ``<think>`` blocks by default.
+
+    Intended for the Qwen3 thinking family (e.g. ``Qwen3-30B-A3B-Thinking-2507``)
+    where reasoning from earlier assistant turns should remain in the rendered
+    context across user turns.
+    """
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        *,
+        enable_thinking: bool = True,
+        keep_thinking: bool = True,
+    ):
+        super().__init__(
+            tokenizer,
+            enable_thinking=enable_thinking,
+            keep_thinking=keep_thinking,
+        )
