@@ -30,7 +30,7 @@ from .utils.mcp_proxy_utils import (
     validate_tool_protocol,
 )
 from .utils.program_utils import run_local_command
-from .runtime import Runtime, runtime_context
+from .runtime import Runtime
 from .utils.sandbox_utils import run_sandbox_command
 from .utils.sandbox_program_utils import run_sandbox_python_program
 from .utils.trajectory_utils import sync_trajectory
@@ -168,34 +168,33 @@ class Harness:
         state = await self.init_state(task) if state is None else state
         timing_recorded = False
         completed = False
-        with runtime_context(self.runtime):
+        try:
             try:
-                try:
-                    state = await self.setup_state(task, state)
-                    if not await self.runtime.is_completed(task, state):
-                        state = await self.run_program(task, state)
-                        await self.runtime.is_completed(task, state)
-                    state["stop_condition"] = (
-                        state.get("stop_condition") or "program_completed"
-                    )
-                    await self.runtime.collect_artifacts(task, state)
-                except Error as e:
-                    self.record_error(state, e)
-                sync_trajectory(state)
+                state = await self.setup_state(task, state)
+                if not await self.runtime.is_completed(task, state):
+                    state = await self.run_program(task, state)
+                    await self.runtime.is_completed(task, state)
+                state["stop_condition"] = (
+                    state.get("stop_condition") or "program_completed"
+                )
+                await self.runtime.collect_artifacts(task, state)
+            except Error as e:
+                self.record_error(state, e)
+            sync_trajectory(state)
+            self.record_generation_timing(state)
+            timing_recorded = True
+            if state.get("runtime", {}).get("score_rollout", True):
+                await self.runtime.score_rollout(task, state)
+            state["is_completed"] = True
+            completed = True
+        finally:
+            if not timing_recorded:
                 self.record_generation_timing(state)
-                timing_recorded = True
-                if state.get("runtime", {}).get("score_rollout", True):
-                    await self.runtime.score_rollout(task, state)
-                state["is_completed"] = True
-                completed = True
-            finally:
-                if not timing_recorded:
-                    self.record_generation_timing(state)
-                await self.runtime.cleanup_rollout(task, state)
-                if not self.has_group_boundary(state):
-                    await self.runtime.cleanup_group([task], [state])
-                if completed:
-                    state.assert_serializable()
+            await self.runtime.cleanup_rollout(task, state)
+            if not self.has_group_boundary(state):
+                await self.runtime.cleanup_group([task], [state])
+            if completed:
+                state.assert_serializable()
         return state
 
     def record_error(self, state: State, error: Error) -> None:
@@ -208,12 +207,10 @@ class Harness:
         state["stop_condition"] = "has_error"
 
     async def score_group(self, tasks: list[Task], states: list[State]) -> list[State]:
-        with runtime_context(self.runtime):
-            return await self.runtime.score_group(tasks, states)
+        return await self.runtime.score_group(tasks, states)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
-        with runtime_context(self.runtime):
-            await self.runtime.cleanup_group(tasks, states)
+        await self.runtime.cleanup_group(tasks, states)
 
     def has_group_boundary(self, state: State) -> bool:
         runtime = state.get("runtime", {})
@@ -359,6 +356,16 @@ class Harness:
         prompt = normalize_messages(state.get("prompt", []), field_name="state.prompt")
         prompt_messages = [message.model_dump(exclude_none=True) for message in prompt]
         messages = list(prompt)
+
+        def sync_completion() -> list[dict[str, object]]:
+            rendered_messages = [
+                message.model_dump(exclude_none=True) for message in messages
+            ]
+            state["completion"] = assistant_completion_from_messages(
+                prompt_messages, rendered_messages
+            )
+            return rendered_messages
+
         turn = 0
         while self.config.max_turns <= 0 or turn < self.config.max_turns:
             if await self.runtime.is_completed(task, state):
@@ -371,19 +378,11 @@ class Harness:
             )
             turn += 1
             messages.append(response.message)
-            rendered_messages = [
-                message.model_dump(exclude_none=True) for message in messages
-            ]
-            state["completion"] = assistant_completion_from_messages(
-                prompt_messages, rendered_messages
-            )
+            rendered_messages = sync_completion()
             tool_calls = list(response.message.tool_calls or [])
             if not tool_calls:
-                transcript = [
-                    message.model_dump(exclude_none=True) for message in messages
-                ]
                 user_messages = await self.runtime.user_messages(
-                    task, state, transcript=transcript
+                    task, state, transcript=rendered_messages
                 )
                 if user_messages:
                     messages.extend(
@@ -392,28 +391,18 @@ class Harness:
                             field_name="user_messages",
                         )
                     )
-                    rendered_messages = [
-                        message.model_dump(exclude_none=True) for message in messages
-                    ]
-                    state["completion"] = assistant_completion_from_messages(
-                        prompt_messages, rendered_messages
-                    )
+                    sync_completion()
                     continue
                 state["stop_condition"] = state.get("stop_condition") or "no_tools"
                 return state
-            callable_tools = load_tools_from_state(state)
+            callable_tools = load_tools_from_state(state, runtime=self.runtime)
             for tool_call in tool_calls:
                 name = tool_call.name
                 result = await callable_tools[name](**json_args(tool_call.arguments))
                 messages.append(
                     ToolMessage(tool_call_id=tool_call.id, content=str(result))
                 )
-                rendered_messages = [
-                    message.model_dump(exclude_none=True) for message in messages
-                ]
-                state["completion"] = assistant_completion_from_messages(
-                    prompt_messages, rendered_messages
-                )
+                sync_completion()
                 if await self.runtime.is_completed(task, state):
                     return state
             if self.config.max_turns > 0 and turn >= self.config.max_turns:

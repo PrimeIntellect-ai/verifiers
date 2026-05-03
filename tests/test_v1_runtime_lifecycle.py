@@ -260,9 +260,9 @@ async def child_program(task, state):
     }
 
 
-async def parent_program(task, state):
+async def parent_program(task, state, runtime):
     child = vf.Harness(program=child_program)
-    child_state = await vf.current_runtime().run_harness(
+    child_state = await runtime.run_harness(
         child,
         vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
         parent_state=state,
@@ -274,6 +274,18 @@ async def mark_submitted(task, state):
     _ = task
     state["submitted"] = True
     return state
+
+
+async def parent_calls_owned_child_program(task, state, runtime):
+    child = vf.Harness(
+        program=child_program, client=cast(Client, FakeClient()), model="child-model"
+    )
+    child_state = await runtime.run_harness(
+        child,
+        vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
+        parent_state=state,
+    )
+    return {"child_state": child_state}
 
 
 async def submitted(task, state) -> bool:
@@ -327,6 +339,17 @@ async def test_callable_tool_can_accept_name_argument() -> None:
     result = await harness.runtime.call_tool("named_tool", task, state, name="Ada")
 
     assert result == "name:Ada"
+
+
+@pytest.mark.asyncio
+async def test_callable_tool_rejects_reserved_hidden_args() -> None:
+    harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    harness.runtime.prepare_state(task, state)
+
+    with pytest.raises(ValueError, match="runtime is reserved"):
+        await harness.runtime.call_tool("echo_tool", task, state, runtime="bad")
 
 
 @pytest.mark.asyncio
@@ -453,6 +476,27 @@ async def test_nested_harness_inherits_model_controls_with_new_rollout_scope() -
     assert child_state["child_runtime"]["sampling_args"] == {"temperature": 0.2}
     assert child_state["child_runtime"]["group_key"] == "group-a"
     assert child_state["child_runtime"]["client_key"] == state["runtime"]["client_key"]
+    assert (
+        state["child_rollouts"][0]["state"]["trajectory_id"]
+        == child_state["trajectory_id"]
+    )
+    assert state["child_rollouts"][0]["state"]["metrics"] == child_state["metrics"]
+
+
+@pytest.mark.asyncio
+async def test_nested_harness_can_use_own_model_controls() -> None:
+    harness = vf.Harness(program=parent_calls_owned_child_program)
+    task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
+    state = vf.State.for_task(task)
+    state["runtime"]["model"] = "parent-model"
+    state["runtime"]["sampling_args"] = {"temperature": 0.2}
+    harness.runtime.bind_model_client(state, cast(Client, FakeClient()))
+
+    state = await harness.run(task, state)
+
+    child_state = state["child_state"]
+    assert child_state["child_runtime"]["model"] == "child-model"
+    assert child_state["child_runtime"]["client_key"] != state["runtime"]["client_key"]
 
 
 @pytest.mark.asyncio

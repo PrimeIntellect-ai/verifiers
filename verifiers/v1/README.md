@@ -153,10 +153,15 @@ Completions is the default; Anthropic Messages and OpenAI Responses are selected
 through `ClientConfig.client_type` / endpoint registry `type`.
 
 Third-party Python programs should configure their own libraries against the
-interception endpoint passed in state. For example, a DSPy entrypoint can build
-`dspy.LM(..., api_base=state["endpoint_base_url"], api_key="intercepted")` and
-use `dspy.context(lm=...)` inside the program call. Avoid global library
-configuration in async entrypoints.
+interception endpoint passed in state. For OpenAI-compatible libraries, use
+`openai_endpoint_config(state, client)` to derive the model, endpoint base URL,
+and endpoint API key without directly depending on how the interception client
+was constructed. For example, a DSPy entrypoint can build `dspy.LM(...)` from
+that helper and use `dspy.context(lm=...)` inside the program call. Avoid global
+library configuration in async entrypoints. If a third-party framework expects
+sync Python tool functions, wrap any nontrivial blocking work with
+`asyncio.to_thread(...)` or use native async clients so worker concurrency stays
+cooperative.
 
 Standalone harnesses can receive model controls directly:
 
@@ -204,8 +209,8 @@ tools. Programs that need callable tools use:
 from verifiers.v1.utils.tool_utils import load_tools_from_state
 
 
-async def program(task, state):
-    tools = load_tools_from_state(state)
+async def program(task, state, runtime):
+    tools = load_tools_from_state(state, runtime=runtime)
     result = await tools["search"](query=task["question"])
     state["answer"] = result
     return state
@@ -215,6 +220,11 @@ Toolsets can declare `sandbox={...}` for tools that need isolated execution.
 Sandbox scope can be `rollout`, `group`, or `global`. A toolset can also use
 `sandbox="program"` when its tools should operate against the primary program
 sandbox for the current rollout/group.
+
+Tool arguments named `task`, `state`, and `runtime` are reserved and injected by
+the runtime when requested by a callable. `sandbox` is also reserved for tools
+owned by a sandboxed toolset. Binding targets such as `search.index` are hidden
+from model-visible schemas and cannot be supplied by model/tool-call arguments.
 
 Lazy `objects` are scoped as well. Read-only toolsets default to global objects;
 `write=True` toolsets default to rollout-scoped objects unless `scope` is set.
@@ -251,9 +261,9 @@ Callable tools can also be presented as MCP tools when the harness selects MCP.
 A tool or program can launch a child harness through the active runtime:
 
 ```python
-async def ask_child(prompt: str, harness, state):
+async def ask_child(prompt: str, harness, runtime, state):
     task = vf.Task({"prompt": prompt}).freeze()
-    child_state = await vf.current_runtime().run_harness(
+    child_state = await runtime.run_harness(
         harness,
         task,
         parent_state=state,
@@ -263,8 +273,10 @@ async def ask_child(prompt: str, harness, state):
 
 The child rollout receives its own `trajectory_id` and rollout-local state. It
 inherits the parent group key, model, sampling args, and model client unless the
-child state overrides them. The parent should store only serializable child
-outputs in its own state.
+child harness or child state overrides them. Each child call is also recorded in
+`state["child_rollouts"]` as a serializable `{task, state}` record. Parent
+metrics are not merged with child metrics by default, so duplicate signal names
+remain namespaced to the child call that produced them.
 
 ## Users
 
@@ -585,10 +597,10 @@ async def run(task, state):
 ### Call A Nested Harness
 
 ```python
-async def solve_subtask(prompt: str, state):
+async def solve_subtask(prompt: str, runtime, state):
     child = vf.Harness(program="my_env.child:run")
     task = vf.Task({"prompt": [{"role": "user", "content": prompt}]}).freeze()
-    child_state = await vf.current_runtime().run_harness(
+    child_state = await runtime.run_harness(
         child,
         task,
         parent_state=state,
@@ -598,7 +610,7 @@ async def solve_subtask(prompt: str, state):
 
 The child rollout gets its own `trajectory_id` and rollout-scoped resources. It
 inherits the parent `group_key`, model, sampling args, and model client unless
-the child state overrides them.
+the child harness or child state overrides them.
 
 ## FAQ
 

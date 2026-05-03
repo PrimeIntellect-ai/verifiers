@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.13.dev0",
     "dspy>=3.0.0",
+    "pydantic>=2.0.0",
 ]
 
 [build-system]

@@ -10,11 +10,9 @@ async def child_program(task, state):
     return state
 
 
-async def call_harness(prompt, harness, state):
+async def call_harness(prompt, harness, runtime, state):
     task = vf.Task({"prompt": prompt}).freeze()
-    child_state = await vf.current_runtime().run_harness(
-        harness, task, parent_state=state
-    )
+    child_state = await runtime.run_harness(harness, task, parent_state=state)
     return child_state["answer"]
 
 
@@ -58,8 +56,8 @@ def load_toolset(config=None):
     )
 
 
-async def parent_program(task, state):
-    tools = load_tools_from_state(state)
+async def parent_program(task, state, runtime):
+    tools = load_tools_from_state(state, runtime=runtime)
     answers = []
     for prompt in task["child_prompts"]:
         answer = await tools["call_harness"](prompt=prompt)

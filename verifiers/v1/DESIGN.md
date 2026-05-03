@@ -13,7 +13,8 @@ tools, user behavior, and task-level runtime requests. `Env` attaches the
 taskset to the harness and bridges the existing `vf.Environment` worker API.
 
 Runtime objects are internal. User-facing code works with serializable `Task`
-and `State`, plus tool handles loaded from state.
+and `State`. In-process Python programs and tools can ask for the active
+`runtime` by name when they need tool handles or nested harness calls.
 
 `verifiers.v1.State` is the public `verifiers.types.State`; v1 adds helper
 constructors and serializability checks to the shared type rather than
@@ -98,8 +99,9 @@ stdio servers. It can carry:
 - `sandbox` requirements;
 - cleanup/teardown functions.
 
-Harness programs use `load_tools_from_state(state)`. Tool handles do not live in
-state; state stores only serializable refs such as tool names and sandbox ids.
+Harness programs use `load_tools_from_state(state, runtime=runtime)`. Tool
+handles do not live in state; state stores only serializable refs such as tool
+names and sandbox ids.
 
 MCP tools can be passed as `MCPTool(...)` objects in code, or as `{command=...,
 args=[...]}` specs inside toolset config.
@@ -198,10 +200,13 @@ sync.
 
 ### Nested Harness Runs
 
-`current_runtime().run_harness(child, task, parent_state=state)` starts a child
-rollout from inside a program/tool. The child receives a fresh `trajectory_id`
-and rollout-scoped resources, while inheriting the parent `group_key`, model,
-sampling args, and model client unless its state overrides them.
+`runtime.run_harness(child, task, parent_state=state)` starts a child rollout
+from inside a program/tool. The child receives a fresh `trajectory_id` and
+rollout-scoped resources, while inheriting the parent `group_key`, model,
+sampling args, and model client unless the child harness or child state overrides
+them. The parent records each child call in `state["child_rollouts"]`; child
+metrics remain namespaced inside the child state rather than being merged into
+parent metrics.
 
 ## Current Examples
 

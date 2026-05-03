@@ -3,7 +3,7 @@ name = "nested-harness-v1"
 version = "0.1.0"
 tags = ["nested", "harness", "v1"]
 license = "Apache-2.0"
-description = "Taskset/harness sketch for calling a child harness through a tool."
+description = "Taskset/harness example for calling a child harness through a tool."
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.13.dev0",

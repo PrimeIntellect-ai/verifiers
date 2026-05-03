@@ -1,62 +1,90 @@
 from __future__ import annotations
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.tool_utils import load_tools_from_state
 
 
-async def child_program(task, state):
-    state["answer"] = f"hello {task['name']}"
-    state["completion"] = [{"role": "assistant", "content": state["answer"]}]
-    return state
-
-
-async def ask_subagent(name: str, harness, state):
-    task = vf.Task({"name": name}).freeze()
-    child_state = await vf.current_runtime().run_harness(
+async def ask_subagent(name: str, harness, runtime, state) -> str:
+    """Ask a child language-model harness to produce the greeting for one name."""
+    task = vf.Task(
+        {
+            "name": name,
+            "prompt": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a child subagent. Reply with exactly "
+                        f"`hello {name}` and no extra text."
+                    ),
+                },
+                {"role": "user", "content": f"Say hello to {name}."},
+            ],
+        }
+    ).freeze()
+    child_state = await runtime.run_harness(
         harness,
         task,
         parent_state=state,
     )
-    return {
-        "answer": child_state["answer"],
-        "trajectory_id": child_state["trajectory_id"],
-        "metrics": child_state.get("metrics", {}),
-    }
+    return completion_text(child_state.get("completion")).strip()
 
 
 @vf.metric
 async def subagent_calls(task, state) -> float:
-    return float(len(state.get("subagent_results", [])))
+    return float(len(state.get("child_rollouts", [])))
 
 
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
-    return float(state.get("answer") == task["answer"])
+    return float(completion_text(state.get("completion")).strip() == task["answer"])
+
+
+def completion_text(completion) -> str:
+    if isinstance(completion, list):
+        for message in reversed(completion):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                return str(message.get("content") or "")
+    return str(completion or "")
 
 
 def source():
     return [
         {
-            "prompt": (
-                "Use the ask_subagent tool for each requested name, then join "
-                "the child answers with ', '."
-            ),
             "names": ["world"],
+            "prompt": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a parent coordinator. You must call "
+                        "ask_subagent once for each requested name. After all "
+                        "tool results are available, join the child answers "
+                        "with ', ' and output only that final joined text."
+                    ),
+                },
+                {"role": "user", "content": "Names: world"},
+            ],
             "answer": "hello world",
         },
         {
-            "prompt": (
-                "Use the ask_subagent tool for each requested name, then join "
-                "the child answers with ', '."
-            ),
             "names": ["prime", "verifiers"],
+            "prompt": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a parent coordinator. You must call "
+                        "ask_subagent once for each requested name. After all "
+                        "tool results are available, join the child answers "
+                        "with ', ' and output only that final joined text."
+                    ),
+                },
+                {"role": "user", "content": "Names: prime, verifiers"},
+            ],
             "answer": "hello prime, hello verifiers",
         },
     ]
 
 
-def load_child_harness():
-    return vf.Harness(program=child_program)
+def load_child_harness(config=None):
+    return vf.Harness(config=config)
 
 
 def load_toolset(config=None):
@@ -68,27 +96,12 @@ def load_toolset(config=None):
     )
 
 
-async def parent_program(task, state):
-    tools = load_tools_from_state(state)
-    results = []
-    answers = []
-    for name in task["names"]:
-        result = await tools["ask_subagent"](name=name)
-        results.append(result)
-        answers.append(result["answer"])
-    state["subagent_results"] = results
-    state["answer"] = ", ".join(answers)
-    state["completion"] = [{"role": "assistant", "content": state["answer"]}]
-    return state
-
-
 def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[exact_answer], config=config)
 
 
 def load_harness(config=None):
     return vf.Harness(
-        program=parent_program,
         toolsets=[load_toolset(getattr(config, "toolset", None))],
         metrics=[subagent_calls],
         config=config,

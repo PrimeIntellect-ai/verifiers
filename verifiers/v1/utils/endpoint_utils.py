@@ -37,6 +37,17 @@ from ..state import State
 from ..task import Task
 
 
+def openai_endpoint_config(
+    state: State, client: object | None = None
+) -> dict[str, str]:
+    api_key = getattr(client, "api_key", None) or "intercepted"
+    return {
+        "model": str(state["runtime"]["model"]),
+        "api_base": str(state["endpoint_base_url"]),
+        "api_key": str(api_key),
+    }
+
+
 class Endpoint:
     TUNNEL_CHECK_INTERVAL = 60.0
 
@@ -184,7 +195,13 @@ async def run_intercepted_program(
     )
     client = endpoint.client(state)
     execution = asyncio.create_task(
-        maybe_call_with_named_args(program, task=task, state=state, client=client)
+        maybe_call_with_named_args(
+            program,
+            task=task,
+            state=state,
+            client=client,
+            runtime=runtime,
+        )
     )
     request_key = str(state["endpoint_request_key"])
     queue = endpoint.request_queue(request_key)

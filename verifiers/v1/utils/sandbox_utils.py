@@ -121,14 +121,6 @@ class SandboxHandle:
         await self.lease.delete()
 
 
-async def ensure_tool_sandbox(
-    toolset: object, task: Task, state: State
-) -> SandboxHandle:
-    _ = task
-    lease = await create_tool_sandbox_lease(toolset)
-    return SandboxHandle(lease, state)
-
-
 async def create_tool_sandbox_lease(toolset: object) -> SandboxLease:
     return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset))
 
@@ -475,16 +467,19 @@ def build_dir_archive(local_source: Path | Traversable, remote_path: str) -> Pat
     return tar_path
 
 
+UPLOAD_IGNORE_PARTS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules",
+}
+
+
 def upload_tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
-    if Path(tarinfo.name).name in {
-        ".git",
-        ".venv",
-        "__pycache__",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "node_modules",
-    }:
+    if any(part in UPLOAD_IGNORE_PARTS for part in Path(tarinfo.name).parts):
         return None
     return tarinfo
 

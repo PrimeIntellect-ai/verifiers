@@ -2,7 +2,7 @@
 
 ### Overview
 - **Environment ID**: `hello-rlm-v1`
-- **Short description**: v1 sketch environment for running an RLM-style CLI program through the harness endpoint.
+- **Short description**: v1 environment for running an RLM-style CLI program through the harness endpoint.
 - **Tags**: v1, cli, sandbox
 
 ### Task

@@ -5,8 +5,6 @@ import glob
 import json
 import uuid
 from contextlib import AsyncExitStack
-from contextlib import contextmanager
-from contextvars import ContextVar
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast, get_args
 
@@ -27,10 +25,6 @@ from .state import State
 from .task import Task
 from .toolset import MCPTool, Toolset, flatten_toolsets, iter_toolsets, tool_name
 from .user import User
-
-_global_runtime: ContextVar[object | None] = ContextVar(
-    "verifiers_v1_global_runtime", default=None
-)
 
 
 class Runtime:
@@ -53,9 +47,9 @@ class Runtime:
         self.mcp_tools: dict[str, dict[str, object]] = {}
         self.exposed_mcp_tools: dict[str, dict[str, object]] = {}
         self.stop_conditions = collect_handlers(
-            (taskset, harness, *self.toolsets),
+            self._handler_owners(),
             "stop",
-            self._extra_stop(),
+            self._extra_handlers("stop", builtins=[state_done]),
         )
         signals = self._build_signals()
         self.rollout_signals = [
@@ -65,19 +59,19 @@ class Runtime:
             signal for signal in signals if signal["stage"] == "group"
         ]
         self.rollout_cleanup = collect_handlers(
-            (taskset, harness, *self.toolsets),
+            self._handler_owners(),
             "cleanup",
-            self._extra_cleanup(),
+            self._extra_handlers("cleanup"),
             stage="rollout",
         )
         self.group_cleanup = collect_handlers(
-            (taskset, harness, *self.toolsets),
+            self._handler_owners(),
             "cleanup",
-            self._extra_cleanup(),
+            self._extra_handlers("cleanup"),
             stage="group",
         )
         self.teardown_handlers = collect_handlers(
-            (taskset, harness, *self.toolsets), "teardown", self._extra_teardown()
+            self._handler_owners(), "teardown", self._extra_handlers("teardown")
         )
 
     def prepare_state(self, task: Task, state: State) -> None:
@@ -124,14 +118,29 @@ class Runtime:
         self, parent_state: State, child_runtime: Runtime, child_state: State
     ) -> None:
         parent = parent_state.get("runtime", {})
+        child_harness = getattr(child_runtime, "harness", None)
+        child_has_client = getattr(child_harness, "client", None) is not None
+        child_has_model = getattr(child_harness, "model", None) is not None
+        child_has_sampling_args = bool(getattr(child_harness, "sampling_args", None))
         child_state.setdefault("runtime", {})
         for key in ("model", "sampling_args", "client_type", "score_rollout"):
+            if key == "model" and child_has_model:
+                continue
+            if key == "sampling_args" and child_has_sampling_args:
+                continue
+            if key == "client_type" and child_has_client:
+                continue
             if key in parent and key not in child_state["runtime"]:
                 child_state["runtime"][key] = parent[key]
         if "group_key" in parent and "group_key" not in child_state["runtime"]:
             child_state["runtime"]["group_key"] = parent["group_key"]
         client_key = parent.get("client_key")
-        if isinstance(client_key, str) and client_key in self.model_clients:
+        if (
+            not child_has_client
+            and "client_key" not in child_state["runtime"]
+            and isinstance(client_key, str)
+            and client_key in self.model_clients
+        ):
             child_runtime.model_clients[client_key] = self.model_clients[client_key]
             child_state["runtime"]["client_key"] = client_key
 
@@ -149,7 +158,20 @@ class Runtime:
         task = task if isinstance(task, Task) else Task(task).freeze()
         child_state = State.for_task(task) if state is None else state
         self.inherit_model_controls(parent_state, harness.runtime, child_state)
-        return await harness.run(task, child_state)
+        child_state = await harness.run(task, child_state)
+        self.record_child_rollout(parent_state, task, child_state)
+        return child_state
+
+    def record_child_rollout(
+        self, parent_state: State, task: Task, child_state: State
+    ) -> None:
+        parent_state.setdefault("child_rollouts", [])
+        parent_state["child_rollouts"].append(
+            {
+                "task": serializable(task),
+                "state": serializable(child_state),
+            }
+        )
 
     def model_client(self, state: State) -> Client:
         key = str(state.get("runtime", {}).get("client_key") or "default")
@@ -225,7 +247,7 @@ class Runtime:
         if isinstance(mcp_tool_def, Tool):
             return mcp_tool_def
         tool_def = convert_func_to_tool_def(tool)
-        hidden_args = {"task", "state"}
+        hidden_args = {"runtime", "task", "state"}
         owner = self.tool_owners.get(name)
         if owner is not None and owner.sandbox is not None:
             hidden_args.add("sandbox")
@@ -303,10 +325,13 @@ class Runtime:
             raise KeyError(f"Unknown {kind} {tool_name!r}.")
         tool_kwargs = dict(kwargs)
         owner = self.tool_owners.get(tool_name)
+        for hidden_arg in ("runtime", "task", "state"):
+            if hidden_arg in tool_kwargs:
+                raise ValueError(f"Tool arg {tool_name}.{hidden_arg} is reserved.")
         if owner is not None and owner.sandbox is not None:
-            tool_kwargs.setdefault(
-                "sandbox", await self.resolve_tool_sandbox(owner, task, state)
-            )
+            if "sandbox" in tool_kwargs:
+                raise ValueError(f"Tool arg {tool_name}.sandbox is reserved.")
+            tool_kwargs["sandbox"] = await self.resolve_tool_sandbox(owner, task, state)
         for binding_key, source in self.bindings.items():
             tool_name_prefix, separator, arg_name = binding_key.partition(".")
             if separator != ".":
@@ -318,6 +343,7 @@ class Runtime:
             tool_kwargs[arg_name] = await self.resolve_binding(source, task, state)
         return await maybe_call_with_named_args(
             cast(Callable[..., object], tools[tool_name]),
+            runtime=self,
             task=task,
             state=state,
             **tool_kwargs,
@@ -462,7 +488,7 @@ class Runtime:
     ) -> object:
         if name not in user.objects:
             raise KeyError(f"Unknown user object {name!r}.")
-        key = (id(user), self.user_scope_key(user.scope, state), name)
+        key = (id(user), self.scope_key(user.scope, state), name)
         if key in self.user_objects:
             return self.user_objects[key]
         spec = user.objects[name]
@@ -473,22 +499,10 @@ class Runtime:
         self.user_objects[key] = obj
         return obj
 
-    def user_scope_key(self, scope: str, state: State | None = None) -> str:
-        if scope == "global":
-            return "global"
-        if state is None:
-            raise ValueError(f"{scope} user object cleanup requires state.")
-        runtime = state.get("runtime", {})
-        if scope == "group":
-            return str(runtime.get("group_key") or state.get("trajectory_id"))
-        if scope == "rollout":
-            return str(state.get("trajectory_id"))
-        raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
-
     async def release_user_objects(
         self, scope: str, state: State | None = None
     ) -> None:
-        scope_key = self.user_scope_key(scope, state) if scope != "global" else "global"
+        scope_key = self.scope_key(scope, state) if scope != "global" else "global"
         for key, obj in list(self.user_objects.items()):
             _, object_scope_key, _ = key
             if object_scope_key != scope_key:
@@ -575,36 +589,21 @@ class Runtime:
             advantages=getattr(owner, "advantages", ()),
         )
 
-    def _extra_cleanup(self) -> list[Callable[..., object]]:
-        handlers: list[Callable[..., object]] = []
-        for owner in (self.taskset, self.harness, *self.toolsets):
-            if owner is None:
-                continue
-            for handler in getattr(owner, "__dict__", {}).get("cleanup", ()):
-                if not callable(handler):
-                    raise TypeError("cleanup entries must be callable.")
-                handlers.append(cast(Callable[..., object], handler))
-        return handlers
+    def _handler_owners(self) -> tuple[object | None, ...]:
+        return (self.taskset, self.harness, *self.toolsets)
 
-    def _extra_stop(self) -> list[Callable[..., object]]:
-        handlers: list[Callable[..., object]] = [state_done]
-        for owner in (self.taskset, self.harness, *self.toolsets):
+    def _extra_handlers(
+        self,
+        attr: str,
+        builtins: Sequence[Callable[..., object]] = (),
+    ) -> list[Callable[..., object]]:
+        handlers: list[Callable[..., object]] = list(builtins)
+        for owner in self._handler_owners():
             if owner is None:
                 continue
-            for handler in getattr(owner, "__dict__", {}).get("stop", ()):
+            for handler in getattr(owner, "__dict__", {}).get(attr, ()):
                 if not callable(handler):
-                    raise TypeError("stop entries must be callable.")
-                handlers.append(cast(Callable[..., object], handler))
-        return handlers
-
-    def _extra_teardown(self) -> list[Callable[..., object]]:
-        handlers: list[Callable[..., object]] = []
-        for owner in (self.taskset, self.harness, *self.toolsets):
-            if owner is None:
-                continue
-            for handler in getattr(owner, "__dict__", {}).get("teardown", ()):
-                if not callable(handler):
-                    raise TypeError("teardown entries must be callable.")
+                    raise TypeError(f"{attr} entries must be callable.")
                 handlers.append(cast(Callable[..., object], handler))
         return handlers
 
@@ -1091,19 +1090,3 @@ async def close_object(obj: object) -> None:
         if callable(fn):
             await maybe_call_with_named_args(fn)
             return
-
-
-@contextmanager
-def runtime_context(runtime: Runtime):
-    token = _global_runtime.set(runtime)
-    try:
-        yield
-    finally:
-        _global_runtime.reset(token)
-
-
-def current_runtime() -> Runtime:
-    raw_runtime = _global_runtime.get()
-    if raw_runtime is None:
-        raise RuntimeError("v1 runtime helpers must be called inside Harness.run().")
-    return cast(Runtime, raw_runtime)
