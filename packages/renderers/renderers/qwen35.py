@@ -55,9 +55,11 @@ class Qwen35Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         # Look up special token IDs from the tokenizer (not hardcoded)
         self._im_start = self._token_id("<|im_start|>")
@@ -365,9 +367,11 @@ class Qwen35Renderer:
         """Whether to emit a ``<think>`` block for the assistant message at ``msg_idx``.
 
         Qwen3.5 only emits thinking for assistant turns that sit after the
-        last real user query. Subclasses (Qwen3.6) may override to mirror
-        the newer template's ``preserve_thinking`` knob.
+        last real user query. ``keep_thinking=True`` overrides this so
+        prior-turn thinking is retained across user turns.
         """
+        if self._keep_thinking:
+            return True
         return msg_idx > last_query_index
 
     @staticmethod

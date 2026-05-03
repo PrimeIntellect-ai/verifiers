@@ -48,9 +48,11 @@ class Qwen3Renderer:
         tokenizer: PreTrainedTokenizer,
         *,
         enable_thinking: bool = True,
+        keep_thinking: bool = False,
     ):
         self._tokenizer = tokenizer
         self._enable_thinking = enable_thinking
+        self._keep_thinking = keep_thinking
 
         self._im_start = self._token_id("<|im_start|>")
         self._im_end = self._token_id("<|im_end|>")
@@ -303,7 +305,10 @@ class Qwen3Renderer:
         # preserve BPE merges (e.g., ".\n" is a single token in Qwen3).
         tool_calls = msg.get("tool_calls") or []
 
-        if msg_idx > last_query_index and (is_last or reasoning_content):
+        render_thinking = (self._keep_thinking and reasoning_content) or (
+            msg_idx > last_query_index and (is_last or reasoning_content)
+        )
+        if render_thinking:
             prefix = (
                 "assistant\n<think>\n"
                 + reasoning_content.strip("\n")
