@@ -1,265 +1,483 @@
-# Verifiers v1 Workspace
+# Verifiers v1
 
-`verifiers.v1` is the workspace for the next environment architecture. The
-goal is to make the stable v1 surface feel like functions plus typed configs,
-while preserving the execution scale needed for sandboxes, endpoint forwarding,
-tool servers, group scoring, and hosted eval/training workers.
+`verifiers.v1` is the next-pass environment stack. It keeps the public authoring
+model close to functions and config, while the framework owns endpoint
+forwarding, trajectory capture, tool resolution, sandbox lifetime, and
+rollout/group scoring.
 
-This package is intentionally separate from `verifiers.envs.experimental`.
-Code in this folder should converge toward the release-facing API rather than
-carry every compatibility concern from the current environment stack.
+The stable boundary is:
 
-## Design Thesis
+- `Task`: immutable JSON-serializable dataset row.
+- `State`: mutable JSON-serializable rollout record.
+- `Taskset`: task source plus task-owned tools, user behavior, metrics, rewards,
+  and cleanup.
+- `Harness`: endpoint-backed runner plus harness-owned tools, user behavior,
+  metrics, rewards, cleanup, and teardown.
+- `Env`: `vf.Environment` adapter for eval/training workers.
 
-The core user-facing objects are:
+## Opinionated Choices
 
-- `Task`: immutable, serializable input row.
-- `State`: mutable, serializable rollout record.
-- `TasksetConfig`: how tasks are loaded, shaped, and scored.
-- `HarnessConfig`: how a runner executes a task into a state.
-- `Harness`: the owner of runtime resolution and rollout execution.
-- `Env`: the trainer/eval adapter that attaches a taskset to a harness.
+- Use `Taskset + Harness -> Env` for eval/training. Do not subclass `Env` for
+  normal environment authoring.
+- Use `harness.run(task, state=None)` for standalone experiments. A harness
+  should be runnable without a taskset.
+- Put immutable per-example data in `Task`; put mutable rollout data in
+  `State`. Both must remain JSON-serializable at API boundaries.
+- Put pluggable logic in functions: programs, tools, users, metrics, rewards,
+  cleanup, and teardown.
+- Use configs for selection and tuning. Code may pass functions directly; TOML
+  uses `"module:object"` refs.
+- Subclass `Taskset` or `Harness` only to define a new config surface or
+  behavior that cannot be represented by functions/config.
+- Package tools as `Toolset`. A callable tool can be wrapped implicitly, but
+  stateful tools, sandboxed tools, MCP tools, and lifecycle hooks belong in a
+  toolset.
+- Keep parser-like helpers as ordinary Python objects. Pass them through
+  closures, toolset objects, user objects, or config refs.
+- Treat metrics and rewards as signals. Rollout signals run inside
+  `harness.run`; group signals run from `Env` group scoring.
+- Use cleanup for user-extensible end-of-rollout or end-of-group state/resource
+  finalization. Framework-owned timing, completion rendering, trajectory sync,
+  and sandbox destruction are automatic.
+- Treat channel-like behavior as promoted config sections. `toolsets`, `user`,
+  `sandbox`, `metrics`, `rewards`, `scoring`, `cleanup`, and `teardown` are the
+  supported compatibility/resolution surfaces. New cross-cutting surfaces start
+  as fields on a `TasksetConfig` or `HarnessConfig` subclass.
 
-The core user-facing extension mechanism is a small set of functions with
-strict signatures:
+## Minimal Shape
 
 ```python
-async def init_state(task: vf.Task, state: vf.State) -> vf.State: ...
-async def execute(task: vf.Task, state: vf.State) -> vf.State: ...
-async def metric(task: vf.Task, state: vf.State) -> float: ...
-async def reward(task: vf.Task, state: vf.State) -> float: ...
-async def cleanup(task: vf.Task, state: vf.State) -> vf.State: ...
-async def teardown() -> None: ...
+import verifiers.v1 as vf
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(state["answer"] == task["answer"])
+
+
+def source():
+    yield {
+        "prompt": [{"role": "user", "content": "Reverse abc."}],
+        "answer": "cba",
+    }
+
+
+def load_taskset(config=None):
+    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+
+
+def load_harness(config=None):
+    return vf.Harness(config=config)
+
+
+def load_environment(taskset_config=None, harness_config=None):
+    return vf.Env(
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
+)
 ```
 
-`stop` and `render` need sharper boundaries before they become public v1
-extension points. `stop` is natural for framework-owned loops, but it is less
-obvious when the rollout loop lives entirely inside `execute`. `render` may be a
-framework-owned state normalization pass rather than an API users need to touch
-directly.
+`Taskset.get_dataset()` returns rows compatible with the current
+`vf.Environment` worker schema. The full task row is stored as a JSON string in
+`info["task"]`, and `Taskset.to_task(...)` accepts a `Task`, mapping, or JSON
+string.
 
-Group-stage functions opt in explicitly and use plural arguments:
+## Harness Programs
+
+`Harness.run(task, state=None)` is the primary local entrypoint. It initializes
+state when needed, runs the program through the interception endpoint, syncs
+trajectory-derived state fields, runs rollout metrics/rewards, runs rollout
+cleanup, and validates that the returned state is serializable.
+
+The supported program forms are:
+
+- `program=None`: default tool loop using the selected client protocol.
+- `program=callable`: Python function called through the interception endpoint.
+- `program={"command": [...], ...}`: local or sandboxed command.
+
+The default loop is controlled by `HarnessConfig.max_turns`.
+
+The selected client protocol is carried in runtime state. OpenAI Chat
+Completions is the default; Anthropic Messages and OpenAI Responses are selected
+through `ClientConfig.client_type` / endpoint registry `type`.
+
+## Tools
+
+Tools are packaged with `Toolset`:
 
 ```python
-async def group_metric(tasks: list[vf.Task], states: list[vf.State]) -> float: ...
-async def group_reward(tasks: list[vf.Task], states: list[vf.State]) -> float: ...
-async def group_cleanup(tasks: list[vf.Task], states: list[vf.State]) -> list[vf.State]: ...
+async def search(query: str, index) -> str:
+    ...
+
+
+toolset = vf.Toolset(
+    tools=[search],
+    objects={"index": load_index},
+    bindings={"search.index": "objects.index"},
+)
 ```
 
-## Runtime Boundary
+`Toolset.tools` accepts callable tools, nested `Toolset` objects, and
+`vf.MCPTool(command=..., args=[...])` stdio servers. Toolsets expose all tools
+by default; `show=[...]` or `hide=[...]` can narrow the exposed surface.
+In config/TOML, MCP tools can be written as command specs inside `tools`.
 
-User code should not depend on a live in-process `resources` object. Runtime
-objects are internal implementation details used to instantiate clients,
-sandboxes, MCP servers, endpoint proxies, caches, and other service handles.
+Hidden bindings can read from `task`, `state`, runtime `objects`, or other
+tools. Programs that need callable tools use:
 
-The public boundary should be serializable config plus serializable
-`Task`/`State`. Runtime resolution can still create rich internal objects, but
-those objects should be reachable only through framework-managed runners and
-tool handles.
+```python
+from verifiers.v1.utils.tool_utils import load_tools_from_state
 
-The harness owns the resolved runtime. A taskset may contribute task rows,
-signals, toolsets, handles, and runtime selection info, but `Env` only connects
-the taskset to the harness and bridges trainer/eval controls into serializable
-state.
 
-Users should not receive the runtime object. If a harness program needs tools,
-it calls `load_tools_from_state(state)` from `verifiers.v1.utils.tool_utils`.
-That helper resolves the exposed tool handles for the active harness run. Hidden
-tools remain available for tool-to-tool bindings but are not part of the
-program's public tool surface.
-
-## Resolution Model
-
-The v1 resolution path should be:
-
-```text
-TasksetConfig + HarnessConfig
-        |
-        v
-Harness-owned runtime
-        |
-        v
-strict tool, signal, cleanup, and teardown lists
+async def program(task, state):
+    tools = load_tools_from_state(state)
+    result = await tools["search"](query=task["question"])
+    state["answer"] = result
+    return state
 ```
 
-The first implementation slice should prefer simple functions over consolidated
-manager objects. Once the function boundaries are clear, repeated patterns can
-be collapsed behind internal helpers.
+Toolsets can declare `sandbox={...}` for tools that need isolated execution.
+Sandbox scope can be `rollout`, `group`, or `global`.
 
-## Lifecycle
+Lazy `objects` are scoped as well. Read-only toolsets default to global objects;
+`write=True` toolsets default to rollout-scoped objects unless `scope` is set.
 
-The intended v1 lifecycle is:
+Tasks can narrow the exposed tools for a rollout by setting
+`task["runtime"]["tools"] = ["tool_name", ...]`. Unknown tool names hard fail.
 
-```text
-init_group
-  -> init_state
-  -> harness.run / runner.execute
-  -> rollout state rendering
-  -> rollout metrics and rewards
-  -> rollout cleanup
-  -> group state rendering
-  -> group metrics and rewards
-  -> advantage
-  -> group cleanup
-  -> teardown
+## Users
+
+Tasksets and harnesses may define a `User`, or pass a user callable directly.
+The callable receives `task`, `state`, and configured bindings. `transcript` is
+available by default and resolves to the current observable conversation.
+
+```python
+async def user(task, state, transcript):
+    if len([m for m in transcript if m["role"] == "assistant"]) >= 2:
+        return []
+    return [{"role": "user", "content": "Try one more time."}]
+
+
+taskset = vf.Taskset(source=source, user=user)
 ```
 
-Rollout-stage functions receive one `task` and one `state`. Group-stage
-functions receive `tasks` and `states`. Group-stage functions should require an
-explicit `stage="group"` declaration so a single-rollout function cannot
-accidentally become group-aware.
+User objects can use `scope="rollout"`, `"group"`, or `"global"` for stateful
+helpers created through `User(objects={...})`.
 
-`Harness.run(task, state=None)` resolves the harness runtime in the background.
-If no taskset has been attached, the harness runs with its own defaults.
+Users can also request sandboxes with the same scope vocabulary as tools:
 
-`Harness.run(task, state)` completes the rollout-scope lifecycle before it
-returns: program execution, artifact collection, timing render, rollout metrics
-and rewards, rollout cleanup, and serialization validation. Group metrics,
-group rewards, and group cleanup run from the environment/group adapter after
-all rollout states are available.
+```python
+async def user(task, state, sandbox, transcript):
+    result = await sandbox.execute("python /tmp/check.py")
+    if result.exit_code:
+        return [{"role": "user", "content": "Check your work again."}]
+    return []
 
-Verifier errors (`vf.Error`) are handled rollout outcomes. They are rendered
-into serializable `state["error"]` records and then continue through rollout
-scoring and cleanup, matching the ComposableEnv/MultiTurn pattern where error
-states are visible to metrics, rewards, and retry logic. Non-verifier
-exceptions are implementation failures and propagate.
 
-Teardown is process-level cleanup for framework-managed services such as atexit
-handlers, local servers, endpoint proxies, and long-lived sandbox resources. It
-is distinct from rollout or group cleanup, which prepares serializable states
-and releases resources tied to a completed rollout or group.
+taskset = vf.Taskset(
+    user=vf.User(
+        user,
+        scope="group",
+        sandbox={"image": "python:3.11-slim", "scope": "group"},
+    )
+)
+```
 
-## Harness And Runner Boundary
+## Signals And Cleanup
 
-`Harness` is endpoint-backed by definition. Model calls go through the standard
-endpoint/interception boundary; v1 does not maintain a separate no-intercept
-generation path. The default harness program makes OpenAI-compatible calls to
-that endpoint, and user programs may do the same through the injected endpoint
-client when they ask for a `client` argument.
+Metrics and rewards are signal functions.
 
-The base `Harness` owns runtime resolution, the shared endpoint loop, tool
-exposure, scoring, and lifecycle machinery. Opinionated subclasses such as
-`OpenCode(Harness)` are fully instantiable harness packages that add defaults
-and config fields, but they should not introduce a separate lifecycle layer.
+```python
+@vf.metric
+async def turns(task, state) -> float: ...
 
-The harness may declare one primary `sandbox`; that sandbox is where the
-harness program itself lives when the program is command-based. Toolsets can
-declare additional sandbox requirements for their own tools. This keeps the
-main execution placement distinct from sub-object placement without turning the
-harness constructor into a list of sandboxes.
 
-The placement/runtime config for Python, CLI, sandboxed CLI, and remote workers
-is still open. The first v1 pass should not force a generic config object before
-the examples earn it.
+@vf.reward(weight=0.5, priority=10)
+async def format_reward(task, state) -> float: ...
 
-The confident piece is that all of these forms should attach to the same
-endpoint/interception boundary.
 
-## Toolsets
+@vf.reward(stage="group")
+async def best_of_n(tasks, states) -> list[float]: ...
+```
 
-Toolsets are first-class packaging for tools. A toolset can carry:
+Rollout signals accept exactly `task, state`. Group signals opt in with
+`stage="group"` and accept exactly `tasks, states`.
 
-- callable tools,
-- MCP tools,
-- hidden bindings,
-- setup requirements,
-- rollout or group lifecycle handlers,
-- runtime transport preferences.
+Cleanup functions use `@vf.cleanup`; teardown functions use `@vf.teardown`.
+There is no public render decorator. State rendering that the framework owns,
+such as timing, completion, and trajectory sync, is part of the harness run
+contract.
 
-Harnesses declare what tool transports they can consume. Tool resolution should
-choose the best compatible representation, including adapting callable tools
-behind framework-managed MCP/server handles when needed.
+## Config
 
-`Toolset(sandbox={...})` declares that tools in that toolset need an isolated
-sandbox handle. The runtime creates that sandbox lazily on first tool call,
-passes it as a hidden `sandbox` argument, stores only the serializable sandbox
-reference in state, and releases it at rollout or group cleanup based on
-`sandbox.scope`. `scope="global"` creates one sandbox per harness/env-worker
-runtime before program execution and releases it only at teardown.
+Tasksets and harnesses expose their constructor extension surface through
+Pydantic configs. Code can pass callables and objects directly; TOML passes
+`"module:object"` refs.
 
-## Signals
+```python
+taskset = vf.Taskset(
+    config={
+        "source": "my_env.data:load_rows",
+        "eval_source": "my_env.data:load_eval_rows",
+        "rewards": ["my_env.signals:exact_answer"],
+        "toolsets": [{"tools": ["my_env.tools:search"]}],
+    }
+)
 
-Metrics and rewards are signals. Metrics are always single-rollout unless
-explicitly promoted to a group stage. Rewards may be rollout-stage or
-group-stage. The metric/reward split is still under design: the key invariant is
-that signal execution has explicit stage semantics, not that every signal must
-be exposed through separate public concepts. `Rubric` should not be part of the
-v1 public API; compatibility adapters may translate existing rubrics into signal
-configs outside the core v1 surface.
+harness = vf.Harness(
+    config={
+        "program": "my_env.program:run",
+        "max_turns": 20,
+        "cleanup": ["my_env.cleanup:summarize_rollout"],
+    }
+)
+```
 
-Harnesses can contribute rollout metrics about their own execution. Tasksets
-own correctness rewards. Both may contribute rollout cleanup. Group rewards,
-group metrics, advantages, and group cleanup are resolved at the
-environment/group stage.
+Direct constructor items extend list-like config items. Scalar constructor args
+such as `source`, `program`, `sandbox`, `user`, and `max_turns` override config.
 
-Python constructor arguments such as `metrics=[...]` and `rewards=[...]` define
-available signal functions. `config.scoring` is metadata for overriding,
-skipping, or importing those functions by name. Owners do not need a separate
-`scoring_config` attribute.
+`scoring` tunes named signal functions:
 
-## Config Requirements
+```toml
+[env.taskset.scoring.exact_answer]
+weight = 0.5
 
-Configs should be expressible as Python objects and TOML. Python configs may
-accept live callables. TOML configs should reference importable symbols by name.
+[env.harness.scoring.turns]
+skip = true
+```
 
-Config objects should be Pydantic-compatible where useful, with strict field
-names and nested subconfigs for complex areas such as:
+Subclass only when an environment needs a new config surface or new behavior.
+Set `config_type` to a `TasksetConfig` or `HarnessConfig` subclass:
 
-- models and policies,
-- endpoints,
-- sandboxes,
-- tools and toolsets,
-- scoring signals,
-- cleanup/render lifecycle,
-- logging and artifacts.
+```python
+class MyHarnessConfig(vf.HarnessConfig):
+    cache_dir: str | None = None
 
-## Model And Policy Split
 
-Harnesses should not hardcode concrete model IDs. Concrete model configuration
-comes from the trainer through a per-group invocation/control envelope. This
-keeps the path to "run model X in harness Y" independent of harness code.
+class MyHarness(vf.Harness):
+    config_type = MyHarnessConfig
+```
 
-Models describe endpoints and generation protocols. Policies describe which
-model calls are part of optimization and scoring. The exact v1 shape for
-multiple model uses inside one harness is still open.
+Dicts are accepted by constructors and validated through the same models. To
+inspect the active shape:
 
-The trainer-env boundary has a control plane in addition to task delivery.
-Tasks and states remain the env-author contract; runtime controls carry
-per-group model configuration, seeds, budgets, placement, logging, and other
-trainer-owned decisions.
+```python
+print(vf.TasksetConfig.schema_text())
+print(vf.HarnessConfig.schema_text())
+print(MyHarness.config_schema())
+```
 
-## Open Design Questions
+### Custom Config Surfaces
 
-- What is the smallest strict `Task`/`State` schema that still allows arbitrary
-  dataset rows and flexible transcripts?
-- Should `execute` be a decorator, a config field, or a named method on a
-  runner implementation?
-- Does v1 expose `stop`, or is stopping only a concern for built-in
-  framework-owned loops?
-- Does v1 expose `render`, or should rendering remain a fixed state
-  normalization step around scoring?
-- Should metrics and rewards be distinct public concepts, or one signal concept
-  with reward weights and stage semantics?
-- How much dependency metadata must a portable executor declare to run inside a
-  sandbox?
-- What is the exact TOML shape for referencing callables, toolsets, and signal
-  functions?
-- Where should group setup state live when prompt randomization or dynamic
-  tasksets need stable per-group choices?
-- How should dynamic tasksets expose task DAGs, generated tasks, and cross-worker
-  coordination without making every eval stateful?
-- How should sandbox retention be configured across rollout scoring, group
-  scoring, and cleanup?
+Use a config subclass for taskset/harness-specific surfaces that do not belong
+in the promoted v1 fields yet:
 
-## First Implementation Slice
+```python
+class WikiTasksetConfig(vf.TasksetConfig):
+    db_path: str
 
-The first v1 slice should prove the strict boundary:
 
-1. Define minimal `Task` and `State` types with serialization enforcement.
-2. Define Pydantic config shells for tasksets, harnesses, toolsets, models, and
-   lifecycle signals.
-3. Implement one endpoint-backed harness runner whose public functions only see
-   `task` and `state`.
-4. Implement one callable toolset with hidden bindings resolved through config.
-5. Implement rollout metrics, rollout cleanup, and one group reward.
-6. Port one simple environment and one sandbox/tool environment into `v1`.
+class WikiTaskset(vf.Taskset):
+    config_type = WikiTasksetConfig
+
+    def __init__(self, config):
+        config = self.config_type.model_validate(config)
+        super().__init__(
+            source=load_wiki_rows,
+            toolsets=[
+                vf.Toolset(
+                    tools=[search],
+                    objects={"db": lambda: open_wiki_db(config.db_path)},
+                    bindings={"search.db": "objects.db"},
+                )
+            ],
+            config=config,
+        )
+```
+
+If a taskset and harness both need to negotiate a new kind of object, prefer an
+explicit promoted field once there are multiple concrete users. Until then,
+keep it local to the config subclass and use `objects`/`bindings` to route the
+resolved object into functions.
+
+There is no public generic channel registry in v1. A custom `db` surface, for
+example, should be a typed config field owned by the taskset or harness that
+needs it:
+
+```python
+class DbTasksetConfig(vf.TasksetConfig):
+    db_path: str
+
+
+class DbTaskset(vf.Taskset):
+    config_type = DbTasksetConfig
+
+    def __init__(self, config):
+        config = self.config_type.model_validate(config)
+        super().__init__(
+            source=load_rows,
+            toolsets=[
+                vf.Toolset(
+                    tools=[search],
+                    objects={"db": lambda: open_db(config.db_path)},
+                    bindings={"search.db": "objects.db"},
+                )
+            ],
+            config=config,
+        )
+```
+
+If several tasksets and harnesses start repeating the same `db` shape, promote
+that shape into a first-class config field rather than adding an ad hoc
+parallel resolver.
+
+## Mini Tutorials
+
+### Add A Reward In TOML
+
+Define the function in Python:
+
+```python
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(state.get("answer") == task.get("answer"))
+```
+
+Expose it from config:
+
+```toml
+[env.taskset]
+rewards = ["my_env.signals:exact_answer"]
+
+[env.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+### Add A Tool With Hidden Runtime State
+
+```python
+async def search(query: str, index) -> str:
+    return index.search(query)
+
+
+toolset = vf.Toolset(
+    tools=[search],
+    objects={"index": load_index},
+    bindings={"search.index": "objects.index"},
+)
+```
+
+The model only sees `query`; the runtime injects `index`.
+
+### Limit Tools Per Task
+
+```python
+{
+    "prompt": [{"role": "user", "content": "Use only read access."}],
+    "runtime": {"tools": ["read_file"]},
+}
+```
+
+The runtime hard-fails if a task requests an unknown tool.
+
+### Use A Sandboxed Tool
+
+```python
+async def python(code: str, sandbox) -> str:
+    result = await sandbox.execute(f"python - <<'PY'\n{code}\nPY")
+    return result.stdout
+
+
+toolset = vf.Toolset(
+    tools=[python],
+    write=True,
+    sandbox={
+        "image": "python:3.11-slim",
+        "scope": "group",
+        "packages": ["numpy"],
+    },
+)
+```
+
+The sandbox handle is hidden from the model and recorded in
+`state["runtime"]["sandboxes"]`.
+
+### Configure A Harness Program
+
+```toml
+[env.harness]
+program = "my_env.programs:run"
+max_turns = 20
+```
+
+```python
+async def run(task, state):
+    state["answer"] = "..."
+    return state
+```
+
+`program=None` uses the default endpoint-backed tool loop.
+
+## FAQ
+
+### Where Do Model And Client Settings Live?
+
+Eval/training runners pass `client`, `model`, and `sampling_args` into the
+`Env` boundary. v1 stores the serializable parts in `state["runtime"]` and keeps
+live clients inside the harness runtime.
+
+### How Do I Use Multiple Models?
+
+Use runtime state to select a client key/model for a particular rollout, and
+bind the corresponding client through the harness runtime. Calls that should not
+be optimized can be tagged in state or trajectory extras by the program that
+submits them.
+
+### When Should A Signal Be Group-Scoped?
+
+Use rollout signals for anything computable from one `task, state`. Use
+`stage="group"` only when the function needs multiple attempts at once, such as
+best-of-N preference, relative advantage, or a group-level judge.
+
+### When Should A Sandbox Be Rollout, Group, Or Global?
+
+Use `rollout` when each attempt must be isolated. Use `group` when scoring or
+comparison may need artifacts after rollout completion. Use `global` for
+read-only or reusable services that are safe to share for the harness lifetime.
+
+### How Do MCP Tools Fit?
+
+Use `vf.MCPTool(command=..., args=[...])` inside a `Toolset`. The runtime turns
+MCP server tools into normal tool handles for the harness. Callable tools and
+MCP tools share the same visibility and per-task tool filtering rules.
+
+```toml
+[[env.harness.toolsets]]
+tools = [
+  { command = "uvx", args = ["mcp-server-fetch"] },
+]
+```
+
+### How Do I Keep A Harness Lightweight?
+
+Prefer `Harness(program=..., toolsets=..., user=..., metrics=..., rewards=...)`
+and config refs. Subclass only when the harness needs a named reusable config
+surface or a different `setup_state`/program behavior.
+
+### How Do I Share Expensive Objects?
+
+Use lazy `objects` on `Toolset` or `User`. Read-only objects default to global
+toolset scope; writable toolsets default to rollout scope. Set `scope`
+explicitly when group or global lifetime is intended.
+
+## Examples
+
+The active v1 ports live beside their existing environments:
+
+- `environments/reverse_text/reverse_text_v1.py`
+- `environments/alphabet_sort/alphabet_sort_v1.py`
+- `environments/wiki_search/wiki_search_v1.py`
+- `environments/math_python/math_python_v1.py`
+- `environments/mcp_search_env/mcp_search_v1.py`
+- `environments/opencode_harbor/opencode_harbor_v1.py`
+- `environments/tau2_bench/tau2_bench.py`

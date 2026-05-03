@@ -27,10 +27,10 @@ import shlex
 import tempfile
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, cast
+from typing import Any
 
 import verifiers as vf
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
@@ -212,14 +212,16 @@ class SWESmithTaskSet(SandboxTaskSet):
     def _build_dataset(self) -> Any:
         from swesmith.profiles import registry
 
-        dataset = cast(
-            Dataset,
-            load_dataset(
-                self.dataset_name,
-                split=self.split,
-                keep_in_memory=self.ds_keep_in_memory,
-                num_proc=self.ds_num_proc,
-            ),
+        _kw = dict(
+            num_proc=self.ds_num_proc,
+            keep_in_memory=self.ds_keep_in_memory,
+            load_from_cache_file=False,
+        )
+        dataset = load_dataset(
+            self.dataset_name,
+            split=self.split,
+            keep_in_memory=self.ds_keep_in_memory,
+            num_proc=self.ds_num_proc,
         )
 
         # Drop rows whose repo has no registered profile — needed for cpp where
@@ -232,29 +234,13 @@ class SWESmithTaskSet(SandboxTaskSet):
             except KeyError:
                 return False
 
-        dataset = dataset.filter(
-            _has_profile,
-            num_proc=self.ds_num_proc,
-            keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
-        )
+        dataset = dataset.filter(_has_profile, **_kw)
 
         if self.filter_repos:
             filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: x.get("repo") not in filter_set,
-                num_proc=self.ds_num_proc,
-                keep_in_memory=self.ds_keep_in_memory,
-                load_from_cache_file=False,
-            )
+            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
 
-        return dataset.map(
-            _process_example,
-            remove_columns=dataset.column_names,
-            num_proc=self.ds_num_proc,
-            keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
-        )
+        return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:
         return info["problem_statement"]

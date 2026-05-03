@@ -5,7 +5,7 @@ from verifiers.decorators import cleanup, metric, reward, teardown
 from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
-from .scoring import (
+from .utils.scoring_utils import (
     add_metric,
     add_reward,
     build_signals,
@@ -16,18 +16,21 @@ from .scoring import (
 from .state import State
 from .task import Task
 from .taskset import Taskset
-from .toolset import Toolset
+from .toolset import MCPTool, Toolset
+from .user import User
 
 __all__ = [
     "Config",
     "Env",
     "Harness",
     "HarnessConfig",
+    "MCPTool",
     "State",
     "Task",
     "Taskset",
     "TasksetConfig",
     "Toolset",
+    "User",
     "add_metric",
     "add_reward",
     "build_signals",

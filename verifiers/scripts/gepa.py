@@ -225,7 +225,7 @@ def main():
         "-e",
         type=str,
         default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints registry (.toml preferred, .py supported)",
+        help="Path to API endpoints TOML registry",
     )
     parser.add_argument("--api-key-var", "-k", type=str, default=None)
     parser.add_argument("--api-base-url", "-b", type=str, default=None)

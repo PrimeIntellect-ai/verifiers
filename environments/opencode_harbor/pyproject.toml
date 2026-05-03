@@ -17,7 +17,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["opencode_harbor.py", "pyproject.toml", "prompt.txt", "tasks/**/*"]
+include = ["opencode_harbor.py", "opencode_harbor_v1.py", "pyproject.toml", "prompt.txt", "tasks/**/*"]
 
 [tool.verifiers.eval]
 num_examples = 5

@@ -1,440 +1,190 @@
-# Verifiers v1 Design Notes
+# Verifiers v1 Design State
 
-This is a design workspace, not a locked spec. The purpose of this document is
-to record the few choices we are confident about, keep candidate API sketches
-small, and leave a large open surface for implementation feedback.
+This is the current design state for the v1 pass. It records decisions that are
+implemented or directly reflected in the active examples, plus the open points
+that still need validation.
 
-The first v1 pass should validate top-level APIs before hardening internals.
-When a concept has not clicked into a concrete implementation point, do not name
-it yet.
+## Current Commitments
 
-## Goals
+### One Runtime Owner
 
-- Keep the public surface small and composable.
-- Make Python authoring and TOML iteration both pleasant.
-- Preserve the existing trainer/env boundary unless implementation proves it is
-  insufficient.
-- Keep task and state serializable across rollout and scoring boundaries.
-- Avoid rebuilding the old env hierarchy with new names.
+`Harness` owns runtime resolution. `Taskset` contributes task rows, signals,
+tools, user behavior, and task-level runtime requests. `Env` attaches the
+taskset to the harness and bridges the existing `vf.Environment` worker API.
 
-## Settled
+Runtime objects are internal. User-facing code works with serializable `Task`
+and `State`, plus tool handles loaded from state.
 
-### Target Authoring Signatures
+`verifiers.v1.State` is the public `verifiers.types.State`; v1 adds helper
+constructors and serializability checks to the shared type rather than
+introducing a second state class.
 
-The v1 design should start from the signatures we want authors to use.
-`Environment` compatibility matters, but it should not determine every internal
-type shape.
-
-Env package entrypoints:
+### Harness Run Contract
 
 ```python
-def load_taskset(config=None) -> vf.Taskset: ...
-def load_harness(config=None) -> vf.Harness: ...
-def load_environment(taskset_config=None, harness_config=None) -> vf.Environment: ...
+state = await harness.run(task, state=None)
 ```
 
-Rollout-scoped decorated functions:
+`Harness.run` completes the rollout-scope lifecycle:
 
-```python
-async def reward(task: vf.Task, state: vf.State) -> float: ...
-async def metric(task: vf.Task, state: vf.State) -> float: ...
-```
+1. initialize/setup state;
+2. run the program through the interception endpoint;
+3. collect declared artifacts;
+4. sync trajectory-derived fields;
+5. record timing;
+6. run rollout metrics and rewards;
+7. run rollout cleanup;
+8. release rollout-scoped sandboxes and MCP sessions;
+9. if no group boundary exists, run group cleanup and release group-scoped
+   resources;
+10. validate state serialization.
 
-Group-scoped functions are likely plural, but the exact declaration mechanism is
-not settled:
+Handled `vf.Error` instances are serialized into `state["error"]` and still flow
+through scoring and cleanup. Other exceptions raise.
 
-```python
-async def group_reward(tasks: list[vf.Task], states: list[vf.State]) -> float: ...
-```
+### Env Group Contract
 
-Taskset and harness constructors should be simple. Whether `config` is the only
-argument is still open, but users should not have to manually merge config
-overlays with Python defaults.
+`Env` subclasses `vf.Environment`. It accepts the current worker inputs
+(`RolloutInput`, client, model, sampling args), converts inputs to `Task`
+objects, writes model/client controls into state runtime metadata, dispatches
+rollouts, then runs group scoring and group cleanup.
 
-```python
-taskset = MathTaskset(config=config)
-harness = BasicHarness(config=config)
-```
+Tasksets bridge into the current worker schema by emitting v0-shaped dataset
+rows. The full canonical task row is JSON-serialized into `info["task"]`;
+`Taskset.to_task` and base state initialization both accept `info` as either a
+mapping or JSON string and hydrate `Task` from that payload when present.
 
-### `vf.Env` Adapts To `vf.Environment`
+`run_group` scores by default. It is the convenience path for eval/training
+workers and lightweight callers that do not need custom rollout dispatch.
 
-`vf.Env` must subclass `vf.Environment`. It is the taskset/harness
-implementation of the environment abstraction, not a totally separate
-trainer-facing boundary.
+### Program Forms
 
-The existing clients and env workers currently send these values:
+The base `Harness` supports:
 
-```python
-async def run_group(
-    group_inputs: list[RolloutInput],
-    client: Client | ClientConfig,
-    model: str,
-    sampling_args: SamplingArgs,
-    ...
-) -> list[RolloutOutput]: ...
-```
+- default OpenAI-compatible tool loop;
+- Python callable program;
+- command program, with optional primary sandbox.
 
-Those inputs describe the current adapter boundary, not the canonical v1 API.
-The task/group shape is open. It may stay as grouped rollout inputs, become a
-task plus rollout count, or become another task-oriented request shape:
+All model calls go through the interception endpoint so trajectory capture has
+one implementation path.
 
-```python
-async def run_group(
-    task: vf.Task,
-    num_rollouts: int,
-    ...
-) -> list[vf.State]: ...
-```
+### Client Protocols
 
-The internals are allowed to change. If `Environment` is carrying legacy
-MultiTurnEnv-specific behavior that blocks a clean v1 shape, that behavior can
-move down into `MultiTurnEnv`.
+The interception endpoint is a runtime protocol boundary, not a harness
+subclass boundary. OpenAI Chat Completions is the default protocol. Anthropic
+Messages and OpenAI Responses are selected through `ClientConfig.client_type` /
+endpoint registry `type`, and the resolved protocol is stored in serializable
+runtime state for the harness and interception endpoint.
 
-The core v1 shape may become closer to:
+### Toolsets
 
-```python
-async def rollout(...) -> State: ...
-async def score_group(states: list[State], ...) -> list[State]: ...
-```
+`Toolset` is first-class packaging for callable tools, nested toolsets, and MCP
+stdio servers. It can carry:
 
-or a cleaner `run_and_score_group` pipeline. The important constraint is that
-trainer-provided runtime controls such as client/model/sampling can be bridged
-into the v1 flow without making task rows carry runtime control data.
+- `tools`;
+- `show` or `hide`;
+- hidden `bindings`;
+- lazy `objects`;
+- `sandbox` requirements;
+- cleanup/teardown functions.
 
-The current ownership assumption is that `Harness` owns runtime resolution.
-`Env` attaches a taskset to a harness, adapts the existing trainer/eval request
-shape, and copies trainer controls into serializable state before dispatch.
-Tasksets contribute task rows, signals, toolsets, and task-level runtime
-selection info; they do not own model/client routing.
+Harness programs use `load_tools_from_state(state)`. Tool handles do not live in
+state; state stores only serializable refs such as tool names and sandbox ids.
 
-Harness programs should not accept the runtime object. Tool access goes through
-`load_tools_from_state(state)`, which resolves exposed tool handles from the
-active harness run. Program signatures should stay close to `(task, state)`,
-with the endpoint client available only for programs that explicitly ask for
-`client`.
+MCP tools can be passed as `MCPTool(...)` objects in code, or as `{command=...,
+args=[...]}` specs inside toolset config.
 
-### Decorator-In-Class Pattern
+Toolset sandboxes support `scope="rollout"`, `"group"`, and `"global"`.
+Rollout-scoped sandboxes are released after rollout scoring and cleanup.
+Group-scoped sandboxes survive until group scoring and cleanup. Global sandboxes
+live for the harness runtime and are released at teardown.
 
-Decorated functions defined on a `Taskset` class belong to that taskset.
-Decorated functions defined on a `Harness` class belong to that harness.
+MCP server sessions follow the same scope vocabulary as their owning toolset.
 
-```python
-class MathTaskset(vf.Taskset):
-    @vf.reward(weight=1.0)
-    async def exact_answer(task: vf.Task, state: vf.State) -> float:
-        return float(state.get("answer") == task["answer"])
+Toolset lazy objects use the same scope vocabulary. Read-only toolsets default
+to global objects. `write=True` toolsets default to rollout-scoped objects, so
+mutable task simulators and databases can stay out of `State` while remaining
+isolated per rollout.
 
+### Users
 
-class BasicHarness(vf.Harness):
-    @vf.metric
-    async def num_turns(task: vf.Task, state: vf.State) -> float:
-        return float(len(state.get("trajectory", [])))
-```
+Tasksets and harnesses may define at most one user. A direct callable is wrapped
+as `User(fn=...)`. `User` supports `scope`, `bindings`, and lazy `objects`,
+mirroring tool object lifetimes. Users may also request scoped sandboxes, using
+the same lifecycle rules as toolset sandboxes.
 
-Decorator names are not configurable. The registry key is always the function
-name.
+`transcript` is a default binding. It resolves to the current prompt plus
+completion when available, falling back to trajectory-derived completion.
 
-```toml
-[env.taskset.scoring.exact_answer]
-weight = 0.5
+### Signals
 
-[env.harness.scoring.num_turns]
-skip = true
-```
+Metrics and rewards are signal functions.
 
-Plain reusable functions may still use decorators for metadata, but ownership is
-decided by where they are attached:
-
-```toml
-[env.taskset.scoring.format_penalty]
-ref = "my_project.rewards:format_penalty"
-weight = -0.1
-```
-
-The TOML path decides that `format_penalty` belongs to the taskset.
-
-### Existing Objects Can Be Extended Without Subclassing
-
-Subclassing is not the only way to add a metric, reward, tool, or requirement to
-an existing taskset or harness. The normal overlay path should also work through
-constructor arguments, config, or a small programmatic method.
-
-Programmatic extension should look roughly like this:
+Rollout signals:
 
 ```python
 @vf.metric
-async def num_tool_calls(task: vf.Task, state: vf.State) -> float:
-    return float(len(state.get("tool_calls", [])))
+async def metric_name(task, state) -> float: ...
 
 
-def load_taskset(config=None) -> vf.Taskset:
-    taskset = ExistingTaskset(config=config)
-    taskset.add_metric(num_tool_calls)
-    return taskset
+@vf.reward(weight=1.0)
+async def reward_name(task, state) -> float: ...
 ```
 
-Constructor extension should also be possible when it reads more clearly:
+Group signals:
 
 ```python
-def load_taskset(config=None) -> vf.Taskset:
-    return ExistingTaskset(
-        config=config,
-        metrics=[num_tool_calls],
-    )
+@vf.reward(stage="group")
+async def group_reward_name(tasks, states) -> list[float]: ...
 ```
 
-The exact method names are not settled. The constraint is that extending an
-existing taskset should not require creating another subclass just to attach one
-function.
-
-Nested config comes in at ownership boundaries. The env loader dispatches config
-to the taskset and harness; each owner merges config with its own defaults.
-
-```toml
-[env.taskset.scoring.num_tool_calls]
-ref = "my_project.metrics:num_tool_calls"
-skip = false
-priority = 20
-```
-
-The merge order should be simple and framework-owned:
-
-1. collect decorated class defaults;
-2. add constructor/programmatic entries;
-3. apply TOML/config overrides by function name;
-4. validate and produce a sorted signal list.
-
-Users should not manually merge default Python definitions with TOML overrides.
-The exact nesting below `scoring` is still open; the stable idea is owner path,
-function name, metadata.
-
-### Subclasses Are Definition Surfaces
-
-Taskset and harness subclasses are allowed as one-level definition surfaces.
-They should package defaults, decorated functions, tools, and requirements.
-They should not create a new runtime hierarchy.
-
-This is allowed:
-
-```python
-class MyTaskset(vf.Taskset):
-    # Task loading shape intentionally omitted here.
-
-    @vf.reward(weight=1.0)
-    async def unit_tests(task: vf.Task, state: vf.State) -> float:
-        ...
-
-
-class OpenCode(vf.Harness):
-    # CLI/sandbox declaration shape intentionally omitted here.
-
-    @vf.metric
-    async def patch_size(task: vf.Task, state: vf.State) -> float:
-        ...
-```
-
-This should not be the normal extension mechanism:
-
-```python
-class MyHarness(vf.Harness):
-    async def run(...):
-        ...
-```
-
-The shared runner machinery should stay in the base implementation.
-Subclasses describe what to run, not a new way to run it.
-
-The base harness is endpoint-backed. The default program and custom programs
-share the same interception server path, so model request capture and trajectory
-construction have one implementation.
-
-Toolset sandboxes have rollout, group, or global scope. Global scope means
-env-worker-global: one sandbox per harness runtime, reused across rollouts in
-that process and released at teardown.
-
-### Harnesses Do Not Hardcode Models
-
-Harness packages should not hardcode concrete model IDs. Running model X in
-harness Y must be possible without editing harness code.
-
-The current client/env-worker boundary already carries `client`, `model`, and
-`sampling_args`. If this proves insufficient for per-group model selection, we
-should extend that boundary deliberately after validating the specific gap.
-
-## Minimal Env Sketch
-
-This sketch is intended to validate the authoring shape, not every internal
-type name.
-
-```python
-import verifiers as vf
-
-
-class MathTaskset(vf.Taskset):
-    # Task data loading is intentionally not specified in this sketch.
-
-    @vf.reward(weight=1.0)
-    async def exact_answer(task: vf.Task, state: vf.State) -> float:
-        return float(state.get("answer") == task["answer"])
-
-
-class BasicHarness(vf.Harness):
-    @vf.metric
-    async def num_turns(task: vf.Task, state: vf.State) -> float:
-        return float(len(state.get("trajectory", [])))
-
-
-def load_taskset(config=None) -> vf.Taskset:
-    return MathTaskset(config=config)
-
-
-def load_harness(config=None) -> vf.Harness:
-    return BasicHarness(config=config)
-
-
-def load_environment(taskset_config=None, harness_config=None) -> vf.Environment:
-    return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
-    )
-```
-
-TOML override:
-
-```toml
-[env.taskset.scoring.exact_answer]
-weight = 0.5
-
-[env.taskset.scoring.format_penalty]
-ref = "my_project.rewards:format_penalty"
-weight = -0.1
-priority = 20
-
-[env.harness.scoring.num_turns]
-skip = false
-```
-
-Resolution should be framework-owned:
-
-1. Discover decorated functions on the taskset and harness classes.
-2. Key each function by `fn.__name__`.
-3. Apply TOML entries under the matching owner path.
-4. Import new functions that provide `ref`.
-5. Drop entries with `skip = true`.
-6. Validate signatures and metadata.
-7. Produce a sorted signal list that simple scoring functions can execute.
-
-Users should not manually merge defaults with TOML overlays.
-
-## Open Surface
-
-### Taskset Internals
-
-Not settled:
-
-- how task data is attached to a taskset;
-- how lazy dataset loading is expressed;
-- how arbitrary task rows become immutable `Task` objects;
-- how group-level setup works;
-- how dynamic tasksets and task DAGs should look;
-- which top-level class fields are allowed.
-
-### Harness Internals
-
-Not settled:
-
-- exact runner interface under `Harness`;
-- how CLI, sandboxed CLI, and in-process execution share one runner;
-- how custom execute logic is expressed without allowing arbitrary `run`
-  overrides;
-- how multiple model uses are declared;
-- which top-level class fields are allowed.
-
-Working assumption: the harness owns its runtime, and independent
-`harness.run(task)` should work without constructing an `Env`. When an `Env` is
-present, it should attach the taskset to the harness rather than introducing a
-second runtime owner.
-
-The runtime object should remain internal. Harness programs use
-`load_tools_from_state(state)` when they need callable tool handles, but
-runtime/resource resolution should stay in the background.
-
-`Harness.run` should finish rollout-scope scoring and cleanup before returning.
-Handled verifier errors are part of the returned rollout state; non-verifier
-exceptions are implementation failures and should raise.
-
-### Config And TOML
-
-Not settled:
-
-- exact Pydantic model names;
-- how config overlays are passed into `load_taskset` and `load_harness`;
-- whether config should be accepted directly by constructors or resolved before
-  construction;
-- selector semantics such as "only these scoring functions";
-- whether a custom config escape hatch exists at all.
-
-High-confidence rule: TOML should override named local defaults without forcing
-users to write merge logic.
-
-### Scoring
-
-Not settled:
-
-- whether the public words are `metric`, `reward`, `signal`, or something else;
-- whether metrics and rewards are separate buckets or one signal model with
-  weights;
-- how group-stage functions are declared;
-- where advantage computation fits;
-- whether any compatibility path from existing `Rubric` is core or external.
-
-High-confidence rule: v1 should not require users to think in terms of the old
-`Rubric` object when authoring new taskset/harness envs.
-
-### Post-Run Hooks
-
-Not settled:
-
-- whether `render` is public;
-- whether custom `stop` is public;
-- exact names and stages for cleanup;
-- how teardown is registered for atexit-style resources;
-- how cleanup interacts with scoring when resources must survive until group
-  scoring.
-
-### Tools And Toolsets
-
-Not settled:
-
-- exact toolset config shape;
-- callable tool versus MCP tool representation;
-- hidden binding syntax;
-- callable-to-MCP adaptation rules;
-- sandbox sharing rules for tools;
-- whether toolsets get their own package/library later.
-
-### Model And Runtime Selection
-
-Not settled:
-
-- whether the current `client, model, sampling_args` boundary is enough for
-  per-group model decisions;
-- where auxiliary model configuration belongs;
-- how to distinguish model endpoint from optimization policy;
-- how much model routing should be visible in public config;
-- whether trainer/env worker request envelopes need extension.
-
-High-confidence rule: do not hardcode concrete model IDs in harness packages.
-
-## Next Validation Work
-
-Implement only enough to validate the API surface:
-
-1. Minimal `vf.Env(vf.Environment)` that composes a taskset and harness.
-2. Decorator discovery on taskset/harness classes.
-3. TOML override of a default reward by function name.
-4. TOML addition of a new reward by `ref`.
-5. A basic harness using the shared runner.
-6. One opinionated harness such as OpenCode without overriding the core runner.
-
-Anything not needed for those six checks should stay unnamed or internal.
+Function names are signal names. Name collisions hard fail. Metrics and rewards
+are added through taskset/harness config fields or constructor args; `scoring`
+config only skips or overrides metadata for existing names.
+
+`Rubric` is not part of the v1 authoring path. Compatibility adapters can be
+added around the v1 signal runner where needed.
+
+### Cleanup And Teardown
+
+`@vf.cleanup` is the user extension point for in-place state changes after
+program execution and scoring. It can target rollout or group stage.
+
+`@vf.teardown` is process/runtime cleanup for long-lived services. There is no
+public `render` decorator; framework-owned rendering is part of harness state
+sync.
+
+## Current Examples
+
+- `reverse_text_v1`: single-turn default harness plus rollout reward.
+- `alphabet_sort_v1`: multi-turn default harness plus taskset user callable.
+- `wiki_search_v1`: callable toolset with lazy Chroma object bindings.
+- `math_python_v1`: sandboxed callable Python tool with rollout cleanup.
+- `mcp_search_v1`: stdio MCP toolset consumed by the default harness.
+- `opencode_harbor_v1`: sandboxed command harness plus rollout reward that runs
+  Harbor tests before sandbox cleanup.
+- `nested_harness_v1`: tool binding that calls another harness.
+- `hello_rlm_v1`: command-program harness sketch.
+- `tau2_bench`: taskset-owned tools and user simulator backed by a
+  rollout-scoped session object.
+
+## Open Questions
+
+- Which config surfaces should become nested subconfigs once program, sandbox,
+  tool, and user settings grow more options.
+- Whether a generic channel registry is warranted. The current v1 shape has no
+  public channel registry: stable cross-cutting concepts are promoted config
+  fields, while local/custom concepts live on `TasksetConfig` or
+  `HarnessConfig` subclasses.
+- How to represent model and policy separately when a harness uses auxiliary
+  model calls that should not train the primary policy.
+- How broad the protocol adapter surface should become beyond OpenAI Chat
+  Completions, Anthropic Messages, and OpenAI Responses.
+- How group setup should work for prompt randomization, dynamic tasks, and
+  stateful tasksets.
+- Whether stop conditions should become public v1 decorators, or remain an
+  implementation detail of framework-owned loops.
+- How much callable-to-MCP adaptation should be automatic for sandboxed
+  programs and remote workers.
+- Whether cleanup names need sharper semantics as more resources participate in
+  rollout and group stages.

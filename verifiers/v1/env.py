@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Mapping
-from typing import cast, final
+from typing import cast
 
 import verifiers as vf
-from verifiers.clients import Client, resolve_client
-from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
-from verifiers.serve import EnvClient
-from verifiers.utils.async_utils import maybe_retry
-from verifiers.utils.save_utils import state_to_output
+from verifiers.clients import Client
+from verifiers.types import ClientConfig
+from verifiers.types import RolloutInput, SamplingArgs
 
 from .harness import Harness
 from .state import State
@@ -21,13 +20,15 @@ class Env(vf.Environment):
         self,
         taskset: Taskset,
         harness: Harness,
-        config: object | None = None,
     ):
         self.taskset = taskset
         self.harness = harness
-        self.config = config
         self.harness.attach_taskset(taskset)
-        super().__init__(dataset=self.taskset.get_dataset, rubric=vf.Rubric())
+        super().__init__(
+            dataset=self.taskset.get_dataset,
+            eval_dataset=self.taskset.get_eval_dataset,
+            rubric=vf.Rubric(),
+        )
 
     @vf.teardown
     async def teardown_harness(self) -> None:
@@ -36,7 +37,7 @@ class Env(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: Client,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -48,86 +49,51 @@ class Env(vf.Environment):
                 "client": client,
                 "model": model,
                 "sampling_args": sampling_args or {},
+                "score_rollout": self.score_rollouts,
             },
         )
         return await self.harness.run(task, state)
 
-    @final
-    async def run_rollout(
+    async def _run_rollout_state(
         self,
         input: RolloutInput,
-        client: Client | ClientConfig,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs,
-        max_retries: int = 0,
-        state_columns: list[str] | None = None,
-        env_client: EnvClient | None = None,
-    ) -> vf.RolloutOutput:
-        if env_client is not None:
-            return await super().run_rollout(
-                input,
-                client,
-                model,
-                sampling_args,
-                max_retries,
-                state_columns,
-                env_client,
-            )
+    ) -> State:
+        return await self.rollout(input, client, model, sampling_args)
 
-        async def run_rollout_attempt() -> State:
-            return await self.rollout(
-                input, resolve_client(client), model, sampling_args
-            )
-
-        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        return state_to_output(state, state_columns or [])
-
-    @final
-    async def run_group(
+    async def _run_group_states(
         self,
         group_inputs: list[RolloutInput],
-        client: Client | ClientConfig,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs,
-        max_retries: int = 0,
-        state_columns: list[str] | None = None,
-        env_client: EnvClient | None = None,
-        **kwargs: object,
-    ) -> list[vf.RolloutOutput]:
-        if env_client is not None:
-            return await super().run_group(
-                group_inputs,
-                client,
-                model,
-                sampling_args,
-                max_retries,
-                state_columns,
-                env_client,
-            )
-
-        async def run_group_attempt() -> list[State]:
-            local_client = resolve_client(client)
-            tasks = [self.taskset.to_task(input) for input in group_inputs]
-            states = [State.for_task(task) for task in tasks]
-            self.apply_controls(
-                states,
-                {
-                    "client": local_client,
-                    "model": model,
-                    "sampling_args": sampling_args,
-                },
-            )
-            states = await asyncio.gather(
-                *[self.harness.run(task, state) for task, state in zip(tasks, states)]
-            )
-            try:
+    ) -> list[State]:
+        tasks = [self.taskset.to_task(input) for input in group_inputs]
+        states = [State.for_task(task) for task in tasks]
+        group_key = uuid.uuid4().hex
+        for state in states:
+            state.setdefault("runtime", {})
+            state["runtime"]["group_key"] = group_key
+        self.apply_controls(
+            states,
+            {
+                "client": client,
+                "model": model,
+                "sampling_args": sampling_args,
+                "score_rollout": self.score_rollouts,
+            },
+        )
+        states = await asyncio.gather(
+            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
+        )
+        try:
+            if self.score_rollouts:
                 await self.harness.score_group(tasks, states)
-            finally:
-                await self.harness.cleanup_group(tasks, states)
-            return states
-
-        states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
-        return [state_to_output(state, state_columns or []) for state in states]
+        finally:
+            await self.harness.cleanup_group(tasks, states)
+        return states
 
     def apply_controls(
         self, states: list[State], controls: Mapping[str, object] | None = None
@@ -141,7 +107,10 @@ class Env(vf.Environment):
             state.setdefault("runtime", {})
             client = controls.get("client")
             self.harness.runtime.bind_model_client(
-                state, cast(Client | None, client) if client is not None else None
+                state,
+                cast(Client | ClientConfig | None, client)
+                if client is not None
+                else None,
             )
             state["runtime"].update(serializable_controls)
         return states

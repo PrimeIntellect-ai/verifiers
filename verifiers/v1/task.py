@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
+
+from verifiers.types import assert_json_serializable
 
 
 class Task(dict):
@@ -50,7 +51,4 @@ class Task(dict):
 
 
 def assert_serializable(value: object) -> None:
-    try:
-        json.dumps(value)
-    except TypeError as e:
-        raise TypeError("Task and State values must be JSON-serializable.") from e
+    assert_json_serializable(value)

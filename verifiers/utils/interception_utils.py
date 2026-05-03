@@ -44,6 +44,14 @@ class StreamInterrupted(InfraError):
     """
 
 
+def protocol_from_path(path: str) -> str:
+    if path.endswith("/v1/messages"):
+        return "anthropic_messages"
+    if path.endswith("/v1/responses"):
+        return "openai_responses"
+    return "openai_chat_completions"
+
+
 class InterceptionServer:
     """
     HTTP server that intercepts API requests from agents.
@@ -73,6 +81,14 @@ class InterceptionServer:
             app = web.Application()
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/responses",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/messages",
                 self._handle_request,
             )
             app.router.add_get(
@@ -184,10 +200,14 @@ class InterceptionServer:
             asyncio.Queue() if is_streaming else None
         )
 
+        protocol = protocol_from_path(str(request.path))
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
-            "messages": request_body["messages"],
+            "protocol": protocol,
+            "messages": request_body.get("messages"),
+            "input": request_body.get("input"),
+            "system": request_body.get("system"),
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
             "stream": is_streaming,
@@ -215,7 +235,10 @@ class InterceptionServer:
                 )
                 return web.json_response({"error": str(e)}, status=500)
 
-            response_dict = serialize_intercept_response(response)
+            response_dict = serialize_intercept_response(
+                response,
+                protocol=str(intercept["protocol"]),
+            )
 
             _log_response(rollout_id, response_dict)
             return web.json_response(response_dict)
@@ -505,9 +528,15 @@ def _response_content_to_text(content: Any) -> str:
     return ""
 
 
-def serialize_intercept_response(response: Any) -> dict[str, Any]:
-    """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
+def serialize_intercept_response(
+    response: Any, protocol: str = "openai_chat_completions"
+) -> dict[str, Any]:
+    """Serialize intercepted responses to the requested endpoint protocol shape."""
     if isinstance(response, Response):
+        if protocol == "anthropic_messages":
+            return serialize_anthropic_message_response(response)
+        if protocol == "openai_responses":
+            return serialize_openai_responses_response(response)
         message = response.message
         tool_calls = []
         for tc in message.tool_calls or []:
@@ -553,6 +582,97 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return dict(response)
+
+
+def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
+    content: list[dict[str, Any]] = []
+    message = response.message
+    if message.content:
+        content.append(
+            {"type": "text", "text": _response_content_to_text(message.content)}
+        )
+    for tool_call in message.tool_calls or []:
+        try:
+            tool_input = json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            tool_input = {"arguments": tool_call.arguments}
+        content.append(
+            {
+                "type": "tool_use",
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_input,
+            }
+        )
+    if not content:
+        content.append({"type": "text", "text": ""})
+    usage = {}
+    if response.usage is not None:
+        usage = {
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+        }
+    return {
+        "id": response.id,
+        "type": "message",
+        "role": "assistant",
+        "model": response.model,
+        "content": content,
+        "stop_reason": "tool_use" if message.tool_calls else "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+
+
+def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
+    output: list[dict[str, Any]] = []
+    message = response.message
+    if message.content:
+        output.append(
+            {
+                "id": f"msg_{response.id}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": _response_content_to_text(message.content),
+                        "annotations": [],
+                    }
+                ],
+            }
+        )
+    for tool_call in message.tool_calls or []:
+        output.append(
+            {
+                "id": tool_call.id,
+                "type": "function_call",
+                "call_id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+                "status": "completed",
+            }
+        )
+    usage = None
+    if response.usage is not None:
+        usage = {
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+    return {
+        "id": response.id,
+        "object": "response",
+        "created_at": float(response.created),
+        "status": "completed",
+        "model": response.model,
+        "output": output,
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": usage,
+    }
 
 
 def _log_request(rollout_id: str, body: dict) -> None:

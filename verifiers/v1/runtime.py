@@ -3,24 +3,30 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
+import uuid
+from contextlib import AsyncExitStack
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, cast
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, cast, get_args
 
-from verifiers.clients import Client
+from verifiers.clients import Client, resolve_client
 from verifiers.types import Messages, Response, Tool
+from verifiers.types import ClientConfig, ClientType
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
-from .lifecycle import collect_handlers, run_handlers
-from .scoring import SignalRecord, build_signals, collect_signals
-from .scoring import score_group as score_group_signals
-from .scoring import score_rollout as score_rollout_signals
+from .utils.lifecycle_utils import collect_handlers, run_handlers
+from .utils.scoring_utils import SignalRecord, build_signals, collect_signals
+from .utils.scoring_utils import score_group as score_group_signals
+from .utils.scoring_utils import score_rollout as score_rollout_signals
 from .state import State
 from .task import Task
-from .toolset import Toolset, flatten_toolsets, iter_toolsets, tool_name
+from .toolset import MCPTool, Toolset, flatten_toolsets, iter_toolsets, tool_name
+from .user import User
 
 _global_runtime: ContextVar[object | None] = ContextVar(
     "verifiers_v1_global_runtime", default=None
@@ -37,10 +43,15 @@ class Runtime:
         self.exposed_tools = self._build_tools(apply_visibility=True)
         self.bindings = self._build_bindings()
         self.object_specs = self._build_object_specs()
-        self.objects: dict[str, object] = {}
+        self.objects: dict[tuple[int, str, str], object] = {}
+        self.user_objects: dict[tuple[int, str, str], object] = {}
         self.model_clients: dict[str, Client] = {}
-        self.tool_sandboxes: dict[tuple[int, str], object] = {}
-        self.tool_sandbox_lock = asyncio.Lock()
+        self.owned_model_clients: set[str] = set()
+        self.sandbox_leases: dict[tuple[str, str], object] = {}
+        self.sandbox_lock = asyncio.Lock()
+        self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
+        self.mcp_tools: dict[str, dict[str, object]] = {}
+        self.exposed_mcp_tools: dict[str, dict[str, object]] = {}
         signals = self._build_signals()
         self.rollout_signals = [
             signal for signal in signals if signal["stage"] == "rollout"
@@ -67,15 +78,38 @@ class Runtime:
     def prepare_state(self, task: Task, state: State) -> None:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})
-        state["runtime"].setdefault("tools", sorted(self.exposed_tools))
-        state["tools"] = sorted(self.exposed_tools)
+        state["runtime"].setdefault(
+            "tools", sorted(self.unfiltered_exposed_tools(state))
+        )
+        state["tools"] = sorted(self.all_exposed_tools(state))
 
-    def bind_model_client(self, state: State, client: Client | None) -> None:
+    def bind_model_client(
+        self, state: State, client: Client | ClientConfig | None
+    ) -> None:
         if client is None:
             return
-        key = str(state["runtime"].get("client_key") or "default")
+        owns_client = False
+        if isinstance(client, ClientConfig):
+            resolved_config = resolve_client_config(client)
+            client = resolve_client(resolved_config)
+            client_type: ClientType = resolved_config.client_type
+            owns_client = True
+        else:
+            config = getattr(client, "_config", None)
+            if isinstance(config, ClientConfig):
+                client_type = config.client_type
+            else:
+                client_type = "openai_chat_completions"
+        key = str(
+            state["runtime"].get("client_key")
+            or state.get("trajectory_id")
+            or f"client_{uuid.uuid4().hex}"
+        )
         self.model_clients[key] = client
+        if owns_client:
+            self.owned_model_clients.add(key)
         state["runtime"]["client_key"] = key
+        state["runtime"]["client_type"] = client_type
 
     def model_client(self, state: State) -> Client:
         key = str(state.get("runtime", {}).get("client_key") or "default")
@@ -83,6 +117,14 @@ class Runtime:
         if client is None:
             raise RuntimeError("Harness has no model client for intercepted requests.")
         return client
+
+    def client_type(self, state: State) -> ClientType:
+        raw_client_type = state.get("runtime", {}).get("client_type")
+        if raw_client_type is None:
+            return "openai_chat_completions"
+        if raw_client_type not in get_args(ClientType):
+            raise ValueError(f"Unsupported client type: {raw_client_type!r}")
+        return cast(ClientType, raw_client_type)
 
     def model(self, state: State) -> str:
         model = state.get("runtime", {}).get("model") or state.get("model")
@@ -96,14 +138,52 @@ class Runtime:
             raise TypeError("state.runtime.sampling_args must be a mapping.")
         return dict(cast(Mapping[str, Any], sampling))
 
-    def tool_defs(self) -> list[Tool] | None:
+    def tool_defs(self, state: State) -> list[Tool] | None:
         defs: list[Tool] = []
-        for name, tool in self.exposed_tools.items():
+        for name, tool in self.all_exposed_tools(state).items():
             if callable(tool):
                 defs.append(self._tool_def(name, tool))
         return defs or None
 
+    async def user_messages(
+        self, task: Task, state: State, transcript: Sequence[object] | None = None
+    ) -> list[dict[str, object]]:
+        user = self._resolve_user()
+        if user is None:
+            return []
+        kwargs: dict[str, object] = {}
+        fn = user.fn
+        if user.sandbox is not None:
+            kwargs["sandbox"] = await self.resolve_user_sandbox(user, task, state)
+        for name, source in user.bindings.items():
+            kwargs[name] = await self.resolve_user_binding(
+                user, source, task, state, transcript
+            )
+        raw_messages = await maybe_call_with_named_args(
+            fn, task=task, state=state, **kwargs
+        )
+        if raw_messages is None:
+            return []
+        messages = normalize_messages(raw_messages, field_name="user")
+        return [message.model_dump(exclude_none=True) for message in messages]
+
+    def _resolve_user(self) -> User | None:
+        users = [
+            user
+            for user in (
+                getattr(self.taskset, "user", None),
+                getattr(self.harness, "user", None),
+            )
+            if user is not None
+        ]
+        if len(users) > 1:
+            raise ValueError("Taskset and harness cannot both define user.")
+        return cast(User | None, users[0] if users else None)
+
     def _tool_def(self, name: str, tool: object) -> Tool:
+        mcp_tool_def = getattr(tool, "tool_def", None)
+        if isinstance(mcp_tool_def, Tool):
+            return mcp_tool_def
         tool_def = convert_func_to_tool_def(tool)
         hidden_args = {"task", "state"}
         owner = self.tool_owners.get(name)
@@ -139,7 +219,7 @@ class Runtime:
         self, task: Task, state: State
     ) -> dict[str, Callable[..., Awaitable[object]]]:
         calls: dict[str, Callable[..., Awaitable[object]]] = {}
-        for name in self.exposed_tools:
+        for name in self.all_exposed_tools(state):
             calls[name] = self._tool_call(name, task, state, exposed=True)
         return calls
 
@@ -159,7 +239,7 @@ class Runtime:
         exposed: bool,
         **kwargs: object,
     ) -> object:
-        tools = self.exposed_tools if exposed else self.tools
+        tools = self.all_exposed_tools(state) if exposed else self.all_tools(state)
         if name not in tools:
             kind = "exposed tool" if exposed else "tool"
             raise KeyError(f"Unknown {kind} {name!r}.")
@@ -234,17 +314,20 @@ class Runtime:
         return states
 
     async def cleanup_rollout(self, task: Task, state: State) -> None:
-        await run_handlers(
-            self.rollout_cleanup, task=task, state=state, runtime=self, **self.objects
-        )
-        await self.release_tool_sandboxes(state, scope="rollout")
+        await run_handlers(self.rollout_cleanup, task=task, state=state, runtime=self)
+        await self.release_objects("rollout", state)
+        await self.release_user_objects("rollout", state)
+        await self.release_sandboxes(scope="rollout", state=state)
+        await self.close_mcp_tools(state)
+        await self.release_model_client(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
-        await run_handlers(
-            self.group_cleanup, tasks=tasks, states=states, runtime=self, **self.objects
-        )
+        await run_handlers(self.group_cleanup, tasks=tasks, states=states, runtime=self)
         for state in states:
-            await self.release_tool_sandboxes(state, scope="group")
+            await self.release_objects("group", state)
+            await self.release_user_objects("group", state)
+            await self.release_sandboxes(scope="group", state=state)
+            await self.close_mcp_tools(state, scope="group")
 
     async def collect_artifacts(self, task: Task, state: State) -> None:
         program = getattr(self.harness, "program", None)
@@ -264,10 +347,14 @@ class Runtime:
             state["artifacts"][name] = await self._collect_artifact(spec, task, state)
 
     async def teardown(self) -> None:
-        await run_handlers(self.teardown_handlers, runtime=self, **self.objects)
-        for handle in list(self.tool_sandboxes.values()):
+        await run_handlers(self.teardown_handlers, runtime=self)
+        await self.release_objects("global")
+        await self.release_user_objects("global")
+        for handle in list(self.sandbox_leases.values()):
             await maybe_call_with_named_args(getattr(handle, "delete"))
-        self.tool_sandboxes.clear()
+        self.sandbox_leases.clear()
+        await self.close_all_mcp_tools()
+        await self.release_all_model_clients()
 
     async def resolve_binding(self, source: object, task: Task, state: State) -> object:
         if isinstance(source, str):
@@ -277,6 +364,70 @@ class Runtime:
                 source, task=task, state=state, runtime=self
             )
         return source
+
+    async def resolve_user_binding(
+        self,
+        user: User,
+        source: object,
+        task: Task,
+        state: State,
+        transcript: Sequence[object] | None = None,
+    ) -> object:
+        if isinstance(source, str):
+            root, separator, tail = source.partition(".")
+            if root == "objects" and separator:
+                name, _, rest = tail.partition(".")
+                if name in user.objects:
+                    value = await self.resolve_user_object(user, name, task, state)
+                else:
+                    value = await self.resolve_object(name, task, state)
+                if rest:
+                    return _read_path(value, rest)
+                return value
+        if callable(source):
+            return await maybe_call_with_named_args(
+                source, task=task, state=state, runtime=self, transcript=transcript
+            )
+        return await self.resolve_binding(source, task, state)
+
+    async def resolve_user_object(
+        self, user: User, name: str, task: Task, state: State
+    ) -> object:
+        if name not in user.objects:
+            raise KeyError(f"Unknown user object {name!r}.")
+        key = (id(user), self.user_scope_key(user.scope, state), name)
+        if key in self.user_objects:
+            return self.user_objects[key]
+        spec = user.objects[name]
+        if callable(spec):
+            obj = await maybe_call_with_named_args(spec, task=task, state=state)
+        else:
+            obj = spec
+        self.user_objects[key] = obj
+        return obj
+
+    def user_scope_key(self, scope: str, state: State | None = None) -> str:
+        if scope == "global":
+            return "global"
+        if state is None:
+            raise ValueError(f"{scope} user object cleanup requires state.")
+        runtime = state.get("runtime", {})
+        if scope == "group":
+            return str(runtime.get("group_key") or state.get("trajectory_id"))
+        if scope == "rollout":
+            return str(state.get("trajectory_id"))
+        raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
+
+    async def release_user_objects(
+        self, scope: str, state: State | None = None
+    ) -> None:
+        scope_key = self.user_scope_key(scope, state) if scope != "global" else "global"
+        for key, obj in list(self.user_objects.items()):
+            _, object_scope_key, _ = key
+            if object_scope_key != scope_key:
+                continue
+            await close_object(obj)
+            del self.user_objects[key]
 
     def _build_signals(self) -> list[SignalRecord]:
         taskset_signals = self._owner_signals(self.taskset)
@@ -300,6 +451,8 @@ class Runtime:
                 if isinstance(item, Toolset):
                     visit(item)
                     continue
+                if isinstance(item, MCPTool):
+                    continue
                 name = tool_name(item)
                 if name in owners:
                     raise ValueError(f"Tool {name!r} is defined twice.")
@@ -317,6 +470,8 @@ class Runtime:
             for tool in flatten_toolsets(
                 getattr(owner, "toolsets", ()), apply_visibility=apply_visibility
             ):
+                if isinstance(tool, MCPTool):
+                    continue
                 name = tool_name(tool)
                 if name in tools:
                     raise ValueError(f"Tool {name!r} is defined twice.")
@@ -332,13 +487,13 @@ class Runtime:
                 bindings[key] = value
         return bindings
 
-    def _build_object_specs(self) -> dict[str, object]:
-        objects: dict[str, object] = {}
+    def _build_object_specs(self) -> dict[str, tuple[Toolset, object]]:
+        objects: dict[str, tuple[Toolset, object]] = {}
         for toolset in self.toolsets:
             for key, value in toolset.objects.items():
                 if key in objects:
                     raise ValueError(f"Runtime object {key!r} is defined twice.")
-                objects[key] = value
+                objects[key] = (toolset, value)
         return objects
 
     def _owner_signals(self, owner: object | None) -> list[SignalRecord]:
@@ -431,22 +586,68 @@ class Runtime:
         return value
 
     async def _resolve_object(self, name: str, task: Task, state: State) -> object:
-        if name in self.objects:
-            return self.objects[name]
         if name not in self.object_specs:
             raise KeyError(f"Unknown runtime object {name!r}.")
-        spec = self.object_specs[name]
+        toolset, spec = self.object_specs[name]
+        scope = toolset_object_scope(toolset)
+        key = (id(toolset), self.scope_key(scope, state), name)
+        if key in self.objects:
+            return self.objects[key]
         if callable(spec):
-            obj = await maybe_call_with_named_args(spec, task=task, state=state)
+            obj = await maybe_call_with_named_args(
+                spec, task=task, state=state, runtime=self
+            )
         else:
             obj = spec
-        self.objects[name] = obj
+        self.objects[key] = obj
         return obj
+
+    async def resolve_object(self, name: str, task: Task, state: State) -> object:
+        return await self._resolve_object(name, task, state)
+
+    def scope_key(self, scope: str, state: State | None = None) -> str:
+        if scope == "global":
+            return "global"
+        if state is None:
+            raise ValueError(f"{scope} object cleanup requires state.")
+        runtime = state.get("runtime", {})
+        if scope == "group":
+            return str(runtime.get("group_key") or state.get("trajectory_id"))
+        if scope == "rollout":
+            return str(state.get("trajectory_id"))
+        raise ValueError("Object scope must be 'rollout', 'group', or 'global'.")
+
+    async def release_objects(self, scope: str, state: State | None = None) -> None:
+        scope_key = self.scope_key(scope, state) if scope != "global" else "global"
+        for key, obj in list(self.objects.items()):
+            _, object_scope_key, _ = key
+            if object_scope_key != scope_key:
+                continue
+            await close_object(obj)
+            del self.objects[key]
+
+    async def release_model_client(self, state: State) -> None:
+        key = state.get("runtime", {}).get("client_key")
+        if not isinstance(key, str):
+            return
+        client = self.model_clients.pop(key, None)
+        if key not in self.owned_model_clients:
+            return
+        self.owned_model_clients.remove(key)
+        if client is not None:
+            await close_object(client)
+
+    async def release_all_model_clients(self) -> None:
+        for key, client in list(self.model_clients.items()):
+            del self.model_clients[key]
+            if key in self.owned_model_clients:
+                self.owned_model_clients.remove(key)
+                await close_object(client)
 
     async def resolve_tool_sandbox(
         self, toolset: Toolset, task: Task, state: State
     ) -> object:
-        from .sandbox_utils import (
+        from .utils.sandbox_utils import (
             SandboxHandle,
             create_tool_sandbox_lease,
             sandbox_scope,
@@ -458,52 +659,254 @@ class Runtime:
         if not isinstance(sandbox, Mapping):
             raise TypeError("Toolset sandbox must be a mapping.")
         scope = sandbox_scope(sandbox)
-        state_key = 0 if scope == "global" else id(state)
-        key = (state_key, tool_sandbox_key(toolset))
-        async with self.tool_sandbox_lock:
-            lease = self.tool_sandboxes.get(key)
+        key = (self.scope_key(scope, state), tool_sandbox_key(toolset))
+        async with self.sandbox_lock:
+            lease = self.sandbox_leases.get(key)
             if lease is None:
                 lease = await create_tool_sandbox_lease(toolset)
-                self.tool_sandboxes[key] = lease
+                self.sandbox_leases[key] = lease
         return SandboxHandle(cast(Any, lease), state)
 
-    async def release_tool_sandboxes(self, state: State, scope: str) -> None:
-        for key, handle in list(self.tool_sandboxes.items()):
-            state_id, _ = key
-            if state_id != id(state):
+    async def resolve_user_sandbox(
+        self, user: User, task: Task, state: State
+    ) -> object:
+        from .utils.sandbox_utils import (
+            SandboxHandle,
+            create_scoped_sandbox_lease,
+            sandbox_owner_key,
+            sandbox_scope,
+        )
+
+        _ = task
+        sandbox = user.sandbox
+        if not isinstance(sandbox, Mapping):
+            raise TypeError("User sandbox must be a mapping.")
+        scope = sandbox_scope(sandbox)
+        key = (self.scope_key(scope, state), sandbox_owner_key(user))
+        async with self.sandbox_lock:
+            lease = self.sandbox_leases.get(key)
+            if lease is None:
+                lease = await create_scoped_sandbox_lease(user, key[1])
+                self.sandbox_leases[key] = lease
+        return SandboxHandle(cast(Any, lease), state)
+
+    async def release_sandboxes(self, scope: str, state: State) -> None:
+        scope_key = self.scope_key(scope, state)
+        for key, handle in list(self.sandbox_leases.items()):
+            lease_scope_key, _ = key
+            if lease_scope_key != scope_key:
                 continue
             handle_scope = getattr(handle, "scope", None)
             if handle_scope != scope:
                 continue
             await maybe_call_with_named_args(getattr(handle, "delete"))
-            del self.tool_sandboxes[key]
+            del self.sandbox_leases[key]
 
-    async def ensure_global_tool_sandboxes(self) -> None:
-        from .sandbox_utils import (
+    async def ensure_global_sandboxes(self) -> None:
+        from .utils.sandbox_utils import (
+            create_scoped_sandbox_lease,
             create_tool_sandbox_lease,
+            sandbox_owner_key,
             sandbox_scope,
             tool_sandbox_key,
         )
 
-        async with self.tool_sandbox_lock:
-            for toolset in self.toolsets:
-                sandbox = toolset.sandbox
+        async with self.sandbox_lock:
+            for owner in self.sandbox_owners():
+                sandbox = getattr(owner, "sandbox", None)
                 if not isinstance(sandbox, Mapping):
                     continue
                 if sandbox_scope(sandbox) != "global":
                     continue
-                key = (0, tool_sandbox_key(toolset))
-                if key not in self.tool_sandboxes:
-                    self.tool_sandboxes[key] = await create_tool_sandbox_lease(toolset)
+                if isinstance(owner, Toolset):
+                    sandbox_key = tool_sandbox_key(owner)
+                else:
+                    sandbox_key = sandbox_owner_key(owner)
+                key = ("global", sandbox_key)
+                if key in self.sandbox_leases:
+                    continue
+                if isinstance(owner, Toolset):
+                    self.sandbox_leases[key] = await create_tool_sandbox_lease(owner)
+                else:
+                    self.sandbox_leases[key] = await create_scoped_sandbox_lease(
+                        owner, sandbox_key
+                    )
 
-    def bind_global_tool_sandboxes(self, state: State) -> None:
-        from .sandbox_utils import attach_tool_sandbox_ref
+    def bind_global_sandboxes(self, state: State) -> None:
+        from .utils.sandbox_utils import attach_sandbox_ref
 
-        for key, lease in self.tool_sandboxes.items():
-            state_id, _ = key
-            if state_id != 0:
+        for key, lease in self.sandbox_leases.items():
+            scope_key, _ = key
+            if scope_key != "global":
                 continue
-            attach_tool_sandbox_ref(state, cast(Any, lease))
+            attach_sandbox_ref(state, cast(Any, lease))
+
+    def sandbox_owners(self) -> list[object]:
+        owners: list[object] = [*self.toolsets]
+        user = self._resolve_user()
+        if user is not None:
+            owners.append(user)
+        return owners
+
+    async def ensure_mcp_tools(self, state: State) -> None:
+        from .utils.mcp_utils import connect_mcp_tool
+
+        for key in self.mcp_scope_keys(state):
+            if key in self.mcp_exit_stacks:
+                continue
+            exit_stack = AsyncExitStack()
+            tools: dict[str, object] = {}
+            exposed_tools: dict[str, object] = {}
+            try:
+                for toolset in self.toolsets:
+                    await self._register_mcp_tools(
+                        toolset,
+                        [toolset],
+                        connect_mcp_tool,
+                        exit_stack,
+                        tools,
+                        exposed_tools,
+                        state,
+                        key,
+                    )
+            except BaseException:
+                await exit_stack.aclose()
+                raise
+            self.mcp_exit_stacks[key] = exit_stack
+            self.mcp_tools[key] = tools
+            self.exposed_mcp_tools[key] = exposed_tools
+
+    async def _register_mcp_tools(
+        self,
+        toolset: Toolset,
+        parents: list[Toolset],
+        connect_mcp_tool: Callable[
+            [MCPTool, AsyncExitStack[bool | None]], Awaitable[Sequence[object]]
+        ],
+        exit_stack: AsyncExitStack,
+        tools: dict[str, object],
+        exposed_tools: dict[str, object],
+        state: State,
+        target_key: str,
+    ) -> None:
+        for item in toolset.tools:
+            if isinstance(item, Toolset):
+                await self._register_mcp_tools(
+                    item,
+                    [*parents, item],
+                    connect_mcp_tool,
+                    exit_stack,
+                    tools,
+                    exposed_tools,
+                    state,
+                    target_key,
+                )
+                continue
+            if not isinstance(item, MCPTool):
+                continue
+            if self.mcp_scope_key(toolset, state) != target_key:
+                continue
+            handles = await connect_mcp_tool(item, exit_stack)
+            for handle in handles:
+                name = tool_name(handle)
+                if name in self.tools or name in tools:
+                    raise ValueError(f"Tool {name!r} is defined twice.")
+                tools[name] = handle
+                if all(tool_visible(parent, name) for parent in parents):
+                    exposed_tools[name] = handle
+
+    async def close_mcp_tools(self, state: State, scope: str = "rollout") -> None:
+        for key in self.mcp_scope_keys(state, scope=scope):
+            exit_stack = self.mcp_exit_stacks.pop(key, None)
+            self.mcp_tools.pop(key, None)
+            self.exposed_mcp_tools.pop(key, None)
+            if exit_stack is not None:
+                await exit_stack.aclose()
+
+    async def close_all_mcp_tools(self) -> None:
+        for key, exit_stack in list(self.mcp_exit_stacks.items()):
+            self.mcp_tools.pop(key, None)
+            self.exposed_mcp_tools.pop(key, None)
+            del self.mcp_exit_stacks[key]
+            await exit_stack.aclose()
+
+    def all_tools(self, state: State) -> dict[str, object]:
+        tools = dict(self.tools)
+        for name, tool in self.mcp_tools_for_state(state, exposed=False).items():
+            if name in tools:
+                raise ValueError(f"Tool {name!r} is defined twice.")
+            tools[name] = tool
+        return tools
+
+    def unfiltered_exposed_tools(self, state: State) -> dict[str, object]:
+        tools = dict(self.exposed_tools)
+        for name, tool in self.mcp_tools_for_state(state, exposed=True).items():
+            if name in tools:
+                raise ValueError(f"Tool {name!r} is defined twice.")
+            tools[name] = tool
+        return tools
+
+    def all_exposed_tools(self, state: State) -> dict[str, object]:
+        tools = self.unfiltered_exposed_tools(state)
+        selected = state.get("runtime", {}).get("tools")
+        if selected is None:
+            return tools
+        if not isinstance(selected, Sequence) or isinstance(selected, str | bytes):
+            raise TypeError("state.runtime.tools must be a list of tool names.")
+        selected_names = [str(name) for name in selected]
+        unknown = sorted(set(selected_names) - set(tools))
+        if unknown:
+            raise KeyError(f"Unknown requested tools: {unknown}.")
+        return {name: tools[name] for name in selected_names}
+
+    def mcp_tools_for_state(self, state: State, exposed: bool) -> dict[str, object]:
+        source = self.exposed_mcp_tools if exposed else self.mcp_tools
+        tools: dict[str, object] = {}
+        for key in self.mcp_scope_keys(state):
+            for name, tool in source.get(key, {}).items():
+                if name in tools:
+                    raise ValueError(f"Tool {name!r} is defined twice.")
+                tools[name] = tool
+        return tools
+
+    def mcp_scope_keys(self, state: State, scope: str | None = None) -> list[str]:
+        keys: list[str] = []
+
+        def visit(toolset: Toolset) -> None:
+            for item in toolset.tools:
+                if isinstance(item, Toolset):
+                    visit(item)
+                    continue
+                if not isinstance(item, MCPTool):
+                    continue
+                item_scope = toolset_object_scope(toolset)
+                if scope is not None and item_scope != scope:
+                    continue
+                key = self.mcp_scope_key(toolset, state)
+                if key not in keys:
+                    keys.append(key)
+
+        for toolset in self.toolsets:
+            visit(toolset)
+        return keys
+
+    def mcp_scope_key(self, toolset: Toolset, state: State) -> str:
+        scope = toolset_object_scope(toolset)
+        return f"{scope}:{self.scope_key(scope, state)}:{id(toolset)}"
+
+
+def tool_visible(toolset: Toolset, name: str) -> bool:
+    if toolset.show is not None and name not in toolset.show:
+        return False
+    if toolset.hide is not None and name in toolset.hide:
+        return False
+    return True
+
+
+def toolset_object_scope(toolset: Toolset) -> str:
+    if toolset.scope is not None:
+        return toolset.scope
+    return "rollout" if toolset.write else "global"
 
 
 def _read_path(value: object, path: str) -> object:
@@ -531,6 +934,14 @@ def serializable(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): serializable(item) for key, item in value.items()}
     return value
+
+
+async def close_object(obj: object) -> None:
+    for name in ("aclose", "close", "delete", "teardown"):
+        fn = getattr(obj, name, None)
+        if callable(fn):
+            await maybe_call_with_named_args(fn)
+            return
 
 
 @contextmanager

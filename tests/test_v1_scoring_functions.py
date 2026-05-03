@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 import verifiers as vf
@@ -46,9 +48,10 @@ async def test_programmatic_metric_and_reward_share_signal_path() -> None:
 
     await score_rollout(signals, task, state)
 
+    metrics = cast(dict[str, float], state["metrics"])
     assert state["reward"] == 2.0
-    assert state["metrics"]["exact_answer"] == 1.0
-    assert state["metrics"]["num_tool_calls"] == 2.0
+    assert metrics["exact_answer"] == 1.0
+    assert metrics["num_tool_calls"] == 2.0
 
 
 @pytest.mark.asyncio
@@ -66,21 +69,18 @@ async def test_config_overrides_default_signal_metadata() -> None:
 
 
 @pytest.mark.asyncio
-async def test_config_adds_imported_signal_by_name() -> None:
+async def test_config_tunes_imported_signal_by_name() -> None:
     signals = build_signals(
-        scoring={
-            "config_metric": {
-                "ref": f"{__name__}:config_metric",
-                "priority": 10,
-            }
-        }
+        metrics=[config_metric],
+        scoring={"config_metric": {"priority": 10}},
     )
     task = {"x": 2}
     state = {"y": 3}
 
     await score_rollout(signals, task, state)
 
-    assert state["metrics"]["config_metric"] == 5.0
+    metrics = cast(dict[str, float], state["metrics"])
+    assert metrics["config_metric"] == 5.0
 
 
 def test_signal_name_collisions_hard_fail() -> None:

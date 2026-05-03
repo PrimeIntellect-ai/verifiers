@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 
+import verifiers as vf
 from verifiers.envs.experimental.harbor_env import HarborEnv
 
 logger = logging.getLogger("verifiers.envs.OpenCodeHarborEnv")
@@ -259,7 +260,27 @@ def load_environment(
     disk_size_gb: int = 10,
     timeout_minutes: int = 120,
     max_turns: int = 4,
-) -> OpenCodeHarborEnv:
+    v1: bool = False,
+) -> vf.Environment:
+    if v1:
+        from opencode_harbor_v1 import load_v1_environment
+
+        return load_v1_environment(
+            dataset_path=dataset_path,
+            dataset=dataset,
+            tasks=tasks,
+            agent_workdir=agent_workdir,
+            docker_image=docker_image,
+            system_prompt_path=system_prompt_path,
+            disabled_tools=disabled_tools,
+            timeout_seconds=timeout_seconds,
+            cpu_cores=cpu_cores,
+            memory_gb=memory_gb,
+            disk_size_gb=disk_size_gb,
+            timeout_minutes=timeout_minutes,
+            max_turns=max_turns,
+        )
+
     if dataset and tasks:
         raise ValueError("Cannot specify both 'dataset' and 'tasks'")
     if dataset:

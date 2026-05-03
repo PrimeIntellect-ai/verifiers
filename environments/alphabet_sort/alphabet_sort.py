@@ -200,8 +200,25 @@ def load_environment(
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
+    v1: bool = False,
     **kwargs,
 ) -> vf.Environment:
+    if v1:
+        from alphabet_sort_v1 import load_v1_environment
+
+        return load_v1_environment(
+            max_turns=max_turns,
+            min_turns=min_turns,
+            min_names_per_turn=min_names_per_turn,
+            max_names_per_turn=max_names_per_turn,
+            similarity_power=similarity_power,
+            power_per_turn=power_per_turn,
+            dataset_name=dataset_name,
+            dataset_split=dataset_split,
+            seed=seed,
+            **kwargs,
+        )
+
     assert min_turns >= 1, "min_turns must be at least 1"
     assert min_turns <= max_turns, "min_turns must be less than or equal to max_turns"
     assert min_names_per_turn >= 1, "min_names_per_turn must be at least 1"

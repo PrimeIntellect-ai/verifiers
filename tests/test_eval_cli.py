@@ -545,7 +545,7 @@ def test_cli_endpoint_id_not_found_raises(monkeypatch, run_cli):
 def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            'endpoints_path = "./configs/endpoints.py"\n\n'
+            'endpoints_path = "./configs/endpoints.json"\n\n'
             '[[eval]]\nenv_id = "env1"\nendpoint_id = "gpt-5-mini"\n'
         )
         f.flush()

@@ -70,7 +70,6 @@ def configure_value(value, config):
 def configure_named(items, config):
     # Items are addressed by function/object name.
     # Matching config entries tune metadata such as weight, skip, priority.
-    # New config entries must be import refs or registry refs and are appended.
     # Duplicate final names hard fail.
     ...
 

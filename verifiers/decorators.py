@@ -1,7 +1,8 @@
 import inspect
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable, Literal, TypeVar, overload
 
 SignalStage = Literal["rollout", "group"]
+F = TypeVar("F", bound=Callable[..., object])
 
 
 def discover_decorated(obj: Any, attr: str) -> list:
@@ -20,12 +21,15 @@ def discover_decorated(obj: Any, attr: str) -> list:
     return methods
 
 
-def stop(
-    func: Callable[..., Awaitable[bool]] | None = None, priority: int = 0
-) -> (
-    Callable[..., Awaitable[bool]]
-    | Callable[[Callable[..., Awaitable[bool]]], Callable[..., Awaitable[bool]]]
-):
+@overload
+def stop(func: F, priority: int = 0) -> F: ...
+
+
+@overload
+def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+
+
+def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """
     Decorator to mark a method as a stop condition.
 
@@ -52,7 +56,7 @@ def stop(
             ...
     """
 
-    def decorator(f: Callable[..., Awaitable[bool]]) -> Callable[..., Awaitable[bool]]:
+    def decorator(f: F) -> F:
         setattr(f, "stop", True)
         setattr(f, "stop_priority", priority)
         return f
@@ -63,14 +67,19 @@ def stop(
         return decorator(func)
 
 
+@overload
+def cleanup(func: F, priority: int = 0, stage: SignalStage = "rollout") -> F: ...
+
+
+@overload
 def cleanup(
-    func: Callable[..., Awaitable[None]] | None = None,
-    priority: int = 0,
-    stage: SignalStage = "rollout",
-) -> (
-    Callable[..., Awaitable[None]]
-    | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
-):
+    func: None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> Callable[[F], F]: ...
+
+
+def cleanup(
+    func: F | None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> F | Callable[[F], F]:
     """
     Decorator to mark a method as a rollout cleanup.
 
@@ -96,7 +105,7 @@ def cleanup(
             ...
     """
 
-    def decorator(f: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    def decorator(f: F) -> F:
         setattr(f, "cleanup", True)
         setattr(f, "cleanup_priority", priority)
         setattr(f, "cleanup_stage", stage)
@@ -108,40 +117,22 @@ def cleanup(
         return decorator(func)
 
 
-def render(
-    func: Callable[..., Awaitable[None]] | None = None,
-    priority: int = 0,
-    stage: SignalStage = "rollout",
-) -> (
-    Callable[..., Awaitable[None]]
-    | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
-):
-    """Decorator to mark a pre-scoring state render/finalization handler."""
+@overload
+def metric(func: F, priority: int = 0, stage: SignalStage = "rollout") -> F: ...
 
-    def decorator(f: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
-        setattr(f, "render", True)
-        setattr(f, "render_priority", priority)
-        setattr(f, "render_stage", stage)
-        return f
 
-    if func is None:
-        return decorator
-    return decorator(func)
+@overload
+def metric(
+    func: None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> Callable[[F], F]: ...
 
 
 def metric(
-    func: Callable[..., Awaitable[float]] | None = None,
-    priority: int = 0,
-    stage: SignalStage = "rollout",
-) -> (
-    Callable[..., Awaitable[float]]
-    | Callable[[Callable[..., Awaitable[float]]], Callable[..., Awaitable[float]]]
-):
+    func: F | None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> F | Callable[[F], F]:
     """Decorator to mark a rollout or group metric signal."""
 
-    def decorator(
-        f: Callable[..., Awaitable[float]],
-    ) -> Callable[..., Awaitable[float]]:
+    def decorator(f: F) -> F:
         setattr(f, "metric", True)
         setattr(f, "metric_priority", priority)
         setattr(f, "metric_stage", stage)
@@ -152,20 +143,33 @@ def metric(
     return decorator(func)
 
 
+@overload
 def reward(
-    func: Callable[..., Awaitable[float]] | None = None,
+    func: F,
     weight: float = 1.0,
     priority: int = 0,
     stage: SignalStage = "rollout",
-) -> (
-    Callable[..., Awaitable[float]]
-    | Callable[[Callable[..., Awaitable[float]]], Callable[..., Awaitable[float]]]
-):
+) -> F: ...
+
+
+@overload
+def reward(
+    func: None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    stage: SignalStage = "rollout",
+) -> Callable[[F], F]: ...
+
+
+def reward(
+    func: F | None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    stage: SignalStage = "rollout",
+) -> F | Callable[[F], F]:
     """Decorator to mark a rollout or group reward signal."""
 
-    def decorator(
-        f: Callable[..., Awaitable[float]],
-    ) -> Callable[..., Awaitable[float]]:
+    def decorator(f: F) -> F:
         setattr(f, "reward", True)
         setattr(f, "reward_priority", priority)
         setattr(f, "reward_stage", stage)
@@ -177,20 +181,18 @@ def reward(
     return decorator(func)
 
 
-def advantage(
-    func: Callable[..., Awaitable[list[float]]] | None = None,
-    priority: int = 0,
-) -> (
-    Callable[..., Awaitable[list[float]]]
-    | Callable[
-        [Callable[..., Awaitable[list[float]]]], Callable[..., Awaitable[list[float]]]
-    ]
-):
+@overload
+def advantage(func: F, priority: int = 0) -> F: ...
+
+
+@overload
+def advantage(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+
+
+def advantage(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Decorator to mark a group-stage advantage handler."""
 
-    def decorator(
-        f: Callable[..., Awaitable[list[float]]],
-    ) -> Callable[..., Awaitable[list[float]]]:
+    def decorator(f: F) -> F:
         setattr(f, "advantage", True)
         setattr(f, "advantage_priority", priority)
         setattr(f, "advantage_stage", "group")
@@ -201,12 +203,15 @@ def advantage(
     return decorator(func)
 
 
-def teardown(
-    func: Callable[..., Awaitable[None]] | None = None, priority: int = 0
-) -> (
-    Callable[..., Awaitable[None]]
-    | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
-):
+@overload
+def teardown(func: F, priority: int = 0) -> F: ...
+
+
+@overload
+def teardown(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+
+
+def teardown(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """
     Decorator to mark a method as a teardown handler.
 
@@ -233,7 +238,7 @@ def teardown(
             ...
     """
 
-    def decorator(f: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    def decorator(f: F) -> F:
         setattr(f, "teardown", True)
         setattr(f, "teardown_priority", priority)
         return f

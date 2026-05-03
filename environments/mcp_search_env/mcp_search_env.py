@@ -7,7 +7,7 @@ from verifiers.envs.experimental.mcp_env import MCPEnv
 
 
 def load_environment(
-    mcp_servers: list | None = None, dataset=None, **kwargs
+    mcp_servers: list | None = None, dataset=None, v1: bool = False, **kwargs
 ) -> vf.Environment:
     """Load an MCPEnv environment with fetch server for testing."""
     if mcp_servers is None:
@@ -26,6 +26,11 @@ def load_environment(
                 "description": "Fetch MCP server",
             },
         ]
+
+    if v1:
+        from mcp_search_v1 import load_v1_environment
+
+        return load_v1_environment(mcp_servers=mcp_servers, dataset=dataset, **kwargs)
 
     dataset = dataset or Dataset.from_dict(
         {

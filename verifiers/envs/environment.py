@@ -251,13 +251,11 @@ class Environment(ABC):
 
         def _sync_teardown():
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self._teardown())
-                else:
-                    loop.run_until_complete(self._teardown())
+                loop = asyncio.get_running_loop()
             except RuntimeError:
                 asyncio.run(self._teardown())
+            else:
+                loop.create_task(self._teardown())
 
         atexit.register(_sync_teardown)
         signal.signal(
@@ -683,6 +681,57 @@ class Environment(ABC):
                 return True
         return False
 
+    async def _run_rollout_state(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> State:
+        state = await self.rollout(
+            input,
+            client,
+            model,
+            sampling_args,
+        )
+
+        if self.score_rollouts:
+            await self.rubric.score_rollout(state)
+        else:
+            await self.rubric.dummy_score_rollout(state)
+
+        await self.rubric.cleanup(state)
+        return state
+
+    async def _run_group_states(
+        self,
+        group_inputs: list[RolloutInput],
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> list[State]:
+        rollout_tasks = [
+            self.rollout(
+                input,
+                client,
+                model,
+                sampling_args,
+            )
+            for input in group_inputs
+        ]
+        group_states = await asyncio.gather(*rollout_tasks)
+
+        if self.score_rollouts:
+            await self.rubric.score_group(group_states)
+        else:
+            await self.rubric.dummy_score_group(group_states)
+
+        for state in group_states:
+            await self.rubric.cleanup(state)
+
+        return group_states
+
+    @final
     async def run_rollout(
         self,
         input: RolloutInput,
@@ -717,26 +766,18 @@ class Environment(ABC):
         resolved_client = resolve_client(client)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(
+            return await self._run_rollout_state(
                 input,
                 resolved_client,
                 model,
                 sampling_args,
             )
 
-            if self.score_rollouts:
-                await self.rubric.score_rollout(state)
-            else:
-                await self.rubric.dummy_score_rollout(state)
-
-            await self.rubric.cleanup(state)
-
-            return state
-
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
         output = state_to_output(state, state_columns or [])
         return output
 
+    @final
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
@@ -772,26 +813,12 @@ class Environment(ABC):
         resolved_client = resolve_client(client)
 
         async def run_group_attempt() -> list[State]:
-            rollout_tasks = [
-                self.rollout(
-                    input,
-                    resolved_client,
-                    model,
-                    sampling_args,
-                )
-                for input in group_inputs
-            ]
-            group_states = await asyncio.gather(*rollout_tasks)
-
-            if self.score_rollouts:
-                await self.rubric.score_group(group_states)
-            else:
-                await self.rubric.dummy_score_group(group_states)
-
-            for state in group_states:
-                await self.rubric.cleanup(state)
-
-            return group_states
+            return await self._run_group_states(
+                group_inputs,
+                resolved_client,
+                model,
+                sampling_args,
+            )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [
