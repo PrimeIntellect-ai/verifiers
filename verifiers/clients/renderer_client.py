@@ -377,11 +377,11 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size) so that different parser configs or pool
-    # sizes for the same model don't collide.
+    # Cache key is (renderer_model_name, renderer_name, keep_thinking,
+    # tool_parser, reasoning_parser, pool_size) so that different renderer
+    # behavior, parser configs, or pool sizes for the same model don't collide.
     _shared_pools: ClassVar[
-        dict[tuple[str, str, str | None, str | None, int], RendererPool]
+        dict[tuple[str, str, bool, str | None, str | None, int], RendererPool]
     ] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -417,12 +417,16 @@ class RendererClient(
             else model
         )
         tool_parser = self._config.tool_parser if self._config is not None else None
+        keep_thinking = (
+            self._config.renderer_keep_thinking if self._config is not None else False
+        )
         reasoning_parser = (
             self._config.reasoning_parser if self._config is not None else None
         )
         cache_key = (
             renderer_model,
             renderer_name,
+            keep_thinking,
             tool_parser,
             reasoning_parser,
             self._pool_size,
@@ -434,6 +438,7 @@ class RendererClient(
                     renderer_model,
                     renderer=renderer_name,
                     size=self._pool_size,
+                    keep_thinking=keep_thinking,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
                 )

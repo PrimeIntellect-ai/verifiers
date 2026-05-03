@@ -44,6 +44,7 @@ def test_renderer_client_honors_configured_renderer_name():
         "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
         size=1,
+        keep_thinking=False,
         tool_parser=None,
         reasoning_parser=None,
     )
@@ -73,6 +74,39 @@ def test_renderer_client_uses_renderer_model_name_override():
         "Qwen/Qwen3-VL-4B-Instruct",
         renderer="qwen3_vl",
         size=1,
+        keep_thinking=False,
+        tool_parser=None,
+        reasoning_parser=None,
+    )
+
+
+def test_renderer_client_forwards_keep_thinking_to_renderer_pool():
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer="nemotron3",
+        renderer_keep_thinking=True,
+    )
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        return_value=sentinel_pool,
+    ) as create_pool_mock:
+        pool = client._get_renderer_or_pool(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+        )
+
+    assert pool is sentinel_pool
+    create_pool_mock.assert_called_once_with(
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        renderer="nemotron3",
+        size=1,
+        keep_thinking=True,
         tool_parser=None,
         reasoning_parser=None,
     )
