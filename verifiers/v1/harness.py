@@ -367,7 +367,8 @@ class Harness:
             return rendered_messages
 
         turn = 0
-        while self.config.max_turns <= 0 or turn < self.config.max_turns:
+        max_turns = self.max_turns(state)
+        while max_turns <= 0 or turn < max_turns:
             if await self.runtime.is_completed(task, state):
                 return state
             response = await self.runtime.submit_model_request(
@@ -405,10 +406,21 @@ class Harness:
                 sync_completion()
                 if await self.runtime.is_completed(task, state):
                     return state
-            if self.config.max_turns > 0 and turn >= self.config.max_turns:
+            if max_turns > 0 and turn >= max_turns:
                 state["stop_condition"] = "max_turns_reached"
                 return state
         return state
+
+    def max_turns(self, state: State) -> int:
+        runtime = state.get("runtime", {})
+        if isinstance(runtime, Mapping) and "max_turns" in runtime:
+            value = runtime["max_turns"]
+            if value is None:
+                return self.config.max_turns
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError("state.runtime.max_turns must be an integer.")
+            return value
+        return self.config.max_turns
 
     def command_program(self, program: Mapping[str, object]) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
@@ -442,7 +454,7 @@ class Harness:
                 runtime=self.runtime,
                 mode="base",
                 entrypoint=None,
-                max_turns=self.config.max_turns,
+                max_turns=self.max_turns(state),
             )
 
         return run
@@ -464,7 +476,7 @@ class Harness:
                 runtime=self.runtime,
                 mode="entrypoint",
                 entrypoint=entrypoint,
-                max_turns=self.config.max_turns,
+                max_turns=self.max_turns(state),
             )
 
         return run

@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from pydantic_core import PydanticUndefined
 
 
@@ -68,6 +68,31 @@ class HarnessConfig(Config):
     cleanup: list[object] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
     max_turns: int = 10
+
+
+class RuntimeToolSelection(Config):
+    show: list[str] | None = None
+    hide: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> Self:
+        if self.show is not None and self.hide is not None:
+            raise ValueError("runtime.tools accepts show or hide, not both.")
+        return self
+
+
+class RuntimeConfig(Config):
+    max_turns: StrictInt | None = None
+    tools: list[str] | RuntimeToolSelection | None = None
+
+
+def normalize_runtime_config(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    if isinstance(value, RuntimeConfig):
+        return value.model_dump(exclude_none=True)
+    config = RuntimeConfig.model_validate(value)
+    return config.model_dump(exclude_none=True)
 
 
 def merge_config_value(value: object, config: object) -> object:

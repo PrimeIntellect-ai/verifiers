@@ -6,6 +6,8 @@ from typing import Any, SupportsIndex, cast
 
 from verifiers.types import assert_json_serializable
 
+from .config import normalize_runtime_config
+
 
 class Task(dict):
     def __init__(self, row: Mapping[str, Any] | None = None):
@@ -13,6 +15,8 @@ class Task(dict):
         self._frozen = False
 
     def freeze(self) -> Task:
+        if "runtime" in self:
+            super().__setitem__("runtime", normalize_runtime_config(self["runtime"]))
         for key, value in list(self.items()):
             super().__setitem__(key, freeze_value(value))
         assert_serializable(self)

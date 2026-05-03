@@ -114,6 +114,7 @@ def source():
     yield {
         "prompt": [{"role": "user", "content": "Reverse abc."}],
         "answer": "cba",
+        "runtime": {"max_turns": 1},
     }
 
 
@@ -126,18 +127,8 @@ def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_harness(config=None):
-    return vf.Harness(config=config)
-
-
-def load_environment(taskset_config=None, harness_config=None):
-    taskset = load_taskset(taskset_config)
-    if harness_config is None:
-        return vf.Env(taskset=taskset)
-    return vf.Env(
-        taskset=taskset,
-        harness=load_harness(harness_config),
-    )
+def load_environment(taskset_config=None):
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -207,6 +198,33 @@ Every task receives:
 
 - `taskset_id`: the taskset identifier, defaulting to the class name;
 - `task_id`: `task_id`, `id`, `example_id`, or a generated UUID.
+
+### Task Runtime Requests
+
+`runtime` is a privileged task field for serializable rollout requests. It is
+validated before the task is frozen. Current task-level runtime fields are:
+
+- `max_turns`: per-rollout turn limit for the base harness loop;
+- `tools`: tool visibility as a list of names, `{"show": [...]}`, or
+  `{"hide": [...]}`.
+
+The priority rule is:
+
+```text
+explicit state.runtime > task.runtime > harness defaults
+```
+
+`state.runtime` is only present when a caller passes an already-specialized
+state into `harness.run(...)`, when `Taskset.init_group(...)` returns customized
+states, or when `Env` writes model controls for eval/training. The base harness
+default remains `max_turns=10`; a taskset can override it per row:
+
+```python
+yield {
+    "prompt": [{"role": "user", "content": "Answer briefly."}],
+    "runtime": {"max_turns": 3},
+}
+```
 
 For compatibility with the current `vf.Environment` worker schema,
 `Taskset.get_dataset()` emits worker rows and stores the full canonical task as

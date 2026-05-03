@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 import verifiers as vf
 from verifiers.v1 import (
@@ -254,6 +255,46 @@ def test_harness_max_turns_arg_overrides_config() -> None:
     harness = Harness(max_turns=9, config={"max_turns": 3})
 
     assert harness.config.max_turns == 9
+
+
+@pytest.mark.asyncio
+async def test_task_runtime_max_turns_overrides_harness_default() -> None:
+    harness = Harness(max_turns=9)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "runtime": {"max_turns": 3},
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert harness.max_turns(state) == 3
+
+
+@pytest.mark.asyncio
+async def test_explicit_state_runtime_max_turns_overrides_task_runtime() -> None:
+    harness = Harness(max_turns=9)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "runtime": {"max_turns": 3},
+        }
+    ).freeze()
+    state = State.for_task(task)
+    state["runtime"] = {"max_turns": 2}
+    state = await harness.setup_state(task, state)
+
+    assert harness.max_turns(state) == 2
+
+
+def test_task_runtime_rejects_unknown_keys() -> None:
+    with pytest.raises(ValidationError):
+        Task({"runtime": {"unknown": True}}).freeze()
+
+
+def test_task_runtime_rejects_non_integer_max_turns() -> None:
+    with pytest.raises(ValidationError):
+        Task({"runtime": {"max_turns": "3"}}).freeze()
 
 
 def test_option_only_program_requires_sandbox_placement() -> None:

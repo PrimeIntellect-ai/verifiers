@@ -2,7 +2,7 @@
 
 from verifiers.decorators import advantage, cleanup, metric, reward, stop, teardown
 
-from .config import Config, HarnessConfig, TasksetConfig
+from .config import Config, HarnessConfig, RuntimeConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
 from .runtime import load_runtime_from_state
@@ -27,6 +27,7 @@ __all__ = [
     "Harness",
     "HarnessConfig",
     "MCPTool",
+    "RuntimeConfig",
     "State",
     "Task",
     "Taskset",
