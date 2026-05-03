@@ -113,9 +113,6 @@ exclude-newer = "7 days"
 preview = true
 required-version = ">=0.11.1"
 
-[tool.uv.sources]
-renderers = { path = "packages/renderers", editable = true }
-
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
