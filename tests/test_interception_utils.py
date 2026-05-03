@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 from verifiers.errors import InfraError
@@ -92,6 +93,39 @@ def test_set_rollout_error_does_not_clobber_existing_error():
     server._set_rollout_error("r1", StreamInterrupted("later"))
 
     assert state["error"] is original
+
+
+def test_dump_intercepted_request_disabled_without_env(monkeypatch, tmp_path):
+    monkeypatch.delenv(interception_utils.INTERCEPT_DUMP_DIR_ENV, raising=False)
+
+    path = interception_utils._dump_intercepted_request(
+        "rollout_1",
+        "req_1",
+        {"messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dump_intercepted_request_writes_replay_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv(interception_utils.INTERCEPT_DUMP_DIR_ENV, str(tmp_path))
+    body = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "logprobs": True,
+    }
+
+    path = interception_utils._dump_intercepted_request(
+        "rollout_1", "req_1", body
+    )
+
+    assert path is not None
+    payload = json.loads(path.read_text())
+    assert payload["rollout_id"] == "rollout_1"
+    assert payload["request_id"] == "req_1"
+    assert payload["request"] == body
+    assert path.parent == tmp_path
 
 
 async def test_streaming_write_failure_surfaces_to_state(monkeypatch):

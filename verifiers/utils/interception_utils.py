@@ -4,8 +4,10 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, cast
 
 from aiohttp import web
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
+INTERCEPT_DUMP_DIR_ENV = "VF_INTERCEPT_DUMP_DIR"
 
 
 class StreamInterrupted(InfraError):
@@ -179,6 +182,7 @@ class InterceptionServer:
 
         is_streaming = request_body.get("stream", False)
         request_id = f"req_{uuid.uuid4().hex[:8]}"
+        dump_path = _dump_intercepted_request(rollout_id, request_id, request_body)
 
         chunk_queue: asyncio.Queue[dict | None] | None = (
             asyncio.Queue() if is_streaming else None
@@ -194,6 +198,7 @@ class InterceptionServer:
             "chunk_queue": chunk_queue,
             "response_future": asyncio.Future(),
             "headers": {k.lower(): v for k, v in request.headers.items()},
+            "dump_path": str(dump_path) if dump_path else None,
         }
 
         self.intercepts[request_id] = intercept
@@ -211,7 +216,8 @@ class InterceptionServer:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
                 logger.debug(
-                    f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}"
+                    f"[{rollout_id}] Rollout error surfaced in non-streaming request "
+                    f"{request_id}: {type(e).__name__}: {e}"
                 )
                 return web.json_response({"error": str(e)}, status=500)
 
@@ -236,6 +242,7 @@ class InterceptionServer:
         )
 
         start = time.monotonic()
+        request_id = intercept.get("request_id", "?")
 
         # Half-open transport at accept raises here; surface it so the
         # rollout reschedules instead of looking like a clean empty stream.
@@ -296,11 +303,12 @@ class InterceptionServer:
                 await asyncio.sleep(0)
 
         except asyncio.CancelledError:
-            logger.debug(f"[{rollout_id}] Streaming cancelled")
+            logger.debug(f"[{rollout_id}] Streaming cancelled for request {request_id}")
         except Exception as e:
             waited_s = time.monotonic() - start
             logger.debug(
-                f"[{rollout_id}] Streaming error after {print_time(waited_s)}: {e}"
+                f"[{rollout_id}] Streaming error for request {request_id} "
+                f"after {print_time(waited_s)}: {e}"
             )
             self._set_rollout_error(
                 rollout_id,
@@ -318,7 +326,8 @@ class InterceptionServer:
             await response_future
         except BaseException as e:
             logger.debug(
-                f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+                f"[{rollout_id}] Rollout error surfaced in stream request "
+                f"{request_id}: {type(e).__name__}: {e}"
             )
 
         # Surface any write_eof failure so a tail truncation becomes a
@@ -574,6 +583,38 @@ def _log_request(rollout_id: str, body: dict) -> None:
             func = tc.get("function", {})
             log_msg += f"\n[tool_call]\n{func.get('name')}({truncate(func.get('arguments', ''), 100)})"
     logger.debug(log_msg)
+
+
+def _dump_intercepted_request(
+    rollout_id: str, request_id: str, body: dict
+) -> Path | None:
+    """Persist the full intercepted OpenAI request for deterministic replay."""
+    dump_dir = os.getenv(INTERCEPT_DUMP_DIR_ENV)
+    if not dump_dir:
+        return None
+
+    try:
+        base = Path(dump_dir)
+        base.mkdir(parents=True, exist_ok=True)
+        created_ns = time.time_ns()
+        path = base / f"{created_ns}_{rollout_id}_{request_id}.json"
+        payload = {
+            "rollout_id": rollout_id,
+            "request_id": request_id,
+            "created_ns": created_ns,
+            "request": body,
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return path
+    except Exception:
+        logger.warning(
+            f"Failed to dump intercepted request {request_id} for {rollout_id}",
+            exc_info=True,
+        )
+        return None
 
 
 def _log_response(rollout_id: str, response: dict) -> None:
