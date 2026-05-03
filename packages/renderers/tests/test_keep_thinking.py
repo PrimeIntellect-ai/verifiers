@@ -20,6 +20,7 @@ from renderers import (
     Qwen3Renderer,
     Qwen35Renderer,
     Qwen36Renderer,
+    create_renderer,
 )
 
 # Renderer class + canonical HF model id.
@@ -72,3 +73,25 @@ def test_keep_thinking_retains_prior_turn_reasoning(renderer_cls, hf_model):
     # keep_thinking=True must additionally retain the prior turn's marker.
     assert "PRIORTHINK_MARKER" not in default_text
     assert "PRIORTHINK_MARKER" in keep_text
+
+
+def test_create_renderer_forwards_keep_thinking_to_model_renderer():
+    tokenizer = AutoTokenizer.from_pretrained(
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", trust_remote_code=True
+    )
+
+    default_renderer = create_renderer(tokenizer, renderer="nemotron3")
+    keep_renderer = create_renderer(tokenizer, renderer="nemotron3", keep_thinking=True)
+
+    default_text = tokenizer.decode(default_renderer.render_ids(_multi_turn_messages()))
+    keep_text = tokenizer.decode(keep_renderer.render_ids(_multi_turn_messages()))
+
+    assert "PRIORTHINK_MARKER" not in default_text
+    assert "PRIORTHINK_MARKER" in keep_text
+
+
+def test_create_renderer_rejects_keep_thinking_for_unsupported_renderer():
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B", trust_remote_code=True)
+
+    with pytest.raises(ValueError, match="does not support keep_thinking"):
+        create_renderer(tokenizer, renderer="default", keep_thinking=True)

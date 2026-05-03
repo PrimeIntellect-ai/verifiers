@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import inspect
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol, TypedDict, runtime_checkable
@@ -330,6 +331,7 @@ def create_renderer_pool(
     renderer: str = "auto",
     size: int = 16,
     *,
+    keep_thinking: bool = False,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
 ) -> RendererPool:
@@ -339,8 +341,8 @@ def create_renderer_pool(
     HuggingFace fast tokenizers release the GIL during Rust encoding, so
     threads achieve real parallelism.
 
-    ``tool_parser`` and ``reasoning_parser`` are forwarded to
-    ``create_renderer`` when the pool falls back to ``DefaultRenderer``.
+    ``keep_thinking``, ``tool_parser``, and ``reasoning_parser`` are forwarded
+    to ``create_renderer`` for each renderer slot.
     """
 
     def factory() -> Renderer:
@@ -352,6 +354,7 @@ def create_renderer_pool(
         return create_renderer(
             tokenizer,
             renderer=renderer,
+            keep_thinking=keep_thinking,
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
         )
@@ -363,6 +366,7 @@ def create_renderer(
     tokenizer,
     renderer: str = "auto",
     *,
+    keep_thinking: bool = False,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
 ) -> Renderer:
@@ -373,6 +377,8 @@ def create_renderer(
         renderer: Renderer name ('qwen3', 'qwen3_vl', 'qwen3.5', 'glm5', 'glm4.5',
                   'minimax-m2', 'deepseek_v3', 'kimi_k2', 'kimi_k25', 'nemotron3',
                   'gpt_oss', 'default') or 'auto' to detect from model name.
+        keep_thinking: Preserve historical assistant reasoning blocks for
+                  renderers that support that behavior.
         tool_parser: Name of a tool parser registered in ``renderers.parsers``.
                   Only consumed by DefaultRenderer. Model-specific renderers
                   have their own parsing wired in.
@@ -387,22 +393,33 @@ def create_renderer(
     if reasoning_parser is not None:
         default_kwargs["reasoning_parser"] = reasoning_parser
 
+    def instantiate_renderer(name: str, cls) -> Renderer:
+        kwargs: dict[str, Any] = {}
+        if name == "default":
+            kwargs.update(default_kwargs)
+        elif default_kwargs:
+            logger.info(
+                "tool_parser / reasoning_parser are only consumed by "
+                "DefaultRenderer; ignoring for renderer=%r which has "
+                "built-in behavior.",
+                name,
+            )
+
+        supports_keep_thinking = "keep_thinking" in inspect.signature(cls).parameters
+        if supports_keep_thinking:
+            kwargs["keep_thinking"] = keep_thinking
+        elif keep_thinking:
+            raise ValueError(f"Renderer {name!r} does not support keep_thinking=True")
+
+        return cls(tokenizer, **kwargs)
+
     if renderer != "auto":
         cls = RENDERER_REGISTRY.get(renderer)
         if cls is None:
             raise ValueError(
                 f"Unknown renderer {renderer!r}. Available: {', '.join(sorted(RENDERER_REGISTRY))}"
             )
-        if renderer == "default":
-            return cls(tokenizer, **default_kwargs)
-        if default_kwargs:
-            logger.info(
-                "tool_parser / reasoning_parser are only consumed by "
-                "DefaultRenderer; ignoring for renderer=%r which has "
-                "built-in behavior.",
-                renderer,
-            )
-        return cls(tokenizer)
+        return instantiate_renderer(renderer, cls)
 
     # Auto-detect from model name via exact match on the canonical HF id.
     # Fine-tunes and renamed checkpoints miss on purpose — their chat
@@ -412,7 +429,7 @@ def create_renderer(
     model_name = getattr(tokenizer, "name_or_path", "")
     renderer_name = MODEL_RENDERER_MAP.get(model_name)
     if renderer_name is not None:
-        return RENDERER_REGISTRY[renderer_name](tokenizer)
+        return instantiate_renderer(renderer_name, RENDERER_REGISTRY[renderer_name])
 
     # No match — fall back to default (apply_chat_template). For fine-tunes
     # with customized chat templates this is the *correct* choice, so we don't
@@ -423,7 +440,7 @@ def create_renderer(
         "reasoning_parser=<name> to enable structured output parsing.",
         model_name or "<unnamed tokenizer>",
     )
-    return RENDERER_REGISTRY["default"](tokenizer, **default_kwargs)
+    return instantiate_renderer("default", RENDERER_REGISTRY["default"])
 
 
 # ---------------------------------------------------------------------------
