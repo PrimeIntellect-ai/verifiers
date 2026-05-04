@@ -128,6 +128,9 @@ def test_prepare_agent_skill_dirs_materializes_skills_from_prime(
 
     setup._prepare_agent_skill_dirs(["codex"])
 
+    skills_dir = tmp_path / ".codex" / "skills"
+    if skills_dir.is_symlink():
+        assert skills_dir.resolve() == (tmp_path / ".prime" / "skills").resolve()
     for skill_name in setup.LAB_SKILLS:
         source = tmp_path / ".prime" / "skills" / skill_name
         target = tmp_path / ".codex" / "skills" / skill_name
@@ -199,10 +202,10 @@ def test_prepare_agent_skill_dirs_removes_managed_link_when_user_skill_exists(
     source.mkdir(parents=True, exist_ok=True)
     (source / "SKILL.md").write_text("bundled brainstorm\n")
 
-    target = tmp_path / ".codex" / "skills" / "brainstorm"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(
-        os.path.relpath(source, start=target.parent),
+    skills_dir = tmp_path / ".codex" / "skills"
+    skills_dir.parent.mkdir(parents=True, exist_ok=True)
+    skills_dir.symlink_to(
+        os.path.relpath(source.parent, start=skills_dir.parent),
         target_is_directory=True,
     )
 
@@ -212,6 +215,9 @@ def test_prepare_agent_skill_dirs_removes_managed_link_when_user_skill_exists(
 
     setup._prepare_agent_skill_dirs(["codex"])
 
+    target = tmp_path / ".codex" / "skills" / "brainstorm"
+    assert skills_dir.exists()
+    assert not skills_dir.is_symlink()
     assert not target.exists()
     assert not target.is_symlink()
     assert (user_skill / "SKILL.md").exists()
@@ -255,6 +261,9 @@ def test_prepare_agent_skill_dirs_uses_mapped_root_for_amp(
 
     setup._prepare_agent_skill_dirs(["amp"])
 
+    skills_dir = tmp_path / ".agents" / "skills"
+    if skills_dir.is_symlink():
+        assert skills_dir.resolve() == (tmp_path / ".prime" / "skills").resolve()
     assert (
         tmp_path / ".agents" / "skills" / "create-environments" / "SKILL.md"
     ).exists()
@@ -289,7 +298,8 @@ def test_run_setup_prints_post_setup_call_to_action(
     monkeypatch.chdir(tmp_path)
     _isolate_home(tmp_path, monkeypatch)
 
-    monkeypatch.setattr(setup.wget, "download", _fake_download_factory([]))
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
     monkeypatch.setattr(setup, "download_configs", lambda *_: None)
     monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
 
@@ -310,6 +320,40 @@ def test_run_setup_prints_post_setup_call_to_action(
     assert "prime eval tui" in output
     assert "prime rl run configs/rl/wiki-search.toml" in output
     assert "prime gepa run my-env -m openai/gpt-5-nano" in output
+
+
+def test_run_setup_does_not_write_claude_md_for_default_codex_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
+
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
+    monkeypatch.setattr(setup, "download_configs", lambda *_: None)
+    monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
+
+    setup.run_setup(skip_install=True, no_interactive=True)
+
+    assert (setup.CLAUDE_MD_SRC, setup.CLAUDE_MD_DST) not in downloaded
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_run_setup_writes_claude_md_when_claude_agent_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
+
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
+    monkeypatch.setattr(setup, "download_configs", lambda *_: None)
+    monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
+
+    setup.run_setup(skip_install=True, agents="claude", no_interactive=True)
+
+    assert (setup.CLAUDE_MD_SRC, setup.CLAUDE_MD_DST) in downloaded
+    assert (tmp_path / "CLAUDE.md").exists()
 
 
 def test_run_setup_prints_prime_rl_post_setup_call_to_action(
