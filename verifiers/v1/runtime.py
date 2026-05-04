@@ -137,10 +137,6 @@ class Runtime:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})
         state["runtime"]["runtime_id"] = self.runtime_id
-        state["runtime"].setdefault(
-            "tool_protocol",
-            getattr(getattr(self, "harness", None), "tool_protocol", "callable"),
-        )
         state["tools"] = sorted(self.all_exposed_tools(state))
 
     def bind_model_client(
@@ -170,67 +166,6 @@ class Runtime:
             self.owned_model_clients.add(key)
         state["runtime"]["client_key"] = key
         state["runtime"]["client_type"] = client_type
-
-    def inherit_model_controls(
-        self, parent_state: State, child_runtime: Runtime, child_state: State
-    ) -> None:
-        parent = parent_state.get("runtime", {})
-        child_harness = getattr(child_runtime, "harness", None)
-        child_has_client = getattr(child_harness, "client", None) is not None
-        child_has_model = getattr(child_harness, "model", None) is not None
-        child_has_sampling_args = bool(getattr(child_harness, "sampling_args", None))
-        child_state.setdefault("runtime", {})
-        for key in ("model", "sampling_args", "client_type", "score_rollout"):
-            if key == "model" and child_has_model:
-                continue
-            if key == "sampling_args" and child_has_sampling_args:
-                continue
-            if key == "client_type" and child_has_client:
-                continue
-            if key in parent and key not in child_state["runtime"]:
-                child_state["runtime"][key] = parent[key]
-        if "group_key" in parent and "group_key" not in child_state["runtime"]:
-            child_state["runtime"]["group_key"] = parent["group_key"]
-        client_key = parent.get("client_key")
-        if (
-            not child_has_client
-            and "client_key" not in child_state["runtime"]
-            and isinstance(client_key, str)
-            and client_key in self.model_clients
-        ):
-            child_runtime.model_clients[client_key] = self.model_clients[client_key]
-            child_state["runtime"]["client_key"] = client_key
-
-    async def run_harness(
-        self,
-        harness: object,
-        task: Task | Mapping[str, Any],
-        parent_state: State,
-        state: State | None = None,
-    ) -> State:
-        from .harness import Harness
-
-        if not isinstance(harness, Harness):
-            raise TypeError("run_harness expects a verifiers.v1.Harness.")
-        task = task if isinstance(task, Task) else Task(task).freeze()
-        child_state = State.for_task(task) if state is None else state
-        self.inherit_model_controls(parent_state, harness.runtime, child_state)
-        child_state = await harness.run(task, child_state)
-        self.record_child_rollout(parent_state, task, child_state)
-        return child_state
-
-    def record_child_rollout(
-        self, parent_state: State, task: Task, child_state: State
-    ) -> None:
-        child_record = State(cast(Mapping[str, Any], serializable(child_state)))
-        child_record.strip_runtime_handles()
-        parent_state.setdefault("child_rollouts", [])
-        parent_state["child_rollouts"].append(
-            {
-                "task": serializable(task),
-                "state": serializable(child_record),
-            }
-        )
 
     def model_client(self, state: State) -> Client:
         key = str(state.get("runtime", {}).get("client_key") or "default")
@@ -306,14 +241,7 @@ class Runtime:
         if isinstance(mcp_tool_def, Tool):
             return mcp_tool_def
         tool_def = convert_func_to_tool_def(tool)
-        hidden_args = {"runtime", "task", "state"}
-        owner = self.tool_owner(name, state)
-        if owner is not None and owner.sandbox is not None:
-            hidden_args.add("sandbox")
-        for binding_key in self.bindings_for_state(state):
-            tool_name_prefix, separator, arg_name = binding_key.partition(".")
-            if separator == "." and tool_name_prefix == name:
-                hidden_args.add(arg_name)
+        hidden_args = self.hidden_tool_args(name, state)
         parameters = dict(tool_def.parameters)
         properties = dict(
             cast(Mapping[str, object], parameters.get("properties") or {})
@@ -330,6 +258,17 @@ class Runtime:
             parameters=parameters,
             strict=tool_def.strict,
         )
+
+    def hidden_tool_args(self, name: str, state: State) -> set[str]:
+        hidden_args = {"runtime", "task", "state"}
+        owner = self.tool_owner(name, state)
+        if owner is not None and owner.sandbox is not None:
+            hidden_args.add("sandbox")
+        for binding_key in self.bindings_for_state(state):
+            tool_name_prefix, separator, arg_name = binding_key.partition(".")
+            if separator == "." and tool_name_prefix == name:
+                hidden_args.add(arg_name)
+        return hidden_args
 
     async def call_tool(
         self, tool_name: str, task: Task, state: State, **kwargs: object
@@ -371,7 +310,32 @@ class Runtime:
         async def call(**kwargs: object) -> object:
             return await self._call_tool(tool_name, task, state, exposed, **kwargs)
 
+        tools = self.all_exposed_tools(state) if exposed else self.all_tools(state)
+        tool = tools[tool_name]
+        tool_def = self._tool_def(tool_name, tool, state)
+        call.__name__ = tool_def.name
+        call.__doc__ = tool_def.description
+        signature = self._tool_signature(tool_name, tool, state)
+        if signature is not None:
+            setattr(call, "__signature__", signature)
         return call
+
+    def _tool_signature(
+        self, tool_name: str, tool: object, state: State
+    ) -> inspect.Signature | None:
+        if not callable(tool):
+            return None
+        try:
+            signature = inspect.signature(tool)
+        except (TypeError, ValueError):
+            return None
+        hidden_args = self.hidden_tool_args(tool_name, state)
+        parameters = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.name not in hidden_args
+        ]
+        return signature.replace(parameters=parameters)
 
     async def _call_tool(
         self,

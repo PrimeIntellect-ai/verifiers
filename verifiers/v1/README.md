@@ -452,8 +452,7 @@ async def program(task, state):
 Available helpers:
 
 - `state.runtime()`: load the active process-local runtime;
-- `state.tools()`: load callable tool handles for the current task/state;
-- `state.run_harness(harness, task, state=None)`: run a child harness.
+- `state.tools()`: load callable tool handles for the current task/state.
 
 These helpers use a process-local runtime registry keyed by
 `state["runtime"]["runtime_id"]`. The registry is not a persistence mechanism:
@@ -631,7 +630,8 @@ index = "simplewiki"
 ```
 
 The runtime normalizes MCP tools into callable handles for Python programs and
-can also present callable tools as an MCP proxy when `tool_protocol="mcp"`.
+can also present the resolved toolsets as an MCP server for sandbox command
+programs when `program.tools = "mcp"`.
 
 Programs can discover and call resolved tools through the interception endpoint:
 
@@ -641,8 +641,19 @@ Programs can discover and call resolved tools through the interception endpoint:
 - `GET ...?protocol=anthropic_messages`;
 - `POST {state["endpoint_root_url"]}/vf/tools/{name}`.
 
-Command and sandbox programs receive `VF_TOOLS_JSON`, `VF_TOOL_DEFS_JSON`,
-`VF_TOOL_BASE_URL`, `VF_TOOL_API_KEY`, and `VF_ENDPOINT_API_KEY`.
+Python entrypoint programs can ask for `tools` and `tool_defs` directly:
+
+```python
+async def program(task, state, client, tools, tool_defs):
+    result = await tools["search"](query=task["question"])
+    state["answer"] = result
+    return state
+```
+
+Command programs do not have a universal Python call surface. If
+`program.tools = "mcp"`, v1 materializes an MCP proxy for the resolved
+toolsets; the concrete command or wrapper is responsible for adding that MCP
+server to its own config.
 
 ## Users
 
@@ -919,22 +930,21 @@ deserve promotion.
 
 ## Nested Harnesses
 
-Use `state.run_harness(...)` to launch a child harness from an active rollout:
+Call child harnesses directly. The parent decides what, if anything, to write
+back into its state:
 
 ```python
 async def ask_child(prompt: str, harness, state):
     task = vf.Task({"prompt": [{"role": "user", "content": prompt}]}).freeze()
-    child_state = await state.run_harness(harness, task)
+    child_state = await harness.run(task)
+    state.setdefault("child_answers", []).append(child_state["answer"])
     return child_state["answer"]
 ```
 
 The child receives a fresh `trajectory_id` and its own rollout-local state. It
-inherits the parent group key, model, sampling args, and model client unless
-the child harness or child state overrides them.
-
-Each child call is recorded under `state["child_rollouts"]` as a serializable
-`{"task": ..., "state": ...}` record. Child metrics are not merged into parent
-metrics by default.
+does not automatically inherit model controls or write records into parent
+state. To reuse a parent model client, construct the child harness with that
+client/model explicitly inside the tool or object factory.
 
 ## Third-Party Python Programs
 

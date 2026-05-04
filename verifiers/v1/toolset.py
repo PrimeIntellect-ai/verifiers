@@ -146,7 +146,7 @@ def normalize_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
 
 
 def merge_toolsets(
-    values: Iterable[object] | Mapping[str, object],
+    values: object,
     config: object,
 ) -> tuple[list[Toolset], dict[str, Toolset]]:
     value_toolsets, value_named = normalize_toolset_collection(values)

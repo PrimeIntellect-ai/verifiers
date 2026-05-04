@@ -10,13 +10,14 @@ async def child_program(task, state):
 
 
 async def call_harness(prompt, harness, state):
+    _ = state
     task = vf.Task({"prompt": prompt}).freeze()
-    child_state = await state.run_harness(harness, task)
+    child_state = await harness.run(task)
     return child_state["answer"]
 
 
 @vf.metric
-async def child_rollouts(task, state) -> float:
+async def child_calls(task, state) -> float:
     return float(len(state["child_answers"]))
 
 
@@ -79,7 +80,7 @@ def load_harness(config=None):
     return vf.Harness(
         program=parent_program,
         toolsets=[load_toolset(getattr(config, "toolset", None))],
-        metrics=[child_rollouts],
+        metrics=[child_calls],
         config=config,
     )
 

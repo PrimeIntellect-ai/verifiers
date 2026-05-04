@@ -332,6 +332,24 @@ def load_tool_defs(protocol):
     return defs.get(protocol) or []
 
 
+class ToolProxy:
+    def __init__(self, state, name, description=None):
+        self.state = state
+        self.name = name
+        self.__name__ = name
+        self.__doc__ = description or ""
+
+    async def __call__(self, **arguments):
+        return await call_tool(self.state, self.name, arguments)
+
+
+def load_tools(state):
+    return {
+        tool["name"]: ToolProxy(state, tool["name"], tool.get("description"))
+        for tool in load_tool_defs("vf")
+    }
+
+
 def response_input(messages):
     items = []
     for message in messages:
@@ -558,7 +576,14 @@ async def main():
     if mode == "base":
         result = await run_base(task, state, client)
     elif mode == "fn":
-        result = await maybe_call(import_ref(sys.argv[2]), task=task, state=state, client=client)
+        result = await maybe_call(
+            import_ref(sys.argv[2]),
+            task=task,
+            state=state,
+            client=client,
+            tools=load_tools(state),
+            tool_defs=load_tool_defs("vf"),
+        )
     else:
         raise ValueError(f"Unknown sandbox program mode: {mode}")
     if result is not None:

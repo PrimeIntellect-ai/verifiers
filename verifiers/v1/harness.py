@@ -34,9 +34,8 @@ from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
     proxy_sandbox,
-    validate_tool_protocol,
 )
-from .utils.program_utils import run_local_command
+from .utils.program_utils import endpoint_api_key, program_tools, run_local_command
 from .runtime import Runtime
 from .utils.sandbox_utils import run_sandbox_command
 from .utils.sandbox_program_utils import run_sandbox_python_program
@@ -53,7 +52,7 @@ from .user import normalize_user
 
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
-PROGRAM_OPTION_KEYS = {"sandbox", "files", "dirs", "setup", "env", "artifacts"}
+PROGRAM_OPTION_KEYS = {"sandbox", "files", "dirs", "setup", "env", "artifacts", "tools"}
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
 SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
 
@@ -66,10 +65,9 @@ class Harness:
         program: Callable[..., object] | Mapping[str, object] | None = None,
         system_prompt: object | None = None,
         system_prompt_merge: str | None = None,
-        toolsets: list[object] | None = None,
+        toolsets: object | None = None,
         user: object | None = None,
         sandbox: Mapping[str, object] | None = None,
-        tool_protocol: str | None = None,
         client: Client | ClientConfig | None = None,
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -104,9 +102,6 @@ class Harness:
         )
         self.user = normalize_user(merge_config_value(user, self.config.user))
         self.sandbox = merge_config_value(sandbox, self.config.sandbox)
-        self.tool_protocol = validate_tool_protocol(
-            merge_config_value(tool_protocol, self.config.tool_protocol)
-        )
         self.client = cast(
             Client | ClientConfig | None,
             resolve_config_object(merge_config_value(client, self.config.client)),
@@ -401,6 +396,13 @@ class Harness:
                 raise ValueError(
                     f"Program keys {sandbox_only} require sandbox placement."
                 )
+        if program_tools(program) == "mcp":
+            if kind != "command":
+                raise ValueError(
+                    "program.tools='mcp' is only supported for command programs."
+                )
+            if sandbox_config is None:
+                raise ValueError("program.tools='mcp' requires program.sandbox.")
         if kind == "base" and sandbox_config is None:
             inert = sorted(set(program) & (PROGRAM_OPTION_KEYS - {"sandbox"}))
             if inert:
@@ -507,9 +509,9 @@ class Harness:
             sandbox_config = self.program_sandbox_config(program)
             if sandbox_config is not None:
                 return await run_sandbox_command(
-                    self.prepare_sandbox_program(program),
+                    self.prepare_sandbox_program(program, state),
                     self.prepare_sandbox_config(
-                        self.task_merged_sandbox(sandbox_config, task)
+                        self.task_merged_sandbox(sandbox_config, task), program
                     ),
                     task,
                     state,
@@ -524,9 +526,9 @@ class Harness:
     ) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(program),
+                program=self.prepare_sandbox_program(program, state),
                 sandbox_config=self.prepare_sandbox_config(
-                    self.task_merged_sandbox(sandbox_config, task)
+                    self.task_merged_sandbox(sandbox_config, task), program
                 ),
                 task=task,
                 state=state,
@@ -546,9 +548,9 @@ class Harness:
     ) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(program),
+                program=self.prepare_sandbox_program(program, state),
                 sandbox_config=self.prepare_sandbox_config(
-                    self.task_merged_sandbox(sandbox_config, task)
+                    self.task_merged_sandbox(sandbox_config, task), program
                 ),
                 task=task,
                 state=state,
@@ -596,16 +598,23 @@ class Harness:
         return sandbox_config
 
     def prepare_sandbox_program(
-        self, program: Mapping[str, object]
+        self, program: Mapping[str, object], state: State
     ) -> Mapping[str, object]:
-        if self.tool_protocol == "mcp":
-            return proxy_program(program)
+        if program_tools(program) == "mcp":
+            endpoint_root_url = state.get("endpoint_root_url")
+            if not isinstance(endpoint_root_url, str):
+                raise RuntimeError("MCP program tools require an active endpoint.")
+            return proxy_program(
+                program,
+                tool_base_url=f"{endpoint_root_url.rstrip('/')}/vf/tools",
+                tool_api_key=endpoint_api_key(self.runtime),
+            )
         return program
 
     def prepare_sandbox_config(
-        self, sandbox_config: Mapping[str, object]
+        self, sandbox_config: Mapping[str, object], program: Mapping[str, object]
     ) -> Mapping[str, object]:
-        if self.tool_protocol == "mcp":
+        if program_tools(program) == "mcp":
             return proxy_sandbox(sandbox_config)
         return sandbox_config
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import tempfile
 import urllib.request
@@ -20,8 +19,8 @@ from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils import mcp_utils
-from verifiers.v1.utils.mcp_proxy_utils import proxy_source
-from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_PATH
+from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
+from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_program_utils import (
     TOOL_DEFS_BY_PROTOCOL_PATH,
@@ -252,14 +251,19 @@ async def mcp_proxy_program(task, state, client):
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(proxy_source())
         proxy_path = Path(f.name)
-    env = dict(os.environ)
-    env["VF_TOOL_BASE_URL"] = f"{state['endpoint_root_url'].rstrip('/')}/vf/tools"
-    env["VF_TOOL_API_KEY"] = "intercepted"
+    config_path = proxy_path.with_suffix(".json")
+    config_path.write_text(
+        json.dumps(
+            {
+                "tool_base_url": f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
+                "tool_api_key": "intercepted",
+            }
+        )
+    )
     try:
         server = StdioServerParameters(
             command=sys.executable,
-            args=[str(proxy_path)],
-            env=env,
+            args=[str(proxy_path), str(config_path)],
         )
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
@@ -272,42 +276,7 @@ async def mcp_proxy_program(task, state, client):
         }
     finally:
         proxy_path.unlink(missing_ok=True)
-
-
-MCP_COMMAND_CLIENT = r"""
-import asyncio
-import json
-import os
-import sys
-
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
-
-async def main():
-    command = json.loads(os.environ["VF_MCP_TOOL_COMMAND_JSON"])
-    server = StdioServerParameters(
-        command=command[0],
-        args=command[1:],
-        env=dict(os.environ),
-    )
-    async with stdio_client(server) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            listed = await session.list_tools()
-            result = await session.call_tool("echo_tool", {"query": "hi"})
-    print(
-        json.dumps(
-            {
-                "tools": [tool.name for tool in listed.tools],
-                "result": result.content[0].text,
-            }
-        )
-    )
-
-
-asyncio.run(main())
-"""
+        config_path.unlink(missing_ok=True)
 
 
 async def child_program(task, state):
@@ -319,11 +288,15 @@ async def child_program(task, state):
 
 
 async def parent_program(task, state):
-    child = vf.Harness(program=child_program)
-    child_state = await state.run_harness(
-        child,
-        vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
+    runtime = state.runtime()
+    child = vf.Harness(
+        program=child_program,
+        client=runtime.model_client(state),
+        model=runtime.model(state),
+        sampling_args=runtime.sampling_args(state),
     )
+    child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
+    child_state = await child.run(child_task)
     return {"child_state": child_state}
 
 
@@ -337,10 +310,8 @@ async def parent_calls_owned_child_program(task, state):
     child = vf.Harness(
         program=child_program, client=cast(Client, FakeClient()), model="child-model"
     )
-    child_state = await state.run_harness(
-        child,
-        vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze(),
-    )
+    child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
+    child_state = await child.run(child_task)
     return {"child_state": child_state}
 
 
@@ -353,6 +324,16 @@ async def state_tools_program(task, state):
     _ = task
     tools = state.tools()
     state["tool_result"] = await tools["echo_tool"](query="state")
+    state["tool_name"] = tools["echo_tool"].__name__
+    return state
+
+
+async def injected_tools_program(task, state, tools, tool_defs):
+    _ = task
+    state["tool_result"] = await tools["echo_tool"](query="injected")
+    state["tool_name"] = tools["echo_tool"].__name__
+    state["tool_docs"] = tools["echo_tool"].__doc__
+    state["tool_defs"] = [tool.name for tool in tool_defs]
     return state
 
 
@@ -423,7 +404,23 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
     state = await harness.run(task)
 
     assert state["tool_result"] == "echo:state"
+    assert state["tool_name"] == "echo_tool"
     assert "runtime_id" not in state["runtime"]
+
+
+@pytest.mark.asyncio
+async def test_entrypoint_program_receives_callable_tools() -> None:
+    harness = vf.Harness(
+        program=injected_tools_program,
+        toolsets=[vf.Toolset(tools=[echo_tool])],
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["tool_result"] == "echo:injected"
+    assert state["tool_name"] == "echo_tool"
+    assert state["tool_defs"] == ["echo_tool"]
 
 
 @pytest.mark.asyncio
@@ -537,20 +534,18 @@ async def test_callable_tools_are_available_through_mcp_proxy() -> None:
     harness = vf.Harness(
         program=mcp_proxy_program,
         toolsets=[vf.Toolset(tools=[echo_tool])],
-        tool_protocol="mcp",
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
 
     state = await harness.run(task)
     await harness.teardown()
 
-    assert state["runtime"]["tool_protocol"] == "mcp"
     assert state["mcp_tools"] == ["echo_tool"]
     assert state["mcp_result"] == "echo:hi"
 
 
 @pytest.mark.asyncio
-async def test_command_env_exposes_protocol_native_tool_payloads() -> None:
+async def test_command_env_exposes_model_endpoint_without_tool_payloads() -> None:
     harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
@@ -560,11 +555,9 @@ async def test_command_env_exposes_protocol_native_tool_payloads() -> None:
 
     env = await command_env({}, task, state, harness.runtime, include_base=False)
 
-    openai_tools = json.loads(env["VF_TOOLS_JSON"])
-    vf_tools = json.loads(env["VF_TOOL_DEFS_JSON"])
-    assert openai_tools[0]["type"] == "function"
-    assert openai_tools[0]["function"]["name"] == "echo_tool"
-    assert vf_tools[0]["name"] == "echo_tool"
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:1/rollout/test/v1"
+    assert env["VF_ENDPOINT_BASE_URL"] == "http://127.0.0.1:1/rollout/test/v1"
+    assert not any(key.startswith("VF_TOOL") for key in env)
 
 
 def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
@@ -604,50 +597,48 @@ def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
     assert tool_payloads_by_protocol["anthropic_messages"][0]["name"] == "echo_tool"
 
 
-def test_mcp_tool_protocol_injects_proxy_into_sandbox_program() -> None:
+def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
     harness = vf.Harness(
-        program={"sandbox": True},
+        program={"sandbox": True, "command": ["true"], "tools": "mcp"},
         sandbox={"image": "python:3.11-slim"},
-        tool_protocol="mcp",
+    )
+    state = vf.State.for_task(vf.Task({}).freeze())
+    state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
+
+    program = harness.prepare_sandbox_program(
+        {"sandbox": True, "command": ["true"], "tools": "mcp"}, state
+    )
+    sandbox = harness.prepare_sandbox_config(
+        {"image": "python:3.11-slim"},
+        {"sandbox": True, "command": ["true"], "tools": "mcp"},
     )
 
-    program = harness.prepare_sandbox_program({})
-    sandbox = harness.prepare_sandbox_config({"image": "python:3.11-slim"})
-
     files = cast(dict[str, str], program["files"])
-    env = cast(dict[str, str], program["env"])
     assert MCP_PROXY_PATH in files
-    assert env["VF_TOOL_PROTOCOL"] == "mcp"
-    assert json.loads(env["VF_MCP_TOOL_COMMAND_JSON"]) == ["python3", MCP_PROXY_PATH]
+    assert MCP_PROXY_CONFIG_PATH in files
+    config = json.loads(files[MCP_PROXY_CONFIG_PATH])
+    assert config == {
+        "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
+        "tool_api_key": "intercepted",
+    }
+    assert proxy_command() == ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
     packages = sandbox["packages"]
     assert isinstance(packages, list)
     assert "mcp>=1.14.1" in packages
 
 
-@pytest.mark.asyncio
-async def test_command_program_accepts_callable_tools_as_mcp() -> None:
-    harness = vf.Harness(
-        program={"command": [sys.executable, "-c", MCP_COMMAND_CLIENT]},
-        toolsets=[vf.Toolset(tools=[echo_tool])],
-        tool_protocol="mcp",
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    state = await harness.run(task)
-    await harness.teardown()
-
-    output = json.loads(state["command"]["stdout"])
-    assert output == {"tools": ["echo_tool"], "result": "echo:hi"}
+def test_program_tools_mcp_requires_sandbox_command() -> None:
+    with pytest.raises(ValueError, match="requires program.sandbox"):
+        vf.Harness(program={"command": ["true"], "tools": "mcp"})
 
 
 @pytest.mark.asyncio
-async def test_nested_harness_inherits_model_controls_with_new_rollout_scope() -> None:
+async def test_nested_harness_uses_explicit_child_model_controls() -> None:
     harness = vf.Harness(program=parent_program)
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
     state["runtime"]["sampling_args"] = {"temperature": 0.2}
-    state["runtime"]["group_key"] = "group-a"
     harness.runtime.bind_model_client(state, cast(Client, FakeClient()))
 
     state = await harness.run(task, state)
@@ -656,16 +647,9 @@ async def test_nested_harness_inherits_model_controls_with_new_rollout_scope() -
     assert child_state["trajectory_id"] != state["trajectory_id"]
     assert child_state["child_runtime"]["model"] == "model-a"
     assert child_state["child_runtime"]["sampling_args"] == {"temperature": 0.2}
-    assert child_state["child_runtime"]["group_key"] == "group-a"
-    assert child_state["child_runtime"]["client_key"] == state["runtime"]["client_key"]
-    assert (
-        state["child_rollouts"][0]["state"]["trajectory_id"]
-        == child_state["trajectory_id"]
-    )
-    assert state["child_rollouts"][0]["state"]["metrics"] == child_state["metrics"]
-    assert "runtime_id" not in state["child_rollouts"][0]["state"]["runtime"]
-    assert "client_key" not in state["child_rollouts"][0]["state"]["runtime"]
-    assert "client_key" not in state["child_rollouts"][0]["state"]["child_runtime"]
+    assert "child_rollouts" not in state
+    assert "client_key" not in child_state["runtime"]
+    assert "client_key" not in child_state["child_runtime"]
 
 
 @pytest.mark.asyncio

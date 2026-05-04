@@ -6,9 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from verifiers.types import State as VFState
 
 if TYPE_CHECKING:
-    from .harness import Harness
     from .runtime import Runtime
-    from .task import Task
 
 
 class State(VFState):
@@ -41,19 +39,6 @@ class State(VFState):
         from .utils.tool_utils import load_tools_from_state
 
         return load_tools_from_state(self)
-
-    async def run_harness(
-        self,
-        harness: Harness,
-        task: Task | Mapping[str, Any],
-        state: State | None = None,
-    ) -> State:
-        return await self.runtime().run_harness(
-            harness,
-            task,
-            parent_state=self,
-            state=state,
-        )
 
     def strip_runtime_handles(self) -> None:
         strip_runtime_handles(self)

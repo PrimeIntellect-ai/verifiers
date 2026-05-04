@@ -17,16 +17,15 @@ async def ask_subagent(name: str, harness, state) -> str:
             ],
         }
     ).freeze()
-    child_state = await state.run_harness(
-        harness,
-        task,
-    )
-    return completion_text(child_state.get("completion")).strip()
+    child_state = await harness.run(task)
+    answer = completion_text(child_state.get("completion")).strip()
+    state.setdefault("subagent_calls", []).append({"name": name, "answer": answer})
+    return answer
 
 
 @vf.metric
 async def subagent_calls(task, state) -> float:
-    return float(len(state.get("child_rollouts", [])))
+    return float(len(state.get("subagent_calls", [])))
 
 
 @vf.reward(weight=1.0)
@@ -58,14 +57,26 @@ def source():
 
 
 def load_child_harness(config=None):
-    return vf.Harness(config=config)
+    def factory(state):
+        runtime = state.runtime()
+        return vf.Harness(
+            client=runtime.model_client(state),
+            model=runtime.model(state),
+            sampling_args=runtime.sampling_args(state),
+            config=config,
+        )
+
+    return factory
 
 
 def load_toolset(config=None):
     return vf.Toolset(
         tools=[ask_subagent],
-        objects={"child_harness": load_child_harness},
+        objects={
+            "child_harness": load_child_harness(getattr(config, "child_harness", None))
+        },
         bindings={"ask_subagent.harness": "objects.child_harness"},
+        scope="rollout",
         config=config,
     )
 

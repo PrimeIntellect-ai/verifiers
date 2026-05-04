@@ -320,13 +320,11 @@ def test_harness_config_extends_constructor_surface() -> None:
             ],
             "user": ref("config_user"),
             "max_turns": 3,
-            "tool_protocol": "mcp",
         },
     )
 
     assert harness.program is config_program
     assert harness.config.max_turns == 3
-    assert harness.tool_protocol == "mcp"
     assert harness.metrics == [config_metric]
     assert harness.rewards == [config_reward]
     assert harness.advantages == [config_advantage]
@@ -354,7 +352,7 @@ async def test_render_config_runs_before_rollout_scoring() -> None:
 
     assert state["rendered"] is True
     assert state["reward"] == 0.75
-    assert harness.render[0].__name__ == "config_render"
+    assert getattr(harness.render[0], "__name__") == "config_render"
 
 
 def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
@@ -700,7 +698,7 @@ def test_configs_load_from_toml_sections(tmp_path) -> None:
     harness = Harness(config=harness_config)
 
     assert taskset.source is source_loader
-    assert taskset.rewards[0].__name__ == "config_reward"
+    assert getattr(taskset.rewards[0], "__name__") == "config_reward"
     assert getattr(taskset.rewards[0], "reward_weight") == 0.5
     assert taskset.named_toolsets["configured"].bindings == {
         "config_tool.prefix": "toml"

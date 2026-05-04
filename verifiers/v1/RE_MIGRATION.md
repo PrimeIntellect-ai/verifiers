@@ -324,8 +324,8 @@ Migration:
 
 1. Wrap each server as `vf.MCPTool(command=..., args=[...])`.
 2. Put MCP tools in a taskset or harness toolset.
-3. Use `Harness(tool_protocol="mcp")` for command/program harnesses that should
-   consume tools through MCP.
+3. Use `program={"command": [...], "sandbox": True, "tools": "mcp"}` for
+   sandbox command harnesses that should consume resolved toolsets through MCP.
 
 Reference: `environments/mcp_search_env/mcp_search_v1.py`.
 
@@ -348,8 +348,9 @@ Gotchas:
 
 - MCP server auth and secrets should be handled by the server command or env.
 - Use task fields and bindings when the server needs task-specific arguments.
-- Callable tools and MCP tools can coexist in toolsets; the harness chooses the
-  protocol it consumes.
+- Callable tools and MCP tools can coexist in toolsets. Python programs receive
+  callable handles; sandbox command programs can request an MCP server with
+  `program.tools = "mcp"`.
 
 ## Nested Harness Calls
 
@@ -362,7 +363,7 @@ Migration:
 
 1. Construct the child `vf.Harness` as a normal object.
 2. Bind it into a toolset object.
-3. Call `await state.run_harness(child_harness, child_task)`.
+3. Call `await child_harness.run(child_task)`.
 
 Reference: `environments/hello_subagent_v1/hello_subagent_v1.py`.
 
@@ -373,7 +374,8 @@ async def ask_child(question: str, harness, state) -> str:
     child_task = vf.Task(
         {"prompt": [{"role": "user", "content": question}]}
     ).freeze()
-    child_state = await state.run_harness(harness, child_task)
+    child_state = await harness.run(child_task)
+    state.setdefault("child_answers", []).append(child_state["answer"])
     return completion_text(child_state)
 
 
@@ -386,9 +388,10 @@ toolset = vf.Toolset(
 
 Gotchas:
 
-- Child rollouts inherit parent model controls unless the child harness supplies
-  its own client/model.
-- Child rollout state is recorded under `state["child_rollouts"]`.
+- Child harnesses do not automatically inherit parent model controls. Construct
+  the child harness with the client/model it should use.
+- Child rollout state is returned to the caller. Persist summaries or full child
+  state explicitly when the parent needs it.
 - Child runtime handles are stripped before state is finalized.
 
 ## Sandbox CLI Harnesses
@@ -417,6 +420,7 @@ harness = vf.Harness(
     program={
         "command": ["bash", "-lc", "opencode run < /task/instruction.md"],
         "sandbox": True,
+        "tools": "mcp",
         "files": {
             "/task/instruction.md": instruction_text,
             "/root/.config/opencode/opencode.json": opencode_config_json,
@@ -425,7 +429,6 @@ harness = vf.Harness(
             "log": {"path": "/logs/agent/opencode.txt", "format": "text"},
         },
     },
-    tool_protocol="mcp",
 )
 ```
 

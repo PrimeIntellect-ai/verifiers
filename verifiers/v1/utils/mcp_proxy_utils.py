@@ -1,32 +1,43 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
-import sys
-import tempfile
 from collections.abc import Mapping
-from pathlib import Path
 from typing import cast
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
+MCP_PROXY_CONFIG_PATH = "/tmp/vf_mcp_tools.json"
 MCP_PACKAGE = "mcp>=1.14.1"
 
 
-def validate_tool_protocol(value: object) -> str:
-    if value not in {"callable", "mcp"}:
-        raise ValueError("tool_protocol must be 'callable' or 'mcp'.")
+def validate_program_tools(value: object) -> str | None:
+    if value is None:
+        return None
+    if value != "mcp":
+        raise ValueError("program.tools must be 'mcp'.")
     return cast(str, value)
 
 
-def proxy_program(program: Mapping[str, object]) -> dict[str, object]:
+def proxy_program(
+    program: Mapping[str, object], tool_base_url: str, tool_api_key: str
+) -> dict[str, object]:
     files = dict(cast(Mapping[str, object], program.get("files") or {}))
-    env = dict(cast(Mapping[str, object], program.get("env") or {}))
     if MCP_PROXY_PATH in files and files[MCP_PROXY_PATH] != proxy_source():
         raise ValueError(f"program.files cannot override {MCP_PROXY_PATH}.")
+    config = {
+        "tool_base_url": tool_base_url.rstrip("/"),
+        "tool_api_key": tool_api_key,
+    }
+    config_json = json.dumps(config)
+    if MCP_PROXY_CONFIG_PATH in files and files[MCP_PROXY_CONFIG_PATH] != config_json:
+        raise ValueError(f"program.files cannot override {MCP_PROXY_CONFIG_PATH}.")
     files[MCP_PROXY_PATH] = proxy_source()
-    env.update(proxy_env(MCP_PROXY_PATH, ["python3", MCP_PROXY_PATH]))
-    return {**dict(program), "files": files, "env": env}
+    files[MCP_PROXY_CONFIG_PATH] = config_json
+    return {**dict(program), "files": files}
+
+
+def proxy_command() -> list[str]:
+    return ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
 
 
 def proxy_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
@@ -36,27 +47,6 @@ def proxy_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
         packages.append(MCP_PACKAGE)
     config["packages"] = packages
     return config
-
-
-def local_proxy_program(
-    program: Mapping[str, object],
-) -> tuple[dict[str, object], Path]:
-    fd, path_text = tempfile.mkstemp(prefix="vf_mcp_tools_", suffix=".py")
-    path = Path(path_text)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(proxy_source())
-    env = dict(cast(Mapping[str, object], program.get("env") or {}))
-    env.update(proxy_env(str(path), [sys.executable, str(path)]))
-    return {**dict(program), "env": env}, path
-
-
-def proxy_env(path: str, command: list[str]) -> dict[str, str]:
-    return {
-        "VF_TOOL_PROTOCOL": "mcp",
-        "VF_MCP_TOOL_PATH": path,
-        "VF_MCP_TOOL_COMMAND_JSON": json.dumps(command),
-        "VF_MCP_TOOL_COMMAND": shlex.join(command),
-    }
 
 
 def package_list(value: object) -> list[str]:
@@ -75,7 +65,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,16 +74,28 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 
+CONFIG = None
+
+
+def config() -> dict:
+    global CONFIG
+    if CONFIG is None:
+        if len(sys.argv) != 2:
+            raise RuntimeError("MCP proxy requires a config path argument.")
+        with open(sys.argv[1]) as f:
+            CONFIG = json.load(f)
+    return CONFIG
+
 
 def tool_base_url() -> str:
-    value = os.environ.get("VF_TOOL_BASE_URL")
+    value = config().get("tool_base_url")
     if not value:
-        raise RuntimeError("VF_TOOL_BASE_URL is required.")
-    return value.rstrip("/")
+        raise RuntimeError("tool_base_url is required.")
+    return str(value).rstrip("/")
 
 
 def auth_headers() -> dict[str, str]:
-    token = os.environ.get("VF_TOOL_API_KEY") or os.environ.get("VF_ENDPOINT_API_KEY")
+    token = config().get("tool_api_key")
     headers = {"content-type": "application/json"}
     if token:
         headers["authorization"] = f"Bearer {token}"

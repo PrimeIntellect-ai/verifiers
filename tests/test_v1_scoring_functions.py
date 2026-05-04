@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 import pytest
 
@@ -110,8 +111,8 @@ def test_group_signal_requires_plural_args_only() -> None:
 @pytest.mark.asyncio
 async def test_group_reward_scores_each_state() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
-    tasks = [{"answer": "a"}, {"answer": "b"}]
-    states = [
+    tasks: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "b"}]
+    states: list[dict[str, Any]] = [
         {
             "answer": "a",
             "trajectory": [{"advantage": None}, {"advantage": 9.0}],
@@ -119,24 +120,25 @@ async def test_group_reward_scores_each_state() -> None:
         {"answer": "c", "trajectory": [{"advantage": None}]},
     ]
 
-    await score_group(signals, tasks, states)
+    await score_group(signals, cast(list[Mapping[str, Any]], tasks), states)
 
     assert states[0]["reward"] == 1.0
     assert states[1]["reward"] == 0.0
     assert states[0]["advantage"] == 0.5
     assert states[1]["advantage"] == -0.5
-    assert states[0]["trajectory"][0]["advantage"] == 0.5
-    assert states[0]["trajectory"][1]["advantage"] == 9.0
+    trajectory = cast(list[dict[str, Any]], states[0]["trajectory"])
+    assert trajectory[0]["advantage"] == 0.5
+    assert trajectory[1]["advantage"] == 9.0
 
 
 @pytest.mark.asyncio
 async def test_advantage_signal_overrides_default_group_advantage() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
     add_advantage(signals, explicit_advantage)
-    tasks = [{"answer": "a"}, {"answer": "b"}]
-    states = [{"answer": "a"}, {"answer": "c"}]
+    tasks: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "b"}]
+    states: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "c"}]
 
-    await score_group(signals, tasks, states)
+    await score_group(signals, cast(list[Mapping[str, Any]], tasks), states)
 
     assert states[0]["advantage"] == 0.0
     assert states[1]["advantage"] == 1.0

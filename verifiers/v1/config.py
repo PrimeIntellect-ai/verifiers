@@ -65,7 +65,6 @@ class HarnessConfig(Config):
     system_prompt: object | None = None
     system_prompt_merge: str = "reject"
     sandbox: object | None = None
-    tool_protocol: str = "callable"
     client: object | None = None
     model: str | None = None
     sampling_args: dict[str, object] = Field(default_factory=dict)
