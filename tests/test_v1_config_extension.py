@@ -107,6 +107,23 @@ async def rendered_reward(
     return float(state.get("rendered") is True)
 
 
+@vf.render(stage="group")
+async def config_group_render(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]]
+) -> None:
+    _ = tasks
+    for state in states:
+        state["group_rendered"] = True
+
+
+@vf.reward(stage="group")
+async def group_rendered_reward(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]]
+) -> list[float]:
+    _ = tasks
+    return [float(state.get("group_rendered") is True) for state in states]
+
+
 async def config_tool(query: str, prefix: str) -> str:
     return f"{prefix}:{query}"
 
@@ -178,6 +195,8 @@ setattr(ref_module, "config_cleanup", config_cleanup)
 setattr(ref_module, "config_group_cleanup", config_group_cleanup)
 setattr(ref_module, "config_render", config_render)
 setattr(ref_module, "rendered_reward", rendered_reward)
+setattr(ref_module, "config_group_render", config_group_render)
+setattr(ref_module, "group_rendered_reward", group_rendered_reward)
 setattr(ref_module, "config_tool", config_tool)
 setattr(ref_module, "config_toolset", config_toolset)
 setattr(ref_module, "direct_tool", direct_tool)
@@ -353,6 +372,23 @@ async def test_render_config_runs_before_rollout_scoring() -> None:
     assert state["rendered"] is True
     assert state["reward"] == 0.75
     assert getattr(harness.render[0], "__name__") == "config_render"
+
+
+@pytest.mark.asyncio
+async def test_group_render_config_runs_before_group_scoring() -> None:
+    harness = Harness(
+        config={
+            "render": [{"fn": ref("config_group_render"), "stage": "group"}],
+            "rewards": [{"fn": ref("group_rendered_reward"), "stage": "group"}],
+        },
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    await harness.score_group([task], [state])
+
+    assert state["group_rendered"] is True
+    assert state["reward"] == 1.0
 
 
 def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
