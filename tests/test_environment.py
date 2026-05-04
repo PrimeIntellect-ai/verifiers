@@ -117,9 +117,9 @@ class TestEnvironmentBase:
         assert not rollout_env.requires_group_rollouts
         assert not rollout_env.provides_advantages
         assert group_env.requires_group_rollouts
-        assert group_env.provides_advantages
+        assert not group_env.provides_advantages
         assert grouped_rubric_env.requires_group_rollouts
-        assert grouped_rubric_env.provides_advantages
+        assert not grouped_rubric_env.provides_advantages
 
     def test_environment_with_eval_dataset_only(self, sample_dataset):
         """Test Environment with only eval_dataset."""

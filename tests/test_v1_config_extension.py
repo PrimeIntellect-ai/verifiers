@@ -256,7 +256,7 @@ def test_env_capabilities_follow_v1_group_runtime_signals() -> None:
     assert group_metric_env.requires_group_rollouts
     assert not group_metric_env.provides_advantages
     assert group_reward_env.requires_group_rollouts
-    assert group_reward_env.provides_advantages
+    assert not group_reward_env.provides_advantages
     assert advantage_env.requires_group_rollouts
     assert advantage_env.provides_advantages
 

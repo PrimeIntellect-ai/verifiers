@@ -41,8 +41,7 @@ class Env(vf.Environment):
 
     @property
     def provides_advantages(self) -> bool:
-        runtime = self.harness.runtime
-        return runtime.has_group_rewards or runtime.has_group_advantages
+        return self.harness.runtime.has_group_advantages
 
     @property
     def _uses_custom_init_group(self) -> bool:

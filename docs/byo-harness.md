@@ -220,7 +220,7 @@ Rollout signals accept exactly `task, state`. Group signals accept exactly
 
 `env.requires_group_rollouts` is true when group-stage scoring or group setup is
 part of the environment contract. `env.provides_advantages` is true when the
-environment writes advantages during group scoring.
+environment has explicit advantage handlers.
 
 ## When To Use Which Path
 

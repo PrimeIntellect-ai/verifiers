@@ -217,7 +217,7 @@ class Environment(ABC):
 
     @property
     def provides_advantages(self) -> bool:
-        return self.rubric.has_group_rewards
+        return self.rubric.has_advantages
 
     @staticmethod
     def _normalize_tool_defs(

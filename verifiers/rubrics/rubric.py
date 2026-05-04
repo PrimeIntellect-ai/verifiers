@@ -250,6 +250,10 @@ class Rubric:
     def has_group_rewards(self) -> bool:
         return bool(self._get_group_reward_funcs())
 
+    @property
+    def has_advantages(self) -> bool:
+        return False
+
     def _get_group_reward_weights(self) -> list[float]:
         return [
             weight

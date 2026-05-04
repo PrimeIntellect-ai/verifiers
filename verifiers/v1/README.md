@@ -666,8 +666,8 @@ one float per state. If no advantage signal is configured, v1 writes
 `reward - mean(group_reward)` as the default advantage.
 
 `Env.requires_group_rollouts` is true when group-stage signals or custom group
-setup are present. `Env.provides_advantages` is true when group rewards or
-explicit group advantages are present.
+setup are present. `Env.provides_advantages` is true only when explicit group
+advantages are present.
 
 ### Stop
 
