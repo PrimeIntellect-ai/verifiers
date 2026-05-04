@@ -420,20 +420,55 @@ class ComposableEnv(CliAgentEnv):
         if self.harness.install_script:
             self.logger.debug(f"Installing agent in sandbox {sandbox_id}")
             install_start = time.perf_counter()
-            result = await self.sandbox_client.execute_command(
-                sandbox_id,
-                self.harness.install_script,
-                **self._get_install_execute_kwargs(),
-            )
+            try:
+                result = await self.sandbox_client.execute_command(
+                    sandbox_id,
+                    self.harness.install_script,
+                    **self._get_install_execute_kwargs(),
+                )
+            except Exception as e:
+                # On install timeout (or any exec failure) the captured stdout is
+                # discarded by the sandbox API. If the harness wrote progress to
+                # /tmp/install_progress.log via run_setup_step, the sandbox FS
+                # outlives the killed exec — fetch it to identify the stuck step.
+                progress = await self._read_install_progress(sandbox_id)
+                suffix = f"\nInstall progress:\n{progress}" if progress else ""
+                raise vf.SandboxError(
+                    f"Agent install errored in sandbox {sandbox_id}: "
+                    f"{type(e).__name__}: {e}{suffix}"
+                ) from e
             elapsed = time.perf_counter() - install_start
             if result.exit_code != 0:
                 output = (result.stdout or "") + (result.stderr or "")
+                progress = await self._read_install_progress(sandbox_id)
+                suffix = f"\nInstall progress:\n{progress}" if progress else ""
                 raise vf.SandboxError(
-                    f"Agent install failed (exit={result.exit_code}): {output[:500]}"
+                    f"Agent install failed (exit={result.exit_code}): "
+                    f"{output[:500]}{suffix}"
                 )
             self.logger.debug(
                 f"Installed agent in sandbox {sandbox_id} in {print_time(elapsed)}"
             )
+
+    async def _read_install_progress(self, sandbox_id: str) -> str:
+        """Best-effort read of /tmp/install_progress.log from a sandbox.
+
+        Used on install failure to surface which run_setup_step was running
+        when /exec timed out. Returns "" on any error so we never mask the
+        original failure with a diagnostic-fetch failure.
+        """
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                "cat /tmp/install_progress.log 2>/dev/null || true",
+                timeout=15,
+            )
+            return (result.stdout or "").strip()
+        except Exception as e:
+            self.logger.debug(
+                f"Could not read install progress from {sandbox_id}: {type(e).__name__}: {e}"
+            )
+            return ""
 
     async def _run_post_install(self, sandbox_id: str) -> None:
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.

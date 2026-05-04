@@ -67,20 +67,24 @@ def build_install_script(
     # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
     # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
     # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
+    # Progress is tee'd to /tmp/install_progress.log so that on a 300s sandbox
+    # /exec timeout (when stdout is discarded) the orchestrator can read the
+    # file from the still-alive sandbox to identify which step ran out.
     return f"""\
 set -e
+: > /tmp/install_progress.log
 run_setup_step() {{
   name="$1"
   shift
   start="$(date +%s)"
-  echo "[setup] start $name"
+  echo "[setup] start $name" | tee -a /tmp/install_progress.log
   set +e
   eval "$*"
   exit_code="$?"
   set -e
   end="$(date +%s)"
   elapsed_s="$((end - start))"
-  echo "[setup] end $name exit=$exit_code elapsed_s=$elapsed_s"
+  echo "[setup] end $name exit=$exit_code elapsed_s=$elapsed_s" | tee -a /tmp/install_progress.log
   return "$exit_code"
 }}
 
