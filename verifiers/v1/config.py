@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import functools
 import importlib
+import inspect
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from pydantic_core import PydanticUndefined
@@ -46,9 +48,11 @@ class TasksetConfig(Config):
     source: object | None = None
     eval_source: object | None = None
     taskset_id: str | None = None
-    toolsets: list[object] = Field(default_factory=list)
+    system_prompt: object | None = None
+    toolsets: object = Field(default_factory=list)
     user: object | None = None
     stop: list[object] = Field(default_factory=list)
+    render: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
     advantages: list[object] = Field(default_factory=list)
@@ -58,15 +62,18 @@ class TasksetConfig(Config):
 
 class HarnessConfig(Config):
     program: object | None = None
+    system_prompt: object | None = None
+    system_prompt_merge: str = "reject"
     sandbox: object | None = None
     tool_protocol: str = "callable"
     client: object | None = None
     model: str | None = None
     sampling_args: dict[str, object] = Field(default_factory=dict)
     keep_trajectory_step: object | None = None
-    toolsets: list[object] = Field(default_factory=list)
+    toolsets: object = Field(default_factory=list)
     user: object | None = None
     stop: list[object] = Field(default_factory=list)
+    render: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
     advantages: list[object] = Field(default_factory=list)
@@ -88,7 +95,7 @@ class RuntimeToolSelection(Config):
 
 class RuntimeConfig(Config):
     max_turns: StrictInt | None = None
-    tools: list[str] | RuntimeToolSelection | None = None
+    tools: RuntimeToolSelection | None = None
 
 
 def normalize_runtime_config(value: object) -> dict[str, object]:
@@ -115,6 +122,102 @@ def merge_config_value(value: object, config: object) -> object:
 
 def merge_config_items(values: Iterable[object], config: object) -> list[object]:
     return [*values, *config_items(config)]
+
+
+CallableKind = Literal[
+    "stop", "render", "metric", "reward", "advantage", "cleanup", "teardown"
+]
+
+
+def merge_config_callables(
+    values: Iterable[Callable[..., object]],
+    config: object,
+    kind: CallableKind,
+) -> list[Callable[..., object]]:
+    return [*config_callables(values, kind), *config_callables(config, kind)]
+
+
+def config_callables(value: object, kind: CallableKind) -> list[Callable[..., object]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [callable_config_item(value, kind)]
+    if isinstance(value, Mapping):
+        return [callable_config_item(value, kind)]
+    if isinstance(value, Iterable):
+        return [callable_config_item(item, kind) for item in value]
+    return [callable_config_item(value, kind)]
+
+
+def callable_config_item(value: object, kind: CallableKind) -> Callable[..., object]:
+    value = resolve_config_object(value)
+    if isinstance(value, Mapping):
+        return callable_from_mapping(cast(Mapping[str, object], value), kind)
+    if not callable(value):
+        raise TypeError(f"{kind} config entries must resolve to callables.")
+    return cast(Callable[..., object], value)
+
+
+def callable_from_mapping(
+    spec: Mapping[str, object], kind: CallableKind
+) -> Callable[..., object]:
+    allowed = callable_config_keys(kind)
+    unknown = set(spec) - allowed
+    if unknown:
+        raise ValueError(f"{kind} callable config has unknown keys: {sorted(unknown)}.")
+    if bool(spec.get("skip", False)):
+        raise ValueError(
+            f"{kind} callable config should be removed instead of skipped."
+        )
+    fn = resolve_config_object(spec.get("fn"))
+    if not callable(fn):
+        raise TypeError(f"{kind} callable config requires callable fn.")
+    metadata = {key: spec[key] for key in spec if key not in {"fn", "skip"}}
+    return configured_callable(cast(Callable[..., object], fn), kind, metadata)
+
+
+def callable_config_keys(kind: CallableKind) -> set[str]:
+    keys = {"fn", "priority", "skip"}
+    if kind in {"render", "metric", "reward", "cleanup"}:
+        keys.add("stage")
+    if kind == "reward":
+        keys.add("weight")
+    return keys
+
+
+def configured_callable(
+    fn: Callable[..., object],
+    kind: CallableKind,
+    metadata: Mapping[str, object],
+) -> Callable[..., object]:
+    if not metadata:
+        return fn
+
+    @functools.wraps(fn)
+    async def wrapper(**kwargs: object) -> object:
+        result = fn(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    setattr(wrapper, "__signature__", inspect.signature(fn))
+    setattr(wrapper, kind, True)
+    if "priority" in metadata:
+        priority = metadata["priority"]
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise TypeError(f"{kind} priority must be an integer.")
+        setattr(wrapper, f"{kind}_priority", priority)
+    if "stage" in metadata:
+        stage = metadata["stage"]
+        if stage not in {"rollout", "group"}:
+            raise ValueError(f"{kind} stage must be 'rollout' or 'group'.")
+        setattr(wrapper, f"{kind}_stage", stage)
+    if "weight" in metadata:
+        weight = metadata["weight"]
+        if not isinstance(weight, int | float) or isinstance(weight, bool):
+            raise TypeError("reward weight must be numeric.")
+        setattr(wrapper, "reward_weight", float(weight))
+    return cast(Callable[..., object], wrapper)
 
 
 def config_items(value: object) -> list[object]:

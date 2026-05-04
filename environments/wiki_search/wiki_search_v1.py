@@ -191,11 +191,8 @@ def build_source(max_turns: int = 10):
             yield {
                 **row,
                 "example_id": index,
-                "runtime": {"max_turns": max_turns},
-                "prompt": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": row["question"]},
-                ],
+                "max_turns": max_turns,
+                "prompt": [{"role": "user", "content": row["question"]}],
             }
 
     return source
@@ -281,6 +278,7 @@ def load_taskset(
 ):
     return vf.Taskset(
         source=build_source(max_turns=max_turns),
+        system_prompt=SYSTEM_PROMPT,
         rewards=[
             judge_reward_factory(
                 judge_model=judge_model,

@@ -84,34 +84,34 @@ async def collect_python_commands(task, state):
     state.pop("sandbox_commands", None)
 
 
+def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
+    pip_install_prompt = (
+        f"In addition to the Python standard library, you have access to: {pip_install_packages}."
+        if pip_install_packages.strip()
+        else "You may only use the Python standard library."
+    )
+    return (
+        "Use Python for all calculations. Give your answer inside \\boxed{}."
+        "\n\n"
+        f"{pip_install_prompt}"
+    )
+
+
 def source(
     dataset_name: str = "math",
     dataset_split: str = "train",
     num_train_examples: int = -1,
-    pip_install_packages: str = "numpy sympy scipy",
 ):
     dataset = load_example_dataset(
         dataset_name,
         dataset_split,
         n=num_train_examples,
     )
-    pip_install_prompt = (
-        f"In addition to the Python standard library, you have access to: {pip_install_packages}."
-        if pip_install_packages.strip()
-        else "You may only use the Python standard library."
-    )
-    system_prompt = (
-        "Use Python for all calculations. Give your answer inside \\boxed{}."
-    )
-    system_prompt += "\n\n" + pip_install_prompt
     for index, row in enumerate(dataset):
         yield {
             **row,
             "example_id": index,
-            "prompt": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": row["question"]},
-            ],
+            "prompt": [{"role": "user", "content": row["question"]}],
         }
 
 
@@ -159,8 +159,8 @@ def load_taskset(
             dataset_name=dataset_name,
             dataset_split=dataset_split,
             num_train_examples=num_train_examples,
-            pip_install_packages=pip_install_packages,
         ),
+        system_prompt=build_system_prompt(pip_install_packages),
         rewards=[correct_answer],
         config=config,
     )

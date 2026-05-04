@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import inspect
 import json
 import uuid
 import weakref
 from contextlib import AsyncExitStack
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, cast, get_args
 
 from verifiers.clients import Client, resolve_client
@@ -18,13 +19,26 @@ from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
-from .utils.lifecycle_utils import collect_handlers, run_handlers
+from .config import resolve_config_object
+from .utils.lifecycle_utils import (
+    collect_handlers,
+    run_handlers,
+    unique_handlers,
+    validate_handler_args,
+)
 from .utils.scoring_utils import SignalRecord, build_signals, collect_signals
 from .utils.scoring_utils import score_group as score_group_signals
 from .utils.scoring_utils import score_rollout as score_rollout_signals
 from .state import State
 from .task import Task
-from .toolset import MCPTool, Toolset, flatten_toolsets, iter_toolsets, tool_name
+from .toolset import (
+    MCPTool,
+    Toolset,
+    flatten_toolsets,
+    iter_toolsets,
+    normalize_toolset_result,
+    tool_name,
+)
 from .user import User
 
 _RUNTIME_REGISTRY: weakref.WeakValueDictionary[str, Runtime] = (
@@ -39,11 +53,8 @@ class Runtime:
         self.taskset = taskset
         self.harness = harness
         self.toolsets = self._collect_toolsets()
-        self.tool_owners = self._build_tool_owners()
-        self.tools = self._build_tools(apply_visibility=False)
-        self.exposed_tools = self._build_tools(apply_visibility=True)
-        self.bindings = self._build_bindings()
-        self.object_specs = self._build_object_specs()
+        self.named_toolsets = self._collect_named_toolsets()
+        self.rollout_toolsets: dict[str, list[Toolset]] = {}
         self.objects: dict[tuple[int, str, str], object] = {}
         self.user_objects: dict[tuple[int, str, str], object] = {}
         self.model_clients: dict[str, Client] = {}
@@ -58,6 +69,25 @@ class Runtime:
             "stop",
             self._extra_handlers("stop", builtins=[state_done]),
         )
+        validate_handler_args(
+            self.stop_conditions, {"task", "state"}, "stop", "rollout"
+        )
+        self.rollout_render = collect_handlers(
+            self._handler_owners(),
+            "render",
+            self._extra_handlers("render"),
+            stage="rollout",
+        )
+        self.group_render = collect_handlers(
+            self._handler_owners(),
+            "render",
+            self._extra_handlers("render"),
+            stage="group",
+        )
+        validate_handler_args(
+            self.rollout_render, {"task", "state"}, "render", "rollout"
+        )
+        validate_handler_args(self.group_render, {"tasks", "states"}, "render", "group")
         signals = self._build_signals()
         self.rollout_signals = [
             signal for signal in signals if signal["stage"] == "rollout"
@@ -77,8 +107,18 @@ class Runtime:
             self._extra_handlers("cleanup"),
             stage="group",
         )
+        validate_handler_args(
+            self.rollout_cleanup, {"task", "state"}, "cleanup", "rollout"
+        )
+        validate_handler_args(
+            self.group_cleanup, {"tasks", "states"}, "cleanup", "group"
+        )
         self.teardown_handlers = collect_handlers(
-            self._handler_owners(), "teardown", self._extra_handlers("teardown")
+            (self.taskset, self.harness, *self.toolsets),
+            "teardown",
+            self._extra_handlers(
+                "teardown", owners=(self.taskset, self.harness, *self.toolsets)
+            ),
         )
 
     @property
@@ -97,9 +137,6 @@ class Runtime:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})
         state["runtime"]["runtime_id"] = self.runtime_id
-        state["runtime"].setdefault(
-            "tools", sorted(self.unfiltered_exposed_tools(state))
-        )
         state["runtime"].setdefault(
             "tool_protocol",
             getattr(getattr(self, "harness", None), "tool_protocol", "callable"),
@@ -226,7 +263,7 @@ class Runtime:
         defs: list[Tool] = []
         for name, tool in self.all_exposed_tools(state).items():
             if callable(tool):
-                defs.append(self._tool_def(name, tool))
+                defs.append(self._tool_def(name, tool, state))
         return defs or None
 
     async def user_messages(
@@ -264,16 +301,16 @@ class Runtime:
             raise ValueError("Taskset and harness cannot both define user.")
         return cast(User | None, users[0] if users else None)
 
-    def _tool_def(self, name: str, tool: object) -> Tool:
+    def _tool_def(self, name: str, tool: object, state: State) -> Tool:
         mcp_tool_def = getattr(tool, "tool_def", None)
         if isinstance(mcp_tool_def, Tool):
             return mcp_tool_def
         tool_def = convert_func_to_tool_def(tool)
         hidden_args = {"runtime", "task", "state"}
-        owner = self.tool_owners.get(name)
+        owner = self.tool_owner(name, state)
         if owner is not None and owner.sandbox is not None:
             hidden_args.add("sandbox")
-        for binding_key in self.bindings:
+        for binding_key in self.bindings_for_state(state):
             tool_name_prefix, separator, arg_name = binding_key.partition(".")
             if separator == "." and tool_name_prefix == name:
                 hidden_args.add(arg_name)
@@ -300,7 +337,10 @@ class Runtime:
         return await self._call_tool(tool_name, task, state, True, **kwargs)
 
     async def is_completed(self, task: Task, state: State) -> bool:
-        for condition in self.stop_conditions:
+        conditions = unique_handlers(
+            [*self.stop_conditions, *self._rollout_handlers("stop", state)]
+        )
+        for condition in conditions:
             completed = await maybe_call_with_named_args(
                 condition, task=task, state=state
             )
@@ -346,7 +386,7 @@ class Runtime:
             kind = "exposed tool" if exposed else "tool"
             raise KeyError(f"Unknown {kind} {tool_name!r}.")
         tool_kwargs = dict(kwargs)
-        owner = self.tool_owners.get(tool_name)
+        owner = self.tool_owner(tool_name, state)
         for hidden_arg in ("runtime", "task", "state"):
             if hidden_arg in tool_kwargs:
                 raise ValueError(f"Tool arg {tool_name}.{hidden_arg} is reserved.")
@@ -354,7 +394,7 @@ class Runtime:
             if "sandbox" in tool_kwargs:
                 raise ValueError(f"Tool arg {tool_name}.sandbox is reserved.")
             tool_kwargs["sandbox"] = await self.resolve_tool_sandbox(owner, task, state)
-        for binding_key, source in self.bindings.items():
+        for binding_key, source in self.bindings_for_state(state).items():
             tool_name_prefix, separator, arg_name = binding_key.partition(".")
             if separator != ".":
                 raise ValueError(f"Tool binding {binding_key!r} must be 'tool.arg'.")
@@ -415,11 +455,34 @@ class Runtime:
         state["trajectory"].append(step)
         return response
 
+    async def render_rollout(self, task: Task, state: State) -> State:
+        handlers = unique_handlers(
+            [
+                *self.rollout_render,
+                *self._rollout_handlers("render", state, stage="rollout"),
+            ]
+        )
+        validate_handler_args(handlers, {"task", "state"}, "render", "rollout")
+        await run_handlers(handlers, task=task, state=state)
+        return state
+
+    async def render_group(self, tasks: list[Task], states: list[State]) -> list[State]:
+        handlers = unique_handlers(
+            [
+                *self.group_render,
+                *self._group_handlers("render", states, stage="group"),
+            ]
+        )
+        validate_handler_args(handlers, {"tasks", "states"}, "render", "group")
+        await run_handlers(handlers, tasks=tasks, states=states)
+        return states
+
     async def score_rollout(self, task: Task, state: State) -> State:
         await score_rollout_signals(self.rollout_signals, task, state)
         return state
 
     async def score_group(self, tasks: list[Task], states: list[State]) -> list[State]:
+        await self.render_group(tasks, states)
         await score_group_signals(
             self.group_signals,
             cast(list[Mapping[str, Any]], tasks),
@@ -428,7 +491,13 @@ class Runtime:
         return states
 
     async def cleanup_rollout(self, task: Task, state: State) -> None:
-        await run_handlers(self.rollout_cleanup, task=task, state=state)
+        handlers = unique_handlers(
+            [
+                *self.rollout_cleanup,
+                *self._rollout_handlers("cleanup", state, stage="rollout"),
+            ]
+        )
+        await run_handlers(handlers, task=task, state=state)
         await self.release_objects("rollout", state)
         await self.release_user_objects("rollout", state)
         await self.release_sandboxes(scope="rollout", state=state)
@@ -436,12 +505,19 @@ class Runtime:
         await self.release_model_client(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
-        await run_handlers(self.group_cleanup, tasks=tasks, states=states)
+        handlers = unique_handlers(
+            [
+                *self.group_cleanup,
+                *self._group_handlers("cleanup", states, stage="group"),
+            ]
+        )
+        await run_handlers(handlers, tasks=tasks, states=states)
         for state in states:
             await self.release_objects("group", state)
             await self.release_user_objects("group", state)
             await self.release_sandboxes(scope="group", state=state)
             await self.close_mcp_tools(state, scope="group")
+            self.rollout_toolsets.pop(self.scope_key("rollout", state), None)
 
     async def collect_artifacts(self, task: Task, state: State) -> None:
         program = getattr(self.harness, "program", None)
@@ -530,6 +606,110 @@ class Runtime:
             await close_object(obj)
             del self.user_objects[key]
 
+    async def ensure_rollout_toolsets(self, task: Task, state: State) -> None:
+        key = self.scope_key("rollout", state)
+        if key in self.rollout_toolsets:
+            return
+        self.rollout_toolsets[key] = await self._task_toolset_additions(task, state)
+
+    def _task_toolsets_config(self, task: Mapping[str, Any]) -> Mapping[str, object]:
+        raw_toolsets = task.get("toolsets")
+        if raw_toolsets is None:
+            return {}
+        if not isinstance(raw_toolsets, Mapping):
+            raise TypeError("task.toolsets must be a mapping.")
+        return cast(Mapping[str, object], raw_toolsets)
+
+    async def _task_toolset_additions(self, task: Task, state: State) -> list[Toolset]:
+        toolsets: list[Toolset] = []
+        config = self._task_toolsets_config(task)
+        for name, spec in config.items():
+            if name in {"show", "hide"}:
+                continue
+            if name in self.named_toolsets:
+                raise ValueError(f"Task toolset {name!r} is already defined.")
+            toolsets.append(await self._runtime_named_toolset(name, spec, task, state))
+        return toolsets
+
+    async def _runtime_named_toolset(
+        self, name: str, spec: object, task: Task, state: State
+    ) -> Toolset:
+        spec = resolve_config_object(spec)
+        if isinstance(spec, Toolset):
+            return spec
+        if isinstance(spec, Mapping):
+            mapping = cast(Mapping[str, object], spec)
+            if "fn" in mapping:
+                fn = resolve_config_object(mapping.get("fn"))
+                if not callable(fn):
+                    raise TypeError(f"Task toolset {name!r} requires callable fn.")
+                kwargs = {key: value for key, value in mapping.items() if key != "fn"}
+                result = await maybe_call_with_named_args(
+                    cast(Callable[..., object], fn),
+                    task=task,
+                    state=state,
+                    **kwargs,
+                )
+                toolsets = normalize_toolset_result(result)
+                if len(toolsets) != 1:
+                    raise ValueError(
+                        f"Task toolset {name!r} fn must return exactly one Toolset."
+                    )
+                return toolsets[0]
+            return Toolset(config=mapping)
+        if callable(spec):
+            result = await maybe_call_with_named_args(
+                cast(Callable[..., object], spec), task=task, state=state
+            )
+            toolsets = normalize_toolset_result(result)
+            if len(toolsets) != 1:
+                raise ValueError(
+                    f"Task toolset {name!r} fn must return exactly one Toolset."
+                )
+            return toolsets[0]
+        return normalize_toolset_result(spec)[0]
+
+    def _rollout_toolsets(self, state: State) -> list[Toolset]:
+        return self.rollout_toolsets.get(self.scope_key("rollout", state), [])
+
+    def active_toolsets(self, state: State) -> list[Toolset]:
+        return [*self._static_toolsets_for_state(state), *self._rollout_toolsets(state)]
+
+    def _static_toolsets_for_state(self, state: State) -> list[Toolset]:
+        task = cast(Mapping[str, Any], state.get("task") or {})
+        selected = self._selected_toolset_names(task)
+        ids_to_names = {
+            id(toolset): name for name, toolset in self.named_toolsets.items()
+        }
+        active: list[Toolset] = []
+        for toolset in self.toolsets:
+            name = ids_to_names.get(id(toolset))
+            if name is not None and name not in selected:
+                continue
+            active.append(toolset)
+        return active
+
+    def _selected_toolset_names(self, task: Mapping[str, Any]) -> set[str]:
+        names = set(self.named_toolsets)
+        config = self._task_toolsets_config(task)
+        show = config.get("show")
+        hide = config.get("hide")
+        if show is not None and hide is not None:
+            raise ValueError("task.toolsets accepts show or hide, not both.")
+        if show is not None:
+            selected = set(string_list(show, "task.toolsets.show"))
+            unknown = sorted(selected - names)
+            if unknown:
+                raise KeyError(f"Unknown shown toolsets: {unknown}.")
+            return selected
+        if hide is not None:
+            hidden = set(string_list(hide, "task.toolsets.hide"))
+            unknown = sorted(hidden - names)
+            if unknown:
+                raise KeyError(f"Unknown hidden toolsets: {unknown}.")
+            return names - hidden
+        return names
+
     def _build_signals(self) -> list[SignalRecord]:
         taskset_signals = self._owner_signals(self.taskset)
         harness_signals = self._owner_signals(self.harness)
@@ -544,7 +724,38 @@ class Runtime:
             groups.extend(iter_toolsets(getattr(owner, "toolsets", ())))
         return groups
 
-    def _build_tool_owners(self) -> dict[str, Toolset]:
+    def _collect_named_toolsets(self) -> dict[str, Toolset]:
+        named: dict[str, Toolset] = {}
+        for owner in (self.taskset, self.harness):
+            if owner is None:
+                continue
+            owner_named = getattr(owner, "named_toolsets", {})
+            if not isinstance(owner_named, Mapping):
+                raise TypeError("named_toolsets must be a mapping.")
+            for name, toolset in owner_named.items():
+                if not isinstance(name, str):
+                    raise TypeError("Toolset names must be strings.")
+                if name in named:
+                    raise ValueError(f"Toolset {name!r} is defined twice.")
+                if not isinstance(toolset, Toolset):
+                    raise TypeError("named_toolsets values must be Toolsets.")
+                named[name] = toolset
+        return named
+
+    def _tools_for_toolsets(
+        self, toolsets: Iterable[object], apply_visibility: bool
+    ) -> dict[str, object]:
+        tools: dict[str, object] = {}
+        for tool in flatten_toolsets(toolsets, apply_visibility=apply_visibility):
+            if isinstance(tool, MCPTool):
+                continue
+            name = tool_name(tool)
+            if name in tools:
+                raise ValueError(f"Tool {name!r} is defined twice.")
+            tools[name] = tool
+        return tools
+
+    def _tool_owners_for(self, toolsets: Sequence[Toolset]) -> dict[str, Toolset]:
         owners: dict[str, Toolset] = {}
 
         def visit(toolset: Toolset) -> None:
@@ -559,38 +770,25 @@ class Runtime:
                     raise ValueError(f"Tool {name!r} is defined twice.")
                 owners[name] = toolset
 
-        for toolset in self.toolsets:
+        for toolset in toolsets:
             visit(toolset)
         return owners
 
-    def _build_tools(self, apply_visibility: bool) -> dict[str, object]:
-        tools: dict[str, object] = {}
-        for owner in (self.taskset, self.harness):
-            if owner is None:
-                continue
-            for tool in flatten_toolsets(
-                getattr(owner, "toolsets", ()), apply_visibility=apply_visibility
-            ):
-                if isinstance(tool, MCPTool):
-                    continue
-                name = tool_name(tool)
-                if name in tools:
-                    raise ValueError(f"Tool {name!r} is defined twice.")
-                tools[name] = tool
-        return tools
+    def tool_owner(self, name: str, state: State) -> Toolset | None:
+        return self._tool_owners_for(self.active_toolsets(state)).get(name)
 
-    def _build_bindings(self) -> dict[str, object]:
+    def bindings_for_state(self, state: State) -> dict[str, object]:
         bindings: dict[str, object] = {}
-        for toolset in self.toolsets:
+        for toolset in iter_toolsets(self.active_toolsets(state)):
             for key, value in toolset.bindings.items():
                 if key in bindings:
                     raise ValueError(f"Tool binding {key!r} is defined twice.")
                 bindings[key] = value
         return bindings
 
-    def _build_object_specs(self) -> dict[str, tuple[Toolset, object]]:
+    def object_specs_for_state(self, state: State) -> dict[str, tuple[Toolset, object]]:
         objects: dict[str, tuple[Toolset, object]] = {}
-        for toolset in self.toolsets:
+        for toolset in iter_toolsets(self.active_toolsets(state)):
             for key, value in toolset.objects.items():
                 if key in objects:
                     raise ValueError(f"Runtime object {key!r} is defined twice.")
@@ -610,15 +808,16 @@ class Runtime:
         )
 
     def _handler_owners(self) -> tuple[object | None, ...]:
-        return (self.taskset, self.harness, *self.toolsets)
+        return (self.taskset, self.harness)
 
     def _extra_handlers(
         self,
         attr: str,
         builtins: Sequence[Callable[..., object]] = (),
+        owners: Sequence[object | None] | None = None,
     ) -> list[Callable[..., object]]:
         handlers: list[Callable[..., object]] = list(builtins)
-        for owner in self._handler_owners():
+        for owner in owners or self._handler_owners():
             if owner is None:
                 continue
             for handler in getattr(owner, "__dict__", {}).get(attr, ()):
@@ -626,6 +825,57 @@ class Runtime:
                     raise TypeError(f"{attr} entries must be callable.")
                 handlers.append(cast(Callable[..., object], handler))
         return handlers
+
+    def _rollout_handlers(
+        self,
+        attr: str,
+        state: State,
+        stage: str | None = None,
+    ) -> list[Callable[..., object]]:
+        handlers: list[Callable[..., object]] = []
+        for toolset in iter_toolsets(self.active_toolsets(state)):
+            for handler in getattr(toolset, attr, ()):
+                if not callable(handler):
+                    raise TypeError(f"{attr} entries must be callable.")
+                if (
+                    stage is not None
+                    and getattr(handler, f"{attr}_stage", "rollout") != stage
+                ):
+                    continue
+                handlers.append(cast(Callable[..., object], handler))
+            for _, method in inspect.getmembers(toolset, predicate=callable):
+                if not getattr(method, attr, False):
+                    continue
+                if (
+                    stage is not None
+                    and getattr(method, f"{attr}_stage", "rollout") != stage
+                ):
+                    continue
+                handlers.append(method)
+        return sorted(
+            unique_handlers(handlers),
+            key=lambda handler: (
+                -int(getattr(handler, f"{attr}_priority", 0)),
+                str(getattr(handler, "__name__", "")),
+            ),
+        )
+
+    def _group_handlers(
+        self,
+        attr: str,
+        states: Sequence[State],
+        stage: str | None = None,
+    ) -> list[Callable[..., object]]:
+        handlers: list[Callable[..., object]] = []
+        for state in states:
+            handlers.extend(self._rollout_handlers(attr, state, stage=stage))
+        return sorted(
+            unique_handlers(handlers),
+            key=lambda handler: (
+                -int(getattr(handler, f"{attr}_priority", 0)),
+                str(getattr(handler, "__name__", "")),
+            ),
+        )
 
     async def _collect_artifact(self, spec: object, task: Task, state: State) -> object:
         if callable(spec):
@@ -670,7 +920,7 @@ class Runtime:
             tail = rest
         elif root == "tools":
             if not separator:
-                return self.tools
+                return self.all_tools(state)
             name, _, rest = tail.partition(".")
 
             value = self._tool_call(name, task, state, exposed=False)
@@ -684,9 +934,10 @@ class Runtime:
         return value
 
     async def _resolve_object(self, name: str, task: Task, state: State) -> object:
-        if name not in self.object_specs:
+        object_specs = self.object_specs_for_state(state)
+        if name not in object_specs:
             raise KeyError(f"Unknown runtime object {name!r}.")
-        toolset, spec = self.object_specs[name]
+        toolset, spec = object_specs[name]
         scope = toolset_object_scope(toolset)
         key = (id(toolset), self.scope_key(scope, state), name)
         if key in self.objects:
@@ -838,7 +1089,7 @@ class Runtime:
             await maybe_call_with_named_args(getattr(handle, "delete"))
             del self.sandbox_leases[key]
 
-    async def ensure_global_sandboxes(self) -> None:
+    async def ensure_global_sandboxes(self, state: State | None = None) -> None:
         from .utils.sandbox_utils import (
             create_scoped_sandbox_lease,
             create_tool_sandbox_lease,
@@ -848,7 +1099,7 @@ class Runtime:
         )
 
         async with self.sandbox_lock:
-            for owner in self.sandbox_owners():
+            for owner in self.sandbox_owners(state):
                 sandbox = getattr(owner, "sandbox", None)
                 if not isinstance(sandbox, Mapping):
                     continue
@@ -877,8 +1128,10 @@ class Runtime:
                 continue
             attach_sandbox_ref(state, cast(Any, lease))
 
-    def sandbox_owners(self) -> list[object]:
+    def sandbox_owners(self, state: State | None = None) -> list[object]:
         owners: list[object] = [*self.toolsets]
+        if state is not None:
+            owners.extend(self._rollout_toolsets(state))
         user = self._resolve_user()
         if user is not None:
             owners.append(user)
@@ -894,7 +1147,7 @@ class Runtime:
             tools: dict[str, object] = {}
             exposed_tools: dict[str, object] = {}
             try:
-                for toolset in self.toolsets:
+                for toolset in self.active_toolsets(state):
                     await self._register_mcp_tools(
                         toolset,
                         [toolset],
@@ -945,7 +1198,13 @@ class Runtime:
             handles = await connect_mcp_tool(item, exit_stack)
             for handle in handles:
                 name = tool_name(handle)
-                if name in self.tools or name in tools:
+                if (
+                    name
+                    in self._tools_for_toolsets(
+                        self.active_toolsets(state), apply_visibility=False
+                    )
+                    or name in tools
+                ):
                     raise ValueError(f"Tool {name!r} is defined twice.")
                 tools[name] = handle
                 if all(tool_visible(parent, name) for parent in parents):
@@ -967,7 +1226,9 @@ class Runtime:
             await exit_stack.aclose()
 
     def all_tools(self, state: State) -> dict[str, object]:
-        tools = dict(self.tools)
+        tools = self._tools_for_toolsets(
+            self.active_toolsets(state), apply_visibility=False
+        )
         for name, tool in self.mcp_tools_for_state(state, exposed=False).items():
             if name in tools:
                 raise ValueError(f"Tool {name!r} is defined twice.")
@@ -975,7 +1236,9 @@ class Runtime:
         return tools
 
     def unfiltered_exposed_tools(self, state: State) -> dict[str, object]:
-        tools = dict(self.exposed_tools)
+        tools = self._tools_for_toolsets(
+            self.active_toolsets(state), apply_visibility=True
+        )
         for name, tool in self.mcp_tools_for_state(state, exposed=True).items():
             if name in tools:
                 raise ValueError(f"Tool {name!r} is defined twice.")
@@ -996,12 +1259,17 @@ class Runtime:
             if selected.get("show") is not None and selected.get("hide") is not None:
                 raise ValueError("state.runtime.tools accepts show or hide, not both.")
             if selected.get("show") is not None:
-                selected = selected["show"]
+                selected_names = string_list(
+                    selected["show"], "state.runtime.tools.show"
+                )
+                unknown = sorted(set(selected_names) - set(tools))
+                if unknown:
+                    raise KeyError(f"Unknown requested tools: {unknown}.")
+                return {name: tools[name] for name in selected_names}
             elif selected.get("hide") is not None:
-                hidden = selected["hide"]
-                if not isinstance(hidden, Sequence) or isinstance(hidden, str | bytes):
-                    raise TypeError("state.runtime.tools.hide must be a list of names.")
-                hidden_names = {str(name) for name in hidden}
+                hidden_names = set(
+                    string_list(selected["hide"], "state.runtime.tools.hide")
+                )
                 unknown = sorted(hidden_names - set(tools))
                 if unknown:
                     raise KeyError(f"Unknown hidden tools: {unknown}.")
@@ -1012,13 +1280,7 @@ class Runtime:
                 }
             else:
                 return tools
-        if not isinstance(selected, Sequence) or isinstance(selected, str | bytes):
-            raise TypeError("state.runtime.tools must be a list of tool names.")
-        selected_names = [str(name) for name in selected]
-        unknown = sorted(set(selected_names) - set(tools))
-        if unknown:
-            raise KeyError(f"Unknown requested tools: {unknown}.")
-        return {name: tools[name] for name in selected_names}
+        raise TypeError("state.runtime.tools must be a mapping with show or hide.")
 
     def mcp_tools_for_state(self, state: State, exposed: bool) -> dict[str, object]:
         source = self.exposed_mcp_tools if exposed else self.mcp_tools
@@ -1047,7 +1309,7 @@ class Runtime:
                 if key not in keys:
                     keys.append(key)
 
-        for toolset in self.toolsets:
+        for toolset in self.active_toolsets(state):
             visit(toolset)
         return keys
 
@@ -1087,6 +1349,17 @@ def _read_path(value: object, path: str) -> object:
         else:
             current = getattr(current, part)
     return current
+
+
+def string_list(value: object, field: str) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, Sequence) or isinstance(value, bytes):
+        raise TypeError(f"{field} must be a string or list of strings.")
+    result = [str(item) for item in value]
+    if len(result) != len(set(result)):
+        raise ValueError(f"{field} contains duplicate names.")
+    return result
 
 
 def serializable(value: object) -> object:

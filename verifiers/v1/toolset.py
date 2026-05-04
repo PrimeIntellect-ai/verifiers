@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import inspect
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
-from .config import config_items, resolve_config_object, string_mapping
+from .config import config_callables, resolve_config_object, string_mapping
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class Toolset:
     scope: str | None = None
     sandbox: Mapping[str, object] | str | None = None
     stop: tuple[object, ...] = ()
+    render: tuple[object, ...] = ()
     cleanup: tuple[object, ...] = ()
     teardown: tuple[object, ...] = ()
     config: object | None = None
@@ -33,6 +35,7 @@ class Toolset:
         scope: str | None = None,
         sandbox: Mapping[str, object] | str | None = None,
         stop: Iterable[object] = (),
+        render: Iterable[object] = (),
         cleanup: Iterable[object] = (),
         teardown: Iterable[object] = (),
         config: object | None = None,
@@ -77,9 +80,16 @@ class Toolset:
                 if sandbox is not None
                 else cast(Mapping[str, object] | str | None, config_sandbox)
             )
-            stop = [*stop, *config_items(config_map.get("stop"))]
-            cleanup = [*cleanup, *config_items(config_map.get("cleanup"))]
-            teardown = [*teardown, *config_items(config_map.get("teardown"))]
+            stop = [*stop, *config_callables(config_map.get("stop"), "stop")]
+            render = [*render, *config_callables(config_map.get("render"), "render")]
+            cleanup = [
+                *cleanup,
+                *config_callables(config_map.get("cleanup"), "cleanup"),
+            ]
+            teardown = [
+                *teardown,
+                *config_callables(config_map.get("teardown"), "teardown"),
+            ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
         object.__setattr__(self, "tools", tuple(tool_item(tool) for tool in tools))
@@ -94,9 +104,12 @@ class Toolset:
         if isinstance(sandbox, str) and sandbox != "program":
             raise ValueError("Toolset sandbox string must be 'program'.")
         object.__setattr__(self, "sandbox", sandbox)
-        object.__setattr__(self, "stop", tuple(stop))
-        object.__setattr__(self, "cleanup", tuple(cleanup))
-        object.__setattr__(self, "teardown", tuple(teardown))
+        object.__setattr__(self, "stop", tuple(config_callables(stop, "stop")))
+        object.__setattr__(self, "render", tuple(config_callables(render, "render")))
+        object.__setattr__(self, "cleanup", tuple(config_callables(cleanup, "cleanup")))
+        object.__setattr__(
+            self, "teardown", tuple(config_callables(teardown, "teardown"))
+        )
         object.__setattr__(self, "config", config)
 
 
@@ -130,6 +143,86 @@ def iter_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
 
 def normalize_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
     return [normalize_toolset(toolset) for toolset in toolsets]
+
+
+def merge_toolsets(
+    values: Iterable[object] | Mapping[str, object],
+    config: object,
+) -> tuple[list[Toolset], dict[str, Toolset]]:
+    value_toolsets, value_named = normalize_toolset_collection(values)
+    config_toolsets, config_named = normalize_toolset_collection(config)
+    duplicate = set(value_named) & set(config_named)
+    if duplicate:
+        raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
+    return [*value_toolsets, *config_toolsets], {**value_named, **config_named}
+
+
+def normalize_toolset_collection(
+    value: object,
+) -> tuple[list[Toolset], dict[str, Toolset]]:
+    if value is None:
+        return [], {}
+    if isinstance(value, Mapping):
+        named: dict[str, Toolset] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("Toolset names must be strings.")
+            if key in named:
+                raise ValueError(f"Toolset {key!r} is defined twice.")
+            named[key] = named_toolset_from_config(key, item)
+        return list(named.values()), named
+    if isinstance(value, str):
+        return [normalize_toolset(value)], {}
+    if not isinstance(value, Iterable):
+        return [normalize_toolset(value)], {}
+    return normalize_toolsets(value), {}
+
+
+def named_toolset_from_config(name: str, value: object) -> Toolset:
+    value = resolve_config_object(value)
+    if isinstance(value, Toolset):
+        return value
+    if isinstance(value, Mapping):
+        spec = cast(Mapping[str, object], value)
+        if "fn" in spec:
+            return toolset_from_factory(name, spec)
+        return Toolset(config=spec)
+    if callable(value):
+        return call_toolset_factory(name, cast(Callable[..., object], value), {})
+    return normalize_toolset(value)
+
+
+def toolset_from_factory(name: str, spec: Mapping[str, object]) -> Toolset:
+    fn = resolve_config_object(spec.get("fn"))
+    if not callable(fn):
+        raise TypeError(f"Toolset {name!r} requires callable fn.")
+    kwargs = {key: value for key, value in spec.items() if key != "fn"}
+    return call_toolset_factory(name, cast(Callable[..., object], fn), kwargs)
+
+
+def call_toolset_factory(
+    name: str,
+    fn: Callable[..., object],
+    kwargs: Mapping[str, object],
+) -> Toolset:
+    result = fn(**kwargs)
+    if inspect.isawaitable(result):
+        raise TypeError(f"Toolset {name!r} fn must be synchronous.")
+    toolsets = normalize_toolset_result(result)
+    if len(toolsets) != 1:
+        raise ValueError(f"Toolset {name!r} fn must return exactly one Toolset.")
+    return toolsets[0]
+
+
+def normalize_toolset_result(value: object) -> list[Toolset]:
+    value = resolve_config_object(value)
+    if value is None:
+        return []
+    if isinstance(value, Toolset | Mapping | str):
+        return [normalize_toolset(value)]
+    if not isinstance(value, Iterable):
+        return [normalize_toolset(value)]
+    return normalize_toolsets(value)
 
 
 def normalize_toolset(value: object) -> Toolset:
@@ -180,6 +273,7 @@ def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
         "scope",
         "sandbox",
         "stop",
+        "render",
         "cleanup",
         "teardown",
     }

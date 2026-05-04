@@ -7,6 +7,7 @@ from typing import Any, SupportsIndex, cast
 from verifiers.types import assert_json_serializable
 
 from .config import normalize_runtime_config
+from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
 
 
 class Task(dict):
@@ -17,6 +18,26 @@ class Task(dict):
     def freeze(self) -> Task:
         if "runtime" in self:
             super().__setitem__("runtime", normalize_runtime_config(self["runtime"]))
+        if "prompt" in self:
+            super().__setitem__(
+                "prompt", normalize_prompt(self["prompt"], field_name="task.prompt")
+            )
+        if "system_prompt" in self:
+            super().__setitem__(
+                "system_prompt",
+                normalize_system_prompt(
+                    self["system_prompt"], field_name="task.system_prompt"
+                ),
+            )
+        if "tools" in self and not isinstance(self["tools"], Mapping):
+            raise TypeError("task.tools must be a mapping with show or hide.")
+        if "toolsets" in self and not isinstance(self["toolsets"], Mapping):
+            raise TypeError("task.toolsets must be a mapping.")
+        if "max_turns" in self and (
+            not isinstance(self["max_turns"], int)
+            or isinstance(self["max_turns"], bool)
+        ):
+            raise TypeError("task.max_turns must be an integer.")
         for key, value in list(self.items()):
             super().__setitem__(key, freeze_value(value))
         assert_serializable(self)

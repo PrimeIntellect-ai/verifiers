@@ -118,6 +118,32 @@ def cleanup(
 
 
 @overload
+def render(func: F, priority: int = 0, stage: SignalStage = "rollout") -> F: ...
+
+
+@overload
+def render(
+    func: None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> Callable[[F], F]: ...
+
+
+def render(
+    func: F | None = None, priority: int = 0, stage: SignalStage = "rollout"
+) -> F | Callable[[F], F]:
+    """Decorator to mark a rollout or group state-rendering handler."""
+
+    def decorator(f: F) -> F:
+        setattr(f, "render", True)
+        setattr(f, "render_priority", priority)
+        setattr(f, "render_stage", stage)
+        return f
+
+    if func is None:
+        return decorator
+    return decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0, stage: SignalStage = "rollout") -> F: ...
 
 

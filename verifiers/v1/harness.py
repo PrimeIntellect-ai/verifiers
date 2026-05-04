@@ -20,7 +20,7 @@ from verifiers.types import (
 from .config import (
     HarnessConfig,
     import_config_ref,
-    merge_config_items,
+    merge_config_callables,
     merge_config_value,
     resolve_config_object,
     string_mapping,
@@ -41,13 +41,18 @@ from .runtime import Runtime
 from .utils.sandbox_utils import run_sandbox_command
 from .utils.sandbox_program_utils import run_sandbox_python_program
 from .utils.trajectory_utils import sync_trajectory
+from .utils.prompt_utils import (
+    normalize_prompt,
+    normalize_system_prompt,
+    resolve_system_prompt,
+)
 from .state import State
 from .task import Task
-from .toolset import normalize_toolsets
+from .toolset import merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
 
 
-PROGRAM_KIND_KEYS = {"base", "entrypoint", "command"}
+PROGRAM_KIND_KEYS = {"base", "fn", "command"}
 PROGRAM_OPTION_KEYS = {"sandbox", "files", "dirs", "setup", "env", "artifacts"}
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
 SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
@@ -59,6 +64,8 @@ class Harness:
     def __init__(
         self,
         program: Callable[..., object] | Mapping[str, object] | None = None,
+        system_prompt: object | None = None,
+        system_prompt_merge: str | None = None,
         toolsets: list[object] | None = None,
         user: object | None = None,
         sandbox: Mapping[str, object] | None = None,
@@ -67,6 +74,7 @@ class Harness:
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,
         stop: list[Callable[..., object]] | None = None,
+        render: list[Callable[..., object]] | None = None,
         metrics: list[Callable[..., object]] | None = None,
         rewards: list[Callable[..., object]] | None = None,
         advantages: list[Callable[..., object]] | None = None,
@@ -84,8 +92,15 @@ class Harness:
         self.program = cast(
             Callable[..., object] | Mapping[str, object] | None, program_value
         )
-        self.toolsets = normalize_toolsets(
-            merge_config_items(toolsets or (), self.config.toolsets)
+        self.system_prompt = normalize_system_prompt(
+            merge_config_value(system_prompt, self.config.system_prompt),
+            field_name="harness.system_prompt",
+        )
+        self.system_prompt_merge = str(
+            merge_config_value(system_prompt_merge, self.config.system_prompt_merge)
+        )
+        self.toolsets, self.named_toolsets = merge_toolsets(
+            toolsets or (), self.config.toolsets
         )
         self.user = normalize_user(merge_config_value(user, self.config.user))
         self.sandbox = merge_config_value(sandbox, self.config.sandbox)
@@ -103,23 +118,29 @@ class Harness:
         )
         self.stop = cast(
             list[Callable[..., object]],
-            merge_config_items(stop or (), self.config.stop),
+            merge_config_callables(stop or (), self.config.stop, "stop"),
+        )
+        self.render = cast(
+            list[Callable[..., object]],
+            merge_config_callables(render or (), self.config.render, "render"),
         )
         self.metrics = cast(
             list[Callable[..., object]],
-            merge_config_items(metrics or (), self.config.metrics),
+            merge_config_callables(metrics or (), self.config.metrics, "metric"),
         )
         self.rewards = cast(
             list[Callable[..., object]],
-            merge_config_items(rewards or (), self.config.rewards),
+            merge_config_callables(rewards or (), self.config.rewards, "reward"),
         )
         self.advantages = cast(
             list[Callable[..., object]],
-            merge_config_items(advantages or (), self.config.advantages),
+            merge_config_callables(
+                advantages or (), self.config.advantages, "advantage"
+            ),
         )
         self.cleanup = cast(
             list[Callable[..., object]],
-            merge_config_items(cleanup or (), self.config.cleanup),
+            merge_config_callables(cleanup or (), self.config.cleanup, "cleanup"),
         )
         keep_step_value = resolve_config_object(
             merge_config_value(keep_trajectory_step, self.config.keep_trajectory_step)
@@ -149,11 +170,20 @@ class Harness:
         self.runtime = self.resolve_runtime()
 
     def add_toolset(self, toolset: object) -> None:
-        self.toolsets.extend(normalize_toolsets([toolset]))
+        toolsets, named_toolsets = normalize_toolset_collection(toolset)
+        duplicate = set(self.named_toolsets) & set(named_toolsets)
+        if duplicate:
+            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
+        self.toolsets.extend(toolsets)
+        self.named_toolsets.update(named_toolsets)
         self.runtime = self.resolve_runtime()
 
     def add_stop(self, fn: Callable[..., object]) -> None:
         self.stop.append(fn)
+        self.runtime = self.resolve_runtime()
+
+    def add_render(self, fn: Callable[..., object]) -> None:
+        self.render.append(fn)
         self.runtime = self.resolve_runtime()
 
     def add_cleanup(self, fn: Callable[..., object]) -> None:
@@ -162,6 +192,9 @@ class Harness:
 
     def attach_taskset(self, taskset: object) -> None:
         self.taskset = taskset
+        attach_harness = getattr(taskset, "attach_harness", None)
+        if callable(attach_harness):
+            attach_harness(self)
         self.runtime = self.resolve_runtime()
 
     def resolve_runtime(self) -> Runtime:
@@ -189,6 +222,7 @@ class Harness:
             sync_trajectory(state)
             self.record_generation_timing(state)
             timing_recorded = True
+            await self.runtime.render_rollout(task, state)
             if state.get("runtime", {}).get("score_rollout", True):
                 await self.runtime.score_rollout(task, state)
             state["is_completed"] = True
@@ -231,8 +265,14 @@ class Harness:
         return State.for_task(task)
 
     async def setup_state(self, task: Task, state: State) -> State:
-        state.setdefault("runtime", {})
-        state["runtime"] = {**task.get("runtime", {}), **state["runtime"]}
+        explicit_runtime = dict(cast(Mapping[str, object], state.get("runtime") or {}))
+        task_runtime = dict(cast(Mapping[str, object], task.get("runtime") or {}))
+        task_controls = {
+            key: task[key] for key in ("max_turns", "tools") if key in task
+        }
+        state["runtime"] = {**task_runtime, **task_controls, **explicit_runtime}
+        if "tools" in task and not isinstance(task["tools"], Mapping):
+            raise TypeError("task.tools must be a mapping with show or hide.")
         if self.client is not None and "client_key" not in state["runtime"]:
             self.runtime.bind_model_client(state, self.client)
         if self.model is not None:
@@ -243,9 +283,11 @@ class Harness:
                 cast(Mapping[str, object], state["runtime"].get("sampling_args") or {})
             )
             state["runtime"]["sampling_args"] = sampling_args
+        self.resolve_system_prompt(task, state)
+        await self.runtime.ensure_rollout_toolsets(task, state)
         await self.runtime.ensure_mcp_tools(state)
         self.runtime.prepare_state(task, state)
-        await self.runtime.ensure_global_sandboxes()
+        await self.runtime.ensure_global_sandboxes(state)
         self.runtime.bind_global_sandboxes(state)
         state.setdefault("trajectory", [])
         state.setdefault("artifacts", {})
@@ -261,6 +303,15 @@ class Harness:
             },
         )
         return state
+
+    def resolve_system_prompt(self, task: Task, state: State) -> None:
+        taskset_system_prompt = getattr(self.taskset, "system_prompt", [])
+        state["system_prompt"] = resolve_system_prompt(
+            task=task,
+            taskset_system_prompt=taskset_system_prompt,
+            harness_system_prompt=self.system_prompt,
+            merge=self.system_prompt_merge,
+        )
 
     def record_generation_timing(self, state: State) -> None:
         timing = state["timing"]
@@ -297,19 +348,17 @@ class Harness:
             if sandbox_config is not None:
                 return self.sandbox_base_program(program, sandbox_config)
             return self.base_program
-        if kind == "entrypoint":
+        if kind == "fn":
             self.validate_program_options(program, kind)
-            entrypoint = program["entrypoint"]
-            if not isinstance(entrypoint, str):
-                raise TypeError("program.entrypoint must be a string ref.")
+            fn_ref = program["fn"]
+            if not isinstance(fn_ref, str):
+                raise TypeError("program.fn must be a string ref.")
             sandbox_config = self.program_sandbox_config(program)
             if sandbox_config is not None:
-                return self.sandbox_entrypoint_program(
-                    program, sandbox_config, entrypoint
-                )
-            fn = import_config_ref(entrypoint)
+                return self.sandbox_fn_program(program, sandbox_config, fn_ref)
+            fn = import_config_ref(fn_ref)
             if not callable(fn):
-                raise TypeError("program.entrypoint did not resolve to a callable.")
+                raise TypeError("program.fn did not resolve to a callable.")
             return fn
         if kind == "command":
             self.validate_program_options(program, kind)
@@ -323,8 +372,8 @@ class Harness:
         kinds = []
         if base:
             kinds.append("base")
-        if "entrypoint" in program:
-            kinds.append("entrypoint")
+        if "fn" in program:
+            kinds.append("fn")
         if "command" in program:
             kinds.append("command")
         if not kinds and any(key in program for key in PROGRAM_OPTION_KEYS):
@@ -335,7 +384,7 @@ class Harness:
             kinds.append("base")
         if len(kinds) != 1:
             raise ValueError(
-                "program mapping must specify exactly one of base=true, entrypoint, or command."
+                "program mapping must specify exactly one of base=true, fn, or command."
             )
         return kinds[0]
 
@@ -360,9 +409,20 @@ class Harness:
                 )
 
     async def base_program(self, task: Task, state: State) -> State:
-        prompt = normalize_messages(state.get("prompt", []), field_name="state.prompt")
-        prompt_messages = [message.model_dump(exclude_none=True) for message in prompt]
-        messages = list(prompt)
+        prompt = normalize_messages(
+            cast(
+                Messages,
+                normalize_prompt(state.get("prompt", []), field_name="state.prompt"),
+            ),
+            field_name="state.prompt",
+        )
+        system_prompt = normalize_messages(
+            state.get("system_prompt", []), field_name="state.system_prompt"
+        )
+        messages = [*system_prompt, *prompt]
+        prompt_messages = [
+            message.model_dump(exclude_none=True) for message in messages
+        ]
 
         def sync_completion() -> list[dict[str, object]]:
             rendered_messages = [
@@ -472,17 +532,17 @@ class Harness:
                 state=state,
                 runtime=self.runtime,
                 mode="base",
-                entrypoint=None,
+                fn_ref=None,
                 max_turns=self.max_turns(state),
             )
 
         return run
 
-    def sandbox_entrypoint_program(
+    def sandbox_fn_program(
         self,
         program: Mapping[str, object],
         sandbox_config: Mapping[str, object],
-        entrypoint: str,
+        fn_ref: str,
     ) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
             return await run_sandbox_python_program(
@@ -493,8 +553,8 @@ class Harness:
                 task=task,
                 state=state,
                 runtime=self.runtime,
-                mode="entrypoint",
-                entrypoint=entrypoint,
+                mode="fn",
+                fn_ref=fn_ref,
                 max_turns=self.max_turns(state),
             )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from typing import Any, ClassVar, cast
@@ -11,14 +12,15 @@ from verifiers.types import task_payload_from_info
 
 from .config import (
     TasksetConfig,
-    merge_config_items,
+    merge_config_callables,
     merge_config_value,
     resolve_config_object,
 )
 from .state import State
 from .task import Task
-from .toolset import normalize_toolsets
+from .toolset import merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
+from .utils.prompt_utils import normalize_system_prompt
 
 
 class Taskset:
@@ -33,12 +35,14 @@ class Taskset:
         | Callable[[], Iterable[Mapping[str, Any]]]
         | None = None,
         taskset_id: str | None = None,
+        system_prompt: object | None = None,
         metrics: Iterable[Callable[..., object]] = (),
         rewards: Iterable[Callable[..., object]] = (),
         advantages: Iterable[Callable[..., object]] = (),
         toolsets: Iterable[object] = (),
         user: object | None = None,
         stop: Iterable[Callable[..., object]] = (),
+        render: Iterable[Callable[..., object]] = (),
         cleanup: Iterable[Callable[..., object]] = (),
         config: TasksetConfig | Mapping[str, object] | None = None,
     ):
@@ -65,34 +69,43 @@ class Taskset:
         if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
             raise TypeError("taskset_id must be a string.")
         self.taskset_id = resolved_taskset_id or type(self).__name__
+        self.system_prompt = normalize_system_prompt(
+            merge_config_value(system_prompt, self.config.system_prompt),
+            field_name="taskset.system_prompt",
+        )
         self.metrics = cast(
             list[Callable[..., object]],
-            merge_config_items(metrics, self.config.metrics),
+            merge_config_callables(metrics, self.config.metrics, "metric"),
         )
         self.rewards = cast(
             list[Callable[..., object]],
-            merge_config_items(rewards, self.config.rewards),
+            merge_config_callables(rewards, self.config.rewards, "reward"),
         )
         self.advantages = cast(
             list[Callable[..., object]],
-            merge_config_items(advantages, self.config.advantages),
+            merge_config_callables(advantages, self.config.advantages, "advantage"),
         )
-        self.toolsets = normalize_toolsets(
-            merge_config_items(toolsets, self.config.toolsets)
+        self.toolsets, self.named_toolsets = merge_toolsets(
+            toolsets, self.config.toolsets
         )
         self.user = normalize_user(merge_config_value(user, self.config.user))
         self.stop = cast(
             list[Callable[..., object]],
-            merge_config_items(stop, self.config.stop),
+            merge_config_callables(stop, self.config.stop, "stop"),
+        )
+        self.render = cast(
+            list[Callable[..., object]],
+            merge_config_callables(render, self.config.render, "render"),
         )
         self.cleanup = cast(
             list[Callable[..., object]],
-            merge_config_items(cleanup, self.config.cleanup),
+            merge_config_callables(cleanup, self.config.cleanup, "cleanup"),
         )
         self._rows: list[dict[str, Any]] | None = None
         self._eval_rows: list[dict[str, Any]] | None = None
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
+        self._attached_harnesses: weakref.WeakSet[object] = weakref.WeakSet()
 
     @classmethod
     def config_schema(cls) -> str:
@@ -100,21 +113,45 @@ class Taskset:
 
     def add_metric(self, fn: Callable[..., object]) -> None:
         self.metrics.append(fn)
+        self._refresh_attached_harnesses()
 
     def add_reward(self, fn: Callable[..., object]) -> None:
         self.rewards.append(fn)
+        self._refresh_attached_harnesses()
 
     def add_advantage(self, fn: Callable[..., object]) -> None:
         self.advantages.append(fn)
+        self._refresh_attached_harnesses()
 
     def add_toolset(self, toolset: object) -> None:
-        self.toolsets.extend(normalize_toolsets([toolset]))
+        toolsets, named_toolsets = normalize_toolset_collection(toolset)
+        duplicate = set(self.named_toolsets) & set(named_toolsets)
+        if duplicate:
+            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
+        self.toolsets.extend(toolsets)
+        self.named_toolsets.update(named_toolsets)
+        self._refresh_attached_harnesses()
 
     def add_stop(self, fn: Callable[..., object]) -> None:
         self.stop.append(fn)
+        self._refresh_attached_harnesses()
+
+    def add_render(self, fn: Callable[..., object]) -> None:
+        self.render.append(fn)
+        self._refresh_attached_harnesses()
 
     def add_cleanup(self, fn: Callable[..., object]) -> None:
         self.cleanup.append(fn)
+        self._refresh_attached_harnesses()
+
+    def attach_harness(self, harness: object) -> None:
+        self._attached_harnesses.add(harness)
+
+    def _refresh_attached_harnesses(self) -> None:
+        for harness in list(self._attached_harnesses):
+            resolve_runtime = getattr(harness, "resolve_runtime", None)
+            if callable(resolve_runtime):
+                setattr(harness, "runtime", resolve_runtime())
 
     def rows(self) -> list[dict[str, Any]]:
         if self._rows is None:
@@ -195,7 +232,7 @@ class Taskset:
             )
         task_payload = dict(self.task(normalized))
         dataset_row: dict[str, Any] = {
-            "prompt": normalized["prompt"],
+            "prompt": task_payload["prompt"],
             "example_id": normalized["example_id"],
             "info": dataset_info_with_task(task_payload),
         }

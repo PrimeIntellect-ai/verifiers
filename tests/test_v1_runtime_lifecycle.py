@@ -62,6 +62,19 @@ class FakeModelClient:
         return self.responses.pop(0)
 
 
+class CapturingModelClient(FakeModelClient):
+    def __init__(self, responses: list[Response]):
+        super().__init__(responses)
+        self.requests: list[dict[str, object]] = []
+
+    async def get_response(self, **kwargs: object) -> Response:
+        prompt = kwargs.get("prompt")
+        if isinstance(prompt, list):
+            kwargs["prompt"] = list(prompt)
+        self.requests.append(dict(kwargs))
+        return await super().get_response(**kwargs)
+
+
 class FakeCreateSandboxRequest:
     def __init__(self, **kwargs: object):
         self.kwargs = kwargs
@@ -472,6 +485,31 @@ async def test_base_program_returns_tool_errors_to_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_base_program_submits_system_prompt_before_prompt() -> None:
+    client = CapturingModelClient([fake_response(content="ok")])
+    harness = vf.Harness(client=cast(Client, client), model="fake", max_turns=1)
+    task = vf.Task(
+        {
+            "system_prompt": "Use a short answer.",
+            "prompt": [{"role": "user", "content": "hi"}],
+        }
+    ).freeze()
+
+    state = await harness.run(task)
+
+    prompt = cast(list[object], client.requests[0]["prompt"])
+    assert [getattr(message, "role", None) for message in prompt] == [
+        "system",
+        "user",
+    ]
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "Use a short answer."}
+    ]
+    assert state["prompt"][0]["role"] == "system"
+    assert state["completion"][-1]["content"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = vf.Harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -538,7 +576,7 @@ def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
         task=task,
         state=state,
         mode="base",
-        entrypoint=None,
+        fn_ref=None,
         max_turns=3,
         tool_defs=[
             Tool(

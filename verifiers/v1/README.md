@@ -38,10 +38,19 @@ defining a shallow subclass when a package needs a typed config surface.
 A `Task` is an immutable, JSON-serializable dataset row. It is the canonical
 place for per-example data such as prompts, answers, metadata, tool filters, and
 sandbox overrides. A task is frozen before rollout code sees it.
+`task["prompt"]` must not contain system messages. Use `task["system_prompt"]`
+for per-task system instructions, or set `Taskset(system_prompt=...)` /
+`Harness(system_prompt=...)` for package-level instructions.
+Multiple system prompt sources reject by default; set `system_prompt_merge`
+explicitly on the harness only when that harness knows how they should combine.
+Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
+for per-row runtime specialization. `tools` and `toolsets` use `show`/`hide`
+maps; `runtime` remains hidden framework metadata.
 
 ```python
 task = vf.Task(
     {
+        "system_prompt": "Reverse text exactly.",
         "prompt": [{"role": "user", "content": "Reverse abc."}],
         "answer": "cba",
     }
@@ -117,7 +126,7 @@ def source():
     yield {
         "prompt": [{"role": "user", "content": "Reverse abc."}],
         "answer": "cba",
-        "runtime": {"max_turns": 1},
+        "max_turns": 1,
     }
 
 
@@ -202,19 +211,19 @@ Every task receives:
 - `taskset_id`: the taskset identifier, defaulting to the class name;
 - `task_id`: `task_id`, `id`, `example_id`, or a generated UUID.
 
-### Task Runtime Requests
+### Task Controls
 
-`runtime` is a privileged task field for serializable rollout requests. It is
-validated before the task is frozen. Current task-level runtime fields are:
+Tasks can request rollout behavior through top-level serializable fields:
 
 - `max_turns`: per-rollout turn limit for the base harness loop;
-- `tools`: tool visibility as a list of names, `{"show": [...]}`, or
-  `{"hide": [...]}`.
+- `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
+- `toolsets`: toolset visibility or rollout-local toolsets;
+- `sandbox`: per-task primary sandbox overrides.
 
 The priority rule is:
 
 ```text
-explicit state.runtime > task.runtime > harness defaults
+explicit state.runtime > task top-level controls > hidden task.runtime > harness defaults
 ```
 
 `state.runtime` is only present when a caller passes an already-specialized
@@ -225,9 +234,13 @@ default remains `max_turns=10`; a taskset can override it per row:
 ```python
 yield {
     "prompt": [{"role": "user", "content": "Answer briefly."}],
-    "runtime": {"max_turns": 3},
+    "max_turns": 3,
 }
 ```
+
+`task.runtime` remains reserved for framework metadata and compatibility with
+serialized worker state. Environment authors should prefer the top-level task
+fields above.
 
 For compatibility with the current `vf.Environment` worker schema,
 `Taskset.get_dataset()` emits worker rows and stores the full canonical task as
@@ -261,17 +274,18 @@ class MyTaskset(vf.Taskset):
 `Harness.run(task, state=None)` owns the rollout lifecycle:
 
 1. initialize state if needed;
-2. merge task runtime metadata into state;
+2. resolve task controls into hidden runtime metadata;
 3. start endpoint/tool/MCP/sandbox resources needed by the run;
 4. run the configured program;
 5. collect artifacts;
 6. sync trajectory-derived prompt/completion fields;
 7. record timing;
-8. run rollout metrics and rewards;
-9. run rollout cleanup and release rollout-scoped resources;
-10. if no group boundary exists, run group cleanup and release group-scoped
+8. run rollout render functions;
+9. run rollout metrics and rewards;
+10. run rollout cleanup and release rollout-scoped resources;
+11. if no group boundary exists, run group cleanup and release group-scoped
     resources;
-11. strip runtime handles and validate JSON serializability.
+12. strip runtime handles and validate JSON serializability.
 
 Handled `vf.Error` instances are serialized into `state["error"]` and still
 flow through scoring and cleanup. Other exceptions raise after cleanup.
@@ -285,10 +299,10 @@ flow through scoring and cleanup. Other exceptions raise after cleanup.
 | `None` | default endpoint-backed tool loop |
 | callable | Python program called in-process through the interception endpoint |
 | `{"base": True, ...}` | explicit default loop, usually to set sandbox options |
-| `{"entrypoint": "pkg.module:run", ...}` | importable Python program |
+| `{"fn": "pkg.module:run", ...}` | importable Python program |
 | `{"command": ["cmd", "arg"], ...}` | local or sandboxed command |
 
-Mapping programs must specify exactly one of `base=true`, `entrypoint`, or
+Mapping programs must specify exactly one of `base=true`, `fn`, or
 `command`. An option-only mapping such as `{"sandbox": True}` resolves to the
 base loop; option-only mappings without sandbox placement hard fail because the
 options would be inert.
@@ -343,7 +357,10 @@ configuration surface; do not subclass `Env` just to replay offline solutions.
 
 The default loop reads `state["prompt"]`, sends it to the model with the
 resolved tool definitions, executes tool calls, appends tool results, and
-continues until one of these happens:
+continues until one of these happens. If `state["system_prompt"]` is present,
+the base harness prepends it to the model request without merging it into
+`state["prompt"]`; custom programs and external harnesses decide how to consume
+the resolved system prompt.
 
 - a stop condition returns `True`;
 - the model returns no tool calls and no user response is available;
@@ -378,7 +395,7 @@ vf.Harness(
 # Sandboxed importable Python program.
 vf.Harness(
     program={
-        "entrypoint": "my_env.program:run",
+        "fn": "my_env.program:run",
         "sandbox": {"image": "python:3.11-slim"},
     }
 )
@@ -471,8 +488,23 @@ toolset = vf.Toolset(
 - MCP command specs in config/TOML.
 
 Tools are exposed by function/object name. Name collisions hard fail. Toolsets
-show all tools by default; use `show=[...]` or `hide=[...]` to whitelist or
-blacklist a nested tool surface.
+show all tools by default; use `show=[...]` or `hide=[...]` on a toolset to
+whitelist or blacklist that toolset's nested tool surface.
+
+Tasksets and harnesses can pass toolsets as a list or a mapping:
+
+```python
+vf.Taskset(
+    source=source,
+    toolsets={
+        "wiki": load_wiki_toolset(),
+        "python": vf.Toolset(tools=[python]),
+    },
+)
+```
+
+Mapped toolsets are still active by default, but their keys become task-level
+addresses. List toolsets are active defaults but unnamed.
 
 ### Hidden Bindings
 
@@ -499,17 +531,36 @@ are injected automatically when a callable asks for them; runtime access goes
 through state helpers. `sandbox` is reserved for tools owned by a sandboxed
 toolset.
 
-Tasks can select tools for one rollout:
+Tasks can select toolsets and tools for one rollout:
 
 ```python
 {
     "prompt": [{"role": "user", "content": "Use read-only tools."}],
-    "runtime": {"tools": {"show": ["read_file"]}},
+    "toolsets": {"show": ["wiki"]},
+    "tools": {"show": ["read_file"]},
 }
 ```
 
-`runtime.tools` may be a list of tool names, `{"show": [...]}`, or
-`{"hide": [...]}`. Unknown tool names hard fail.
+`task.toolsets` accepts `{"show": [...]}` or `{"hide": [...]}` over mapped
+toolset keys. `task.tools` accepts `{"show": [...]}` or `{"hide": [...]}` over
+the flattened resolved tool names. In each mapping, `show` and `hide` are
+mutually exclusive, and unknown names hard fail.
+
+Task rows can also add rollout-local toolsets:
+
+```python
+{
+    "toolsets": {
+        "local_search": {
+            "tools": ["my_env:search"],
+            "bindings": {"search.index": "task.index_id"},
+        }
+    }
+}
+```
+
+Task-local toolsets are resolved during rollout setup and follow the same
+tool/binding/lifecycle rules as taskset and harness toolsets.
 
 ### Tool Lifetimes
 
@@ -566,13 +617,17 @@ fetch_tools = vf.Toolset(
 )
 ```
 
-In TOML/config:
+In TOML/config, toolsets are addressable by key:
 
 ```toml
-[[env.harness.toolsets]]
+[env.harness.toolsets.fetch]
 tools = [
-  { command = "uvx", args = ["mcp-server-fetch"] },
+    { command = "uvx", args = ["mcp-server-fetch"] },
 ]
+
+[env.taskset.toolsets.wiki]
+fn = "my_env:load_wiki_toolset"
+index = "simplewiki"
 ```
 
 The runtime normalizes MCP tools into callable handles for Python programs and
@@ -622,7 +677,7 @@ taskset = vf.Taskset(
 `transcript` is a default binding. It resolves to the current observable
 conversation.
 
-## Signals, Stop, Cleanup, Teardown
+## Signals, Stop, Render, Cleanup, Teardown
 
 Signals are numeric functions. Function names are signal names. Collisions hard
 fail.
@@ -688,8 +743,28 @@ async def submitted(task, state) -> bool:
 toolset = vf.Toolset(tools=[submit], stop=[submitted])
 ```
 
-The built-in stop condition treats `state["done"]` and
-`state["is_completed"]` as generic finish signals.
+For user code, `state["done"] = True` is the generic finish signal.
+`state["is_completed"]` is framework-maintained and appears on returned states.
+
+### Render
+
+`@vf.render` runs after program execution and before scoring for its stage.
+Render functions prepare serializable state for metrics and rewards: parse
+artifacts, copy sandbox outputs, normalize answer fields, or attach summaries.
+
+```python
+@vf.render
+async def parse_answer(task, state):
+    state["answer"] = extract_answer(state.get("completion") or "")
+
+
+@vf.render(stage="group")
+async def summarize_attempts(tasks, states):
+    ...
+```
+
+Rollout render receives exactly `task, state`; group render receives exactly
+`tasks, states`.
 
 ### Cleanup And Teardown
 
@@ -706,10 +781,6 @@ async def summarize_group(tasks, states):
 `@vf.teardown` has no task/state arguments and runs when the harness runtime is
 destroyed. Use teardown for global services and `atexit`-style cleanup.
 
-There is no public render decorator. Framework-owned rendering such as timing,
-completion sync, trajectory sync, and runtime-handle stripping is part of the
-harness contract.
-
 ## Config And TOML
 
 `TasksetConfig` and `HarnessConfig` are Pydantic models. Constructors accept
@@ -721,8 +792,12 @@ taskset = vf.Taskset(
     config={
         "source": "my_env.data:load_rows",
         "eval_source": "my_env.data:load_eval_rows",
-        "rewards": ["my_env.signals:exact_answer"],
-        "toolsets": [{"tools": ["my_env.tools:search"]}],
+        "rewards": [
+            {"fn": "my_env.signals:exact_answer", "weight": 1.0}
+        ],
+        "toolsets": {
+            "search": {"tools": ["my_env.tools:search"]},
+        },
     }
 )
 ```
@@ -730,6 +805,50 @@ taskset = vf.Taskset(
 List-like fields are additive: constructor items and config items both
 contribute. Scalar constructor arguments such as `source`, `program`,
 `sandbox`, `user`, and `max_turns` override config values.
+
+Callable config fields use one grammar:
+
+```toml
+[[env.taskset.render]]
+fn = "my_env.signals:parse_answer"
+priority = 10
+
+[[env.taskset.rewards]]
+fn = "my_env.signals:exact_answer"
+weight = 1.0
+priority = 0
+
+[[env.harness.cleanup]]
+fn = "my_env.signals:close_trace"
+stage = "group"
+```
+
+Function names are always the callable's Python `__name__`; TOML does not
+define custom metric/reward/render names. A bare string is shorthand when no
+metadata is needed:
+
+```toml
+[env.taskset]
+rewards = ["my_env.signals:exact_answer"]
+```
+
+Toolsets are addressable resource packages, so TOML keys are toolset ids:
+
+```toml
+[env.taskset.toolsets]
+wiki = "my_env.tools:load_wiki_toolset"
+
+[env.taskset.toolsets.python]
+fn = "my_env.tools:load_python_toolset"
+packages = ["numpy", "pandas"]
+
+[env.taskset.toolsets.search]
+tools = ["my_env.tools:search"]
+bindings = { "search.index" = "objects.index" }
+```
+
+A string value under `toolsets` or a `fn` table must produce exactly one
+`Toolset`. A table without `fn` is an inline `Toolset` config.
 
 `scoring` tunes existing signal names:
 

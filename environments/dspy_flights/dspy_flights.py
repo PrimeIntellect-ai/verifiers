@@ -370,7 +370,7 @@ def load_taskset(config=None):
 
 def load_harness(config=None):
     return vf.Harness(
-        program={"entrypoint": "dspy_flights:run_dspy_flight_program"},
+        program={"fn": "dspy_flights:run_dspy_flight_program"},
         config=config,
     )
 

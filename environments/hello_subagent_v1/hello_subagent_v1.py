@@ -8,14 +8,11 @@ async def ask_subagent(name: str, harness, state) -> str:
     task = vf.Task(
         {
             "name": name,
+            "system_prompt": (
+                "You are a child subagent. Reply with exactly "
+                f"`hello {name}` and no extra text."
+            ),
             "prompt": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a child subagent. Reply with exactly "
-                        f"`hello {name}` and no extra text."
-                    ),
-                },
                 {"role": "user", "content": f"Say hello to {name}."},
             ],
         }
@@ -49,34 +46,12 @@ def source():
     return [
         {
             "names": ["world"],
-            "prompt": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a parent coordinator. You must call "
-                        "ask_subagent once for each requested name. After all "
-                        "tool results are available, join the child answers "
-                        "with ', ' and output only that final joined text."
-                    ),
-                },
-                {"role": "user", "content": "Names: world"},
-            ],
+            "prompt": [{"role": "user", "content": "Names: world"}],
             "answer": "hello world",
         },
         {
             "names": ["prime", "verifiers"],
-            "prompt": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a parent coordinator. You must call "
-                        "ask_subagent once for each requested name. After all "
-                        "tool results are available, join the child answers "
-                        "with ', ' and output only that final joined text."
-                    ),
-                },
-                {"role": "user", "content": "Names: prime, verifiers"},
-            ],
+            "prompt": [{"role": "user", "content": "Names: prime, verifiers"}],
             "answer": "hello prime, hello verifiers",
         },
     ]
@@ -96,7 +71,16 @@ def load_toolset(config=None):
 
 
 def load_taskset(config=None):
-    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+    return vf.Taskset(
+        source=source,
+        system_prompt=(
+            "You are a parent coordinator. You must call ask_subagent once for "
+            "each requested name. After all tool results are available, join "
+            "the child answers with ', ' and output only that final joined text."
+        ),
+        rewards=[exact_answer],
+        config=config,
+    )
 
 
 def load_harness(config=None):

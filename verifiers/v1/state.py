@@ -23,6 +23,7 @@ class State(VFState):
     def for_task(cls, task: Mapping[str, Any]) -> State:
         state = cast(State, super().for_task(task))
         state.pop("answer", None)
+        state["runtime"] = {}
         return state
 
     def runtime_state(self) -> dict[str, Any]:

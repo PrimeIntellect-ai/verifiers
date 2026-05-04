@@ -38,6 +38,22 @@ def collect_handlers(
     )
 
 
+def validate_handler_args(
+    handlers: Iterable[Callable[..., object]],
+    expected: set[str],
+    attr: str,
+    stage: LifecycleStage,
+) -> None:
+    expected_text = " and ".join(sorted(expected))
+    for handler in handlers:
+        names = set(inspect.signature(handler).parameters)
+        if names != expected:
+            name = str(getattr(handler, "__name__", type(handler).__name__))
+            raise ValueError(
+                f"{stage} {attr} handler {name!r} must accept exactly {expected_text}."
+            )
+
+
 async def run_handlers(
     handlers: Iterable[Callable[..., object]], **kwargs: object
 ) -> None:

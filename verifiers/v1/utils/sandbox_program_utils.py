@@ -31,7 +31,7 @@ async def run_sandbox_python_program(
     state: State,
     runtime: Runtime,
     mode: str,
-    entrypoint: str | None,
+    fn_ref: str | None,
     max_turns: int,
 ) -> State:
     runner_program = sandbox_runner_program(
@@ -39,7 +39,7 @@ async def run_sandbox_python_program(
         task=task,
         state=state,
         mode=mode,
-        entrypoint=entrypoint,
+        fn_ref=fn_ref,
         max_turns=max_turns,
         tool_defs=runtime.tool_defs(state),
     )
@@ -64,7 +64,7 @@ def sandbox_runner_program(
     task: Task,
     state: State,
     mode: str,
-    entrypoint: str | None,
+    fn_ref: str | None,
     max_turns: int,
     tool_defs: object,
 ) -> dict[str, object]:
@@ -88,7 +88,7 @@ def sandbox_runner_program(
     artifacts = dict(cast(Mapping[str, object], program.get("artifacts") or {}))
     artifacts[STATE_ARTIFACT] = {"path": STATE_OUTPUT_PATH, "format": "json"}
     command = python_runtime_command(
-        RUNNER_PATH, *([mode] if entrypoint is None else [mode, entrypoint])
+        RUNNER_PATH, *([mode] if fn_ref is None else [mode, fn_ref])
     )
     env = dict(cast(Mapping[str, object], program.get("env") or {}))
     env["VF_MAX_TURNS"] = str(max_turns)
@@ -506,7 +506,8 @@ async def create_model_message(state, messages, client):
 
 
 async def run_base(task, state, client):
-    messages = list(state.get("prompt") or [])
+    prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
+    messages = list(prompt_messages)
     max_turns = int(os.environ.get("VF_MAX_TURNS") or "10")
     for _ in range(max_turns):
         if await check_stop(state):
@@ -540,7 +541,7 @@ async def run_base(task, state, client):
                 break
         if state.get("is_completed"):
             break
-    state["completion"] = messages[len(state.get("prompt") or []):]
+    state["completion"] = messages[len(prompt_messages):]
     state["stop_condition"] = state.get("stop_condition") or "max_turns_reached"
     return state
 
@@ -556,7 +557,7 @@ async def main():
     )
     if mode == "base":
         result = await run_base(task, state, client)
-    elif mode == "entrypoint":
+    elif mode == "fn":
         result = await maybe_call(import_ref(sys.argv[2]), task=task, state=state, client=client)
     else:
         raise ValueError(f"Unknown sandbox program mode: {mode}")

@@ -500,7 +500,8 @@ def source(domain: str):
             "taskset_id": f"tau2_{domain}",
             "task_id": task.id,
             "domain": domain,
-            "prompt": [{"role": "system", "content": system_prompt}],
+            "system_prompt": system_prompt,
+            "prompt": [],
             "info": task.model_dump_json(exclude_none=True),
         }
 

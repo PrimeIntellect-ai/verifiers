@@ -29,9 +29,10 @@ import verifiers.v1 as vf
 
 def source():
     yield {
+        "system_prompt": "Reverse text exactly.",
         "prompt": [{"role": "user", "content": "Reverse abc."}],
         "answer": "cba",
-        "runtime": {"max_turns": 1},
+        "max_turns": 1,
     }
 
 
@@ -79,29 +80,35 @@ Source rows are JSON-serializable mappings. Config is resolved before source
 loading and closed over by the loader; trainers and harnesses do not pass
 runtime values into source.
 
-## Task Runtime
+## Task Controls
 
-`runtime` is a privileged task field for serializable rollout requests. Current
-fields include:
+Tasks can request rollout behavior through top-level serializable fields:
 
 - `max_turns`: per-rollout turn limit for the base harness loop;
-- `tools`: tool visibility as a list of names, `{"show": [...]}`, or
-  `{"hide": [...]}`.
+- `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
+- `toolsets`: toolset visibility or rollout-local toolsets.
 
 Priority is:
 
 ```text
-explicit state.runtime > task.runtime > harness defaults
+explicit state.runtime > task top-level controls > hidden task.runtime > harness defaults
 ```
 
+Keep system instructions out of `prompt`. v1 resolves `system_prompt` from the
+task, taskset, and harness as a separate field; the base harness concatenates
+the resolved system messages with `prompt` only when it submits a model request.
+If more than one source provides a system prompt, resolution fails unless the
+harness explicitly sets a merge policy.
+
 `state.runtime` comes from explicit standalone state passing, `Taskset.init_group`
-customization, or eval/training model controls. For normal taskset-only envs,
-use task runtime:
+customization, or eval/training model controls. For normal tasksets, use
+top-level task controls:
 
 ```python
 yield {
     "prompt": [{"role": "user", "content": "Use the search tool."}],
-    "runtime": {"max_turns": 5, "tools": {"show": ["search"]}},
+    "max_turns": 5,
+    "tools": {"show": ["search"]},
 }
 ```
 
@@ -147,7 +154,7 @@ the resolved taskset tools."
 ```python
 def load_harness(config=None):
     return vf.Harness(
-        program={"entrypoint": "my_env.program:run"},
+        program={"fn": "my_env.program:run"},
         config=config,
     )
 
@@ -165,7 +172,7 @@ def load_environment(taskset_config=None, harness_config=None):
 | --- | --- |
 | `None` | default endpoint-backed tool loop |
 | callable | Python program called in-process |
-| `{"entrypoint": "pkg.module:run"}` | importable Python program |
+| `{"fn": "pkg.module:run"}` | importable Python program |
 | `{"command": ["cmd", "arg"]}` | local or sandboxed command |
 | `{"sandbox": True}` | sandboxed default loop |
 
@@ -194,9 +201,10 @@ Use this for cached completions, deterministic solvers, and gold-solution
 validation. Subclass `Harness` only when packaging reusable behavior with a new
 config surface; do not subclass `Env` just to bypass inference.
 
-## Signals And Cleanup
+## Render, Signals, And Cleanup
 
-Metrics, rewards, and advantages are signal functions.
+Render functions, metrics, rewards, and advantages are lifecycle functions
+around the rollout/group scoring boundary.
 
 ```python
 @vf.metric
@@ -215,8 +223,9 @@ async def best_of_n(tasks, states) -> list[float]:
 ```
 
 Rollout signals accept exactly `task, state`. Group signals accept exactly
-`tasks, states` and return one value per state. Cleanup functions use
-`@vf.cleanup`; teardown functions use `@vf.teardown`.
+`tasks, states` and return one value per state. Render functions use
+`@vf.render` and run before scoring; cleanup functions use `@vf.cleanup` and run
+after scoring; teardown functions use `@vf.teardown`.
 
 `env.requires_group_rollouts` is true when group-stage scoring or group setup is
 part of the environment contract. `env.provides_advantages` is true when the

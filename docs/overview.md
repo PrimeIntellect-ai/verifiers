@@ -86,7 +86,7 @@ def source():
     yield {
         "prompt": [{"role": "user", "content": "Reverse abc."}],
         "answer": "cba",
-        "runtime": {"max_turns": 1},
+        "max_turns": 1,
     }
 
 @vf.reward(weight=1.0)

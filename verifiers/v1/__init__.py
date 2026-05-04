@@ -1,6 +1,14 @@
-"""v1 workspace for the next verifier environment architecture."""
+"""Taskset/harness authoring API."""
 
-from verifiers.decorators import advantage, cleanup, metric, reward, stop, teardown
+from verifiers.decorators import (
+    advantage,
+    cleanup,
+    metric,
+    render,
+    reward,
+    stop,
+    teardown,
+)
 
 from .config import Config, HarnessConfig, RuntimeConfig, TasksetConfig
 from .env import Env
@@ -43,6 +51,7 @@ __all__ = [
     "collect_signals",
     "metric",
     "load_runtime_from_state",
+    "render",
     "reward",
     "score_group",
     "score_rollout",
