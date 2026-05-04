@@ -166,6 +166,17 @@ def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "prime_sandboxes", module)
 
 
+def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def get_tunnel_url(self) -> str:
+        _ = self
+        return "http://127.0.0.1:1"
+
+    monkeypatch.setattr(
+        "verifiers.v1.utils.endpoint_utils.Endpoint.get_tunnel_url",
+        get_tunnel_url,
+    )
+
+
 async def endpoint_user(
     task: dict[str, object], state: dict[str, object]
 ) -> list[dict[str, str]]:
@@ -713,6 +724,7 @@ async def test_program_sandbox_group_scope_reuses_and_cleans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
 
     harness = vf.Harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
@@ -742,6 +754,7 @@ async def test_program_sandbox_global_scope_lives_until_teardown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
 
     harness = vf.Harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
@@ -765,6 +778,7 @@ async def test_toolset_can_bind_to_primary_program_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
 
     harness = vf.Harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
