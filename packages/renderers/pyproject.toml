@@ -4,11 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "renderers"
-version = "0.1.0"
+version = "0.1.5"
 description = "Chat template renderers — deterministic message-to-token conversion for LLM training"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+    "numpy",
+    "openai>=1.108.1",
+    "tiktoken",
+    "jinja2",
     "transformers>=4.50.0",
     # Used by GptOssRenderer to render and parse harmony tokens. Vendoring
     # OpenAI's reference implementation keeps us byte-identical with vLLM
@@ -18,6 +22,12 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["renderers"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
 
 [tool.uv]
 exclude-newer = "7 days"
