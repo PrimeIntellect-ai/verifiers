@@ -182,6 +182,10 @@ def __getattr__(name: str):
             raise AttributeError(
                 f"To use verifiers.{name}, install as `verifiers-rl`."
             ) from e
+        if name == "RendererClient":
+            raise AttributeError(
+                "To use verifiers.RendererClient, install as `verifiers[renderers]`."
+            ) from e
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e

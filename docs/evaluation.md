@@ -124,6 +124,8 @@ env.set_concurrency(256)
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
 
+The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
+
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
 ```toml
