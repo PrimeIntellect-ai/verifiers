@@ -86,6 +86,9 @@ async def test_completions_request_builds_generate_body_and_parses_response():
         "min_tokens": 2,
     }
     assert result == {
+        "id": "",
+        "created": 0,
+        "model": "",
         "prompt_ids": [1, 2, 3],
         "completion_ids": [7, 8],
         "completion_logprobs": [-0.1, -0.2],

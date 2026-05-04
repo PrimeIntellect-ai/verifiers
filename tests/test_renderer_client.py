@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 
 import verifiers as vf
-from verifiers.errors import EmptyModelResponseError
 from renderers import RendererPool
 from renderers.base import ParsedResponse, create_renderer
 from verifiers.clients.renderer_client import (
@@ -15,6 +14,7 @@ from verifiers.clients.renderer_client import (
     _step_token_ids,
     _to_renderer_message,
 )
+from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     SystemMessage,
@@ -477,17 +477,17 @@ def _build_truncated_state(tokenizer, renderer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "model_name,renderer_name",
+    "model_id,renderer_id",
     _TRUNCATED_ANCHOR_MODELS,
 )
 async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
-    model_name, renderer_name
+    model_id, renderer_id
 ):
     """The bridge anchors on the truncated step and returns new prompt_ids
     that start with prev_prompt + prev_completion byte-identically (the
     extension invariant). This is what keeps interleave_rollout from
     fragmenting the rollout into two samples."""
-    tokenizer, renderer = _load_tokenizer_and_renderer(model_name, renderer_name)
+    tokenizer, renderer = _load_tokenizer_and_renderer(model_id, renderer_id)
     prev_prompt_ids, prev_completion_ids, state, next_turn_prompt = (
         _build_truncated_state(tokenizer, renderer)
     )
@@ -497,13 +497,13 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
     )
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
-    assert result is not None, f"{model_name}: bridge returned None on truncated anchor"
+    assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
     assert result[: len(prefix)] == prefix, (
-        f"{model_name}: bridge result does not prefix-preserve "
+        f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
     )
     assert len(result) > len(prefix), (
-        f"{model_name}: bridge produced no tail tokens for the new user turn"
+        f"{model_id}: bridge produced no tail tokens for the new user turn"
     )
 
 
