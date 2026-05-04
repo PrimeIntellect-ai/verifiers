@@ -39,6 +39,7 @@ prime eval run wordle \
 | --- | ---- | ------- | ----------- |
 | `num_train_examples` | int | `2000` | Number of training episodes |
 | `num_eval_examples` | int | `20` | Number of evaluation episodes |
+| `path_to_system_prompt` | str \| Path \| None | `None` | Path to a text file used as the system prompt |
 
 ### Metrics
 | Metric | Meaning |

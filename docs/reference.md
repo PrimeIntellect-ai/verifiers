@@ -34,6 +34,19 @@ ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
 
 OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
 
+### SystemMessage
+
+```python
+class SystemMessage:
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage": ...
+```
+
+Provider-agnostic system message type. Use `vf.SystemMessage.from_path(...)` to load a system prompt from a UTF-8 text file while preserving the file contents verbatim.
+
 ### Info
 
 ```python
@@ -68,6 +81,7 @@ ClientType = Literal[
     "openai_chat_completions",
     "openai_chat_completions_token",
     "openai_responses",
+    "renderer",
     "anthropic_messages",
     "nemorl_chat_completions",
 ]
@@ -184,15 +198,45 @@ class TrajectoryStepTokens(TypedDict):
 
 Token-level data for training.
 
+### TimeSpan
+
+```python
+class TimeSpan(CustomBaseModel):
+    """A timed span. duration = end - start."""
+    start: float = 0.0   # Unix timestamp (seconds since epoch)
+    end: float = 0.0     # Unix timestamp (seconds since epoch)
+    # duration: float    (computed_field)
+```
+
+### TimeSpans
+
+```python
+class TimeSpans(CustomBaseModel):
+    """A list of TimeSpan with aggregate duration (sum)."""
+    spans: list[TimeSpan] = []
+    # duration: float    (computed_field)
+```
+
 ### RolloutTiming
 
 ```python
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+    start_time: float                       # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()            # setup_state() span
+    generation: TimeSpan = TimeSpan()       # full generation phase
+    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
+    model: TimeSpans = TimeSpans()          # all model-call spans
+    env: TimeSpans = TimeSpans()            # all env-response spans
+    # total, overhead: float                (computed_fields)
 ```
+
+Derivations:
+
+- `total    = scoring.end - generation.start`
+- `overhead = total - setup.duration - model.duration - env.duration - scoring.duration`
+
+`generation.start` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases.
 
 ### TokenUsage
 
@@ -661,11 +705,13 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 |-------|---------------|------------|-------------|
 | `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
 | `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
-| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route |
+| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
 | `OpenAIResponsesClient` | `"openai_responses"` | `AsyncOpenAI` | OpenAI Responses API |
+| `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
+| `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
 
-All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`.
 
 ### Response
 

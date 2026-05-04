@@ -1,4 +1,3 @@
-import time
 from typing import Any
 
 from verifiers.rubrics.rubric import Rubric
@@ -63,8 +62,6 @@ class RubricGroup(Rubric):
         original_metrics = (
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
-        original_timing = state["timing"].copy()
-        start_time = time.time()
         for rubric in self.rubrics:
             await rubric.score_rollout(state)
             rubric_reward = state.get("reward", 0.0)
@@ -77,12 +74,8 @@ class RubricGroup(Rubric):
             # restore original values for next rubric
             state["reward"] = original_reward
             state["metrics"] = original_metrics.copy()
-            state["timing"] = original_timing.copy()
-        scoring_ms = (time.time() - start_time) * 1000
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
-        state["timing"]["scoring_ms"] = scoring_ms
-        state["timing"]["total_ms"] = original_timing["total_ms"] + scoring_ms
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -107,8 +100,6 @@ class RubricGroup(Rubric):
             state.get("metrics", {}).copy() if state.get("metrics") else {}
             for state in states
         ]
-        original_timings = [state["timing"].copy() for state in states]
-        start_time = time.time()
         for rubric in self.rubrics:
             await rubric.score_group(states)
             for i, state in enumerate(states):
@@ -123,8 +114,6 @@ class RubricGroup(Rubric):
                     aggregated_metrics[key][i] += value
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
-                state["timing"] = original_timings[i].copy()
-        scoring_ms = (time.time() - start_time) * 1000
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             if aggregated_metrics:
@@ -132,5 +121,3 @@ class RubricGroup(Rubric):
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
-            state["timing"]["scoring_ms"] = scoring_ms
-            state["timing"]["total_ms"] = original_timings[i]["total_ms"] + scoring_ms

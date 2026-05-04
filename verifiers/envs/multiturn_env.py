@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from abc import abstractmethod
 from typing import final
 
@@ -11,6 +12,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
+    TimeSpan,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import (
@@ -130,7 +132,7 @@ class MultiTurnEnv(vf.Environment):
     async def _finalize_rollout(self, state: State) -> None:
         """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
         await self._cleanup(state)
-        await self._render_timing(state)
+        state["timing"].generation.end = time.time()
         await self.render_completion(state)
 
     async def add_model_response(
@@ -169,20 +171,37 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
+            state["timing"].generation.start = time.time()
+            state["timing"].setup.start = time.time()
             try:
                 await self.setup_state(state)
             except vf.Error as e:
                 state["error"] = e
+            finally:
+                state["timing"].setup.end = time.time()
             # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
+                    timing = state["timing"]
+                    start_time = time.time()
                     prompt_messages = await self.get_prompt_messages(state)
+                    end_time = time.time()
+                    # First iteration has no preceding env_response; skip recording.
+                    if state["trajectory"]:
+                        timing.env.spans.append(
+                            TimeSpan(start=start_time, end=end_time)
+                        )
+
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
                     )
                     if state.get("final_env_response") is not None:
                         continue
+
+                    start_time = time.time()
                     response = await self.get_model_response(state, prompt_messages)
+                    end_time = time.time()
+                    timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):

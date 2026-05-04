@@ -292,12 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-client-type",
         type=str,
         default=None,
-        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'anthropic_messages')",
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'renderer', 'anthropic_messages')",
         choices=[
             "openai_completions",
             "openai_chat_completions",
             "openai_chat_completions_token",
             "openai_responses",
+            "renderer",
             "anthropic_messages",
         ],
     )
