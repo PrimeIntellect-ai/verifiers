@@ -226,6 +226,23 @@ def test_load_endpoints_toml_accepts_type_shorthand(tmp_path: Path):
     assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"
 
 
+def test_load_endpoints_toml_accepts_openai_responses_type(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-responses"\n'
+        'model = "gpt-5.2"\n'
+        'url = "https://api.openai.com/v1"\n'
+        'key = "OPENAI_API_KEY"\n'
+        'type = "openai_responses"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["gpt-responses"][0]["api_client_type"] == "openai_responses"
+
+
 def test_load_endpoints_toml_accepts_headers_table(tmp_path: Path):
     registry_path = tmp_path / "endpoints.toml"
     registry_path.write_text(

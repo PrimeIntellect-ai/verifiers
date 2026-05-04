@@ -36,6 +36,7 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
     "renderer",
     "anthropic_messages",
     "nemorl_chat_completions",

@@ -10,6 +10,7 @@ from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
 from verifiers.clients.openai_completions_client import OpenAICompletionsClient
+from verifiers.clients.openai_responses_client import OpenAIResponsesClient
 from verifiers.types import ClientConfig
 
 
@@ -42,6 +43,8 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
                 return OpenAIChatCompletionsClient(client_or_config)
             case "openai_chat_completions_token":
                 return OpenAIChatCompletionsTokenClient(client_or_config)
+            case "openai_responses":
+                return OpenAIResponsesClient(client_or_config)
             case "renderer":
                 RendererClient = _load_renderer_client()
                 return RendererClient(client_or_config)
@@ -65,6 +68,7 @@ __all__ = [
     "OpenAICompletionsClient",
     "OpenAIChatCompletionsClient",
     "OpenAIChatCompletionsTokenClient",
+    "OpenAIResponsesClient",
     "RendererClient",
     "Client",
 ]
