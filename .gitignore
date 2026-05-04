@@ -27,8 +27,6 @@ __pycache__/
 *.pyo
 *.pyd
 *.pyc
-*.cpy
-*.cpython-*
 
 # prime
 .prime
