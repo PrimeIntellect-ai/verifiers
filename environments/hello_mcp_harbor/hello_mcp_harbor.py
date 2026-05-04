@@ -46,7 +46,9 @@ def _build_run_command(agent_workdir: str) -> str:
     return f"""
 set -e
 
-apt-get update && apt-get install -y curl
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# that fail fresh-sandbox apt-get update mid-rollout (launchpad bug #1876035).
+apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl
 
 curl -fsSL https://opencode.ai/install | bash
 export PATH="$HOME/.opencode/bin:$PATH"

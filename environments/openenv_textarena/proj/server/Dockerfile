@@ -32,8 +32,10 @@ RUN if ! command -v uv >/dev/null 2>&1; then \
         mv /root/.local/bin/uvx /usr/local/bin/uvx; \
     fi
 
-# Install git for building from git repos (build-time only)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install git for building from git repos (build-time only).
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# (launchpad bug #1876035).
+RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -59,8 +61,8 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Install runtime system libraries required by TextArena (cv2 needs libGL, glib)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime system libraries required by TextArena (cv2 needs libGL, glib).
+RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
