@@ -37,12 +37,18 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Install in-repo renderers
+        # Override the PyPI renderers pin with the in-repo source so this
+        # PR's lean ``generate()`` API resolves before v0.1.6 lands on PyPI.
+        # Drop once a renderers-v0.1.6 tag has been published.
+        run: uv pip install -e packages/renderers
+
       - name: Install prime
         run: uv pip install prime
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
+          uv run --no-sync pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
     runs-on: ubuntu-latest
