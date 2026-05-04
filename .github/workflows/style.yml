@@ -38,8 +38,5 @@ jobs:
         uses: astral-sh/setup-uv@v7
       - name: Install dependencies
         run: uv sync
-      - name: Install in-repo renderers
-        # See test.yml — same temporary override until renderers v0.1.6 ships.
-        run: uv pip install -e packages/renderers
       - name: Run ty
-        run: uv run --no-sync ty check verifiers
+        run: uv run ty check verifiers

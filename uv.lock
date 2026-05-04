@@ -15,7 +15,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-26T21:40:16.325955Z"
+exclude-newer = "2026-04-27T23:11:33.788590305Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -4847,8 +4847,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.5"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.6"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=40bc2a6#40bc2a6f51adfb1c28c27d5c4a1c9578eecbe768" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -4856,10 +4856,6 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "tiktoken" },
     { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/08/8d/bcb045d4055070c173c8625e884edf45b9ba134aea4c33c69c36123ef5bd/renderers-0.1.5.tar.gz", hash = "sha256:a04c2e6e953539994fd73acf07fa6719ef6e4f10a1bfef8b678341ac00ca82ef", size = 150201, upload-time = "2026-05-03T21:39:16.711Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/b7/4e11b153cb5eedd4fc835d1eec4dc43df84da96ff0b638f20acc96c70e71/renderers-0.1.5-py3-none-any.whl", hash = "sha256:8014139e991750bd4d4223ec1c293bc16fb7eca43c11e587e5862fc6448d2afc", size = 79970, upload-time = "2026-05-03T21:39:15.522Z" },
 ]
 
 [[package]]
@@ -6215,7 +6211,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.5" },
+    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=40bc2a6" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6248,7 +6244,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.5" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=40bc2a6" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },

@@ -74,7 +74,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
-    "renderers>=0.1.5",
+    "renderers>=0.1.6",
 ]
 
 [project.optional-dependencies]
@@ -94,7 +94,7 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 renderers = [
-    "renderers>=0.1.5",
+    "renderers>=0.1.6",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
@@ -119,6 +119,10 @@ required-version = ">=0.11.1"
 prime-tunnel = false
 prime-sandboxes = false
 renderers = false
+
+[tool.uv.sources]
+# Pinned to PrimeIntellect-ai/renderers#1 until v0.1.6 lands on PyPI; drop after.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "40bc2a6" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
