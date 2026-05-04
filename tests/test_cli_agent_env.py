@@ -9,6 +9,8 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.envs.experimental.cli_agent_env import CliAgentMonitorRubric
+from verifiers.types import RolloutTiming
 from verifiers.utils.interception_utils import serialize_intercept_response
 
 
@@ -222,6 +224,41 @@ class TestCliAgentEnv:
         kwargs = mock_client.last_call_kwargs
         assert kwargs["tools"] is not None
         assert kwargs["tools"][0].name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_final_log_formats_missing_first_model_call():
+    timing = RolloutTiming()
+    timing.generation.start = 100.0
+    timing.generation.end = 115.0
+    timing.setup.start = 100.0
+    timing.setup.end = 105.0
+    timing.scoring.start = 115.0
+    timing.scoring.end = 118.0
+    state = {
+        "rollout_id": "rollout_test",
+        "example_id": 2332,
+        "info": {"instance_id": "brazilian-utils__brutils-python-126"},
+        "sandbox_id": "sbx_test",
+        "trajectory": [],
+        "stop_condition": "agent_completed",
+        "agent_exit_code": 0,
+        "agent_start_time": 105.0,
+        "agent_end_time": 112.0,
+        "timing": timing,
+    }
+
+    rubric = CliAgentMonitorRubric()
+    rubric.logger = MagicMock()
+
+    await rubric.cleanup(state)
+
+    message = rubric.logger.info.call_args.args[0]
+    assert "setup_s=5.000" in message
+    assert "first_call_latency_s=n/a" in message
+    assert "agent_s=7.000" in message
+    assert "scoring_s=3.000" in message
+    assert "duration_s=18.000" in message
 
 
 @pytest.mark.asyncio
