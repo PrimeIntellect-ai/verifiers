@@ -59,11 +59,14 @@ def build_install_script(
     """Build the shell script that installs OpenCode in a sandbox."""
     rg_install = (
         'run_setup_step "ripgrep_install" '
-        '"apt-get install -y -qq ripgrep > /dev/null 2>&1 || true"'
+        '"apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"'
         if install_ripgrep
         else ""
     )
     sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+    # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+    # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
+    # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
     return f"""\
 set -e
 run_setup_step() {{
@@ -81,7 +84,7 @@ run_setup_step() {{
   return "$exit_code"
 }}
 
-run_setup_step "apt_dependencies" "apt-get update -qq && apt-get install -y -qq curl tar > /dev/null 2>&1"
+run_setup_step "apt_dependencies" "apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar > /dev/null 2>&1"
 {rg_install}
 
 OPENCODE_RELEASE_REPO="{release_repo}"

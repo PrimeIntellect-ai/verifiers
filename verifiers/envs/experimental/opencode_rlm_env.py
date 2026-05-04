@@ -96,7 +96,9 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
 RLM_RUN_COMMAND_TEMPLATE = """\
 set -e
 
-apt-get update && apt-get install -y curl git unzip jq
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# that fail fresh-sandbox apt-get update mid-rollout (launchpad bug #1876035).
+apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl git unzip jq
 
 # Install bun (TypeScript runtime required by the RLM plugin)
 curl -fsSL https://bun.sh/install | bash

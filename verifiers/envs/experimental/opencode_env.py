@@ -54,7 +54,9 @@ DEFAULT_INSTALL_COMMAND = (
 DEFAULT_RUN_COMMAND_TEMPLATE = """\
 set -eo pipefail
 
-apt-get update && apt-get install -y curl
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# that fail fresh-sandbox apt-get update mid-rollout (launchpad bug #1876035).
+apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl
 
 for install_attempt in 1 2 3; do
     if {install_command}; then
