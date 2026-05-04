@@ -176,8 +176,7 @@ Programs are also the right shape for LLM-free replay:
 
 ```python
 async def replay_solution(task, state):
-    state["answer"] = task["offline_answer"]
-    state["stop_condition"] = "offline_replay"
+    state["answer"] = task["answer"]
     return state
 
 

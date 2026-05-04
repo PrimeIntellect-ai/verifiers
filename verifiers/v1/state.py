@@ -21,7 +21,9 @@ class State(VFState):
 
     @classmethod
     def for_task(cls, task: Mapping[str, Any]) -> State:
-        return cast(State, super().for_task(task))
+        state = cast(State, super().for_task(task))
+        state.pop("answer", None)
+        return state
 
     def runtime_state(self) -> dict[str, Any]:
         raw_runtime = self.setdefault("runtime", {})

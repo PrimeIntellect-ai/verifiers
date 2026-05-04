@@ -345,7 +345,6 @@ async def state_tools_program(task, state):
 
 async def replay_answer_program(task, state):
     state["answer"] = task["answer"]
-    state["stop_condition"] = "offline_replay"
     return state
 
 
@@ -365,6 +364,14 @@ def test_model_client_default_keys_are_rollout_local() -> None:
 
     assert state_a["runtime"]["client_key"] != state_b["runtime"]["client_key"]
     assert len(runtime.model_clients) == 2
+
+
+def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
+    task = vf.Task({"answer": "gold"}).freeze()
+    state = vf.State.for_task(task)
+
+    assert "answer" not in state
+    assert state["task"]["answer"] == "gold"
 
 
 @pytest.mark.asyncio
@@ -426,7 +433,7 @@ async def test_offline_replay_program_scores_without_model_client() -> None:
 
     assert state["answer"] == "solved"
     assert state["reward"] == 1.0
-    assert state["stop_condition"] == "offline_replay"
+    assert state["stop_condition"] == "program_completed"
     assert state["trajectory"] == []
     assert "runtime_id" not in state["runtime"]
 

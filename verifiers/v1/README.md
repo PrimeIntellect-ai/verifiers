@@ -53,6 +53,9 @@ task = vf.Task(
 A `State` is a mutable, JSON-serializable rollout record. It starts from a task,
 then accumulates trajectory, completion, metrics, reward, timing, artifacts,
 errors, and any extra fields the environment author chooses to expose.
+By convention, `task["answer"]` is the reference answer and `state["answer"]`
+is the rollout's submitted answer. v1 does not copy `task["answer"]` into
+top-level state; rewards and metrics should read reference data from `task`.
 
 ```python
 state = vf.State.for_task(task)
@@ -318,8 +321,7 @@ the normal scoring and cleanup lifecycle run.
 
 ```python
 async def replay_solution(task, state):
-    state["answer"] = task["offline_answer"]
-    state["stop_condition"] = "offline_replay"
+    state["answer"] = task["answer"]
     return state
 
 
