@@ -253,7 +253,7 @@ def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
 async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
     assistant_count = len([m for m in transcript if m.get("role") == "assistant"])
     follow_ups = state["info"]["follow_ups"]
-    if assistant_count > len(follow_ups):
+    if assistant_count <= 0 or assistant_count > len(follow_ups):
         return []
     return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
 

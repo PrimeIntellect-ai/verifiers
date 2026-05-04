@@ -133,46 +133,60 @@ async def dspy_calls(task, state) -> float:
 
 
 def source():
+    def row(
+        example_id: int,
+        user_request: str,
+        expected: dict[str, object],
+        initial_itineraries: dict[str, dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        task = {
+            "example_id": example_id,
+            "user_request": user_request,
+            "prompt": [{"role": "user", "content": user_request}],
+            "expected": expected,
+        }
+        if initial_itineraries is not None:
+            task["initial_itineraries"] = initial_itineraries
+        return task
+
     return [
-        {
-            "example_id": 0,
-            "user_request": (
+        row(
+            0,
+            (
                 "please help me book a flight from SFO to JFK on 09/01/2025, "
                 "my name is Adam"
             ),
-            "expected": {"kind": "book", "user": "Adam", "flight_id": "DA123"},
-        },
-        {
-            "example_id": 1,
-            "user_request": (
+            {"kind": "book", "user": "Adam", "flight_id": "DA123"},
+        ),
+        row(
+            1,
+            (
                 "please help me book a flight from SFO to SNA on 10/01/2025, "
                 "my name is Bob"
             ),
-            "expected": {"kind": "book", "user": "Bob", "flight_id": "DA456"},
-        },
-        {
-            "example_id": 2,
-            "user_request": (
+            {"kind": "book", "user": "Bob", "flight_id": "DA456"},
+        ),
+        row(
+            2,
+            (
                 "please cancel itinerary CH123 for Chelsie; she no longer wants "
                 "to travel"
             ),
-            "initial_itineraries": {
-                "CH123": itinerary("CH123", "Chelsie", "DA125").model_dump()
-            },
-            "expected": {"kind": "cancel", "confirmation_number": "CH123"},
-        },
-        {
-            "example_id": 3,
-            "user_request": (
+            {"kind": "cancel", "confirmation_number": "CH123"},
+            {"CH123": itinerary("CH123", "Chelsie", "DA125").model_dump()},
+        ),
+        row(
+            3,
+            (
                 "my name is David and I need wheelchair assistance added to my "
                 "reservation"
             ),
-            "expected": {
+            {
                 "kind": "ticket",
                 "user": "David",
                 "contains": "wheelchair assistance",
             },
-        },
+        ),
     ]
 
 

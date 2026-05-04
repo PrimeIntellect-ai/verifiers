@@ -497,6 +497,7 @@ def source(domain: str):
     ):
         yield {
             "example_id": index,
+            "taskset_id": f"tau2_{domain}",
             "task_id": task.id,
             "domain": domain,
             "prompt": [{"role": "system", "content": system_prompt}],
