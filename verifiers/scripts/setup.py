@@ -330,7 +330,9 @@ def run_setup(
             if os.path.exists(CLAUDE_MD_DST):
                 os.remove(CLAUDE_MD_DST)
             wget.download(CLAUDE_MD_SRC, CLAUDE_MD_DST)
-            print(f"\nDownloaded {CLAUDE_MD_DST} from https://github.com/{VERIFIERS_REPO}")
+            print(
+                f"\nDownloaded {CLAUDE_MD_DST} from https://github.com/{VERIFIERS_REPO}"
+            )
 
         if os.path.exists(ENVS_AGENTS_MD_DST):
             os.remove(ENVS_AGENTS_MD_DST)
