@@ -58,34 +58,50 @@ def build_install_script(
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
     rg_install = (
-        "apt-get install -y -qq ripgrep > /dev/null 2>&1 || true"
+        'run_setup_step "ripgrep_install" '
+        '"apt-get install -y -qq ripgrep > /dev/null 2>&1 || true"'
         if install_ripgrep
         else ""
     )
     sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
     return f"""\
 set -e
-apt-get update -qq && apt-get install -y -qq curl tar > /dev/null 2>&1
+run_setup_step() {{
+  name="$1"
+  shift
+  start="$(date +%s)"
+  echo "[setup] start $name"
+  set +e
+  eval "$*"
+  exit_code="$?"
+  set -e
+  end="$(date +%s)"
+  elapsed_s="$((end - start))"
+  echo "[setup] end $name exit=$exit_code elapsed_s=$elapsed_s"
+  return "$exit_code"
+}}
+
+run_setup_step "apt_dependencies" "apt-get update -qq && apt-get install -y -qq curl tar > /dev/null 2>&1"
 {rg_install}
 
 OPENCODE_RELEASE_REPO="{release_repo}"
 OPENCODE_RELEASE_VERSION="{release_version}"
 
-case "$(uname -m)" in
+run_setup_step "detect_arch" 'case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
   aarch64|arm64) OPENCODE_ARCH=arm64 ;;
   *) echo "Unsupported architecture: $(uname -m)"; exit 1 ;;
-esac
+esac'
 
 OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
 OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
 OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
-curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-{sha256_check}
-tar -xzf /tmp/opencode.tar.gz -C /tmp
-install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
+run_setup_step "download_opencode" 'curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz'
+run_setup_step "verify_opencode_sha256" '{sha256_check}'
+run_setup_step "extract_opencode" "tar -xzf /tmp/opencode.tar.gz -C /tmp"
+run_setup_step "install_opencode" 'install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"'
 echo "OpenCode installed successfully"
 """
 

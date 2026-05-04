@@ -49,6 +49,40 @@ class SandboxNotReadyError(vf.SandboxError): ...
 class SandboxSetupError(vf.SandboxError): ...
 
 
+def format_rollout_log_event(
+    event: str,
+    state: dict[str, Any] | None = None,
+    **fields: Any,
+) -> str:
+    """Format rollout lifecycle logs with stable context fields."""
+    state = state or {}
+    info = state.get("info") or {}
+    instance_id = info.get("instance_id") if isinstance(info, dict) else None
+    parts: list[str] = [f"event={event}"]
+    context = {
+        "rollout_id": state.get("rollout_id"),
+        "example_id": state.get("example_id"),
+        "instance_id": instance_id,
+        "sandbox_id": state.get("sandbox_id"),
+    }
+    for key, value in {**context, **fields}.items():
+        if value is None:
+            continue
+        if isinstance(value, float):
+            value = f"{value:.3f}"
+        parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
+def log_rollout_event(
+    logger: logging.Logger,
+    event: str,
+    state: dict[str, Any] | None = None,
+    **fields: Any,
+) -> None:
+    logger.info(format_rollout_log_event(event, state, **fields))
+
+
 @dataclass(frozen=True)
 class SandboxTimeouts:
     """Per-operation HTTP timeouts (seconds) for sandbox client calls.
@@ -228,6 +262,8 @@ class SandboxMixin:
             SandboxNotReadyError: If sandbox fails to become ready.
             SandboxSetupError: If post_sandbox_setup hook fails.
         """
+        create_start = time.perf_counter()
+        log_rollout_event(self.logger, "sandbox_create_started", state)
         if self.sandbox_creation_rate_limiter is not None:
             await self.sandbox_creation_rate_limiter.acquire()
 
@@ -270,6 +306,12 @@ class SandboxMixin:
             raise SandboxNotReadyError(
                 f"Sandbox {sandbox.id} failed to become ready: {e}"
             ) from e
+        log_rollout_event(
+            self.logger,
+            "sandbox_created",
+            state,
+            elapsed_s=time.perf_counter() - create_start,
+        )
 
         try:
             self.logger.debug(f"Running post-sandbox setup in sandbox {sandbox.id}")
