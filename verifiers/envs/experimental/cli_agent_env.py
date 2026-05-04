@@ -20,6 +20,8 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxMixin,
     SandboxMonitorRubric,
     SandboxTimeouts,
+    format_rollout_log_event,
+    log_rollout_event,
 )
 from verifiers.types import (
     AssistantMessage,
@@ -36,7 +38,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
-from verifiers.utils.logging_utils import print_time, truncate
+from verifiers.utils.logging_utils import truncate
 from verifiers.utils.message_utils import normalize_messages
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,106 @@ def make_agent_error(state: State, message: str) -> AgentError:
     return AgentError(f"{message} ({', '.join(context_parts)})")
 
 
+def _collect_tool_counts(state: State) -> Counter[str]:
+    tool_counts: Counter[str] = Counter()
+    for step in state.get("trajectory", []):
+        for msg in step.get("completion", []):
+            if isinstance(msg, AssistantMessage) and isinstance(msg.tool_calls, list):
+                for tc in msg.tool_calls:
+                    if isinstance(tc, ToolCall):
+                        tool_counts[tc.name] += 1
+    return tool_counts
+
+
+def _phase(timing: Any, name: str) -> Any:
+    if timing is None:
+        return None
+    if isinstance(timing, dict):
+        return timing.get(name)
+    return getattr(timing, name, None)
+
+
+def _span_start(span: Any) -> float:
+    if span is None:
+        return 0.0
+    if isinstance(span, dict):
+        return float(span.get("start", 0.0) or 0.0)
+    return float(getattr(span, "start", 0.0) or 0.0)
+
+
+def _span_end(span: Any) -> float:
+    if span is None:
+        return 0.0
+    if isinstance(span, dict):
+        return float(span.get("end", 0.0) or 0.0)
+    return float(getattr(span, "end", 0.0) or 0.0)
+
+
+def _span_duration(span: Any) -> float:
+    if span is None:
+        return 0.0
+    duration = (
+        span.get("duration")
+        if isinstance(span, dict)
+        else getattr(span, "duration", None)
+    )
+    if duration is not None:
+        return float(duration or 0.0)
+    end = _span_end(span)
+    start = _span_start(span)
+    return end - start if end > 0 and start > 0 else 0.0
+
+
+def _time_spans(timing: Any, name: str) -> list[Any]:
+    phase = _phase(timing, name)
+    if phase is None:
+        return []
+    if isinstance(phase, dict):
+        spans = phase.get("spans", [])
+    else:
+        spans = getattr(phase, "spans", [])
+    return list(spans or [])
+
+
+def _first_call_latency_s(state: State) -> float | None:
+    timing = state.get("timing")
+    spans = _time_spans(timing, "model")
+    if not spans:
+        return None
+    first_model_start = _span_start(spans[0])
+    agent_start = float(state.get("agent_start_time") or 0.0)
+    if agent_start <= 0:
+        agent_start = _span_end(_phase(timing, "setup"))
+    if first_model_start <= 0 or agent_start <= 0:
+        return None
+    return max(0.0, first_model_start - agent_start)
+
+
+def _agent_duration_s(state: State) -> float:
+    agent_start = float(state.get("agent_start_time") or 0.0)
+    if agent_start <= 0:
+        return 0.0
+    agent_end = float(state.get("agent_end_time") or 0.0)
+    if agent_end <= 0:
+        agent_end = _span_end(_phase(state.get("timing"), "generation"))
+    return max(0.0, agent_end - agent_start) if agent_end > 0 else 0.0
+
+
+def _rollout_total_s(state: State) -> float:
+    timing = state.get("timing")
+    scoring = _phase(timing, "scoring")
+    generation = _phase(timing, "generation")
+    scoring_end = _span_end(scoring)
+    generation_start = _span_start(generation)
+    if scoring_end > 0 and generation_start > 0:
+        return max(0.0, scoring_end - generation_start)
+    return _span_duration(generation)
+
+
+def _format_optional_s(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
+
+
 class CliAgentMonitorRubric(vf.Rubric):
     """Monitor rubric that tracks CLI agent execution state."""
 
@@ -78,6 +180,54 @@ class CliAgentMonitorRubric(vf.Rubric):
         if agent_exit_code is None:
             return 0.0
         return float(agent_exit_code != 0)
+
+    @vf.cleanup
+    async def log_rollout_finished(self, state: vf.State) -> None:
+        """Log final rollout lifecycle details after scoring has completed."""
+        if state.get("_cli_agent_rollout_finished_logged"):
+            return
+        state["_cli_agent_rollout_finished_logged"] = True
+
+        tool_counts = Counter(state.get("_cli_agent_tool_counts") or {})
+        if not tool_counts:
+            tool_counts = _collect_tool_counts(state)
+        tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
+        error = state.get("error")
+        error_info = (
+            f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
+        )
+        timed_out = state.get("timed_out", False)
+        stop_condition = state.get("stop_condition", "unknown")
+        exit_code = state.get("agent_exit_code")
+
+        if error_info or timed_out:
+            self.logger.info(
+                format_rollout_log_event(
+                    "rollout_aborted",
+                    state,
+                    stop=stop_condition,
+                    exit_code=exit_code,
+                    timed_out=timed_out if timed_out else None,
+                    error=error_info,
+                )
+            )
+
+        timing = state.get("timing")
+        self.logger.info(
+            format_rollout_log_event(
+                "rollout_finished",
+                state,
+                turns=len(state.get("trajectory", [])),
+                tools=f"[{tools_str}]",
+                stop=stop_condition,
+                exit_code=exit_code,
+                setup_s=_span_duration(_phase(timing, "setup")),
+                first_call_latency_s=_format_optional_s(_first_call_latency_s(state)),
+                agent_s=_agent_duration_s(state),
+                scoring_s=_span_duration(_phase(timing, "scoring")),
+                duration_s=_rollout_total_s(state),
+            )
+        )
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
@@ -233,6 +383,23 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
+        setup_start = time.perf_counter()
+        setup_succeeded = False
+        log_rollout_event(self.logger, "setup_started", state)
+        try:
+            await self._setup_sandbox_and_agent(state, rollout_id)
+            setup_succeeded = True
+        finally:
+            log_rollout_event(
+                self.logger,
+                "setup_finished",
+                state,
+                status="ok" if setup_succeeded else "error",
+                elapsed_s=time.perf_counter() - setup_start,
+            )
+
+    async def _setup_sandbox_and_agent(self, state: State, rollout_id: str) -> None:
+        """Create sandbox resources and launch the CLI agent."""
 
         interception_server = self._require_interception_server()
         await interception_server.start()
@@ -345,6 +512,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_id = state["sandbox_id"]
 
         self.logger.debug(f"Starting agent in sandbox {sandbox_id}")
+        launch_start = time.perf_counter()
+        log_rollout_event(self.logger, "agent_launch_started", state)
         try:
             background_job: BackgroundJob = (
                 await self.sandbox_client.start_background_job(
@@ -359,6 +528,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         state["completion_wait_task"] = asyncio.create_task(
             self.wait_for_completion(state)
+        )
+        log_rollout_event(
+            self.logger,
+            "agent_launched",
+            state,
+            elapsed_s=time.perf_counter() - launch_start,
         )
 
     async def wait_for_completion(self, state: State) -> None:
@@ -391,6 +566,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 sandbox_id, background_job, timeout=self.timeouts.poll
             )
             if status.completed:
+                state["agent_end_time"] = time.time()
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
                 state["agent_stderr"] = status.stderr
@@ -678,47 +854,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
         """
-        tool_counts: Counter[str] = Counter()
-        for step in state.get("trajectory", []):
-            for msg in step.get("completion", []):
-                if isinstance(msg, AssistantMessage) and isinstance(
-                    msg.tool_calls, list
-                ):
-                    for tc in msg.tool_calls:
-                        if isinstance(tc, ToolCall):
-                            tool_counts[tc.name] += 1
-
-        example_id = state.get("example_id")
-        num_turns = len(state.get("trajectory", []))
-        stop_condition = state.get("stop_condition", "unknown")
-        error = state.get("error")
-        error_info = (
-            f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
-        )
-        exit_code = state.get("agent_exit_code")
-        timed_out = state.get("timed_out", False)
-        # post_rollout runs during finalization, before Environment.run_rollout
-        # stamps scoring.end. timing.total is therefore still 0 here, so derive
-        # the live duration from the generation-phase start.
-        timing = state.get("timing")
-        gen = getattr(timing, "generation", None) if timing is not None else None
-        gen_start = getattr(gen, "start", 0.0) if gen is not None else 0.0
-        duration_s = time.time() - gen_start if gen_start > 0 else 0.0
-        tools_str = ",".join(f"{k}:{v}" for k, v in tool_counts.most_common())
-        parts = [
-            f"Finished rollout_id={state.get('rollout_id')}",
-            f"example_id={example_id}",
-            f"turns={num_turns}",
-            f"tools=[{tools_str}]",
-            f"stop={stop_condition}",
-            f"exit_code={exit_code}",
-            f"duration={print_time(duration_s)}",
-        ]
-        if timed_out:
-            parts.append("timed_out=True")
-        if error_info:
-            parts.append(f"error={error_info}")
-        self.logger.info(" | ".join(parts))
+        state["_cli_agent_tool_counts"] = dict(_collect_tool_counts(state))
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
