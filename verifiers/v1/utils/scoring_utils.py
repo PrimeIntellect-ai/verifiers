@@ -107,13 +107,14 @@ async def score_group(
             states[index]["metrics"] = metrics
             if signal["kind"] == "reward":
                 rewards[index] += value * cast(float, signal["weight"])
-    advantages = default_advantages(rewards)
+    advantages: list[float] | None = None
     for signal in advantage_signals:
         advantages = await call_group_signal(signal, tasks, states)
     for index, state in enumerate(states):
         state["reward"] = rewards[index]
-        state["advantage"] = advantages[index]
-        apply_advantage_to_trajectory(state, advantages[index])
+        if advantages is not None:
+            state["advantage"] = advantages[index]
+            apply_advantage_to_trajectory(state, advantages[index])
         record_scoring_timing(state, start_time)
     return states
 
@@ -342,13 +343,6 @@ def bool_config(config: Mapping[str, object], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"Signal config key {key!r} must be a boolean.")
     return value
-
-
-def default_advantages(rewards: Sequence[float]) -> list[float]:
-    if not rewards:
-        return []
-    mean_reward = sum(rewards) / len(rewards)
-    return [reward - mean_reward for reward in rewards]
 
 
 def apply_advantage_to_trajectory(state: dict[str, Any], advantage: float) -> None:

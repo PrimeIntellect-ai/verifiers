@@ -124,15 +124,15 @@ async def test_group_reward_scores_each_state() -> None:
 
     assert states[0]["reward"] == 1.0
     assert states[1]["reward"] == 0.0
-    assert states[0]["advantage"] == 0.5
-    assert states[1]["advantage"] == -0.5
+    assert "advantage" not in states[0]
+    assert "advantage" not in states[1]
     trajectory = cast(list[dict[str, Any]], states[0]["trajectory"])
-    assert trajectory[0]["advantage"] == 0.5
+    assert trajectory[0]["advantage"] is None
     assert trajectory[1]["advantage"] == 9.0
 
 
 @pytest.mark.asyncio
-async def test_advantage_signal_overrides_default_group_advantage() -> None:
+async def test_advantage_signal_writes_group_advantages() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
     add_advantage(signals, explicit_advantage)
     tasks: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "b"}]

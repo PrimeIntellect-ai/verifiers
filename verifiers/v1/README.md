@@ -728,8 +728,8 @@ async def centered(tasks, states) -> list[float]:
 ```
 
 Group metrics/rewards/advantages must accept exactly `tasks, states` and return
-one float per state. If no advantage signal is configured, v1 writes
-`reward - mean(group_reward)` as the default advantage.
+one float per state. v1 writes advantages only when an explicit advantage signal
+is configured.
 
 `Env.requires_group_rollouts` is true when group-stage signals or custom group
 setup are present. `Env.provides_advantages` is true only when explicit group
