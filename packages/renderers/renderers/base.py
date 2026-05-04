@@ -299,7 +299,7 @@ def _populate_registry():
     from renderers.kimi_k25 import KimiK25Renderer
     from renderers.minimax_m2 import MiniMaxM2Renderer
     from renderers.nemotron3 import Nemotron3Renderer
-    from renderers.qwen3 import Qwen3Renderer
+    from renderers.qwen3 import Qwen3KeepThinkingRenderer, Qwen3Renderer
     from renderers.qwen3_vl import Qwen3VLRenderer
     from renderers.qwen35 import Qwen35Renderer
     from renderers.qwen36 import Qwen36Renderer
@@ -308,6 +308,7 @@ def _populate_registry():
         {
             "default": DefaultRenderer,
             "qwen3": Qwen3Renderer,
+            "qwen3-keep-thinking": Qwen3KeepThinkingRenderer,
             "qwen3_vl": Qwen3VLRenderer,
             "qwen3.5": Qwen35Renderer,
             "qwen3.6": Qwen36Renderer,

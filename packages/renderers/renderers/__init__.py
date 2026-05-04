@@ -28,7 +28,7 @@ from renderers.kimi_k2 import KimiK2Renderer
 from renderers.kimi_k25 import KimiK25Renderer
 from renderers.minimax_m2 import MiniMaxM2Renderer
 from renderers.nemotron3 import Nemotron3Renderer
-from renderers.qwen3 import Qwen3Renderer
+from renderers.qwen3 import Qwen3KeepThinkingRenderer, Qwen3Renderer
 from renderers.qwen3_vl import Qwen3VLRenderer
 from renderers.qwen35 import Qwen35Renderer
 from renderers.qwen36 import Qwen36Renderer
@@ -47,6 +47,7 @@ __all__ = [
     "MiniMaxM2Renderer",
     "Nemotron3Renderer",
     "ParsedResponse",
+    "Qwen3KeepThinkingRenderer",
     "Qwen3Renderer",
     "Qwen3VLRenderer",
     "Qwen35Renderer",
