@@ -44,15 +44,24 @@ This folder contains installable example environments that showcase common usage
 
 - **RLMEnv (Recursive Language Model)**
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
+  - **hello_rlm_v1**: v1 sandboxed RLM-style CLI program with endpoint interception and metrics collection.
 
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
+- **Taskset/Harness v1**
+  - **dspy_flights**: DSPy flight-support entrypoint configured against the v1 interception endpoint.
+  - **tau2_bench**: τ²-bench taskset/user/tool pattern on the v1 harness runtime.
+
 ### Composition
 - **EnvGroup**
   - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
+
+- **Nested harnesses**
+  - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
+  - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
 
 - **RubricGroup**
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
