@@ -217,12 +217,6 @@ unresolved-import = "ignore"
 invalid-method-override = "ignore"
 invalid-assignment = "ignore"
 not-iterable = "ignore"
-invalid-argument-type = "ignore"
-unsupported-operator = "ignore"
-unknown-argument = "ignore"
-possibly-missing-attribute = "ignore"
-no-matching-overload = "ignore"
-missing-typed-dict-key = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]
