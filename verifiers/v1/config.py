@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import importlib
-import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from pydantic_core import PydanticUndefined
+from typing_extensions import Self
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 
 class Config(BaseModel):
