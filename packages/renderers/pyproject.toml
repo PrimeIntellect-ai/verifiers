@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "renderers"
-version = "0.1.5"
+version = "0.1.6"
 description = "Chat template renderers — deterministic message-to-token conversion for LLM training"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
