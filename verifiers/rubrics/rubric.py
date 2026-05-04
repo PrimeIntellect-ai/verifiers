@@ -246,6 +246,10 @@ class Rubric:
             [func for func in self.funcs if self._is_group_func(func)],
         )
 
+    @property
+    def has_group_rewards(self) -> bool:
+        return bool(self._get_group_reward_funcs())
+
     def _get_group_reward_weights(self) -> list[float]:
         return [
             weight

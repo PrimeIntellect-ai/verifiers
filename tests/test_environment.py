@@ -89,6 +89,38 @@ class TestEnvironmentBase:
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 
+    def test_environment_capabilities_follow_group_rewards(self, sample_dataset):
+        """Test group rollout capabilities derive from legacy rubric shape."""
+
+        async def rollout_reward(completion):
+            _ = completion
+            return 1.0
+
+        async def group_reward(states):
+            return [1.0 for _ in states]
+
+        rollout_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=Rubric(funcs=[rollout_reward]),
+        )
+        group_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=Rubric(funcs=[group_reward]),
+        )
+        grouped_rubric_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=vf.RubricGroup(
+                [Rubric(funcs=[rollout_reward]), Rubric(funcs=[group_reward])]
+            ),
+        )
+
+        assert not rollout_env.requires_group_rollouts
+        assert not rollout_env.provides_advantages
+        assert group_env.requires_group_rollouts
+        assert group_env.provides_advantages
+        assert grouped_rubric_env.requires_group_rollouts
+        assert grouped_rubric_env.provides_advantages
+
     def test_environment_with_eval_dataset_only(self, sample_dataset):
         """Test Environment with only eval_dataset."""
         env = SimpleEnvironment(

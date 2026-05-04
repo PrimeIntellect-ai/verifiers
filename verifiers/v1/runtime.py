@@ -81,6 +81,18 @@ class Runtime:
             self._handler_owners(), "teardown", self._extra_handlers("teardown")
         )
 
+    @property
+    def has_group_signals(self) -> bool:
+        return bool(self.group_signals)
+
+    @property
+    def has_group_rewards(self) -> bool:
+        return any(signal["kind"] == "reward" for signal in self.group_signals)
+
+    @property
+    def has_group_advantages(self) -> bool:
+        return any(signal["kind"] == "advantage" for signal in self.group_signals)
+
     def prepare_state(self, task: Task, state: State) -> None:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})

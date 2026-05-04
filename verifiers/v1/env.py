@@ -35,6 +35,19 @@ class Env(vf.Environment):
     async def teardown_harness(self) -> None:
         await self.harness.teardown()
 
+    @property
+    def requires_group_rollouts(self) -> bool:
+        return self.harness.runtime.has_group_signals or self._uses_custom_init_group
+
+    @property
+    def provides_advantages(self) -> bool:
+        runtime = self.harness.runtime
+        return runtime.has_group_rewards or runtime.has_group_advantages
+
+    @property
+    def _uses_custom_init_group(self) -> bool:
+        return type(self.taskset).init_group is not Taskset.init_group
+
     async def rollout(
         self,
         input: RolloutInput,

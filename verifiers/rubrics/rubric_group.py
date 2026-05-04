@@ -41,6 +41,10 @@ class RubricGroup(Rubric):
             weights.extend(rubric._get_reward_weights())
         return weights
 
+    @property
+    def has_group_rewards(self) -> bool:
+        return any(rubric.has_group_rewards for rubric in self.rubrics)
+
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
         assert len(self.rubrics) > 0, "RubricGroup must have at least one rubric"
         self.logger.warning("Adding reward function to the first rubric in the group.")

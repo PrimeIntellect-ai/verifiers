@@ -211,6 +211,14 @@ class Environment(ABC):
 
         self.__post_init__()
 
+    @property
+    def requires_group_rollouts(self) -> bool:
+        return self.rubric.has_group_rewards
+
+    @property
+    def provides_advantages(self) -> bool:
+        return self.rubric.has_group_rewards
+
     @staticmethod
     def _normalize_tool_defs(
         tools: list[Tool] | list[dict[str, Any]] | None,

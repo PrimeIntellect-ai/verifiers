@@ -53,6 +53,24 @@ async def config_reward(task: Mapping[str, object], state: dict[str, object]) ->
     return float(task.get("answer") == state.get("answer"))
 
 
+@vf.metric(stage="group")
+async def group_config_metric(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]]
+) -> list[float]:
+    _ = tasks
+    return [float(index) for index, _ in enumerate(states)]
+
+
+@vf.reward(stage="group")
+async def group_config_reward(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]]
+) -> list[float]:
+    return [
+        float(task.get("answer") == state.get("answer"))
+        for task, state in zip(tasks, states)
+    ]
+
+
 @vf.advantage
 async def config_advantage(
     tasks: list[Mapping[str, object]], states: list[dict[str, object]]
@@ -213,6 +231,50 @@ def test_env_defaults_to_base_harness() -> None:
     assert isinstance(env.harness, Harness)
     assert env.harness.taskset is taskset
     assert env.get_dataset()[0]["answer"] == "ok"
+
+
+def test_env_capabilities_follow_v1_group_runtime_signals() -> None:
+    rollout_env = Env(
+        taskset=Taskset(source=source_loader, rewards=[config_reward]),
+        harness=Harness(program=config_program),
+    )
+    group_metric_env = Env(
+        taskset=Taskset(source=source_loader, metrics=[group_config_metric]),
+        harness=Harness(program=config_program),
+    )
+    group_reward_env = Env(
+        taskset=Taskset(source=source_loader, rewards=[group_config_reward]),
+        harness=Harness(program=config_program),
+    )
+    advantage_env = Env(
+        taskset=Taskset(source=source_loader, advantages=[config_advantage]),
+        harness=Harness(program=config_program),
+    )
+
+    assert not rollout_env.requires_group_rollouts
+    assert not rollout_env.provides_advantages
+    assert group_metric_env.requires_group_rollouts
+    assert not group_metric_env.provides_advantages
+    assert group_reward_env.requires_group_rollouts
+    assert group_reward_env.provides_advantages
+    assert advantage_env.requires_group_rollouts
+    assert advantage_env.provides_advantages
+
+
+def test_env_capabilities_follow_custom_taskset_init_group() -> None:
+    class GroupSetupTaskset(Taskset):
+        async def init_group(
+            self, task: Task, num_rollouts: int
+        ) -> tuple[list[Task], list[State]]:
+            return await super().init_group(task, num_rollouts)
+
+    env = Env(
+        taskset=GroupSetupTaskset(source=source_loader),
+        harness=Harness(program=config_program),
+    )
+
+    assert env.requires_group_rollouts
+    assert not env.provides_advantages
 
 
 def test_harness_config_extends_constructor_surface() -> None:

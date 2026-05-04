@@ -218,6 +218,10 @@ Rollout signals accept exactly `task, state`. Group signals accept exactly
 `tasks, states` and return one value per state. Cleanup functions use
 `@vf.cleanup`; teardown functions use `@vf.teardown`.
 
+`env.requires_group_rollouts` is true when group-stage scoring or group setup is
+part of the environment contract. `env.provides_advantages` is true when the
+environment writes advantages during group scoring.
+
 ## When To Use Which Path
 
 Use the core `SingleTurnEnv`, `ToolEnv`, and `MultiTurnEnv` docs when you want
