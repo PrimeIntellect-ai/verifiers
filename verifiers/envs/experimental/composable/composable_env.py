@@ -50,6 +50,7 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
+from verifiers.envs.experimental.sandbox_mixin import log_rollout_event
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State, TrajectoryStep
@@ -265,7 +266,7 @@ class ComposableEnv(CliAgentEnv):
             state["test_timeout"] = spec.timeout_minutes * 60
         else:
             state["test_timeout"] = self.compute_sandbox_timeout_minutes() * 60
-        await self.taskset.setup(state)
+        await self._run_setup_step(state, "task_setup", self.taskset.setup, state)
         dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
         if self.harness.system_prompt:
             dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
@@ -273,10 +274,56 @@ class ComposableEnv(CliAgentEnv):
         await self.sandbox_client.execute_command(
             sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
         )
-        await self._upload_harness_inputs(sandbox_id, state)
-        await self._after_harness_inputs_uploaded(state)
-        await self._install_agent(sandbox_id)
-        await self._run_post_install(sandbox_id)
+        await self._run_setup_step(
+            state,
+            "upload_harness_inputs",
+            self._upload_harness_inputs,
+            sandbox_id,
+            state,
+        )
+        await self._run_setup_step(
+            state,
+            "after_harness_inputs_uploaded",
+            self._after_harness_inputs_uploaded,
+            state,
+        )
+        await self._run_setup_step(
+            state, "agent_install", self._install_agent, sandbox_id
+        )
+        await self._run_setup_step(
+            state, "post_install", self._run_post_install, sandbox_id
+        )
+
+    async def _run_setup_step(
+        self,
+        state: State,
+        step: str,
+        func: Any,
+        *args: Any,
+    ) -> Any:
+        start = time.perf_counter()
+        log_rollout_event(self.logger, "setup_step_started", state, step=step)
+        try:
+            result = await func(*args)
+        except BaseException:
+            log_rollout_event(
+                self.logger,
+                "setup_step_finished",
+                state,
+                step=step,
+                status="error",
+                elapsed_s=time.perf_counter() - start,
+            )
+            raise
+        log_rollout_event(
+            self.logger,
+            "setup_step_finished",
+            state,
+            step=step,
+            status="ok",
+            elapsed_s=time.perf_counter() - start,
+        )
+        return result
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.
