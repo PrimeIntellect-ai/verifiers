@@ -343,6 +343,17 @@ async def state_tools_program(task, state):
     return state
 
 
+async def replay_answer_program(task, state):
+    state["answer"] = task["answer"]
+    state["stop_condition"] = "offline_replay"
+    return state
+
+
+@vf.reward
+async def replay_reward(task, state) -> float:
+    return float(state.get("answer") == task.get("answer"))
+
+
 def test_model_client_default_keys_are_rollout_local() -> None:
     runtime = Runtime()
     client = FakeClient()
@@ -392,6 +403,31 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
     state = await harness.run(task)
 
     assert state["tool_result"] == "echo:state"
+    assert "runtime_id" not in state["runtime"]
+
+
+@pytest.mark.asyncio
+async def test_offline_replay_program_scores_without_model_client() -> None:
+    taskset = vf.Taskset(
+        source=[
+            {
+                "prompt": [{"role": "user", "content": "Return the answer."}],
+                "answer": "solved",
+            }
+        ],
+        rewards=[replay_reward],
+    )
+    harness = vf.Harness(program=replay_answer_program)
+    harness.attach_taskset(taskset)
+    task = next(iter(taskset))
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert state["answer"] == "solved"
+    assert state["reward"] == 1.0
+    assert state["stop_condition"] == "offline_replay"
+    assert state["trajectory"] == []
     assert "runtime_id" not in state["runtime"]
 
 

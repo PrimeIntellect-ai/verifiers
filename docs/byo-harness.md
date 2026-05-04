@@ -172,6 +172,29 @@ def load_environment(taskset_config=None, harness_config=None):
 All model calls go through the v1 interception endpoint so trajectory capture,
 tool forwarding, and protocol translation share one path.
 
+Programs are also the right shape for LLM-free replay:
+
+```python
+async def replay_solution(task, state):
+    state["answer"] = task["offline_answer"]
+    state["stop_condition"] = "offline_replay"
+    return state
+
+
+@vf.reward
+async def exact(task, state) -> float:
+    return float(state.get("answer") == task.get("answer"))
+
+
+def load_environment():
+    taskset = vf.Taskset(source=load_rows, rewards=[exact])
+    return vf.Env(taskset=taskset, harness=vf.Harness(program=replay_solution))
+```
+
+Use this for cached completions, deterministic solvers, and gold-solution
+validation. Subclass `Harness` only when packaging reusable behavior with a new
+config surface; do not subclass `Env` just to bypass inference.
+
 ## Signals And Cleanup
 
 Metrics, rewards, and advantages are signal functions.

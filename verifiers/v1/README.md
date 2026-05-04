@@ -309,6 +309,34 @@ async def program(task, state, client):
 The client points at the v1 interception endpoint, not directly at the upstream
 model provider.
 
+### LLM-Free Replay And Solvers
+
+Programs do not have to call a model. Offline solution replay, gold-patch
+validation, cached completions, and deterministic solvers should be ordinary
+programs that read immutable `task`, write serializable `state`, and then let
+the normal scoring and cleanup lifecycle run.
+
+```python
+async def replay_solution(task, state):
+    state["answer"] = task["offline_answer"]
+    state["stop_condition"] = "offline_replay"
+    return state
+
+
+@vf.reward
+async def exact(task, state) -> float:
+    return float(state.get("answer") == task.get("answer"))
+
+
+taskset = vf.Taskset(source=load_rows, rewards=[exact])
+harness = vf.Harness(program=replay_solution)
+env = vf.Env(taskset=taskset, harness=harness)
+```
+
+This is the preferred shape for "solve without inference" flows. Use a custom
+`Harness` subclass only when you are packaging reusable behavior with a new
+configuration surface; do not subclass `Env` just to replay offline solutions.
+
 ### Default Tool Loop
 
 The default loop reads `state["prompt"]`, sends it to the model with the
