@@ -600,11 +600,13 @@ async def tau2_reward(task, state) -> float:
         for message in cast(list[object], tau2_state["messages"])
     ]
     termination = tau2_state.get("termination_reason")
-    termination_reason = (
-        TerminationReason(str(termination))
-        if isinstance(termination, str)
-        else TerminationReason.AGENT_ERROR
-    )
+    if isinstance(termination, str):
+        termination_reason = TerminationReason(termination)
+    elif state.get("stop_condition") == "max_turns_reached":
+        termination_reason = TerminationReason.MAX_STEPS
+    else:
+        termination_reason = TerminationReason.AGENT_ERROR
+    state["tau2"]["termination_reason"] = termination_reason.value
     task_info = task["info"]
     if isinstance(task_info, str):
         task_info = json.loads(task_info)
