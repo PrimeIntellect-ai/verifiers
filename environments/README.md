@@ -67,13 +67,6 @@ This folder contains installable example environments that showcase common usage
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
   - **wiki_search**: Merges judge scoring with the tool-use rubric.
 
-### Verifiers v1
-- **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
-- **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
-- **hello_rlm_v1**: Sandboxed RLM-style CLI program with endpoint interception and metrics collection.
-- **dspy_flights**: DSPy flight-support entrypoint configured against the v1 interception endpoint.
-- **tau2_bench**: τ²-bench taskset/user/tool pattern on the v1 harness runtime.
-
 ### Judge-based evaluation (LLM-as-judge)
 - **continuation_quality**: Judge rubric extracts `<grade>` and maps A–F to a continuous score.
 - **toxicity_explanation**: Judge rubric returns 0–10 normalized score for both classification correctness and explanation quality.
