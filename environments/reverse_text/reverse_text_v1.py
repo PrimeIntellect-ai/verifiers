@@ -66,10 +66,6 @@ def load_taskset(
     )
 
 
-def load_harness(config=None):
-    return vf.Harness(config=config)
-
-
 def load_v1_environment(
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
     dataset_split: str = "train",
@@ -83,6 +79,5 @@ def load_v1_environment(
             dataset_name=dataset_name,
             dataset_split=dataset_split,
             system_prompt=system_prompt,
-        ),
-        harness=load_harness(),
+        )
     )

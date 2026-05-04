@@ -183,18 +183,22 @@ async def read_section(section_id: str, wiki) -> str:
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def source():
-    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-    for index, row in enumerate(dataset):
-        row = cast(dict, row)
-        yield {
-            **row,
-            "example_id": index,
-            "prompt": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": row["question"]},
-            ],
-        }
+def build_source(max_turns: int = 10):
+    def source():
+        dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+        for index, row in enumerate(dataset):
+            row = cast(dict, row)
+            yield {
+                **row,
+                "example_id": index,
+                "runtime": {"max_turns": max_turns},
+                "prompt": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": row["question"]},
+                ],
+            }
+
+    return source
 
 
 def judge_reward_factory(
@@ -263,6 +267,7 @@ def load_toolset(
 
 
 def load_taskset(
+    max_turns: int = 10,
     judge_model: str = "gpt-4.1-mini",
     judge_base_url: str = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
@@ -275,7 +280,7 @@ def load_taskset(
     config=None,
 ):
     return vf.Taskset(
-        source=source,
+        source=build_source(max_turns=max_turns),
         rewards=[
             judge_reward_factory(
                 judge_model=judge_model,
@@ -297,10 +302,6 @@ def load_taskset(
     )
 
 
-def load_harness(max_turns: int = 10, config=None):
-    return vf.Harness(max_turns=max_turns, config=config)
-
-
 def load_v1_environment(
     max_turns: int = 10,
     judge_model: str = "gpt-4.1-mini",
@@ -315,6 +316,7 @@ def load_v1_environment(
 ) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(
+            max_turns=max_turns,
             judge_model=judge_model,
             judge_base_url=judge_base_url,
             judge_api_key_var=judge_api_key_var,
@@ -324,6 +326,5 @@ def load_v1_environment(
             embed_model=embed_model,
             embed_base_url=embed_base_url,
             embed_api_key_var=embed_api_key_var,
-        ),
-        harness=load_harness(max_turns=max_turns),
+        )
     )

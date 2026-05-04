@@ -7,8 +7,15 @@ from typing import Any, ClassVar, cast
 from verifiers.errors import Error, OverlongPromptError
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.tool_utils import is_valid_tool_content_parts
 from verifiers.clients import Client
-from verifiers.types import ClientConfig, Messages, SamplingArgs, ToolMessage
+from verifiers.types import (
+    ClientConfig,
+    MessageContent,
+    Messages,
+    SamplingArgs,
+    ToolMessage,
+)
 
 from .config import (
     HarnessConfig,
@@ -398,11 +405,20 @@ class Harness:
                 return state
             callable_tools = state.tools()
             for tool_call in tool_calls:
-                name = tool_call.name
-                result = await callable_tools[name](**json_args(tool_call.arguments))
-                messages.append(
-                    ToolMessage(tool_call_id=tool_call.id, content=str(result))
-                )
+                content: MessageContent
+                try:
+                    name = tool_call.name
+                    result = await callable_tools[name](
+                        **json_args(tool_call.arguments)
+                    )
+                    content = (
+                        cast(MessageContent, result)
+                        if is_valid_tool_content_parts(result)
+                        else str(result)
+                    )
+                except Exception as e:
+                    content = self.tool_error_content(e)
+                messages.append(ToolMessage(tool_call_id=tool_call.id, content=content))
                 sync_completion()
                 if await self.runtime.is_completed(task, state):
                     return state
@@ -410,6 +426,9 @@ class Harness:
                 state["stop_condition"] = "max_turns_reached"
                 return state
         return state
+
+    def tool_error_content(self, error: Exception) -> str:
+        return str(error)
 
     def max_turns(self, state: State) -> int:
         runtime = state.get("runtime", {})

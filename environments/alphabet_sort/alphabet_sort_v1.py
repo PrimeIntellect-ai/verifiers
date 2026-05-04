@@ -150,6 +150,7 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                         "answer": json.dumps(
                             {"ground_truths": ground_truths, "turn_names": turn_names}
                         ),
+                        "runtime": {"max_turns": max_turns},
                         "info": {
                             "follow_ups": follow_ups,
                             "turn_names": turn_names,
@@ -285,10 +286,6 @@ def load_taskset(
     )
 
 
-def load_harness(max_turns: int = 3, config=None):
-    return vf.Harness(max_turns=max_turns, config=config)
-
-
 def load_v1_environment(
     max_turns: int = 3,
     min_turns: int = 1,
@@ -314,6 +311,5 @@ def load_v1_environment(
             dataset_name=dataset_name,
             dataset_split=dataset_split,
             seed=seed,
-        ),
-        harness=load_harness(max_turns=max_turns),
+        )
     )

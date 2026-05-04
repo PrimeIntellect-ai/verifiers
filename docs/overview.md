@@ -71,10 +71,36 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     async def correct_answer(completion, answer) -> float:
         completion_ans = completion[-1]['content']
         return 1.0 if completion_ans == answer else 0.0
-    rubric = Rubric(funcs=[correct_answer])
+    rubric = vf.Rubric(funcs=[correct_answer])
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env
 ```
+
+For composable environments with reusable tasksets, toolsets, custom programs,
+or custom harnesses, use the v1 BYO Harness path:
+```python
+# my_env.py
+import verifiers.v1 as vf
+
+def source():
+    yield {
+        "prompt": [{"role": "user", "content": "Reverse abc."}],
+        "answer": "cba",
+        "runtime": {"max_turns": 1},
+    }
+
+@vf.reward(weight=1.0)
+async def contains_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+def load_taskset(config=None):
+    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+
+def load_environment(taskset_config=None) -> vf.Env:
+    return vf.Env(taskset=load_taskset(taskset_config))
+```
+If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
+[BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 
 To install the environment module into your project, do:
 ```bash
@@ -111,6 +137,8 @@ prime eval run primeintellect/math-python
 ## Documentation
 
 **[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
+
+**[BYO Harness](byo-harness.md)** — Build composable v1 taskset/harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](evaluation.md)** - Evaluate models using your environments.
 

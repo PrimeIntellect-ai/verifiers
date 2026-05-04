@@ -1,6 +1,6 @@
 # Environments
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For composable taskset/harness environments, see [BYO Harness](byo-harness.md).
 
 ## Table of Contents
 - [Your First Environment](#your-first-environment)

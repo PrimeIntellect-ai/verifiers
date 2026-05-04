@@ -16,6 +16,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
+from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils import mcp_utils
@@ -48,6 +49,17 @@ class FakeClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeModelClient:
+    def __init__(self, responses: list[Response]):
+        self.responses = responses
+
+    async def get_response(self, **kwargs: object) -> Response:
+        _ = kwargs
+        if not self.responses:
+            raise AssertionError("No fake model responses left.")
+        return self.responses.pop(0)
 
 
 class FakeCreateSandboxRequest:
@@ -117,6 +129,28 @@ async def echo_tool(query: str) -> str:
 
 async def named_tool(name: str) -> str:
     return f"name:{name}"
+
+
+async def failing_tool(section_id: str) -> str:
+    _ = section_id
+    raise ValueError("Invalid section_id format.")
+
+
+def fake_response(
+    content: str | None = None, tool_calls: list[ToolCall] | None = None
+) -> Response:
+    return Response(
+        id="fake",
+        created=0,
+        model="fake",
+        message=ResponseMessage(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason="tool_calls" if tool_calls else "stop",
+            is_truncated=False,
+        ),
+    )
 
 
 async def program_sandbox_id(sandbox) -> str:
@@ -351,6 +385,39 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
 
 
 @pytest.mark.asyncio
+async def test_base_program_returns_tool_errors_to_model() -> None:
+    client = FakeModelClient(
+        [
+            fake_response(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="failing_tool",
+                        arguments='{"section_id": "bad"}',
+                    )
+                ]
+            ),
+            fake_response(content="Recovered."),
+        ]
+    )
+    harness = vf.Harness(
+        client=cast(Client, client),
+        model="fake",
+        toolsets=[vf.Toolset(tools=[failing_tool])],
+        max_turns=2,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    tool_message = state["completion"][1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["content"] == "Invalid section_id format."
+    assert state["completion"][-1]["content"] == "Recovered."
+    assert state["error"] is None
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = vf.Harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -460,7 +527,9 @@ def test_mcp_tool_protocol_injects_proxy_into_sandbox_program() -> None:
     assert MCP_PROXY_PATH in files
     assert env["VF_TOOL_PROTOCOL"] == "mcp"
     assert json.loads(env["VF_MCP_TOOL_COMMAND_JSON"]) == ["python3", MCP_PROXY_PATH]
-    assert "mcp>=1.14.1" in sandbox["packages"]
+    packages = sandbox["packages"]
+    assert isinstance(packages, list)
+    assert "mcp>=1.14.1" in packages
 
 
 @pytest.mark.asyncio

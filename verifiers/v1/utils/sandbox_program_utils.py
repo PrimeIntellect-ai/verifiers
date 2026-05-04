@@ -305,6 +305,10 @@ def tool_call_arguments(tool_call):
     return raw
 
 
+def tool_error_content(error):
+    return str(error)
+
+
 def client_type(state):
     return state.get("runtime", {}).get("client_type") or "openai_chat_completions"
 
@@ -518,14 +522,18 @@ async def run_base(task, state, client):
             state["stop_condition"] = state.get("stop_condition") or "no_tools"
             break
         for tool_call in tool_calls:
-            result = await call_tool(
-                state, tool_call_name(tool_call), tool_call_arguments(tool_call)
-            )
+            try:
+                result = await call_tool(
+                    state, tool_call_name(tool_call), tool_call_arguments(tool_call)
+                )
+                content = str(result)
+            except Exception as exc:
+                content = tool_error_content(exc)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": str(result),
+                    "content": content,
                 }
             )
             if await check_stop(state):

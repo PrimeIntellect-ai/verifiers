@@ -60,7 +60,7 @@ def default_dataset() -> Dataset:
     )
 
 
-def source(dataset=None):
+def source(dataset=None, max_turns: int = 10):
     rows = dataset or default_dataset()
     for index, row in enumerate(rows):
         row = cast(Mapping[str, object], row)
@@ -68,6 +68,7 @@ def source(dataset=None):
         yield {
             **dict(row),
             "example_id": index,
+            "runtime": {"max_turns": max_turns},
             "prompt": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": question},
@@ -123,13 +124,15 @@ def judge_reward_factory(
 
 def load_taskset(
     dataset=None,
+    mcp_servers: list[Mapping[str, object]] | None = None,
+    max_turns: int = 10,
     judge_model: str = "gpt-4.1-mini",
     judge_base_url: str = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
     config=None,
 ):
     return vf.Taskset(
-        source=lambda: source(dataset),
+        source=lambda: source(dataset, max_turns=max_turns),
         rewards=[
             judge_reward_factory(
                 judge_model=judge_model,
@@ -137,6 +140,7 @@ def load_taskset(
                 judge_api_key_var=judge_api_key_var,
             )
         ],
+        toolsets=[load_toolset(mcp_servers=mcp_servers)],
         config=config,
     )
 
@@ -147,18 +151,6 @@ def load_toolset(mcp_servers: list[Mapping[str, object]] | None = None, config=N
             mcp_tool_from_config(server)
             for server in mcp_servers or default_mcp_servers()
         ],
-        config=config,
-    )
-
-
-def load_harness(
-    mcp_servers: list[Mapping[str, object]] | None = None,
-    max_turns: int = 10,
-    config=None,
-):
-    return vf.Harness(
-        toolsets=[load_toolset(mcp_servers=mcp_servers)],
-        max_turns=max_turns,
         config=config,
     )
 
@@ -177,9 +169,10 @@ def load_v1_environment(
     return vf.Env(
         taskset=load_taskset(
             dataset=dataset,
+            mcp_servers=mcp_servers,
+            max_turns=max_turns,
             judge_model=judge_model,
             judge_base_url=judge_base_url,
             judge_api_key_var=judge_api_key_var,
-        ),
-        harness=load_harness(mcp_servers=mcp_servers, max_turns=max_turns),
+        )
     )
