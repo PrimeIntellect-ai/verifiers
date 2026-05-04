@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import random
-import re
 import string
 from collections.abc import Callable, Mapping
 
@@ -11,9 +10,6 @@ from pydantic import BaseModel
 
 import verifiers.v1 as vf
 from verifiers.v1.utils.endpoint_utils import openai_endpoint_config
-
-
-PROCESS_RE = re.compile(r".+", re.S)
 
 
 class Date(BaseModel):
@@ -348,8 +344,6 @@ async def run_dspy_flight_program(task, state, client):
     state["completion"] = [
         {"role": "assistant", "content": state["process_result"]},
     ]
-    if not PROCESS_RE.search(state["process_result"]):
-        state["done"] = True
     return state
 
 
