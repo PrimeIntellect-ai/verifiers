@@ -280,6 +280,7 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
 # dynamo_chat_nvext transport (Dynamo bis/dynamo-rl)
 # ---------------------------------------------------------------------------
 
+
 class _StubRenderer:
     """Renderer stand-in for the dynamo_chat_nvext transport tests.
 
