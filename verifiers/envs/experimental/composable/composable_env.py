@@ -239,6 +239,22 @@ class ComposableEnv(CliAgentEnv):
                 return
         await super().add_trajectory_step(state, trajectory_step)
 
+    async def render_completion(self, state: State) -> None:
+        """Delegate to ``harness.render_completion`` if provided.
+
+        The harness renderer takes the full ``state["trajectory"]`` and
+        returns the full conversation including the original prompt;
+        we slice off ``state["prompt"]`` to produce ``state["completion"]``.
+        Falls back to ``MultiTurnEnv.render_completion`` when no harness
+        renderer is set.
+        """
+        if self.harness.render_completion is None:
+            await super().render_completion(state)
+            return
+        full_conversation = self.harness.render_completion(state["trajectory"])
+        prompt_messages = state["prompt"]
+        state["completion"] = full_conversation[len(prompt_messages) :]
+
     async def post_sandbox_setup(self, state: State) -> None:
         """Task setup → upload instruction/system prompt → upload dirs →
         install agent → post-install (uploads + script).
