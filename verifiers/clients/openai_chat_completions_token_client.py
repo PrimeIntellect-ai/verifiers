@@ -329,6 +329,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 # prefix-match equality is unaffected.
                 if normalized.get("content") == "":
                     normalized["content"] = None
+                # Drop None-valued keys so model_dump's exhaustive view (which
+                # carries e.g. thinking_blocks=None on AssistantMessage) is
+                # equivalent to to_native_prompt's slimmer view (which omits
+                # the field entirely). Without this, vf.Message-shaped input
+                # never matches the to_native_prompt-normalized step messages,
+                # which breaks the prefix match for MultiTurnEnv rollouts.
+                normalized = {k: v for k, v in normalized.items() if v is not None}
                 return normalized
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]
