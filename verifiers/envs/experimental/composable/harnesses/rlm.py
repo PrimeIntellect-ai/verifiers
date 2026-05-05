@@ -51,17 +51,19 @@ def render_completion_with_branches(trajectory: list[TrajectoryStep]) -> Message
         return []
 
     first = trajectory[0]
-    accumulated: Messages = list(first["prompt"]) + list(first["completion"])
+    prev_full: Messages = list(first["prompt"]) + list(first["completion"])
+    accumulated: Messages = list(prev_full)
 
     for step in trajectory[1:]:
         prompt = list(step["prompt"])
         completion = list(step["completion"])
-        if len(prompt) >= len(accumulated):
-            new_tail = prompt[len(accumulated) :] + completion
+        if len(prompt) >= len(prev_full):
+            new_tail = prompt[len(prev_full) :] + completion
         else:
             marker = SystemMessage(content=COMPACTION_BOUNDARY_MARKER)
             new_tail = [marker] + prompt + completion
         accumulated.extend(new_tail)
+        prev_full = prompt + completion
 
     return accumulated
 
