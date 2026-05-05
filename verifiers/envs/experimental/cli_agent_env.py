@@ -62,6 +62,43 @@ def make_agent_error(state: State, message: str) -> AgentError:
     return AgentError(f"{message} ({', '.join(context_parts)})")
 
 
+async def _read_live_agent_logs(state: State) -> tuple[str, str]:
+    """Best-effort fetch of the agent process's job log files from the sandbox.
+
+    Used at rollout_aborted time when state["agent_stdout"]/stderr is empty
+    (e.g. mid-stream abort before poll_job_completion finished). Reads the
+    background-job stdout/stderr files written by prime_sandboxes alongside
+    the .exit marker. Returns ("", "") on any failure so a missing log
+    cannot mask the original error.
+    """
+    sandbox_id = state.get("sandbox_id")
+    background_job = state.get("background_job")
+    sandbox_client = state.get("sandbox_client")
+    if not (sandbox_id and background_job and sandbox_client):
+        return "", ""
+    jid = getattr(background_job, "job_id", None)
+    if not jid:
+        return "", ""
+    try:
+        result = await sandbox_client.execute_command(
+            sandbox_id,
+            (
+                f"tail -c 1000 /tmp/job_{jid}.stdout.log 2>/dev/null; "
+                f"echo '---STDERR---'; "
+                f"tail -c 1000 /tmp/job_{jid}.stderr.log 2>/dev/null"
+            ),
+            timeout=10,
+        )
+        stdout = result.stdout or ""
+        sep = "\n---STDERR---\n"
+        if sep in stdout:
+            out, err = stdout.split(sep, 1)
+            return out, err
+        return stdout, ""
+    except Exception:
+        return "", ""
+
+
 def _collect_tool_counts(state: State) -> Counter[str]:
     tool_counts: Counter[str] = Counter()
     for step in state.get("trajectory", []):
@@ -201,6 +238,15 @@ class CliAgentMonitorRubric(vf.Rubric):
         exit_code = state.get("agent_exit_code")
 
         if error_info or timed_out:
+            # Include agent stdout/stderr tails so abort errors (StreamInterrupted,
+            # EmptyModelResponseError, AgentError, etc.) carry the agent's last
+            # output. state["agent_stdout"]/stderr is only populated when
+            # poll_job_completion succeeded; for mid-stream aborts those are
+            # empty, so fall back to reading the live job log from the sandbox.
+            agent_stdout = state.get("agent_stdout") or ""
+            agent_stderr = state.get("agent_stderr") or ""
+            if not agent_stdout and not agent_stderr:
+                agent_stdout, agent_stderr = await _read_live_agent_logs(state)
             self.logger.info(
                 format_rollout_log_event(
                     "rollout_aborted",
@@ -209,6 +255,8 @@ class CliAgentMonitorRubric(vf.Rubric):
                     exit_code=exit_code,
                     timed_out=timed_out if timed_out else None,
                     error=error_info,
+                    stdout_tail=truncate(agent_stdout, 800),
+                    stderr_tail=truncate(agent_stderr, 800),
                 )
             )
 
