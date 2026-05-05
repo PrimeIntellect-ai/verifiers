@@ -96,7 +96,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         short_client_type if short_client_type is not None else long_client_type
     )
     if client_type is not None:
-        if client_type not in (
+        allowed_types = (
             "openai_completions",
             "openai_chat_completions",
             "openai_chat_completions_token",
@@ -104,9 +104,11 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             "renderer",
             "anthropic_messages",
             "nemorl_chat_completions",
-        ):
+        )
+        if client_type not in allowed_types:
+            allowed_str = "', '".join(allowed_types)
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'renderer', 'anthropic_messages', or 'nemorl_chat_completions' in {source}"
+                f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 
