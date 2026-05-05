@@ -31,38 +31,6 @@ Extension is function-and-config based. Add a metric, reward, cleanup, toolset,
 or user by passing a function/object directly, referencing it from config, or
 defining a shallow subclass when a package needs a typed config surface.
 
-## Singletons And Collections
-
-v1 keeps a sharp distinction between singleton fields and collection fields.
-
-Singletons describe one logical value for a taskset, harness, or rollout:
-`source`, `eval_source`, `program`, `user`, `model`, `client`, `system_prompt`,
-and the primary program `sandbox`. Singleton runtime resources may be borrowed
-across child harness calls when sharing is intentional:
-
-```python
-child_state = state.for_task(child_task, borrow="model")
-child_state = state.for_task(child_task, borrow=["model", "sandbox"])
-```
-
-Collections are merged and extended: `toolsets`, `stops`, `updates`, `metrics`,
-`rewards`, `advantages`, and `cleanups`. Decorators stay singular because each
-decorator marks one function, while constructor/config fields are plural because
-they hold many functions.
-
-Named tools can also be passed into a child state. The child sees the selected
-tool surface, while calls still execute against the source runtime and its
-rollout-scoped resources:
-
-```python
-child_state = state.for_task(child_task, borrow="model", tools="bash")
-```
-
-Local dependencies belong inside the package that owns the callable. Toolsets
-and users can keep private dependency factories and bind those values into
-their own callables, but those dependencies are not state fields or top-level
-borrow targets.
-
 ## Core Objects
 
 ### `Task`
@@ -586,6 +554,38 @@ These helpers use a process-local runtime registry keyed by
 runtime IDs are valid only inside the process and only while the runtime is
 alive. Runtime IDs, client keys, endpoint URLs, and sandbox lease keys are
 stripped before returned state crosses the rollout/group boundary.
+
+## Singletons And Collections
+
+v1 keeps a sharp distinction between singleton fields and collection fields.
+
+Singletons describe one logical value for a taskset, harness, or rollout:
+`source`, `eval_source`, `program`, `user`, `model`, `client`, `system_prompt`,
+and the primary program `sandbox`. Singleton runtime resources may be borrowed
+across child harness calls when sharing is intentional:
+
+```python
+child_state = state.for_task(child_task, borrow="model")
+child_state = state.for_task(child_task, borrow=["model", "sandbox"])
+```
+
+Collections are merged and extended: `toolsets`, `stops`, `updates`, `metrics`,
+`rewards`, `advantages`, and `cleanups`. Decorators stay singular because each
+decorator marks one function, while constructor/config fields are plural because
+they hold many functions.
+
+Named tools can also be passed into a child state. The child sees the selected
+tool surface, while calls still execute against the source runtime and its
+rollout-scoped resources:
+
+```python
+child_state = state.for_task(child_task, borrow="model", tools="bash")
+```
+
+Local dependencies belong inside the package that owns the callable. Toolsets
+and users can keep private dependency factories and bind those values into
+their own callables, but those dependencies are not state fields or top-level
+borrow targets.
 
 ## Toolsets
 
