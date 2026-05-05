@@ -158,6 +158,12 @@ def install_from_hub(env_id: str) -> bool:
 
     pkg_name = normalize_package_name(name)
 
+    # Exempt the hub package itself from any project-level `exclude-newer`
+    # cooldown: the user explicitly requested this version, and hub releases
+    # are typically newer than the cooldown window. Transitive deps still
+    # honor the cooldown.
+    exempt_cooldown = f"--exclude-newer-package={pkg_name}=false"
+
     cmd: list[str]
     if simple_index_url:
         if version and version != "latest":
@@ -167,13 +173,14 @@ def install_from_hub(env_id: str) -> bool:
         cmd = [
             *_uv_pip_cmd("install"),
             "--upgrade",
+            exempt_cooldown,
             pkg_spec,
             "--extra-index-url",
             simple_index_url,
         ]
     else:
         assert wheel_url is not None
-        cmd = [*_uv_pip_cmd("install"), "--upgrade", wheel_url]
+        cmd = [*_uv_pip_cmd("install"), "--upgrade", exempt_cooldown, wheel_url]
 
     logger.info(f"Installing {env_id}...")
     logger.debug(f"Command: {' '.join(cmd)}")
