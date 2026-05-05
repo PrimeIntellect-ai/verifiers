@@ -121,8 +121,8 @@ prime-sandboxes = false
 renderers = false
 
 [tool.uv.sources]
-# Pinned to PrimeIntellect-ai/renderers#1 until v0.1.6 lands on PyPI; drop after.
-renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "40bc2a6" }
+# Pinned to renderers main until v0.1.6 lands on PyPI; drop after.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "9acdc60" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
