@@ -58,6 +58,7 @@ PROGRAM_KIND_KEYS = {"base", "fn", "command"}
 PROGRAM_OPTION_KEYS = {"sandbox", "files", "dirs", "setup", "env", "artifacts", "tools"}
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
 SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
+TASK_PROGRAM_KEYS = {"files", "dirs", "setup", "env", "artifacts", "args"}
 
 
 class Harness:
@@ -531,10 +532,11 @@ class Harness:
     def command_program(self, program: Mapping[str, object]) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
             runtime = self.runtime
+            merged_program = self.task_merged_program(program, task, kind="command")
             sandbox_config = self.program_sandbox_config(program)
             if sandbox_config is not None:
                 return await run_sandbox_command(
-                    self.prepare_sandbox_program(program, state),
+                    self.prepare_sandbox_program(merged_program, state),
                     self.prepare_sandbox_config(
                         self.task_merged_sandbox(sandbox_config, task), program
                     ),
@@ -542,7 +544,7 @@ class Harness:
                     state,
                     runtime,
                 )
-            return await run_local_command(program, task, state, runtime)
+            return await run_local_command(merged_program, task, state, runtime)
 
         return run
 
@@ -550,10 +552,11 @@ class Harness:
         self, program: Mapping[str, object], sandbox_config: Mapping[str, object]
     ) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
+            merged_program = self.task_merged_program(program, task, kind="base")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(program, state),
+                program=self.prepare_sandbox_program(merged_program, state),
                 sandbox_config=self.prepare_sandbox_config(
-                    self.task_merged_sandbox(sandbox_config, task), program
+                    self.task_merged_sandbox(sandbox_config, task), merged_program
                 ),
                 task=task,
                 state=state,
@@ -572,10 +575,11 @@ class Harness:
         fn_ref: str,
     ) -> Callable[..., object]:
         async def run(task: Task, state: State) -> State:
+            merged_program = self.task_merged_program(program, task, kind="fn")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(program, state),
+                program=self.prepare_sandbox_program(merged_program, state),
                 sandbox_config=self.prepare_sandbox_config(
-                    self.task_merged_sandbox(sandbox_config, task), program
+                    self.task_merged_sandbox(sandbox_config, task), merged_program
                 ),
                 task=task,
                 state=state,
@@ -653,6 +657,40 @@ class Harness:
         if scope not in {"rollout", "group", "global"}:
             raise ValueError("program sandbox scope must be rollout, group, or global.")
 
+    def task_merged_program(
+        self, program: Mapping[str, object], task: Task, *, kind: str
+    ) -> Mapping[str, object]:
+        task_program = task.get("program")
+        if task_program is None:
+            return program
+        if not isinstance(task_program, Mapping):
+            raise TypeError("task.program must be a mapping.")
+        unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
+        if unknown:
+            raise ValueError(
+                "task.program can only define files, dirs, setup, env, "
+                f"artifacts, and args; got {unknown}."
+            )
+        if kind != "command" and "args" in task_program:
+            raise ValueError(
+                "task.program.args is only supported for command programs."
+            )
+        merged = dict(program)
+        for key in ("files", "dirs", "env", "artifacts"):
+            merged[key] = merge_program_mapping_option(
+                program.get(key), task_program.get(key), key
+            )
+        merged["setup"] = [
+            *program_setup_items(program.get("setup"), "program.setup"),
+            *program_setup_items(task_program.get("setup"), "task.program.setup"),
+        ]
+        if kind == "command":
+            merged["args"] = [
+                *program_setup_items(program.get("args"), "program.args"),
+                *program_setup_items(task_program.get("args"), "task.program.args"),
+            ]
+        return merged
+
     def task_merged_sandbox(
         self, sandbox_config: Mapping[str, object], task: Task
     ) -> Mapping[str, object]:
@@ -662,3 +700,39 @@ class Harness:
             config.update(string_mapping(cast(Mapping[object, object], task_sandbox)))
         self.validate_program_sandbox_scope(config)
         return config
+
+
+def merge_program_mapping_option(
+    program_value: object, task_value: object, key: str
+) -> dict[str, object]:
+    program_mapping = program_option_mapping(program_value, f"program.{key}")
+    task_mapping = program_option_mapping(task_value, f"task.program.{key}")
+    duplicate = sorted(set(program_mapping) & set(task_mapping))
+    if duplicate:
+        raise ValueError(
+            f"program.{key} and task.program.{key} define the same keys: {duplicate}."
+        )
+    return {**program_mapping, **task_mapping}
+
+
+def program_option_mapping(value: object, field_name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping.")
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{field_name} keys must be strings.")
+        result[key] = item
+    return result
+
+
+def program_setup_items(value: object, field_name: str) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} must be a string or list.")
+    return list(value)

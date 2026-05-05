@@ -13,6 +13,7 @@ from verifiers.decorators import (
 from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
+from .packages.harnesses import CLIHarness, OpenCode
 from .runtime import load_runtime_from_state
 from .utils.scoring_utils import (
     add_metric,
@@ -26,6 +27,7 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset
+from .packages.tasksets import HarborTaskset, HarborTasksetConfig
 from .toolset import MCPTool, Toolset
 from .user import User
 
@@ -34,7 +36,11 @@ __all__ = [
     "Env",
     "Harness",
     "HarnessConfig",
+    "HarborTaskset",
+    "HarborTasksetConfig",
+    "CLIHarness",
     "MCPTool",
+    "OpenCode",
     "State",
     "Task",
     "Taskset",

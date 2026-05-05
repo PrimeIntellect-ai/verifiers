@@ -87,7 +87,8 @@ Tasks can request rollout behavior through top-level serializable fields:
 - `max_turns`: per-rollout turn limit for the base harness loop;
 - `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `toolsets`: toolset visibility or rollout-local toolsets;
-- `sandbox`: per-task overrides for a sandboxed program.
+- `sandbox`: per-task overrides for a sandboxed program;
+- `program`: per-task files, dirs, env, setup, artifacts, and command args.
 
 Priority is:
 
@@ -116,6 +117,10 @@ yield {
 `task.runtime` is not part of the public task schema. Runtime metadata lives on
 `state.runtime` and is written by the harness, the taskset group initializer, or
 the eval/training worker.
+
+Use `task.program` when a taskset owns files or environment variables that a
+reusable harness should consume. The taskset cannot change the harness command
+or tool interface; duplicate keys across the taskset and harness fail.
 
 ## Toolsets
 
@@ -213,6 +218,23 @@ def load_environment():
 Use this for cached completions, deterministic solvers, and gold-solution
 validation. Subclass `Harness` only when packaging reusable behavior with a new
 config surface; do not subclass `Env` just to bypass inference.
+
+Packaged CLI harnesses should use the same boundary. These implementations live
+under `verifiers.v1.packages` while the v1 surface stabilizes, and are
+re-exported through `verifiers.v1`. `CLIHarness` is the generic command wrapper
+and `OpenCode` is the bundled OpenCode wrapper:
+
+```python
+def load_environment():
+    return vf.Env(
+        taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+        harness=vf.OpenCode(),
+    )
+```
+
+`HarborTaskset` owns Harbor task loading, sandbox overrides, task uploads, and
+test scoring. `OpenCode` owns OpenCode install/config/run behavior and works
+with any taskset that supplies a prompt.
 
 ## Updates, Signals, And Cleanup
 

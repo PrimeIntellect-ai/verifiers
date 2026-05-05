@@ -36,6 +36,8 @@ class Task(dict):
             raise TypeError("task.toolsets must be a mapping.")
         if "sandbox" in self and not isinstance(self["sandbox"], Mapping):
             raise TypeError("task.sandbox must be a mapping.")
+        if "program" in self and not isinstance(self["program"], Mapping):
+            raise TypeError("task.program must be a mapping.")
         if "max_turns" in self and (
             not isinstance(self["max_turns"], int)
             or isinstance(self["max_turns"], bool)

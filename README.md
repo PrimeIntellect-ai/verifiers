@@ -154,6 +154,17 @@ def load_environment(taskset_config=None) -> vf.Env:
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
+Reusable taskset and harness packages live under `verifiers.v1.packages` while
+the v1 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
+For example, Harbor task directories can run through the bundled OpenCode CLI
+harness with:
+
+```python
+env = vf.Env(
+    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    harness=vf.OpenCode(),
+)
+```
 
 To install the environment module into your project, do:
 ```bash

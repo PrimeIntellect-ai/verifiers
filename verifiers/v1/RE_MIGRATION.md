@@ -491,41 +491,32 @@ Use this for:
 
 Migration:
 
-1. Build a taskset that yields task rows with prompt/instruction data and
-   sandbox config.
-2. Build a harness with `program={"command": [...], "sandbox": True, ...}`.
-3. Use `program.files`, `program.dirs`, `program.setup`, and
-   `program.artifacts` for uploads, setup, and output collection.
+1. Use `vf.HarborTaskset` for Harbor-format task directories.
+2. Use `vf.OpenCode()` for the OpenCode command harness.
+3. Put task-owned uploads and sandbox overrides on the taskset.
 4. Keep scoring as reward/metric functions on the taskset.
+
+The packaged implementations live under `verifiers.v1.packages` while the v1
+API stabilizes, and are re-exported from `verifiers.v1` for normal use.
 
 Reference: `environments/opencode_harbor/opencode_harbor_v1.py`.
 
 Example:
 
 ```python
-harness = vf.Harness(
-    program={
-        "command": ["bash", "-lc", "opencode run < /task/instruction.md"],
-        "sandbox": True,
-        "tools": "mcp",
-        "files": {
-            "/task/instruction.md": instruction_text,
-            "/root/.config/opencode/opencode.json": opencode_config_json,
-        },
-        "artifacts": {
-            "log": {"path": "/logs/agent/opencode.txt", "format": "text"},
-        },
-    },
+env = vf.Env(
+    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    harness=vf.OpenCode(),
 )
 ```
 
 Gotchas:
 
-- The command runs inside the program sandbox only when `program["sandbox"]` is
-  true.
-- The intercepted endpoint is injected into the sandbox program environment.
-- Use `program.artifacts` for logs or files that need to become serializable
-  state.
+- `HarborTaskset` owns task loading, per-task sandbox overrides, `/task`
+  uploads, and test scoring.
+- `OpenCode` owns OpenCode installation, config generation, MCP tool proxy
+  wiring, and log artifacts.
+- `task.program` is the merge point for task-owned program files/env/setup.
 - Use group-scoped sandbox lifetime when scoring needs to inspect the sandbox.
 
 ## Task-Directory Command Harnesses

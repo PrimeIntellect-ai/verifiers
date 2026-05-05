@@ -258,7 +258,8 @@ Tasks can request rollout behavior through top-level serializable fields:
 - `max_turns`: per-rollout turn limit for the base harness loop;
 - `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `toolsets`: toolset visibility or rollout-local toolsets;
-- `sandbox`: per-task primary sandbox overrides.
+- `sandbox`: per-task primary sandbox overrides;
+- `program`: per-task program options contributed by a taskset.
 
 The priority rule is:
 
@@ -280,6 +281,12 @@ yield {
 
 `task.runtime` is not part of the v1 task schema. Task rows should use top-level
 controls; runtime metadata belongs on `state`.
+
+`task.program` is the taskset-to-harness merge point for command/program data
+that is task-owned but consumed by a harness. It can define only `files`,
+`dirs`, `setup`, `env`, `artifacts`, and command `args`. The harness still owns
+the program kind (`command`, `fn`, or base loop), sandbox placement, and tool
+interface. Duplicate file/env/artifact keys across harness and task fail fast.
 
 Advanced callers may create a state for a new task while borrowing selected live
 resources from an existing state. The stored state remains serializable: borrowed
@@ -489,6 +496,25 @@ The sandboxed base loop uses the same interception endpoint as local programs.
 The loop runs in the sandbox; tool execution and model forwarding remain owned
 by the host runtime.
 
+Tasksets can contribute task-local program options with the same field names:
+
+```python
+yield {
+    "prompt": [{"role": "user", "content": instruction}],
+    "sandbox": {"image": image, "workdir": "/app"},
+    "program": {
+        "files": {
+            "/task/instruction.md": {"task": "instruction"},
+            "/task/task.toml": {"task": "task_toml"},
+        },
+        "env": {"AGENT_WORKDIR": "/app"},
+    },
+}
+```
+
+Use this boundary when the taskset owns task assets, resource sizing, or
+per-task environment variables, and the harness owns the reusable CLI behavior.
+
 Common sandbox config keys:
 
 - `image`: Docker image, defaulting to `python:3.11-slim`;
@@ -510,6 +536,32 @@ writes the serializable pieces into state for each rollout or group.
 State runtime values take precedence for a specific rollout. This is how nested
 or specialized runs can override model controls without changing the method
 signature.
+
+### Packaged CLI Harnesses And Harbor
+
+Reusable CLI programs should be packaged as `Harness` subclasses. Package
+implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
+and are re-exported from `verifiers.v1` for normal use. `CLIHarness` is the thin
+generic wrapper for command programs; `OpenCode` is the bundled OpenCode CLI
+harness.
+
+```python
+import verifiers.v1 as vf
+
+env = vf.Env(
+    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    harness=vf.OpenCode(),
+)
+```
+
+`HarborTaskset` accepts either a local Harbor task directory/dataset directory
+or a Harbor dataset registry id such as `terminal-bench@2.0`. Registry ids use
+the Harbor CLI download path when available; local paths do not require Harbor
+to be installed. Harbor task rows contribute sandbox settings and
+`task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
+`OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
+proxy wiring, and log artifact collection. Neither side needs to know the
+other's private fields.
 
 ## Runtime State Helpers
 
