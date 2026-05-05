@@ -30,4 +30,10 @@ dev = [
 ]
 
 [tool.uv]
+preview = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
 exclude-newer = "7 days"
