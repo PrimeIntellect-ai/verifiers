@@ -41,6 +41,7 @@ ClientType = Literal[
     "anthropic_messages",
     "nemorl_chat_completions",
 ]
+RendererTransport = Literal["prime_vllm_generate", "dynamo_chat_nvext"]
 MessageType = Literal["chat", "completion"]  # deprecated
 
 
@@ -498,6 +499,7 @@ class ClientConfig(BaseModel):
     renderer: str = "auto"
     renderer_model_name: str | None = None
     renderer_pool_size: int | None = None
+    renderer_transport: RendererTransport = "prime_vllm_generate"
     tool_parser: str | None = None
     reasoning_parser: str | None = None
     api_key_var: str = "PRIME_API_KEY"

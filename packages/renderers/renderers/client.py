@@ -1,7 +1,7 @@
 """Renderer-based verifiers client.
 
 All tokenization happens client-side via a Renderer:
-    messages → Renderer.render_ids() → token IDs → vLLM /v1/generate → completion tokens
+    messages → Renderer.render_ids() → token IDs → backend transport → completion tokens
     completion tokens → Renderer.parse_response() → structured message back to verifiers
 
 When a RendererPool is passed instead of a single Renderer, the sync tokenization
@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 from openai import AsyncOpenAI, BadRequestError
 
 from renderers.base import Message, Renderer, RendererPool, ToolSpec
+
+RendererTransport = Literal["prime_vllm_generate", "dynamo_chat_nvext"]
 
 # Logs the (per-message length, total prompt length) on every vLLM /generate
 # call at DEBUG, and the same plus the response text on a 4xx at WARNING.
@@ -45,9 +47,10 @@ async def completions_request(
     model: str,
     tools: list[ToolSpec] | None = None,
     prompt_ids: list[int] | None = None,
+    transport: RendererTransport = "prime_vllm_generate",
     **sampling_args: Any,
 ) -> dict[str, Any]:
-    """Render messages to tokens, call vLLM /v1/generate, return parsed result.
+    """Render messages to tokens, call a token-in/token-out transport.
 
     Returns a dict with: prompt_ids, completion_ids, completion_logprobs,
     content, reasoning_content, tool_calls, finish_reason, usage, routed_experts.
@@ -76,20 +79,7 @@ async def completions_request(
         prompt_ids, stop_token_ids = _prepare(renderer)
 
     # -- Build request body --
-    body: dict[str, Any] = {
-        "model": model,
-        "prompt_token_ids": prompt_ids,
-        "stop_token_ids": stop_token_ids,
-    }
-
-    # Top-level keys accepted by vLLM /generate's GenerateRequest schema. We
-    # forward anything the caller set, mirroring the OpenAI chat-completions
-    # client (which splats ``sampling_args`` into the SDK call). ``cache_salt``
-    # is set by prime-rl's orchestrator per ckpt_step to invalidate stale
-    # prefix-cache KV after each policy update — without forwarding it, vLLM
-    # silently reuses KV computed with older weights → mismatch_kl drifts up
-    # over training.
-    _GENERATE_KEYS = (
+    generate_keys = (
         "temperature",
         "top_p",
         "top_k",
@@ -102,7 +92,12 @@ async def completions_request(
         "priority",
         "cache_salt",
     )
-    for key in _GENERATE_KEYS:
+    body: dict[str, Any] = {
+        "model": model,
+        "prompt_token_ids": prompt_ids,
+        "stop_token_ids": stop_token_ids,
+    }
+    for key in generate_keys:
         if key in sampling_args and sampling_args[key] is not None:
             body[key] = sampling_args[key]
 
@@ -112,22 +107,57 @@ async def completions_request(
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 
-    # Fallback for callers using the OpenAI-SDK convention of stuffing
-    # vLLM-specific args under ``extra_body``.
     extra_body = sampling_args.get("extra_body") or {}
-    for key in _GENERATE_KEYS:
+    for key in generate_keys:
         if key not in body and key in extra_body and extra_body[key] is not None:
             body[key] = extra_body[key]
 
-    # Pass through caller-supplied HTTP headers (auth, tracing, etc.) to vLLM.
+    path = "/generate"
+    if transport == "dynamo_chat_nvext":
+        nvext: dict[str, Any] = {
+            "token_data": prompt_ids,
+            "extra_fields": ["completion_token_ids"],
+        }
+        priority = sampling_args.get("priority", extra_body.get("priority"))
+        if priority is not None:
+            nvext["agent_hints"] = {"priority": priority}
+
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": "(token-in mode)"}],
+            "stream": False,
+            "logprobs": True,
+            "stop_token_ids": stop_token_ids,
+            "nvext": nvext,
+        }
+        if max_tokens is not None:
+            body["max_completion_tokens"] = max_tokens
+        for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "seed",
+            "n",
+            "repetition_penalty",
+            "min_tokens",
+        ):
+            value = sampling_args.get(key, extra_body.get(key))
+            if value is not None:
+                body[key] = value
+        path = "/chat/completions"
+    elif transport != "prime_vllm_generate":
+        raise ValueError(f"Unsupported renderer transport: {transport}")
+
     extra_headers = sampling_args.get("extra_headers") or {}
 
-    # -- Send to vLLM --
     _request_logger.debug(
-        "vllm /generate: prompt_len=%d messages=%d max_tokens=%s",
+        "renderer transport=%s prompt_len=%d messages=%d max_tokens=%s stop_ids=%d",
+        transport,
         len(prompt_ids),
         len(messages),
         max_tokens,
+        len(stop_token_ids),
     )
     post_kwargs: dict[str, Any] = {
         "cast_to": cast(Any, dict[str, Any]),
@@ -136,7 +166,7 @@ async def completions_request(
     if extra_headers:
         post_kwargs["options"] = cast(Any, {"headers": extra_headers})
     try:
-        data = await client.post("/generate", **post_kwargs)
+        data = await client.post(path, **post_kwargs)
     except BadRequestError as exc:
         _log_overlong_prompt_diagnostic(
             prompt_ids=prompt_ids,
@@ -145,24 +175,48 @@ async def completions_request(
             exc=exc,
         )
         raise
+
     choices = data.get("choices") or [{}]
     choice = choices[0]
-
-    # -- Parse completion tokens --
-    completion_ids = choice.get("token_ids") or []
+    if transport == "dynamo_chat_nvext":
+        completion_ids = (
+            choice.get("token_ids")
+            or choice.get("nvext", {}).get("completion_token_ids")
+            or data.get("nvext", {}).get("completion_token_ids")
+            or []
+        )
+        completion_logprobs = [
+            float(item.get("logprob") or 0.0)
+            for item in (choice.get("logprobs") or {}).get("content") or []
+            if isinstance(item, dict)
+        ]
+        raw_re = (
+            choice.get("routed_experts")
+            or choice.get("nvext", {}).get("routed_experts")
+            or data.get("nvext", {}).get("routed_experts")
+        )
+        response_id = data.get("id") or data.get("request_id") or ""
+    else:
+        completion_ids = choice.get("token_ids") or []
+        completion_logprobs = [
+            float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []
+        ]
+        raw_re = choice.get("routed_experts")
+        response_id = data.get("id") or ""
 
     if pool is not None:
         parsed = await _run_pooled(pool, lambda r: r.parse_response(completion_ids))
     else:
         parsed = renderer.parse_response(completion_ids)
 
-    completion_logprobs = [
-        float(lp) if lp is not None else 0.0 for lp in choice.get("logprobs") or []
-    ]
+    # Renderer parsing is responsible for client-side tool detection. If a
+    # transport reports a plain stop but parsed tokens contain tool calls, expose
+    # the chat-style finish reason so OpenAI-compatible agent loops continue.
+    finish_reason = choice.get("finish_reason")
+    if parsed.tool_calls and finish_reason == "stop":
+        finish_reason = "tool_calls"
 
-    # Extract routed experts
     routed_experts = None
-    raw_re = choice.get("routed_experts")
     if isinstance(raw_re, dict) and "data" in raw_re and "shape" in raw_re:
         routed_experts = (
             np.frombuffer(base64.b85decode(raw_re["data"]), dtype=np.int32)
@@ -170,18 +224,8 @@ async def completions_request(
             .tolist()
         )
 
-    # vLLM's /v1/generate only knows about the raw generate loop, so it
-    # returns finish_reason in {"stop","length",…} — never "tool_calls",
-    # which is a chat-completions concept. When we extract tool calls
-    # client-side from the tokens, promote "stop" → "tool_calls" so
-    # OpenAI-compatible agent loops (AI SDK, opencode) continue past the
-    # tool turn instead of treating the response as final output.
-    finish_reason = choice.get("finish_reason")
-    if parsed.tool_calls and finish_reason == "stop":
-        finish_reason = "tool_calls"
-
     return {
-        "id": data.get("id") or "",
+        "id": response_id,
         "created": data.get("created") or 0,
         "model": data.get("model") or "",
         "prompt_ids": list(prompt_ids),
@@ -199,7 +243,7 @@ async def completions_request(
 def _log_overlong_prompt_diagnostic(
     *,
     prompt_ids: list[int],
-    messages: list[Message],
+    messages: list[Any],
     max_tokens: int | None,
     exc: BadRequestError,
 ) -> None:
