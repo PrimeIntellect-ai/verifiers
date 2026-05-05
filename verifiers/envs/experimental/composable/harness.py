@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec
-    from verifiers.types import Messages, State, TrajectoryStep
+    from verifiers.types import State, TrajectoryStep
 
 
 @dataclass
@@ -124,15 +124,13 @@ class Harness:
         sub-agent calls (``X-RLM-Depth`` header > 0) so only the
         parent agent's turns contribute to the policy gradient.
     render_completion:
-        Optional renderer for ``state["completion"]``. Takes the full
-        ``state["trajectory"]`` and returns the full conversation
-        (including the original prompt); ``ComposableEnv`` slices off
-        ``state["prompt"]`` and assigns the remainder to
-        ``state["completion"]``. ``None`` (default) falls back to
-        ``MultiTurnEnv.render_completion`` which renders only the last
-        trajectory step. Use this for harnesses that compact context
-        mid-rollout — e.g. rlm_harness uses it to render
-        pre-compaction branches that would otherwise be invisible.
+        Optional renderer for ``state["completion"]``. Called with the
+        per-rollout ``State``; mutates ``state["completion"]`` in place.
+        ``None`` (default) falls back to ``MultiTurnEnv.render_completion``
+        which renders only the last trajectory step. Use this for
+        harnesses that compact context mid-rollout — e.g. rlm_harness
+        uses it to render pre-compaction branches that would otherwise
+        be invisible.
     """
 
     install_script: str | None = None
@@ -157,7 +155,7 @@ class Harness:
     keep_trajectory_step: (
         Callable[[TrajectoryStep, State, dict[str, str]], bool] | None
     ) = None
-    render_completion: Callable[[list[TrajectoryStep]], Messages] | None = None
+    render_completion: Callable[[State], None] | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

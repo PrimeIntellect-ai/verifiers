@@ -7,17 +7,14 @@ import random
 import shlex
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from verifiers.envs.experimental.composable import Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
-from verifiers.types import Messages, SystemMessage, TrajectoryStep
-
-if TYPE_CHECKING:
-    from verifiers.types import State
+from verifiers.types import Messages, State, SystemMessage, TrajectoryStep
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"
@@ -67,6 +64,16 @@ def render_completion_with_branches(trajectory: list[TrajectoryStep]) -> Message
         accumulated.extend(new_tail)
 
     return accumulated
+
+
+def render_rlm_completion(state: State) -> None:
+    """Adapter wiring ``render_completion_with_branches`` onto a rollout state.
+
+    Walks ``state["trajectory"]`` for the full conversation, then assigns
+    everything past ``state["prompt"]`` to ``state["completion"]``.
+    """
+    full = render_completion_with_branches(state["trajectory"])
+    state["completion"] = full[len(state["prompt"]) :]
 
 
 def resolve_local_checkout(
@@ -240,7 +247,7 @@ def rlm_harness(
         tool_names=tool_names,
         environment_vars=env_vars_for_rollout,
         keep_trajectory_step=keep_trajectory_step,
-        render_completion=render_completion_with_branches,
+        render_completion=render_rlm_completion,
     )
 
 
