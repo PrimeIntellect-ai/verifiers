@@ -110,9 +110,14 @@ rl = [
 ]
 
 [tool.uv]
-exclude-newer = "7 days"
 preview = true
 required-version = ">=0.11.1"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+exclude-newer = "7 days"
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
