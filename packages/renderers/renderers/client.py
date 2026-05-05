@@ -127,6 +127,7 @@ async def completions_request(
             "messages": [{"role": "user", "content": "(token-in mode)"}],
             "stream": False,
             "logprobs": True,
+            "stop_token_ids": stop_token_ids,
             "nvext": nvext,
         }
         if max_tokens is not None:

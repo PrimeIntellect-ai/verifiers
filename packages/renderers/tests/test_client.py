@@ -170,6 +170,7 @@ async def test_completions_request_can_use_dynamo_chat_nvext_transport():
     }
     assert body["messages"] == [{"role": "user", "content": "(token-in mode)"}]
     assert body["logprobs"] is True
+    assert body["stop_token_ids"] == [99]
     assert body["max_completion_tokens"] == 7
     assert body["temperature"] == 0.3
     assert body["min_tokens"] == 2
