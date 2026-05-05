@@ -165,24 +165,54 @@ class EnvGroup(vf.Environment):
 
             return add_task
 
+        def _register_nested_env_map(inner_env: "EnvGroup", outer_name: str) -> None:
+            """Expand a nested EnvGroup's task names into the outer env_map.
+
+            Registers each inner task name pointing to inner_env, then removes the
+            outer_name entry unless that name is also an inner task name (which would
+            mean the pop would undo the registration we just did).
+            Raises ValueError if an inner task name conflicts with a pre-existing
+            sibling env entry.
+            """
+            for inner_name in inner_env.env_map:
+                if (
+                    inner_name in self.env_map
+                    and self.env_map[inner_name] is not inner_env
+                ):
+                    raise ValueError(
+                        f"Inner task name '{inner_name}' from nested EnvGroup "
+                        f"'{outer_name}' conflicts with an existing task name in the "
+                        f"outer EnvGroup. Use unique task names across all levels."
+                    )
+                self.env_map[inner_name] = inner_env
+            if outer_name not in inner_env.env_map:
+                self.env_map.pop(outer_name, None)
+
         for env, name in zip(self.envs, self.env_names):
             add_task = make_add_task_fn(name)
 
             # Build dataset if using DatasetBuilder, returns None if not available
             env_dataset = env.build_dataset()
             if env_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_dataset.column_names:
-                    env_dataset = env_dataset.remove_columns(["task"])
-                env_dataset = env_dataset.map(add_task, **map_kwargs)
+                if isinstance(env, EnvGroup):
+                    # Preserve inner task names so routing works through both levels.
+                    _register_nested_env_map(env, name)
+                else:
+                    # override task column to use env_name for routing
+                    if "task" in env_dataset.column_names:
+                        env_dataset = env_dataset.remove_columns(["task"])
+                    env_dataset = env_dataset.map(add_task, **map_kwargs)
                 datasets.append(env_dataset)
             # Build eval_dataset if using DatasetBuilder, returns None if not available
             env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
-                # override task column to use env_name for routing
-                if "task" in env_eval_dataset.column_names:
-                    env_eval_dataset = env_eval_dataset.remove_columns(["task"])
-                env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
+                if isinstance(env, EnvGroup):
+                    _register_nested_env_map(env, name)
+                else:
+                    # override task column to use env_name for routing
+                    if "task" in env_eval_dataset.column_names:
+                        env_eval_dataset = env_eval_dataset.remove_columns(["task"])
+                    env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
@@ -312,7 +342,13 @@ class EnvGroup(vf.Environment):
         return await env.rollout(input, client, model, sampling_args)
 
     def get_env_for_task(self, task: str) -> vf.Environment:
-        return self.env_map.get(task, self.envs[0])
+        env = self.env_map.get(task)
+        if env is None:
+            available = list(self.env_map.keys())
+            raise ValueError(
+                f"No environment found for task '{task}'. Available tasks: {available}"
+            )
+        return env
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the max_seq_len value for this environment group and all sub-environments."""

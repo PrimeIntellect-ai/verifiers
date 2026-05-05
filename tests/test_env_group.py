@@ -343,8 +343,62 @@ class TestEnvGroup:
 
         assert env_group.get_env_for_task("math") == env1
         assert env_group.get_env_for_task("code") == env2
-        # Unknown task returns first environment as fallback
-        assert env_group.get_env_for_task("unknown") == env1
+        # Unknown task should raise rather than silently misroute
+        with pytest.raises(ValueError, match="No environment found for task"):
+            env_group.get_env_for_task("unknown")
+
+    def test_nested_env_group_preserves_inner_tasks(self, mock_client):
+        """Wrapping an EnvGroup in another EnvGroup must preserve inner task names."""
+        env1 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+        env2 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
+        outer_group = EnvGroup(envs=[inner_group], env_names=["my_env"])
+
+        # Inner task names should be present in the outer env_map
+        assert outer_group.get_env_for_task("math") is inner_group
+        assert outer_group.get_env_for_task("code") is inner_group
+
+        # Stale outer name should be removed so it does not cause misleading lookups
+        with pytest.raises(ValueError, match="No environment found for task"):
+            outer_group.get_env_for_task("my_env")
+
+        # Dataset should retain the inner task labels
+        dataset = outer_group.get_dataset()
+        tasks = set(dataset["task"])
+        assert "math" in tasks
+        assert "code" in tasks
+        assert "my_env" not in tasks
+
+    def test_nested_env_group_name_collision_raises(self, mock_client):
+        """A nested EnvGroup whose inner task name collides with a sibling env raises."""
+        env1 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+        env2 = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        inner_group = EnvGroup(envs=[env1], env_names=["math"])
+        # "math" is both an inner task name and the name of a sibling env
+        with pytest.raises(ValueError, match="conflicts with an existing task name"):
+            EnvGroup(envs=[inner_group, env2], env_names=["group", "math"])
 
     @pytest.mark.asyncio
     async def test_env_group_generate(self, mock_client, make_input):

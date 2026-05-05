@@ -522,11 +522,15 @@ OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebui
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"]  # optional
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Each row in the concatenated dataset is tagged with a `task` column that routes rollouts and scoring to the correct sub-environment.
+
+`get_env_for_task(task)` raises `ValueError` for unknown task names (listing available tasks) rather than silently falling back to `envs[0]`.
+
+An `EnvGroup` can be nested inside another `EnvGroup`. The outer group automatically inherits the inner group's task names so routing works through both levels. Task names must be unique across all nesting levels; a collision raises `ValueError` at construction time.
 
 ---
 
