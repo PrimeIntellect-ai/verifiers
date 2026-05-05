@@ -15,8 +15,6 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-26T21:40:16.325955Z"
-exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 prime-tunnel = false

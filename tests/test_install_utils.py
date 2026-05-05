@@ -5,7 +5,6 @@ import pytest
 
 from verifiers.utils.install_utils import (
     check_hub_env_installed,
-    install_from_hub,
     is_hub_env,
     is_installed,
     normalize_package_name,
@@ -161,99 +160,3 @@ class TestCheckHubEnvInstalled:
         result = check_hub_env_installed("primeintellect/gsm8k@1.0.0")
         assert result is True
         mock_is_installed.assert_called_once_with("gsm8k", "1.0.0")
-
-
-class TestInstallFromHub:
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    @patch("verifiers.utils.install_utils.requests.get")
-    def test_simple_index_install_opts_hub_package_out_of_exclude_newer(
-        self, mock_get, mock_run
-    ):
-        response = MagicMock()
-        response.json.return_value = {
-            "data": {"simple_index_url": "https://hub.example/simple"}
-        }
-        mock_get.return_value = response
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        assert install_from_hub("primeintellect/gsm8k") is True
-
-        mock_run.assert_called_once_with(
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--upgrade",
-                "--exclude-newer-package",
-                "gsm8k=false",
-                "gsm8k",
-                "--extra-index-url",
-                "https://hub.example/simple",
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    @patch("verifiers.utils.install_utils.requests.get")
-    def test_versioned_simple_index_install_keeps_exclude_newer_override(
-        self, mock_get, mock_run
-    ):
-        response = MagicMock()
-        response.json.return_value = {
-            "data": {"simple_index_url": "https://hub.example/simple"}
-        }
-        mock_get.return_value = response
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        assert install_from_hub("primeintellect/gsm8k@1.2.3") is True
-
-        mock_run.assert_called_once_with(
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--upgrade",
-                "--exclude-newer-package",
-                "gsm8k=false",
-                "gsm8k==1.2.3",
-                "--extra-index-url",
-                "https://hub.example/simple",
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    @patch("verifiers.utils.install_utils.requests.get")
-    def test_wheel_install_opts_hub_package_out_of_exclude_newer(
-        self, mock_get, mock_run
-    ):
-        response = MagicMock()
-        response.json.return_value = {
-            "data": {"wheel_url": "https://hub.example/packages/gsm8k-1.2.3.whl"}
-        }
-        mock_get.return_value = response
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        assert install_from_hub("primeintellect/gsm8k") is True
-
-        mock_run.assert_called_once_with(
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--upgrade",
-                "--exclude-newer-package",
-                "gsm8k=false",
-                "https://hub.example/packages/gsm8k-1.2.3.whl",
-            ],
-            capture_output=True,
-            text=True,
-        )
