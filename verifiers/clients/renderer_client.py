@@ -488,6 +488,9 @@ class RendererClient(
             model=model,
             tools=tools,
             prompt_ids=prompt_ids,
+            transport=getattr(
+                self._config, "renderer_transport", "prime_vllm_generate"
+            ),
             **args,
         )
 
