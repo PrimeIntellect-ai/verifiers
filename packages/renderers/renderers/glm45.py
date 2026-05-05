@@ -365,3 +365,11 @@ class GLM45Renderer:
             emit_special(self._observation, msg_idx)
 
         emit_text("\n<tool_response>\n" + content + "\n</tool_response>", msg_idx)
+
+
+class GLM45AirRenderer(GLM45Renderer):
+    """GLM45Renderer with keep_thinking=True hardcoded for the GLM-4.5-Air training run."""
+
+    def __init__(self, tokenizer, **kwargs):
+        kwargs.setdefault("keep_thinking", True)
+        super().__init__(tokenizer, **kwargs)

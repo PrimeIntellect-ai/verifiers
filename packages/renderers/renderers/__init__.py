@@ -22,7 +22,7 @@ from renderers.base import (
 from renderers.deepseek_v3 import DeepSeekV3Renderer
 from renderers.default import DefaultRenderer
 from renderers.glm5 import GLM5Renderer
-from renderers.glm45 import GLM45Renderer
+from renderers.glm45 import GLM45AirRenderer, GLM45Renderer
 from renderers.gpt_oss import GptOssRenderer
 from renderers.kimi_k2 import KimiK2Renderer
 from renderers.kimi_k25 import KimiK25Renderer
@@ -38,6 +38,7 @@ __all__ = [
     "ContentPart",
     "DeepSeekV3Renderer",
     "DefaultRenderer",
+    "GLM45AirRenderer",
     "GLM45Renderer",
     "GLM5Renderer",
     "GptOssRenderer",

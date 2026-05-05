@@ -293,7 +293,7 @@ def _populate_registry():
     from renderers.default import DefaultRenderer
     from renderers.deepseek_v3 import DeepSeekV3Renderer
     from renderers.glm5 import GLM5Renderer, GLM51Renderer
-    from renderers.glm45 import GLM45Renderer
+    from renderers.glm45 import GLM45AirRenderer, GLM45Renderer
     from renderers.gpt_oss import GptOssRenderer
     from renderers.kimi_k2 import KimiK2Renderer
     from renderers.kimi_k25 import KimiK25Renderer
@@ -315,6 +315,7 @@ def _populate_registry():
             "glm5": GLM5Renderer,
             "glm5.1": GLM51Renderer,
             "glm4.5": GLM45Renderer,
+            "glm4.5-air": GLM45AirRenderer,
             "minimax-m2": MiniMaxM2Renderer,
             "deepseek_v3": DeepSeekV3Renderer,
             "kimi_k2": KimiK2Renderer,
