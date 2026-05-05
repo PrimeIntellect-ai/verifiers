@@ -157,6 +157,7 @@ def install_from_hub(env_id: str) -> bool:
         return False
 
     pkg_name = normalize_package_name(name)
+    exclude_newer_override = ["--exclude-newer-package", f"{pkg_name}=false"]
 
     cmd: list[str]
     if simple_index_url:
@@ -167,13 +168,19 @@ def install_from_hub(env_id: str) -> bool:
         cmd = [
             *_uv_pip_cmd("install"),
             "--upgrade",
+            *exclude_newer_override,
             pkg_spec,
             "--extra-index-url",
             simple_index_url,
         ]
     else:
         assert wheel_url is not None
-        cmd = [*_uv_pip_cmd("install"), "--upgrade", wheel_url]
+        cmd = [
+            *_uv_pip_cmd("install"),
+            "--upgrade",
+            *exclude_newer_override,
+            wheel_url,
+        ]
 
     logger.info(f"Installing {env_id}...")
     logger.debug(f"Command: {' '.join(cmd)}")
