@@ -538,11 +538,66 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            error = make_agent_error(state, f"Agent polling failed: {e}")
+            diagnostics = await self._gather_agent_hang_diagnostics(
+                sandbox_id, background_job
+            )
+            suffix = f"\n{diagnostics}" if diagnostics else ""
+            error = make_agent_error(state, f"Agent polling failed: {e}{suffix}")
             state["error"] = error
             self.logger.error(str(error))
         finally:
             state["agent_completed"] = True
+
+    async def _gather_agent_hang_diagnostics(
+        self, sandbox_id: str, background_job: BackgroundJob
+    ) -> str:
+        """Best-effort post-mortem when poll_job_completion fails.
+
+        Snapshot the still-alive sandbox: liveness probe, recent process tree,
+        and tail of the agent's stdout/stderr log files. Each step short-timeout
+        and individually try-wrapped so a failed probe never masks the real error.
+        """
+        parts: list[str] = []
+        try:
+            probe = await self.sandbox_client.execute_command(
+                sandbox_id, "echo OK", timeout=10
+            )
+            parts.append(f"sandbox_alive=yes (echo exit={probe.exit_code})")
+            if probe.exit_code != 0:
+                return "\n".join(parts)
+        except Exception as e:
+            parts.append(f"sandbox_alive=no ({type(e).__name__}: {e})")
+            return "\n".join(parts)
+
+        try:
+            ps = await self.sandbox_client.execute_command(
+                sandbox_id,
+                "ps -eo pid,etime,stat,cmd --no-headers --sort=-etime | head -20",
+                timeout=10,
+            )
+            parts.append(
+                f"top_processes (etime desc):\n{(ps.stdout or '').strip()[:1500]}"
+            )
+        except Exception as e:
+            parts.append(f"top_processes_err={type(e).__name__}: {e}")
+
+        try:
+            jid = background_job.job_id
+            tails = await self.sandbox_client.execute_command(
+                sandbox_id,
+                (
+                    f"echo '--stdout tail (last 1000 bytes)--'; "
+                    f"tail -c 1000 /tmp/job_{jid}.stdout.log 2>/dev/null || true; "
+                    f"echo '--stderr tail (last 1000 bytes)--'; "
+                    f"tail -c 1000 /tmp/job_{jid}.stderr.log 2>/dev/null || true"
+                ),
+                timeout=10,
+            )
+            parts.append(f"agent_log_tails:\n{(tails.stdout or '').strip()[:2500]}")
+        except Exception as e:
+            parts.append(f"agent_log_tails_err={type(e).__name__}: {e}")
+
+        return "\n".join(parts)
 
     async def poll_job_completion(
         self, state: State, sandbox_id: str, background_job: BackgroundJob
