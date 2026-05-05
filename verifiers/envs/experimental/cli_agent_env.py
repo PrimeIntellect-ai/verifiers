@@ -212,12 +212,13 @@ class CliAgentMonitorRubric(vf.Rubric):
                 )
             )
 
+        turns = len(state.get("trajectory", []))
         timing = state.get("timing")
         self.logger.info(
             format_rollout_log_event(
                 "rollout_finished",
                 state,
-                turns=len(state.get("trajectory", [])),
+                turns=turns,
                 tools=f"[{tools_str}]",
                 stop=stop_condition,
                 exit_code=exit_code,
@@ -228,6 +229,26 @@ class CliAgentMonitorRubric(vf.Rubric):
                 duration_s=_rollout_total_s(state),
             )
         )
+
+        # Bad-row diagnostic: when rollout completes cleanly (no error, not
+        # timed_out) but produced zero LLM turns, the orchestrator will discard
+        # it as an empty trajectory and reschedule. Surface what the agent
+        # actually wrote so we can identify and filter the offending instance.
+        if turns == 0 and not error_info and not timed_out:
+            agent_stdout = state.get("agent_stdout") or ""
+            agent_stderr = state.get("agent_stderr") or ""
+            self.logger.warning(
+                format_rollout_log_event(
+                    "rollout_empty_trajectory",
+                    state,
+                    stop=stop_condition,
+                    exit_code=exit_code,
+                    agent_s=_agent_duration_s(state),
+                    duration_s=_rollout_total_s(state),
+                    stdout_tail=truncate(agent_stdout, 800),
+                    stderr_tail=truncate(agent_stderr, 800),
+                )
+            )
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
