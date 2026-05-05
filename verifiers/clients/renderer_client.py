@@ -125,10 +125,14 @@ def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
     if hasattr(value, "model_dump"):
         return _normalize_for_comparison(value.model_dump(exclude_none=True))
     if isinstance(value, Mapping):
+        # Treat content="" as equivalent to content=None (absent): tool-call-only
+        # assistant messages get serialized either way depending on the upstream
+        # pipeline (e.g., reasoning parsers strip text content to "" while other
+        # paths leave it as None), and the prefix-match must be unaffected.
         return {
             str(k): _normalize_for_comparison(v, _key=str(k))
             for k, v in value.items()
-            if v is not None
+            if v is not None and not (str(k) == "content" and v == "")
         }
     if isinstance(value, list):
         return [_normalize_for_comparison(v) for v in value]
