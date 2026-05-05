@@ -149,6 +149,12 @@ def build_opencode_config(
             }
         },
         "model": model_id,
+        # Without small_model, title/summary sub-agents fall through to
+        # opencode/gpt-5-nano (free hosted Cloudflare tier) and rate-limit
+        # under concurrent rollouts, which silently blocks the main agent
+        # before it issues any LLM call. See OpenCode provider.ts
+        # getSmallModel() priority chain. Pin to the same intercepted model.
+        "small_model": model_id,
     }
 
     if disable_compaction:
