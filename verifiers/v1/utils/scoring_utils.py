@@ -3,7 +3,14 @@ from __future__ import annotations
 import importlib
 import inspect
 import time
-from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    MutableSequence,
+    Sequence,
+)
 from typing import Any, Literal, cast
 
 from verifiers.utils.async_utils import maybe_await
@@ -68,7 +75,14 @@ def add_advantage(
 
 
 async def score_rollout(
-    signals: Iterable[SignalRecord], task: Mapping[str, Any], state: dict[str, Any]
+    signals: Iterable[SignalRecord],
+    task: Mapping[str, Any],
+    state: dict[str, Any],
+    resolve_kwargs: Callable[
+        [Callable[..., object], Mapping[str, Any], dict[str, Any]],
+        Awaitable[dict[str, object]],
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     start_time = time.time()
     reward = float(state.get("reward", 0.0) or 0.0)
@@ -76,7 +90,12 @@ async def score_rollout(
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "rollout":
             continue
-        value = await call_rollout_signal(signal, task, state)
+        extra_kwargs: dict[str, object] = {}
+        if resolve_kwargs is not None:
+            extra_kwargs = await resolve_kwargs(
+                cast(Callable[..., object], signal["fn"]), task, state
+            )
+        value = await call_rollout_signal(signal, task, state, extra_kwargs)
         metrics[cast(str, signal["name"])] = value
         if signal["kind"] == "reward":
             reward += value * cast(float, signal["weight"])
@@ -252,9 +271,9 @@ def validate_signal(signal: SignalRecord) -> None:
             raise ValueError(
                 f"Advantage signal {signal['name']!r} must use stage='group'."
             )
-        if names != {"task", "state"}:
+        if not {"task", "state"}.issubset(names):
             raise ValueError(
-                f"Rollout signal {signal['name']!r} must accept exactly task and state."
+                f"Rollout signal {signal['name']!r} must accept task and state."
             )
     if signal["stage"] == "group":
         if names != {"tasks", "states"}:
@@ -264,10 +283,16 @@ def validate_signal(signal: SignalRecord) -> None:
 
 
 async def call_rollout_signal(
-    signal: SignalRecord, task: Mapping[str, Any], state: dict[str, Any]
+    signal: SignalRecord,
+    task: Mapping[str, Any],
+    state: dict[str, Any],
+    extra_kwargs: Mapping[str, object] | None = None,
 ) -> float:
     value = await maybe_await(
-        cast(Callable[..., object], signal["fn"]), task=task, state=state
+        cast(Callable[..., object], signal["fn"]),
+        task=task,
+        state=state,
+        **dict(extra_kwargs or {}),
     )
     return float(value)
 

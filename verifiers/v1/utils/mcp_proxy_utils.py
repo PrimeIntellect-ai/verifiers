@@ -3,19 +3,23 @@ from __future__ import annotations
 import json
 import shlex
 from collections.abc import Mapping
-from typing import cast
+from typing import Literal, cast
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
 MCP_PROXY_CONFIG_PATH = "/tmp/vf_mcp_tools.json"
 MCP_PACKAGE = "mcp>=1.14.1"
+REQUESTS_PACKAGE = "requests"
 
 
-def validate_program_tools(value: object) -> str | None:
+ProgramToolType = Literal["callable", "mcp"]
+
+
+def validate_program_tool_type(value: object) -> ProgramToolType | None:
     if value is None:
         return None
-    if value != "mcp":
-        raise ValueError("program.tools must be 'mcp'.")
-    return cast(str, value)
+    if value not in {"callable", "mcp"}:
+        raise ValueError("program.tools must be 'callable' or 'mcp'.")
+    return cast(ProgramToolType, value)
 
 
 def proxy_program(
@@ -45,6 +49,8 @@ def proxy_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
     packages = package_list(config.get("packages"))
     if not any(str(package).startswith("mcp") for package in packages):
         packages.append(MCP_PACKAGE)
+    if not any(str(package).startswith("requests") for package in packages):
+        packages.append(REQUESTS_PACKAGE)
     config["packages"] = packages
     return config
 
@@ -66,9 +72,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+
+import requests
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -96,34 +101,46 @@ def tool_base_url() -> str:
 
 def auth_headers() -> dict[str, str]:
     token = config().get("tool_api_key")
-    headers = {"content-type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "python-requests/2.32.3",
+    }
     if token:
-        headers["authorization"] = f"Bearer {token}"
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
-def get_json(url: str) -> dict:
-    request = urllib.request.Request(url, headers=auth_headers())
+def get_json(url: str, params: dict | None = None) -> dict:
     try:
-        with urllib.request.urlopen(request) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(detail) from exc
+        response = requests.get(
+            url,
+            params=params,
+            headers=auth_headers(),
+            timeout=300,
+        )
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(response.text) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(str(exc)) from exc
+    return response.json()
 
 
 def post_json(url: str, payload: dict) -> dict:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers=auth_headers(),
-    )
     try:
-        with urllib.request.urlopen(request) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(detail) from exc
+        response = requests.post(
+            url,
+            json=payload,
+            headers=auth_headers(),
+            timeout=300,
+        )
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(response.text) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(str(exc)) from exc
+    return response.json()
 
 
 def tool_text(value: object) -> str:
@@ -137,8 +154,7 @@ server = Server("verifiers-tools")
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    url = tool_base_url() + "?" + urllib.parse.urlencode({"protocol": "vf"})
-    payload = await asyncio.to_thread(get_json, url)
+    payload = await asyncio.to_thread(get_json, tool_base_url(), {"protocol": "vf"})
     tools = []
     for item in payload.get("tools") or []:
         tools.append(

@@ -16,6 +16,8 @@ from typing import Any, cast
 from verifiers.errors import SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
+from .artifact_utils import artifact_format, artifact_key, artifact_optional
+from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
 from ..runtime import Runtime
 from ..state import State
@@ -168,7 +170,9 @@ async def run_sandbox_command(
     async with lease.lock:
         state["sandbox_id"] = lease.id
         state.setdefault("runtime", {})
-        lease_scope_key = runtime.scope_key(lease.scope, state)
+        lease_scope_key = getattr(lease, "scope_key", None) or runtime.scope_key(
+            lease.scope, state
+        )
         state["runtime"]["sandbox"] = {
             "id": lease.id,
             "scope": lease.scope,
@@ -207,7 +211,7 @@ async def run_sandbox_command(
             raise SandboxError(
                 f"Sandbox command exited with {result.exit_code}: {result.stderr}"
             )
-        state["stop_condition"] = state.get("stop_condition") or "command_completed"
+        state._set_stop_condition("command_completed")
         await collect_sandbox_artifacts(lease.client, lease.id, program, state)
         return state
 
@@ -524,29 +528,26 @@ async def collect_sandbox_artifacts(
         if not isinstance(spec, Mapping):
             raise TypeError("program.artifacts values must be mappings.")
         spec = cast(Mapping[str, object], spec)
-        path = spec.get("path")
-        if not isinstance(path, str):
-            raise TypeError("program artifact path must be a string.")
+        path = artifact_path(spec)
+        optional = artifact_optional(spec)
         try:
             content = await read_sandbox_artifact(
                 client, sandbox_id, path.format(**state)
             )
         except FileNotFoundError:
-            if bool(spec.get("optional", False)):
+            if optional:
                 state["artifacts"][name] = None
                 continue
             raise
-        artifact_format = spec.get("format", "text")
-        if artifact_format == "json":
+        format_name = artifact_format(spec)
+        if format_name == "json":
             value: object = json.loads(content)
-        elif artifact_format == "text":
+        elif format_name == "text":
             value = content
         else:
-            raise ValueError(f"Unsupported artifact format: {artifact_format!r}")
-        key = spec.get("key")
+            raise ValueError(f"Unsupported artifact format: {format_name!r}")
+        key = artifact_key(spec)
         if key is not None:
-            if not isinstance(key, str):
-                raise TypeError("program artifact key must be a string.")
             value = cast(Mapping[str, object], value)[key]
         state["artifacts"][name] = value
 

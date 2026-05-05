@@ -86,12 +86,13 @@ Tasks can request rollout behavior through top-level serializable fields:
 
 - `max_turns`: per-rollout turn limit for the base harness loop;
 - `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
-- `toolsets`: toolset visibility or rollout-local toolsets.
+- `toolsets`: toolset visibility or rollout-local toolsets;
+- `sandbox`: per-task overrides for a sandboxed program.
 
 Priority is:
 
 ```text
-explicit state.runtime > task top-level controls > hidden task.runtime > harness defaults
+explicit state.runtime > task top-level controls > harness defaults
 ```
 
 Keep system instructions out of `prompt`. v1 resolves `system_prompt` from the
@@ -112,6 +113,10 @@ yield {
 }
 ```
 
+`task.runtime` is not part of the public task schema. Runtime metadata lives on
+`state.runtime` and is written by the harness, the taskset group initializer, or
+the eval/training worker.
+
 ## Toolsets
 
 Tools are packaged as `Toolset` objects. A taskset can own tools directly:
@@ -131,7 +136,8 @@ taskset = vf.Taskset(source=source, toolsets=[toolset])
 ```
 
 Bindings inject hidden arguments that the model does not see. Common binding
-roots are `task.*`, `state.*`, `objects.*`, and `tools.*`.
+roots are `task.*`, `state.*`, and `tools.*`. Tool and user callables can also
+bind `objects.*` from their own private dependency factories.
 
 MCP servers are also tools:
 
@@ -179,11 +185,18 @@ def load_environment(taskset_config=None, harness_config=None):
 All model calls go through the v1 interception endpoint so trajectory capture,
 tool forwarding, and protocol translation share one path.
 
+Sandbox command programs can request the resolved tools as an MCP server with
+`program={"command": [...], "sandbox": True, "tools": "mcp"}`. Python programs
+receive callable tool handles by default, or can set
+`program={"sandbox": True, "tools": "callable"}` when the base loop is moved
+into a sandbox.
+
 Programs are also the right shape for LLM-free replay:
 
 ```python
 async def replay_solution(task, state):
     state["answer"] = task["answer"]
+    state.stop("replayed")
     return state
 
 
@@ -201,9 +214,9 @@ Use this for cached completions, deterministic solvers, and gold-solution
 validation. Subclass `Harness` only when packaging reusable behavior with a new
 config surface; do not subclass `Env` just to bypass inference.
 
-## Render, Signals, And Cleanup
+## Updates, Signals, And Cleanup
 
-Render functions, metrics, rewards, and advantages are lifecycle functions
+Update functions, metrics, rewards, and advantages are lifecycle functions
 around the rollout/group scoring boundary.
 
 ```python
@@ -222,14 +235,15 @@ async def best_of_n(tasks, states) -> list[float]:
     ...
 ```
 
-Rollout signals accept exactly `task, state`. Group signals accept exactly
-`tasks, states` and return one value per state. Render functions use
-`@vf.render` and run before scoring; cleanup functions use `@vf.cleanup` and run
-after scoring; teardown functions use `@vf.teardown`.
+Rollout signals accept `task, state`, plus any Toolset-bound hidden args. Group
+signals accept exactly `tasks, states` and return one value per state. Update
+functions use `@vf.update` and run before scoring; cleanup functions use
+`@vf.cleanup` and run after scoring; teardown functions use `@vf.teardown`.
 
-`env.requires_group_rollouts` is true when group-stage scoring or group setup is
-part of the environment contract. `env.provides_advantages` is true when the
-environment has explicit advantage handlers.
+`env.requires_group_rollouts` is true when group-stage updates, scoring,
+cleanup, or group setup are part of the environment contract.
+`env.provides_advantages` is true when the environment has explicit advantage
+handlers.
 
 ## When To Use Which Path
 

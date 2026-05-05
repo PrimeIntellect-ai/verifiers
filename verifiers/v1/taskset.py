@@ -28,6 +28,7 @@ class Taskset:
 
     def __init__(
         self,
+        # Singleton fields.
         source: Iterable[Mapping[str, Any]]
         | Callable[[], Iterable[Mapping[str, Any]]]
         | None = None,
@@ -36,14 +37,16 @@ class Taskset:
         | None = None,
         taskset_id: str | None = None,
         system_prompt: object | None = None,
+        user: object | None = None,
+        # Collection fields.
+        toolsets: Iterable[object] = (),
+        stops: Iterable[Callable[..., object]] = (),
+        updates: Iterable[Callable[..., object]] = (),
         metrics: Iterable[Callable[..., object]] = (),
         rewards: Iterable[Callable[..., object]] = (),
         advantages: Iterable[Callable[..., object]] = (),
-        toolsets: Iterable[object] = (),
-        user: object | None = None,
-        stop: Iterable[Callable[..., object]] = (),
-        render: Iterable[Callable[..., object]] = (),
-        cleanup: Iterable[Callable[..., object]] = (),
+        cleanups: Iterable[Callable[..., object]] = (),
+        # Config.
         config: TasksetConfig | Mapping[str, object] | None = None,
     ):
         self.config = type(self).config_type.model_validate(config or {})
@@ -73,6 +76,18 @@ class Taskset:
             merge_config_value(system_prompt, self.config.system_prompt),
             field_name="taskset.system_prompt",
         )
+        self.user = normalize_user(merge_config_value(user, self.config.user))
+        self.toolsets, self.named_toolsets = merge_toolsets(
+            toolsets, self.config.toolsets
+        )
+        self.stops = cast(
+            list[Callable[..., object]],
+            merge_config_callables(stops, self.config.stops, "stop"),
+        )
+        self.updates = cast(
+            list[Callable[..., object]],
+            merge_config_callables(updates, self.config.updates, "update"),
+        )
         self.metrics = cast(
             list[Callable[..., object]],
             merge_config_callables(metrics, self.config.metrics, "metric"),
@@ -85,21 +100,9 @@ class Taskset:
             list[Callable[..., object]],
             merge_config_callables(advantages, self.config.advantages, "advantage"),
         )
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            toolsets, self.config.toolsets
-        )
-        self.user = normalize_user(merge_config_value(user, self.config.user))
-        self.stop = cast(
+        self.cleanups = cast(
             list[Callable[..., object]],
-            merge_config_callables(stop, self.config.stop, "stop"),
-        )
-        self.render = cast(
-            list[Callable[..., object]],
-            merge_config_callables(render, self.config.render, "render"),
-        )
-        self.cleanup = cast(
-            list[Callable[..., object]],
-            merge_config_callables(cleanup, self.config.cleanup, "cleanup"),
+            merge_config_callables(cleanups, self.config.cleanups, "cleanup"),
         )
         self._rows: list[dict[str, Any]] | None = None
         self._eval_rows: list[dict[str, Any]] | None = None
@@ -133,15 +136,15 @@ class Taskset:
         self._refresh_attached_harnesses()
 
     def add_stop(self, fn: Callable[..., object]) -> None:
-        self.stop.append(fn)
+        self.stops.append(fn)
         self._refresh_attached_harnesses()
 
-    def add_render(self, fn: Callable[..., object]) -> None:
-        self.render.append(fn)
+    def add_update(self, fn: Callable[..., object]) -> None:
+        self.updates.append(fn)
         self._refresh_attached_harnesses()
 
     def add_cleanup(self, fn: Callable[..., object]) -> None:
-        self.cleanup.append(fn)
+        self.cleanups.append(fn)
         self._refresh_attached_harnesses()
 
     def attach_harness(self, harness: object) -> None:

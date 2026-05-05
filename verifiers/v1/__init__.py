@@ -4,13 +4,13 @@ from verifiers.decorators import (
     advantage,
     cleanup,
     metric,
-    render,
     reward,
     stop,
     teardown,
+    update,
 )
 
-from .config import Config, HarnessConfig, RuntimeConfig, TasksetConfig
+from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
 from .runtime import load_runtime_from_state
@@ -35,7 +35,6 @@ __all__ = [
     "Harness",
     "HarnessConfig",
     "MCPTool",
-    "RuntimeConfig",
     "State",
     "Task",
     "Taskset",
@@ -51,10 +50,10 @@ __all__ = [
     "collect_signals",
     "metric",
     "load_runtime_from_state",
-    "render",
     "reward",
     "score_group",
     "score_rollout",
     "stop",
     "teardown",
+    "update",
 ]

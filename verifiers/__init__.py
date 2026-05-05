@@ -11,10 +11,10 @@ from .decorators import (  # noqa # isort: skip
     advantage,
     cleanup,
     metric,
-    render,
     reward,
     stop,
     teardown,
+    update,
 )
 from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
@@ -92,11 +92,11 @@ __all__ = [
     "print_prompt_completions_sample",
     "cleanup",
     "metric",
-    "render",
     "reward",
     "advantage",
     "stop",
     "teardown",
+    "update",
     "ensure_keys",
     "MissingKeyError",
     "get_model",

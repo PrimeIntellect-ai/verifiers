@@ -31,6 +31,7 @@ from tau2.registry import registry
 from tau2.run import load_tasks
 from tau2.user.user_simulator import UserSimulator, is_valid_user_history_message
 from tau2.utils.utils import DATA_DIR, format_time, get_now
+from verifiers.utils.async_utils import maybe_call_with_named_args
 
 DEFAULT_USER_MODEL = "gpt-4.1"
 DEFAULT_USER_BASE_URL = "https://api.openai.com/v1"
@@ -423,17 +424,31 @@ class Tau2Session:
         state["num_assistant_tool_calls"] = self.num_assistant_tool_calls
         state["num_user_tool_calls"] = self.num_user_tool_calls
         if self.done and self.termination_reason is not None:
-            state["stop_condition"] = self.termination_reason.value
+            state.stop(self.termination_reason.value)
 
 
 class Tau2Harness(vf.Harness):
+    def __init__(
+        self,
+        *args,
+        session_factory: Callable[..., Tau2Session] | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.session_factory = session_factory
+
     async def setup_state(self, task: vf.Task, state: vf.State) -> vf.State:
         state = await super().setup_state(task, state)
         sampling_args = dict(DEFAULT_LLM_ARGS_AGENT)
         sampling_args.update(dict(state.get("runtime", {}).get("sampling_args") or {}))
         state["runtime"]["sampling_args"] = sampling_args
+        if self.session_factory is None:
+            raise RuntimeError("Tau2Harness requires a session_factory.")
         session = cast(
-            Tau2Session, await self.runtime.resolve_object("tau2", task, state)
+            Tau2Session,
+            await maybe_call_with_named_args(
+                self.session_factory, task=task, state=state
+            ),
         )
         await session.initialize(state)
         state.setdefault("prompt", [])
@@ -513,12 +528,16 @@ def load_session_factory(
     max_steps: int,
     max_errors: int,
 ) -> Callable[..., Tau2Session]:
+    sessions: dict[str, Tau2Session] = {}
+
     def load_session(task, state) -> Tau2Session:
-        _ = state
+        key = str(state.get("trajectory_id") or id(state))
+        if key in sessions:
+            return sessions[key]
         task_info = task["info"]
         if isinstance(task_info, str):
             task_info = json.loads(task_info)
-        return Tau2Session(
+        session = Tau2Session(
             domain=domain,
             task_payload=cast(Mapping[str, object], task_info),
             user_model=user_model,
@@ -526,6 +545,8 @@ def load_session_factory(
             max_steps=max_steps,
             max_errors=max_errors,
         )
+        sessions[key] = session
+        return session
 
     return load_session
 
@@ -554,6 +575,7 @@ def load_toolset(
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
+    session_factory: Callable[..., Tau2Session] | None = None,
 ) -> vf.Toolset:
     download_tau2_data()
     environment_constructor = registry.get_env_constructor(domain)
@@ -566,26 +588,30 @@ def load_toolset(
         )
         for schema in schemas
     ]
-    resolved_user_args = {
+    if session_factory is None:
+        session_factory = load_session_factory(
+            domain=domain,
+            user_model=user_model,
+            user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
+            max_steps=max_steps,
+            max_errors=max_errors,
+        )
+    return vf.Toolset(
+        tools=tools,
+        bindings={f"{tool.__name__}.session": session_factory for tool in tools},
+        write=True,
+        scope="rollout",
+    )
+
+
+def tau2_user_args(
+    user_args: Mapping[str, object], user_base_url: str, user_api_key_var: str
+) -> dict[str, object]:
+    return {
         **dict(user_args),
         "api_base": user_base_url,
         "api_key": os.getenv(user_api_key_var),
     }
-    return vf.Toolset(
-        tools=tools,
-        bindings={f"{tool.__name__}.session": "objects.tau2" for tool in tools},
-        objects={
-            "tau2": load_session_factory(
-                domain=domain,
-                user_model=user_model,
-                user_args=resolved_user_args,
-                max_steps=max_steps,
-                max_errors=max_errors,
-            )
-        },
-        write=True,
-        scope="rollout",
-    )
 
 
 async def tau2_user(session: Tau2Session, state, transcript) -> list[dict[str, object]]:
@@ -667,8 +693,17 @@ def load_taskset(
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
+    session_factory: Callable[..., Tau2Session] | None = None,
     config=None,
 ) -> vf.Taskset:
+    if session_factory is None:
+        session_factory = load_session_factory(
+            domain=domain,
+            user_model=user_model,
+            user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
+            max_steps=max_steps,
+            max_errors=max_errors,
+        )
     toolset = load_toolset(
         domain=domain,
         user_model=user_model,
@@ -677,9 +712,14 @@ def load_taskset(
         user_api_key_var=user_api_key_var,
         max_steps=max_steps,
         max_errors=max_errors,
+        session_factory=session_factory,
     )
+
+    def load_rows():
+        return source(domain)
+
     return vf.Taskset(
-        source=lambda: source(domain),
+        source=load_rows,
         taskset_id=f"tau2_{domain}",
         rewards=[tau2_reward],
         metrics=[
@@ -689,13 +729,34 @@ def load_taskset(
             tau2_num_user_tool_calls,
         ],
         toolsets=[toolset],
-        user=vf.User(tau2_user, bindings={"session": "objects.tau2"}),
+        user=vf.User(tau2_user, bindings={"session": session_factory}),
         config=config,
     )
 
 
-def load_harness(max_turns: int = DEFAULT_MAX_STEPS, config=None) -> Tau2Harness:
-    return Tau2Harness(max_turns=max_turns, config=config)
+def load_harness(
+    domain: str = "telecom",
+    user_model: str = DEFAULT_USER_MODEL,
+    user_args: Mapping[str, object] = DEFAULT_LLM_ARGS_USER,
+    user_base_url: str = DEFAULT_USER_BASE_URL,
+    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_errors: int = DEFAULT_MAX_ERRORS,
+    max_turns: int = DEFAULT_MAX_STEPS,
+    session_factory: Callable[..., Tau2Session] | None = None,
+    config=None,
+) -> Tau2Harness:
+    if session_factory is None:
+        session_factory = load_session_factory(
+            domain=domain,
+            user_model=user_model,
+            user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
+            max_steps=max_steps,
+            max_errors=max_errors,
+        )
+    return Tau2Harness(
+        max_turns=max_turns, session_factory=session_factory, config=config
+    )
 
 
 def load_v1_environment(
@@ -711,6 +772,13 @@ def load_v1_environment(
 ) -> vf.Env:
     if kwargs:
         raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
+    session_factory = load_session_factory(
+        domain=domain,
+        user_model=user_model,
+        user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
+        max_steps=max_steps,
+        max_errors=max_errors,
+    )
     taskset = load_taskset(
         domain=domain,
         user_model=user_model,
@@ -719,8 +787,19 @@ def load_v1_environment(
         user_api_key_var=user_api_key_var,
         max_steps=max_steps,
         max_errors=max_errors,
+        session_factory=session_factory,
     )
-    harness = load_harness(max_turns=max_turns)
+    harness = load_harness(
+        domain=domain,
+        user_model=user_model,
+        user_args=user_args,
+        user_base_url=user_base_url,
+        user_api_key_var=user_api_key_var,
+        max_steps=max_steps,
+        max_errors=max_errors,
+        max_turns=max_turns,
+        session_factory=session_factory,
+    )
     return vf.Env(taskset=taskset, harness=harness)
 
 

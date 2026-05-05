@@ -5,6 +5,7 @@ import functools
 import random
 import string
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -135,7 +136,7 @@ def source():
         expected: dict[str, object],
         initial_itineraries: dict[str, dict[str, object]] | None = None,
     ) -> dict[str, object]:
-        task = {
+        task: dict[str, object] = {
             "example_id": example_id,
             "user_request": user_request,
             "prompt": [{"role": "user", "content": user_request}],
@@ -196,7 +197,9 @@ def itinerary(confirmation_number: str, user_name: str, flight_id: str) -> Itine
     )
 
 
-def build_airline_tools(task) -> tuple[list[object], dict[str, dict[str, BaseModel]]]:
+def build_airline_tools(
+    task,
+) -> tuple[list[Callable[..., object]], dict[str, Mapping[str, BaseModel]]]:
     users = user_database()
     flights = flight_database()
     itineraries = {
@@ -280,7 +283,7 @@ def build_airline_tools(task) -> tuple[list[object], dict[str, dict[str, BaseMod
         )
         return ticket_id
 
-    return [
+    tools: list[Callable[..., object]] = [
         async_tool(fetch_flight_info),
         async_tool(fetch_itinerary),
         async_tool(pick_flight),
@@ -288,13 +291,15 @@ def build_airline_tools(task) -> tuple[list[object], dict[str, dict[str, BaseMod
         async_tool(cancel_itinerary),
         async_tool(get_user_info),
         async_tool(file_ticket),
-    ], {
+    ]
+    databases: dict[str, Mapping[str, BaseModel]] = {
         "itinerary_database": itineraries,
         "ticket_database": tickets,
     }
+    return tools, databases
 
 
-def async_tool(fn: Callable[..., object]) -> Callable[..., object]:
+def async_tool(fn: Callable[..., object]) -> Callable[..., Any]:
     @functools.wraps(fn)
     async def wrapped(*args: object, **kwargs: object) -> object:
         return await asyncio.to_thread(fn, *args, **kwargs)

@@ -12,13 +12,13 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 from ..runtime import Runtime, _read_path
 from ..state import State
 from ..task import Task
-from .mcp_proxy_utils import validate_program_tools
+from .mcp_proxy_utils import validate_program_tool_type
 
 
 async def run_local_command(
     program: Mapping[str, object], task: Task, state: State, runtime: Runtime
 ) -> State:
-    if program_tools(program) == "mcp":
+    if program_tool_type(program) == "mcp":
         raise ValueError("program.tools='mcp' requires sandbox command placement.")
     argv = await command_argv(program, task, state, runtime)
     env = await command_env(program, task, state, runtime, include_base=True)
@@ -42,7 +42,7 @@ async def run_local_command(
         raise InfraError(
             f"Command exited with {proc.returncode}: {state['command']['stderr']}"
         )
-    state["stop_condition"] = state.get("stop_condition") or "command_completed"
+    state._set_stop_condition("command_completed")
     return state
 
 
@@ -83,15 +83,9 @@ async def command_env(
         endpoint_root_url = state.get("endpoint_root_url")
         env.setdefault("OPENAI_BASE_URL", endpoint_base_url)
         env.setdefault("OPENAI_API_KEY", api_key)
-        env.setdefault("VF_ENDPOINT_API_KEY", api_key)
         if isinstance(endpoint_root_url, str):
             env.setdefault("ANTHROPIC_BASE_URL", endpoint_root_url)
             env.setdefault("ANTHROPIC_API_KEY", api_key)
-        env.setdefault("VF_ENDPOINT_BASE_URL", endpoint_base_url)
-        client_type = str(
-            state.get("runtime", {}).get("client_type") or "openai_chat_completions"
-        )
-        env.setdefault("VF_CLIENT_TYPE", client_type)
     raw_env = program.get("env", {})
     if not isinstance(raw_env, Mapping):
         raise TypeError("program.env must be a mapping.")
@@ -147,5 +141,5 @@ def endpoint_api_key(runtime: Runtime) -> str:
     return str(secret or "intercepted")
 
 
-def program_tools(program: Mapping[str, object]) -> str | None:
-    return validate_program_tools(program.get("tools"))
+def program_tool_type(program: Mapping[str, object]) -> str | None:
+    return validate_program_tool_type(program.get("tools"))

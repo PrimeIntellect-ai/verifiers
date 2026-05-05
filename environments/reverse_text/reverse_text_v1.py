@@ -22,13 +22,14 @@ def build_source(
     dataset_split: str = "train",
 ):
     def source():
-        dataset = load_dataset(dataset_name, split=dataset_split).map(
-            lambda row: {
+        def map_row(row):
+            return {
                 "question": row["prompt"],
                 "answer": row["prompt"][::-1],
                 "info": {},
             }
-        )
+
+        dataset = load_dataset(dataset_name, split=dataset_split).map(map_row)
         dataset = dataset.remove_columns(["prompt"])
         for index, row in enumerate(dataset):
             yield {

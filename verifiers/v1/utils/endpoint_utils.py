@@ -315,7 +315,7 @@ async def forward_request(
     except BaseException as e:
         error = e
         if isinstance(e, Error):
-            state["error"] = error_info(e)
+            state._set_error(error_info(e))
         raise
     finally:
         if bool(request.get("stream")):

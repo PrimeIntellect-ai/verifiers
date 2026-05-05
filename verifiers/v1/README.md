@@ -31,6 +31,38 @@ Extension is function-and-config based. Add a metric, reward, cleanup, toolset,
 or user by passing a function/object directly, referencing it from config, or
 defining a shallow subclass when a package needs a typed config surface.
 
+## Singletons And Collections
+
+v1 keeps a sharp distinction between singleton fields and collection fields.
+
+Singletons describe one logical value for a taskset, harness, or rollout:
+`source`, `eval_source`, `program`, `user`, `model`, `client`, `system_prompt`,
+and the primary program `sandbox`. Singleton runtime resources may be borrowed
+across child harness calls when sharing is intentional:
+
+```python
+child_state = state.for_task(child_task, borrow="model")
+child_state = state.for_task(child_task, borrow=["model", "sandbox"])
+```
+
+Collections are merged and extended: `toolsets`, `stops`, `updates`, `metrics`,
+`rewards`, `advantages`, and `cleanups`. Decorators stay singular because each
+decorator marks one function, while constructor/config fields are plural because
+they hold many functions.
+
+Named tools can also be passed into a child state. The child sees the selected
+tool surface, while calls still execute against the source runtime and its
+rollout-scoped resources:
+
+```python
+child_state = state.for_task(child_task, borrow="model", tools="bash")
+```
+
+Local dependencies belong inside the package that owns the callable. Toolsets
+and users can keep private dependency factories and bind those values into
+their own callables, but those dependencies are not state fields or top-level
+borrow targets.
+
 ## Core Objects
 
 ### `Task`
@@ -41,8 +73,8 @@ sandbox overrides. A task is frozen before rollout code sees it.
 `task["prompt"]` must not contain system messages. Use `task["system_prompt"]`
 for per-task system instructions, or set `Taskset(system_prompt=...)` /
 `Harness(system_prompt=...)` for package-level instructions.
-Multiple system prompt sources reject by default; set `system_prompt_merge`
-explicitly on the harness only when that harness knows how they should combine.
+Multiple system prompt sources reject by default; set `system_prompt_merge` in
+`HarnessConfig` only when that harness knows how they should combine.
 Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
 for per-row runtime specialization. `tools` and `toolsets` use `show`/`hide`
 maps; `runtime` remains hidden framework metadata.
@@ -65,6 +97,14 @@ errors, and any extra fields the environment author chooses to expose.
 By convention, `task["answer"]` is the reference answer and `state["answer"]`
 is the rollout's submitted answer. v1 does not copy `task["answer"]` into
 top-level state; rewards and metrics should read reference data from `task`.
+
+`trajectory` is the request-level audit log captured by the interception
+endpoint. It contains the prompts, completions, tool calls, provider metadata,
+and token-level details needed for evaluation and debugging. `completion` is the
+post-prompt message view used by ordinary reward and display code, not
+necessarily the last assistant message. When the default loop executes a tool
+and stops before another model request, `completion` still includes the final
+tool message even though no additional trajectory step exists.
 
 ```python
 state = vf.State.for_task(task)
@@ -223,7 +263,7 @@ Tasks can request rollout behavior through top-level serializable fields:
 The priority rule is:
 
 ```text
-explicit state.runtime > task top-level controls > hidden task.runtime > harness defaults
+explicit state.runtime > task top-level controls > harness defaults
 ```
 
 `state.runtime` is only present when a caller passes an already-specialized
@@ -238,9 +278,40 @@ yield {
 }
 ```
 
-`task.runtime` remains reserved for framework metadata and compatibility with
-serialized worker state. Environment authors should prefer the top-level task
-fields above.
+`task.runtime` is not part of the v1 task schema. Task rows should use top-level
+controls; runtime metadata belongs on `state`.
+
+Advanced callers may create a state for a new task while borrowing selected live
+resources from an existing state. The stored state remains serializable: borrowed
+resources are represented as runtime handles and stripped before return. The
+runtime that created a resource owns cleanup, so a later harness that uses the
+handle does not release it.
+
+```python
+child_state = state.for_task(
+    child_task,
+    borrow="model",
+    tools="bash",
+    transcript="append",
+)
+child_state = await child_harness.run(child_task, child_state)
+```
+
+Supported borrow targets are:
+
+- `model`: reuse a live model client while allowing state/task model controls to
+  specialize the request;
+- `sandbox`: reuse the active primary program sandbox.
+
+`tools` accepts a tool name or list of tool names. Borrowed tools remain owned by
+the source runtime, so rollout-scoped backing resources such as sandboxes, MCP
+sessions, and stateful clients are not duplicated.
+
+`transcript="append"` writes the child rollout into the same public trajectory,
+marked by the child `trajectory_id`. The parent owns that public log. Appended
+child steps affect saved `completion` and `num_model_requests` when they run
+before the framework `render_completion` update. The default is a private child
+transcript.
 
 For compatibility with the current `vf.Environment` worker schema,
 `Taskset.get_dataset()` emits worker rows and stores the full canonical task as
@@ -278,14 +349,14 @@ class MyTaskset(vf.Taskset):
 3. start endpoint/tool/MCP/sandbox resources needed by the run;
 4. run the configured program;
 5. collect artifacts;
-6. sync trajectory-derived prompt/completion fields;
+6. run rollout update functions, including the framework-owned late
+   `render_completion` update;
 7. record timing;
-8. run rollout render functions;
-9. run rollout metrics and rewards;
-10. run rollout cleanup and release rollout-scoped resources;
-11. if no group boundary exists, run group cleanup and release group-scoped
+8. run rollout metrics and rewards;
+9. run rollout cleanup and release rollout-scoped resources;
+10. if no group boundary exists, run group cleanup and release group-scoped
     resources;
-12. strip runtime handles and validate JSON serializability.
+11. strip runtime handles and validate JSON serializability.
 
 Handled `vf.Error` instances are serialized into `state["error"]` and still
 flow through scoring and cleanup. Other exceptions raise after cleanup.
@@ -410,6 +481,10 @@ Sandboxed programs support:
 - `setup`: commands run after uploads and before the program;
 - `artifacts`: text/JSON files read back into `state["artifacts"]`.
 
+Artifact specs use `{"path": "...", "format": "text" | "json"}`. Set
+`optional=True` for logs or outputs that may not be produced on every rollout;
+missing optional artifacts are recorded as `None`.
+
 The sandboxed base loop uses the same interception endpoint as local programs.
 The loop runs in the sandbox; tool execution and model forwarding remain owned
 by the host runtime.
@@ -472,6 +547,10 @@ async def search(query: str, index) -> str:
     return index.search(query)
 
 
+def load_index():
+    return SearchIndex.open()
+
+
 toolset = vf.Toolset(
     tools=[search],
     objects={"index": load_index},
@@ -510,6 +589,14 @@ addresses. List toolsets are active defaults but unnamed.
 Bindings inject arguments that the model does not see:
 
 ```python
+async def search(query: str, index) -> str:
+    return index.search(query)
+
+
+def load_index():
+    return SearchIndex.open()
+
+
 vf.Toolset(
     tools=[search],
     objects={"index": load_index},
@@ -522,13 +609,20 @@ Binding roots:
 - `task.*`: read from the immutable task;
 - `state.*`: read from mutable state;
 - `runtime.*`: read serializable runtime metadata from state;
-- `objects.*`: resolve a lazy toolset object;
+- `objects.*`: resolve a private dependency owned by the same callable package;
 - `tools.*`: call another resolved tool.
 
 Arguments named `task`, `state`, and `runtime` are reserved. `task` and `state`
 are injected automatically when a callable asks for them; runtime access goes
 through state helpers. `sandbox` is reserved for tools owned by a sandboxed
 toolset.
+
+`objects.*` is intentionally owner-private. Object factories are named zero-arg
+loaders for private dependencies owned by the same `Toolset` or `User`. If a
+hidden argument needs task or state data, bind it with a callable source instead
+of an object factory. Updates, cleanup, metrics, and rewards should read
+serializable task/state data or call resolved tools through `state.tools()`
+instead of reaching into toolset dependencies directly.
 
 Tasks can select toolsets and tools for one rollout:
 
@@ -560,6 +654,51 @@ Task rows can also add rollout-local toolsets:
 
 Task-local toolsets are resolved during rollout setup and follow the same
 tool/binding/lifecycle rules as taskset and harness toolsets.
+
+Callable tool schemas come from the Python callable. Use the function docstring
+for the tool description, type annotations for JSON Schema, and either
+Google-style `Args:` docstrings or `Annotated[..., pydantic.Field(description=...)]`
+for argument descriptions:
+
+```python
+from typing import Annotated
+
+from pydantic import Field
+
+
+async def search(
+    query: Annotated[str, Field(description="Search query.")],
+) -> list[str]:
+    """Search indexed pages."""
+    ...
+```
+
+Dynamic schema-backed tools should still be callable objects. The object can
+provide a `tool_def` when the visible schema is task data rather than a Python
+signature:
+
+```python
+class DynamicTool:
+    def __init__(self, tool_def):
+        self.name = tool_def.name
+        self.tool_def = tool_def
+
+    async def __call__(self, state, **arguments):
+        state.setdefault("tool_calls", []).append({self.name: arguments})
+        return "recorded"
+
+
+def load_task_toolset(task):
+    return vf.Toolset(tools=[DynamicTool(vf.Tool(**task["tool_schema"]))])
+```
+
+This keeps BFCL-style dynamic tools on the normal callable-tool path: the model
+sees the task-specific schema, and the runtime still has an executable tool
+surface for recording, validation, or replay.
+
+Tool `**arguments` receive only model-visible arguments. Framework values such
+as `task` and `state`, and configured hidden args such as bound clients or
+sandboxes, are injected only when the callable declares them by name.
 
 ### Tool Lifetimes
 
@@ -605,6 +744,20 @@ vf.Toolset(tools=[inspect_workspace], sandbox="program", write=True)
 ```
 
 `sandbox="program"` hard-fails unless a primary program sandbox is active.
+Use `prefer="program"` when a toolset should reuse the primary sandbox when one
+exists, then fall back to provisioning its own scoped sandbox:
+
+```python
+vf.Toolset(
+    tools=[python],
+    write=True,
+    sandbox={
+        "prefer": "program",
+        "image": "python:3.11-slim",
+        "scope": "rollout",
+    },
+)
+```
 
 ### MCP Tools
 
@@ -631,7 +784,10 @@ index = "simplewiki"
 
 The runtime normalizes MCP tools into callable handles for Python programs and
 can also present the resolved toolsets as an MCP server for sandbox command
-programs when `program.tools = "mcp"`.
+programs when `program.tools = "mcp"`. `program.tools` selects the program tool
+interface, not a concrete tool name: it accepts `"callable"` or `"mcp"`.
+Concrete tools such as `bash` belong to a `Toolset` and are then exposed through
+one of those interfaces.
 
 Programs can discover and call resolved tools through the interception endpoint:
 
@@ -649,6 +805,10 @@ async def program(task, state, client, tools, tool_defs):
     state["answer"] = result
     return state
 ```
+
+Sandboxed base and Python entrypoint programs use the callable interface by
+default. Set `program={"sandbox": True, "tools": "callable"}` when the config
+should make that interface explicit.
 
 Command programs do not have a universal Python call surface. If
 `program.tools = "mcp"`, v1 materializes an MCP proxy for the resolved
@@ -671,7 +831,7 @@ taskset = vf.Taskset(source=source, user=user)
 ```
 
 Direct callables are wrapped as `vf.User(fn=...)`. Use `vf.User(...)` when the
-user needs bindings, lazy objects, scope, or a sandbox:
+user needs bindings, private dependency factories, scope, or a sandbox:
 
 ```python
 taskset = vf.Taskset(
@@ -685,10 +845,10 @@ taskset = vf.Taskset(
 )
 ```
 
-`transcript` is a default binding. It resolves to the current observable
-conversation.
+`transcript` is a default binding for user functions. It currently means the
+observable message list passed to the user simulator.
 
-## Signals, Stop, Render, Cleanup, Teardown
+## Signals, Stop, Update, Cleanup, Teardown
 
 Signals are numeric functions. Function names are signal names. Collisions hard
 fail.
@@ -709,7 +869,9 @@ async def format_reward(task, state) -> float:
     return float("<answer>" in str(state.get("completion")))
 ```
 
-Rollout signals must accept exactly `task, state`.
+Rollout signals must accept `task, state`. Extra required arguments are only
+valid when a Toolset binding supplies them. Group signals are stricter because
+they run after rollout-local runtime handles are gone.
 
 ### Group Signals
 
@@ -731,9 +893,9 @@ Group metrics/rewards/advantages must accept exactly `tasks, states` and return
 one float per state. v1 writes advantages only when an explicit advantage signal
 is configured.
 
-`Env.requires_group_rollouts` is true when group-stage signals or custom group
-setup are present. `Env.provides_advantages` is true only when explicit group
-advantages are present.
+`Env.requires_group_rollouts` is true when group-stage updates, signals,
+cleanup, or custom group setup are present. `Env.provides_advantages` is true
+only when explicit group advantages are present.
 
 ### Stop
 
@@ -742,46 +904,47 @@ Stop handlers can be contributed by tasksets, harnesses, and toolsets:
 ```python
 async def submit(answer: str, state):
     state["answer"] = answer
-    state["done"] = True
+    state.stop("submitted")
     return "submitted"
-
-
-@vf.stop
-async def submitted(task, state) -> bool:
-    return bool(state.get("done"))
-
-
-toolset = vf.Toolset(tools=[submit], stop=[submitted])
 ```
 
-For user code, `state["done"] = True` is the generic finish signal.
-`state["is_completed"]` is framework-maintained and appears on returned states.
+For custom programs and tools, `state.stop("reason")` is the generic finish
+signal. A plain `state["done"] = True` also works through the built-in stop
+condition when no custom reason is needed.
+`state["is_completed"]`, `state["stop_condition"]`, `state["is_truncated"]`,
+and `state["error"]` are framework-managed lifecycle fields. They appear on
+returned states, but normal state writes cannot set them. Use `done`, `@vf.stop`,
+`state.stop(...)`, or raise `vf.Error` instead.
 
-### Render
+### Update
 
-`@vf.render` runs after program execution and before scoring for its stage.
-Render functions prepare serializable state for metrics and rewards: parse
+`@vf.update` runs after program execution and before scoring for its stage.
+Update functions prepare serializable state for metrics and rewards: parse
 artifacts, copy sandbox outputs, normalize answer fields, or attach summaries.
+The framework registers `render_completion` as a rollout update at priority
+`-100`; ordinary updates run before it, and lower-priority updates intentionally
+bypass the default completion render.
 
 ```python
-@vf.render
+@vf.update
 async def parse_answer(task, state):
     state["answer"] = extract_answer(state.get("completion") or "")
 
 
-@vf.render(stage="group")
+@vf.update(stage="group")
 async def summarize_attempts(tasks, states):
     ...
 ```
 
-Rollout render receives exactly `task, state`; group render receives exactly
-`tasks, states`.
+Rollout update receives `task, state`, plus any Toolset-bound hidden args.
+Group update receives exactly `tasks, states`.
 
 ### Cleanup And Teardown
 
 `@vf.cleanup` runs after scoring for its stage. Rollout cleanup receives
-`task, state`; group cleanup receives `tasks, states`. Cleanup is the user
-extension point for final state mutation and resource-related cleanup.
+`task, state`, plus any Toolset-bound hidden args. Group cleanup receives
+exactly `tasks, states`. Cleanup is the user extension point for final state
+mutation and resource-related cleanup.
 
 ```python
 @vf.cleanup(stage="group")
@@ -820,7 +983,7 @@ contribute. Scalar constructor arguments such as `source`, `program`,
 Callable config fields use one grammar:
 
 ```toml
-[[env.taskset.render]]
+[[env.taskset.updates]]
 fn = "my_env.signals:parse_answer"
 priority = 10
 
@@ -829,13 +992,13 @@ fn = "my_env.signals:exact_answer"
 weight = 1.0
 priority = 0
 
-[[env.harness.cleanup]]
+[[env.harness.cleanups]]
 fn = "my_env.signals:close_trace"
 stage = "group"
 ```
 
 Function names are always the callable's Python `__name__`; TOML does not
-define custom metric/reward/render names. A bare string is shorthand when no
+define custom metric/reward/update names. A bare string is shorthand when no
 metadata is needed:
 
 ```toml
@@ -902,12 +1065,16 @@ class WikiTaskset(vf.Taskset):
 
     def __init__(self, config):
         config = self.config_type.model_validate(config)
+
+        def load_db():
+            return open_db(config.db_path)
+
         super().__init__(
             source=load_rows,
             toolsets=[
                 vf.Toolset(
                     tools=[search],
-                    objects={"db": lambda: open_db(config.db_path)},
+                    objects={"db": load_db},
                     bindings={"search.db": "objects.db"},
                 )
             ],
@@ -943,8 +1110,23 @@ async def ask_child(prompt: str, harness, state):
 
 The child receives a fresh `trajectory_id` and its own rollout-local state. It
 does not automatically inherit model controls or write records into parent
-state. To reuse a parent model client, construct the child harness with that
-client/model explicitly inside the tool or object factory.
+state. To reuse live resources, construct the child state from the parent state:
+
+```python
+async def summarize(task, state):
+    child_task = vf.Task(
+        {"prompt": [{"role": "user", "content": str(state["completion"])}]}
+    ).freeze()
+    child_state = state.for_task(
+        child_task,
+        borrow="model",
+        transcript="append",
+    )
+    child_state = await vf.Harness(
+        system_prompt="Summarize the rollout in one sentence."
+    ).run(child_task, child_state)
+    state["summary"] = child_state["completion"]
+```
 
 ## Third-Party Python Programs
 
@@ -978,5 +1160,7 @@ Reference implementations live beside their existing environments:
 - `environments/tau2_bench/tau2_bench.py`
 - `environments/nested_harness_v1/nested_harness_v1.py`
 - `environments/hello_subagent_v1/hello_subagent_v1.py`
+- `environments/hello_self_judge_v1/hello_self_judge_v1.py`
+- `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`
 - `environments/hello_rlm_v1/hello_rlm_v1.py`
 - `environments/dspy_flights/dspy_flights.py`

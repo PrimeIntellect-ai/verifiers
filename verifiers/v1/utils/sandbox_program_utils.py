@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -18,10 +19,40 @@ from .sandbox_utils import (
 TASK_PATH = "/tmp/vf_task.json"
 STATE_INPUT_PATH = "/tmp/vf_state_in.json"
 STATE_OUTPUT_PATH = "/tmp/vf_state_out.json"
+RUNNER_CONFIG_PATH = "/tmp/vf_runner_config.json"
 TOOL_DEFS_PATH = "/tmp/vf_tool_defs.json"
 TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 RUNNER_PATH = "/tmp/vf_program_runner.py"
 STATE_ARTIFACT = "__vf_state"
+PYTHON_PROGRAM_PACKAGES = ("openai", "anthropic", "requests")
+
+
+def python_program_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
+    config = dict(sandbox_config)
+    raw_packages = config.get("packages") or []
+    if isinstance(raw_packages, str):
+        packages = shlex.split(raw_packages)
+    elif isinstance(raw_packages, list):
+        packages = [str(package) for package in raw_packages]
+    else:
+        raise TypeError("sandbox.packages must be a list or string.")
+    for package in PYTHON_PROGRAM_PACKAGES:
+        if not any(is_python_package(existing, package) for existing in packages):
+            packages.append(package)
+    config["packages"] = packages
+    return config
+
+
+def is_python_package(requirement: str, package: str) -> bool:
+    return (
+        requirement == package
+        or requirement.startswith(f"{package}[")
+        or requirement.startswith(f"{package}=")
+        or requirement.startswith(f"{package}<")
+        or requirement.startswith(f"{package}>")
+        or requirement.startswith(f"{package}~")
+        or requirement.startswith(f"{package}!")
+    )
 
 
 async def run_sandbox_python_program(
@@ -49,6 +80,7 @@ async def run_sandbox_python_program(
     if not isinstance(output, Mapping):
         raise RuntimeError("Sandbox Python program did not return state.")
     patch = dict(cast(Mapping[str, Any], output))
+    apply_internal_state_patch(state, patch, mode=mode)
     patch_artifacts = patch.pop("artifacts", None)
     if isinstance(patch_artifacts, Mapping):
         state.setdefault("artifacts", {})
@@ -57,6 +89,31 @@ async def run_sandbox_python_program(
     if command_record is not None:
         state["command"] = command_record
     return state
+
+
+def apply_internal_state_patch(
+    state: State, patch: dict[str, Any], *, mode: str
+) -> None:
+    for key in State.INTERNAL_KEYS:
+        if key not in patch:
+            continue
+        value = patch.pop(key)
+        if value == state.get(key):
+            continue
+        if mode != "base" or key == "is_completed":
+            raise RuntimeError(
+                f"Sandbox Python program cannot set framework-managed state key {key!r}."
+            )
+        if key == "stop_condition":
+            state._set_stop_condition(cast(str | None, value), overwrite=True)
+        elif key == "is_truncated":
+            state._set_truncated(bool(value), overwrite=True)
+        elif key == "error":
+            state._set_error(value)
+        else:
+            raise RuntimeError(
+                f"Sandbox Python program cannot set framework-managed state key {key!r}."
+            )
 
 
 def sandbox_runner_program(
@@ -78,6 +135,7 @@ def sandbox_runner_program(
         {
             protocol: serializable(serialize_tool_defs(tool_defs or [], protocol))
             for protocol in (
+                "vf",
                 "openai_chat_completions",
                 "openai_responses",
                 "anthropic_messages",
@@ -85,13 +143,12 @@ def sandbox_runner_program(
         }
     )
     files[RUNNER_PATH] = runner_source()
+    files[RUNNER_CONFIG_PATH] = json.dumps({"max_turns": max_turns})
     artifacts = dict(cast(Mapping[str, object], program.get("artifacts") or {}))
     artifacts[STATE_ARTIFACT] = {"path": STATE_OUTPUT_PATH, "format": "json"}
     command = python_runtime_command(
         RUNNER_PATH, *([mode] if fn_ref is None else [mode, fn_ref])
     )
-    env = dict(cast(Mapping[str, object], program.get("env") or {}))
-    env["VF_MAX_TURNS"] = str(max_turns)
     setup = program.get("setup") or []
     if isinstance(setup, str):
         setup = [setup]
@@ -101,7 +158,7 @@ def sandbox_runner_program(
         **dict(program),
         "files": files,
         "command": command,
-        "env": env,
+        "env": dict(cast(Mapping[str, object], program.get("env") or {})),
         "setup": [python_runtime_setup_command(), *setup],
         "artifacts": artifacts,
     }
@@ -117,107 +174,76 @@ import inspect
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
-from types import SimpleNamespace
+
+import requests
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
 TASK_PATH = "/tmp/vf_task.json"
 STATE_INPUT_PATH = "/tmp/vf_state_in.json"
 STATE_OUTPUT_PATH = "/tmp/vf_state_out.json"
+RUNNER_CONFIG_PATH = "/tmp/vf_runner_config.json"
 TOOL_DEFS_PATH = "/tmp/vf_tool_defs.json"
 TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 
 
-def namespace(value):
-    if isinstance(value, dict):
-        return SimpleNamespace(**{key: namespace(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return [namespace(item) for item in value]
-    return value
-
-
-def post_json(url, payload, headers=None):
-    headers = headers or {"content-type": "application/json"}
-    data = json.dumps(payload).encode()
-    request = urllib.request.Request(url, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(request) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(f"request failed: {detail}") from exc
-
-
-class JsonEndpoint:
-    def __init__(self, base_url, api_key, path):
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.path = path
-
-    async def create(self, **payload):
-        return namespace(await asyncio.to_thread(self._create, payload))
-
-    def _create(self, payload):
-        return post_json(
-            f"{self.base_url}/{self.path}",
-            payload,
-            {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.api_key}",
-            },
-        )
-
-
-class ChatCompletions(JsonEndpoint):
-    def __init__(self, base_url, api_key):
-        super().__init__(base_url, api_key, "chat/completions")
-
-
-class Responses(JsonEndpoint):
-    def __init__(self, base_url, api_key):
-        super().__init__(base_url, api_key, "responses")
-
-
-class Messages(JsonEndpoint):
-    def __init__(self, base_url, api_key):
-        super().__init__(base_url, api_key, "messages")
-
-
-class Chat:
-    def __init__(self, base_url, api_key):
-        self.completions = ChatCompletions(base_url, api_key)
-
-
 class Client:
-    def __init__(self, base_url, api_key):
-        self.chat = Chat(base_url, api_key)
-        self.responses = Responses(base_url, api_key)
-        self.messages = Messages(base_url, api_key)
+    def __init__(self, state):
+        self.openai = AsyncOpenAI(
+            api_key=endpoint_api_key(),
+            base_url=os.environ.get("OPENAI_BASE_URL")
+            or state["endpoint_base_url"],
+        )
+        self.anthropic = AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY")
+            or endpoint_api_key(),
+            base_url=os.environ.get("ANTHROPIC_BASE_URL")
+            or state["endpoint_root_url"],
+        )
+        self.chat = self.openai.chat
+        self.responses = self.openai.responses
+        self.messages = self.anthropic.messages
+
+    async def close(self):
+        await self.openai.close()
+        await self.anthropic.close()
 
 
 def endpoint_api_key():
-    return os.environ.get("VF_ENDPOINT_API_KEY") or os.environ.get("OPENAI_API_KEY") or "intercepted"
+    return os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "intercepted"
 
 
 def endpoint_headers():
     return {
-        "content-type": "application/json",
-        "authorization": f"Bearer {endpoint_api_key()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "python-requests/2.32.3",
+        "Authorization": f"Bearer {endpoint_api_key()}",
     }
 
 
-def endpoint_url(state, path):
-    return f"{state['endpoint_base_url'].rstrip('/')}/{path}"
-
-
 def vf_url(state, path):
-    return f"{state['endpoint_root_url'].rstrip('/')}/{path}"
+    return f"{state['endpoint_root_url'].rstrip('/')}/vf/{path}"
 
 
-async def endpoint_post(state, path, payload):
-    return await asyncio.to_thread(
-        post_json, endpoint_url(state, path), payload, endpoint_headers()
+def endpoint_timeout():
+    return 300.0
+
+
+def post_json(url, payload, headers=None):
+    response = requests.post(
+        url,
+        json=payload,
+        headers=headers or endpoint_headers(),
+        timeout=endpoint_timeout(),
     )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(response.text) from exc
+    if not response.content:
+        return {}
+    return response.json()
 
 
 async def vf_post(state, path, payload):
@@ -240,14 +266,18 @@ async def call_user(state, transcript):
     return payload.get("messages") or []
 
 
+def set_stop_condition(state, value, *, overwrite=False):
+    if overwrite or state.get("stop_condition") is None:
+        state["stop_condition"] = value
+
+
 async def check_stop(state):
     payload = await vf_post(state, "stop", {})
     if "error" in payload:
         raise RuntimeError(str(payload["error"]))
     if payload.get("done"):
-        state["is_completed"] = True
         if payload.get("stop_condition"):
-            state["stop_condition"] = payload["stop_condition"]
+            set_stop_condition(state, payload["stop_condition"])
         return True
     return False
 
@@ -269,6 +299,16 @@ def import_ref(ref):
     for part in attr_path.split("."):
         obj = getattr(obj, part)
     return obj
+
+
+def to_plain(value):
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    if hasattr(value, "model_dump_json"):
+        return json.loads(value.model_dump_json(exclude_none=True))
+    return json.loads(json.dumps(value))
 
 
 def message_from_response(response):
@@ -499,8 +539,8 @@ async def create_model_message(state, messages, client):
         tool_defs = load_tool_defs(protocol)
         if tool_defs:
             payload["tools"] = tool_defs
-        response = await endpoint_post(state, "responses", payload)
-        return message_from_responses_response(response)
+        response = await client.responses.create(**payload)
+        return message_from_responses_response(to_plain(response))
     if protocol == "anthropic_messages":
         system, provider_messages = anthropic_payload_messages(messages)
         if "max_tokens" in sampling:
@@ -518,19 +558,22 @@ async def create_model_message(state, messages, client):
         tool_defs = load_tool_defs(protocol)
         if tool_defs:
             payload["tools"] = tool_defs
-        response = await endpoint_post(state, "messages", payload)
-        return message_from_anthropic_response(response)
+        response = await client.messages.create(**payload)
+        return message_from_anthropic_response(to_plain(response))
     raise RuntimeError(f"Unsupported sandbox base client type: {protocol}")
 
 
 async def run_base(task, state, client):
     prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
     messages = list(prompt_messages)
-    max_turns = int(os.environ.get("VF_MAX_TURNS") or "10")
-    for _ in range(max_turns):
+    config = json.loads(open(RUNNER_CONFIG_PATH).read())
+    max_turns = int(config["max_turns"])
+    turn = 0
+    while max_turns <= 0 or turn < max_turns:
         if await check_stop(state):
             break
         message = await create_model_message(state, messages, client)
+        turn += 1
         messages.append(message)
         tool_calls = list(message.get("tool_calls") or [])
         if not tool_calls:
@@ -538,7 +581,7 @@ async def run_base(task, state, client):
             if user_messages:
                 messages.extend(user_messages)
                 continue
-            state["stop_condition"] = state.get("stop_condition") or "no_tools"
+            set_stop_condition(state, "no_tools")
             break
         for tool_call in tool_calls:
             try:
@@ -556,11 +599,14 @@ async def run_base(task, state, client):
                 }
             )
             if await check_stop(state):
+                completed = True
                 break
-        if state.get("is_completed"):
+        else:
+            completed = False
+        if completed:
             break
     state["completion"] = messages[len(prompt_messages):]
-    state["stop_condition"] = state.get("stop_condition") or "max_turns_reached"
+    set_stop_condition(state, "max_turns_reached")
     return state
 
 
@@ -569,23 +615,23 @@ async def main():
     task = json.loads(open(TASK_PATH).read())
     state = json.loads(open(STATE_INPUT_PATH).read())
     original_state = json.loads(json.dumps(state))
-    client = Client(
-        state["endpoint_base_url"],
-        endpoint_api_key(),
-    )
-    if mode == "base":
-        result = await run_base(task, state, client)
-    elif mode == "fn":
-        result = await maybe_call(
-            import_ref(sys.argv[2]),
-            task=task,
-            state=state,
-            client=client,
-            tools=load_tools(state),
-            tool_defs=load_tool_defs("vf"),
-        )
-    else:
-        raise ValueError(f"Unknown sandbox program mode: {mode}")
+    client = Client(state)
+    try:
+        if mode == "base":
+            result = await run_base(task, state, client)
+        elif mode == "fn":
+            result = await maybe_call(
+                import_ref(sys.argv[2]),
+                task=task,
+                state=state,
+                client=client,
+                tools=load_tools(state),
+                tool_defs=load_tool_defs("vf"),
+            )
+        else:
+            raise ValueError(f"Unknown sandbox program mode: {mode}")
+    finally:
+        await client.close()
     if result is not None:
         if not isinstance(result, dict):
             raise TypeError("Sandbox Python program must return None or a mapping.")

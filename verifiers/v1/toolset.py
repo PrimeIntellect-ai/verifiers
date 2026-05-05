@@ -10,34 +10,42 @@ from .config import config_callables, resolve_config_object, string_mapping
 
 @dataclass(frozen=True)
 class Toolset:
+    # Tool surface.
     tools: tuple[object, ...] = ()
     show: tuple[str, ...] | None = None
     hide: tuple[str, ...] | None = None
+    # Local dependencies and runtime policy.
     bindings: Mapping[str, object] = field(default_factory=dict)
     objects: Mapping[str, object] = field(default_factory=dict)
     write: bool = False
     scope: str | None = None
     sandbox: Mapping[str, object] | str | None = None
-    stop: tuple[object, ...] = ()
-    render: tuple[object, ...] = ()
-    cleanup: tuple[object, ...] = ()
-    teardown: tuple[object, ...] = ()
+    # Lifecycle collections.
+    stops: tuple[object, ...] = ()
+    updates: tuple[object, ...] = ()
+    cleanups: tuple[object, ...] = ()
+    teardowns: tuple[object, ...] = ()
+    # Config.
     config: object | None = None
 
     def __init__(
         self,
+        # Tool surface.
         tools: Iterable[object] = (),
         show: Iterable[str] | None = None,
         hide: Iterable[str] | None = None,
+        # Local dependencies and runtime policy.
         bindings: Mapping[str, object] | None = None,
         objects: Mapping[str, object] | None = None,
         write: bool | None = None,
         scope: str | None = None,
         sandbox: Mapping[str, object] | str | None = None,
-        stop: Iterable[object] = (),
-        render: Iterable[object] = (),
-        cleanup: Iterable[object] = (),
-        teardown: Iterable[object] = (),
+        # Lifecycle collections.
+        stops: Iterable[object] = (),
+        updates: Iterable[object] = (),
+        cleanups: Iterable[object] = (),
+        teardowns: Iterable[object] = (),
+        # Config.
         config: object | None = None,
     ):
         config_map = toolset_config_mapping(config)
@@ -80,15 +88,18 @@ class Toolset:
                 if sandbox is not None
                 else cast(Mapping[str, object] | str | None, config_sandbox)
             )
-            stop = [*stop, *config_callables(config_map.get("stop"), "stop")]
-            render = [*render, *config_callables(config_map.get("render"), "render")]
-            cleanup = [
-                *cleanup,
-                *config_callables(config_map.get("cleanup"), "cleanup"),
+            stops = [*stops, *config_callables(config_map.get("stops"), "stop")]
+            updates = [
+                *updates,
+                *config_callables(config_map.get("updates"), "update"),
             ]
-            teardown = [
-                *teardown,
-                *config_callables(config_map.get("teardown"), "teardown"),
+            cleanups = [
+                *cleanups,
+                *config_callables(config_map.get("cleanups"), "cleanup"),
+            ]
+            teardowns = [
+                *teardowns,
+                *config_callables(config_map.get("teardowns"), "teardown"),
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
@@ -103,12 +114,18 @@ class Toolset:
         object.__setattr__(self, "scope", scope)
         if isinstance(sandbox, str) and sandbox != "program":
             raise ValueError("Toolset sandbox string must be 'program'.")
+        if isinstance(sandbox, Mapping):
+            prefer = cast(Mapping[str, object], sandbox).get("prefer")
+            if prefer is not None and prefer != "program":
+                raise ValueError("Toolset sandbox.prefer must be 'program'.")
         object.__setattr__(self, "sandbox", sandbox)
-        object.__setattr__(self, "stop", tuple(config_callables(stop, "stop")))
-        object.__setattr__(self, "render", tuple(config_callables(render, "render")))
-        object.__setattr__(self, "cleanup", tuple(config_callables(cleanup, "cleanup")))
+        object.__setattr__(self, "stops", tuple(config_callables(stops, "stop")))
+        object.__setattr__(self, "updates", tuple(config_callables(updates, "update")))
         object.__setattr__(
-            self, "teardown", tuple(config_callables(teardown, "teardown"))
+            self, "cleanups", tuple(config_callables(cleanups, "cleanup"))
+        )
+        object.__setattr__(
+            self, "teardowns", tuple(config_callables(teardowns, "teardown"))
         )
         object.__setattr__(self, "config", config)
 
@@ -272,10 +289,10 @@ def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
         "write",
         "scope",
         "sandbox",
-        "stop",
-        "render",
-        "cleanup",
-        "teardown",
+        "stops",
+        "updates",
+        "cleanups",
+        "teardowns",
     }
     if unknown_keys:
         unknown = ", ".join(sorted(unknown_keys))

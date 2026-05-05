@@ -37,7 +37,7 @@ class Env(vf.Environment):
 
     @property
     def requires_group_rollouts(self) -> bool:
-        return self.harness.runtime.has_group_signals or self._uses_custom_init_group
+        return self.harness.runtime.has_group_stage or self._uses_custom_init_group
 
     @property
     def provides_advantages(self) -> bool:

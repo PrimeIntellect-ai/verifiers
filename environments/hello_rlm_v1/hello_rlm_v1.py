@@ -82,6 +82,9 @@ def load_harness(
     rlm_tools: list[str] | None = None,
     rlm_env: Mapping[str, str] | None = None,
 ):
+    harness_config = vf.HarnessConfig.model_validate(config or {})
+    if not include_sub_rlm_trajectories:
+        harness_config.keep_trajectory_step = keep_only_parent_rlm_steps
     tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
     summarize_resolver = build_summarize_resolver(summarize_at_tokens)
     env = {
@@ -142,10 +145,7 @@ def load_harness(
             rlm_sub_llm_total_turns,
             rlm_sub_llm_total_tool_calls,
         ],
-        keep_trajectory_step=(
-            None if include_sub_rlm_trajectories else keep_only_parent_rlm_steps
-        ),
-        config=config,
+        config=harness_config,
     )
 
 
@@ -232,14 +232,23 @@ def build_summarize_resolver(
     if isinstance(value, int):
         if value <= 0:
             raise ValueError("summarize_at_tokens must be positive")
-        return lambda state: str(value)
+
+        def fixed_threshold(state):
+            _ = state
+            return str(value)
+
+        return fixed_threshold
     if isinstance(value, (tuple, list)):
         if len(value) != 2:
             raise ValueError("summarize_at_tokens pair must have 2 elements")
         lo, hi = int(value[0]), int(value[1])
         if lo <= 0 or hi <= 0 or lo > hi:
             raise ValueError("summarize_at_tokens pair must satisfy 0 < lo <= hi")
-        return lambda state: str(draw_threshold(state, lo, hi))
+
+        def sampled_threshold(state):
+            return str(draw_threshold(state, lo, hi))
+
+        return sampled_threshold
     raise ValueError("summarize_at_tokens must be int, (lo, hi), or None")
 
 

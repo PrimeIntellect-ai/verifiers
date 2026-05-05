@@ -29,13 +29,7 @@ def collect_handlers(
             for handler in handlers
             if getattr(handler, f"{attr}_stage", "rollout") == stage
         ]
-    return sorted(
-        unique_handlers(handlers),
-        key=lambda handler: (
-            -int(getattr(handler, f"{attr}_priority", 0)),
-            str(getattr(handler, "__name__", "")),
-        ),
-    )
+    return sort_handlers(unique_handlers(handlers), attr)
 
 
 def validate_handler_args(
@@ -44,13 +38,17 @@ def validate_handler_args(
     attr: str,
     stage: LifecycleStage,
 ) -> None:
-    expected_text = " and ".join(sorted(expected))
+    expected_text = expected_args_text(expected)
     for handler in handlers:
         names = set(inspect.signature(handler).parameters)
-        if names != expected:
-            name = str(getattr(handler, "__name__", type(handler).__name__))
+        name = str(getattr(handler, "__name__", type(handler).__name__))
+        if stage == "group" and names != expected:
             raise ValueError(
-                f"{stage} {attr} handler {name!r} must accept exactly {expected_text}."
+                f"group {attr} handler {name!r} must accept exactly {expected_text}."
+            )
+        if not expected.issubset(names):
+            raise ValueError(
+                f"{stage} {attr} handler {name!r} must accept {expected_text}."
             )
 
 
@@ -76,3 +74,23 @@ def unique_handlers(
         seen.add(key)
         unique.append(handler)
     return unique
+
+
+def sort_handlers(
+    handlers: Iterable[Callable[..., object]], attr: str
+) -> list[Callable[..., object]]:
+    return sorted(
+        handlers,
+        key=lambda handler: (
+            -int(getattr(handler, f"{attr}_priority", 0)),
+            str(getattr(handler, "__name__", "")),
+        ),
+    )
+
+
+def expected_args_text(expected: set[str]) -> str:
+    if expected == {"task", "state"}:
+        return "task and state"
+    if expected == {"tasks", "states"}:
+        return "tasks and states"
+    return " and ".join(sorted(expected))

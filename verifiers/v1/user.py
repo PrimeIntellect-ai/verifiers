@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, cast
@@ -40,7 +41,13 @@ class User:
     def __post_init__(self) -> None:
         if self.scope not in {"rollout", "group", "global"}:
             raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
-        bindings = {"transcript": state_transcript, **dict(self.bindings)}
+        bindings = dict(self.bindings)
+        try:
+            parameters = inspect.signature(self.fn).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "transcript" in parameters:
+            bindings.setdefault("transcript", state_transcript)
         object.__setattr__(self, "bindings", bindings)
 
 

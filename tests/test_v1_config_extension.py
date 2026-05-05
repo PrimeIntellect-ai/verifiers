@@ -3,10 +3,9 @@ from __future__ import annotations
 import sys
 import types
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from pydantic import ValidationError
 
 import verifiers as vf
 from verifiers.v1 import (
@@ -93,35 +92,33 @@ async def config_group_cleanup(
         state["group_cleaned"] = True
 
 
-@vf.render(priority=5)
-async def config_render(task: Mapping[str, object], state: dict[str, object]) -> None:
+@vf.update(priority=5)
+async def config_update(task: Mapping[str, object], state: dict[str, object]) -> None:
     _ = task
-    state["rendered"] = True
+    state["updated"] = True
 
 
 @vf.reward
-async def rendered_reward(
-    task: Mapping[str, object], state: dict[str, object]
-) -> float:
+async def updated_reward(task: Mapping[str, object], state: dict[str, object]) -> float:
     _ = task
-    return float(state.get("rendered") is True)
+    return float(state.get("updated") is True)
 
 
-@vf.render(stage="group")
-async def config_group_render(
+@vf.update(stage="group")
+async def config_group_update(
     tasks: list[Mapping[str, object]], states: list[dict[str, object]]
 ) -> None:
     _ = tasks
     for state in states:
-        state["group_rendered"] = True
+        state["group_updated"] = True
 
 
 @vf.reward(stage="group")
-async def group_rendered_reward(
+async def group_updated_reward(
     tasks: list[Mapping[str, object]], states: list[dict[str, object]]
 ) -> list[float]:
     _ = tasks
-    return [float(state.get("group_rendered") is True) for state in states]
+    return [float(state.get("group_updated") is True) for state in states]
 
 
 async def config_tool(query: str, prefix: str) -> str:
@@ -136,6 +133,66 @@ async def hidden_tool() -> str:
     return "hidden"
 
 
+async def object_tool(value: str, box: dict[str, object]) -> str:
+    values = cast(list[str], box.setdefault("values", []))
+    values.append(value)
+    return value
+
+
+def load_object_box() -> dict[str, object]:
+    return {"values": []}
+
+
+async def update_from_binding(
+    task: Mapping[str, object], state: dict[str, object], expected: str
+) -> None:
+    _ = task
+    state["expected"] = expected
+
+
+async def colliding_tool(value: str, token: str) -> str:
+    return f"{token}:{value}"
+
+
+async def colliding_update(
+    task: Mapping[str, object], state: dict[str, object], token: str
+) -> None:
+    _ = task
+    state["colliding_update_token"] = token
+
+
+colliding_update.__name__ = "colliding_tool"
+
+
+class DynamicSchemaTool:
+    def __init__(self, tool_def: vf.Tool):
+        self.name = tool_def.name
+        self.tool_def = tool_def
+
+    async def __call__(self, state: dict[str, object], **kwargs: object) -> str:
+        calls = cast(list[object], state.setdefault("dynamic_tool_calls", []))
+        calls.append({self.name: kwargs})
+        return "recorded"
+
+
+def dynamic_toolset(task: Mapping[str, object]) -> Toolset:
+    tool = task["dynamic_tool"]
+    if not isinstance(tool, Mapping):
+        raise TypeError("dynamic_tool must be a mapping.")
+    tool = cast(Mapping[str, Any], tool)
+    return Toolset(
+        tools=[
+            DynamicSchemaTool(
+                vf.Tool(
+                    name=str(tool["name"]),
+                    description=str(tool["description"]),
+                    parameters=dict(cast(Mapping[str, Any], tool["parameters"])),
+                )
+            )
+        ]
+    )
+
+
 async def config_user(
     task: Mapping[str, object], state: dict[str, object]
 ) -> list[dict[str, str]]:
@@ -146,8 +203,7 @@ async def config_user(
     return [{"role": "user", "content": "continue"}]
 
 
-def token_factory(task: Mapping[str, object], state: dict[str, object]) -> str:
-    _ = task, state
+def token_factory() -> str:
     return "secret-token"
 
 
@@ -161,6 +217,16 @@ async def config_user_with_bindings(
     state["token_seen"] = token
     state["transcript_len"] = len(transcript)
     return [{"role": "user", "content": token}]
+
+
+async def direct_user_with_transcript(
+    task: Mapping[str, object],
+    state: dict[str, object],
+    transcript: list[object],
+) -> list[dict[str, str]]:
+    _ = task
+    state["direct_transcript_len"] = len(transcript)
+    return [{"role": "user", "content": "continue"}]
 
 
 async def sandbox_user(
@@ -193,12 +259,13 @@ setattr(ref_module, "config_reward", config_reward)
 setattr(ref_module, "config_advantage", config_advantage)
 setattr(ref_module, "config_cleanup", config_cleanup)
 setattr(ref_module, "config_group_cleanup", config_group_cleanup)
-setattr(ref_module, "config_render", config_render)
-setattr(ref_module, "rendered_reward", rendered_reward)
-setattr(ref_module, "config_group_render", config_group_render)
-setattr(ref_module, "group_rendered_reward", group_rendered_reward)
+setattr(ref_module, "config_update", config_update)
+setattr(ref_module, "updated_reward", updated_reward)
+setattr(ref_module, "config_group_update", config_group_update)
+setattr(ref_module, "group_updated_reward", group_updated_reward)
 setattr(ref_module, "config_tool", config_tool)
 setattr(ref_module, "config_toolset", config_toolset)
+setattr(ref_module, "dynamic_toolset", dynamic_toolset)
 setattr(ref_module, "direct_tool", direct_tool)
 setattr(ref_module, "hidden_tool", hidden_tool)
 setattr(ref_module, "config_user", config_user)
@@ -222,7 +289,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
             "metrics": [ref("config_metric")],
             "rewards": [ref("config_reward")],
             "advantages": [ref("config_advantage")],
-            "cleanup": [ref("config_cleanup")],
+            "cleanups": [ref("config_cleanup")],
             "toolsets": [
                 {
                     "tools": [ref("config_tool")],
@@ -243,7 +310,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
     assert taskset.metrics == [config_metric]
     assert taskset.rewards == [config_reward]
     assert taskset.advantages == [config_advantage]
-    assert taskset.cleanup == [config_cleanup]
+    assert taskset.cleanups == [config_cleanup]
     assert taskset.user is not None
     assert len(taskset.toolsets) == 1
     assert taskset.toolsets[0].tools == (config_tool,)
@@ -304,6 +371,34 @@ def test_env_capabilities_follow_v1_group_runtime_signals() -> None:
     assert advantage_env.provides_advantages
 
 
+def test_env_capabilities_follow_group_lifecycle_handlers() -> None:
+    group_update_env = Env(
+        taskset=Taskset(source=source_loader, updates=[config_group_update]),
+        harness=Harness(program=config_program),
+    )
+    group_cleanup_env = Env(
+        taskset=Taskset(source=source_loader, cleanups=[config_group_cleanup]),
+        harness=Harness(program=config_program),
+    )
+
+    assert group_update_env.requires_group_rollouts
+    assert not group_update_env.provides_advantages
+    assert group_cleanup_env.requires_group_rollouts
+    assert not group_cleanup_env.provides_advantages
+
+
+def test_group_lifecycle_handlers_reject_extra_args() -> None:
+    @vf.update(stage="group")
+    async def bad_group_update(tasks, states, extra) -> None:
+        _ = tasks, states, extra
+
+    with pytest.raises(ValueError, match="exactly tasks and states"):
+        Env(
+            taskset=Taskset(source=source_loader, updates=[bad_group_update]),
+            harness=Harness(program=config_program),
+        )
+
+
 def test_env_capabilities_follow_custom_taskset_init_group() -> None:
     class GroupSetupTaskset(Taskset):
         async def init_group(
@@ -330,7 +425,7 @@ def test_harness_config_extends_constructor_surface() -> None:
             "metrics": [],
             "rewards": [ref("config_reward")],
             "advantages": [ref("config_advantage")],
-            "cleanup": [ref("config_cleanup")],
+            "cleanups": [ref("config_cleanup")],
             "toolsets": [
                 {
                     "tools": [ref("config_tool")],
@@ -347,7 +442,7 @@ def test_harness_config_extends_constructor_surface() -> None:
     assert harness.metrics == [config_metric]
     assert harness.rewards == [config_reward]
     assert harness.advantages == [config_advantage]
-    assert harness.cleanup == [config_cleanup]
+    assert harness.cleanups == [config_cleanup]
     assert harness.user is not None
     assert len(harness.toolsets) == 2
     assert harness.toolsets[0] is direct_toolset
@@ -355,12 +450,12 @@ def test_harness_config_extends_constructor_surface() -> None:
 
 
 @pytest.mark.asyncio
-async def test_render_config_runs_before_rollout_scoring() -> None:
+async def test_update_config_runs_before_rollout_scoring() -> None:
     harness = Harness(
         program=config_program,
         config={
-            "render": [{"fn": ref("config_render"), "priority": 5}],
-            "rewards": [{"fn": ref("rendered_reward"), "weight": 0.75}],
+            "updates": [{"fn": ref("config_update"), "priority": 5}],
+            "rewards": [{"fn": ref("updated_reward"), "weight": 0.75}],
         },
     )
     task = Task(
@@ -369,17 +464,17 @@ async def test_render_config_runs_before_rollout_scoring() -> None:
 
     state = await harness.run(task)
 
-    assert state["rendered"] is True
+    assert state["updated"] is True
     assert state["reward"] == 0.75
-    assert getattr(harness.render[0], "__name__") == "config_render"
+    assert getattr(harness.updates[0], "__name__") == "config_update"
 
 
 @pytest.mark.asyncio
-async def test_group_render_config_runs_before_group_scoring() -> None:
+async def test_group_update_config_runs_before_group_scoring() -> None:
     harness = Harness(
         config={
-            "render": [{"fn": ref("config_group_render"), "stage": "group"}],
-            "rewards": [{"fn": ref("group_rendered_reward"), "stage": "group"}],
+            "updates": [{"fn": ref("config_group_update"), "stage": "group"}],
+            "rewards": [{"fn": ref("group_updated_reward"), "stage": "group"}],
         },
     )
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -387,8 +482,44 @@ async def test_group_render_config_runs_before_group_scoring() -> None:
 
     await harness.score_group([task], [state])
 
-    assert state["group_rendered"] is True
+    assert state["group_updated"] is True
     assert state["reward"] == 1.0
+
+
+def test_lifecycle_fields_are_framework_managed() -> None:
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    for key, value in {
+        "is_completed": True,
+        "stop_condition": "done",
+        "is_truncated": True,
+        "error": {"message": "boom"},
+    }.items():
+        with pytest.raises(RuntimeError, match="framework-managed"):
+            State({key: value})
+        with pytest.raises(RuntimeError, match="framework-managed"):
+            state[key] = value
+        with pytest.raises(RuntimeError, match="framework-managed"):
+            state.update({key: value})
+        with pytest.raises(RuntimeError, match="framework-managed"):
+            state.setdefault(key, value)
+        with pytest.raises(RuntimeError, match="framework-managed"):
+            state.pop(key)
+    with pytest.raises(RuntimeError, match="framework-managed"):
+        state.popitem()
+    with pytest.raises(RuntimeError, match="framework-managed"):
+        state.clear()
+
+    state._set_completed(True)
+    state._set_stop_condition("done")
+    state._set_truncated(True)
+    state._set_error({"message": "boom"})
+
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "done"
+    assert state["is_truncated"] is True
+    assert state["error"] == {"message": "boom"}
 
 
 def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
@@ -449,6 +580,127 @@ async def test_task_toolsets_can_add_rollout_local_toolsets() -> None:
 
     assert state["tools"] == ["config_tool"]
     assert await state.tools()["config_tool"](query="q") == "ok:q"
+
+
+@pytest.mark.asyncio
+async def test_task_toolsets_can_add_dynamic_schema_backed_tools() -> None:
+    harness = Harness()
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "dynamic_tool": {
+                "name": "lookup_city",
+                "description": "Look up one city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+            "toolsets": {"dynamic": {"fn": ref("dynamic_toolset")}},
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    tool_defs = harness.runtime.tool_defs(state)
+    assert tool_defs is not None
+    assert state["tools"] == ["lookup_city"]
+    assert tool_defs[0].name == "lookup_city"
+    assert tool_defs[0].parameters["properties"] == {"city": {"type": "string"}}
+    assert await state.tools()["lookup_city"](city="Paris") == "recorded"
+    assert state["dynamic_tool_calls"] == [{"lookup_city": {"city": "Paris"}}]
+
+
+@pytest.mark.asyncio
+async def test_tool_bindings_inject_owner_private_objects() -> None:
+    harness = Harness(
+        toolsets=[
+            Toolset(
+                tools=[object_tool],
+                objects={"box": load_object_box},
+                bindings={"object_tool.box": "objects.box"},
+                write=True,
+            )
+        ]
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert await state.tools()["object_tool"](value="alpha") == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_rollout_handlers_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        toolsets=[
+            Toolset(
+                updates=[update_from_binding],
+                bindings={"update_from_binding.expected": "task.answer"},
+            )
+        ]
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.update_rollout(task, state)
+
+    assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_object_bindings_are_private_to_callable_tools() -> None:
+    harness = Harness(
+        toolsets=[
+            Toolset(
+                updates=[update_from_binding],
+                objects={"box": load_object_box},
+                bindings={"update_from_binding.expected": "objects.box"},
+            )
+        ]
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    with pytest.raises(ValueError, match="objects"):
+        await harness.setup_state(task, State.for_task(task))
+
+
+@pytest.mark.asyncio
+async def test_bindings_must_match_declared_callable_args() -> None:
+    harness = Harness(
+        toolsets=[
+            Toolset(
+                tools=[object_tool],
+                objects={"box": load_object_box},
+                bindings={"object_tool.missing": "objects.box"},
+            )
+        ]
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    with pytest.raises(TypeError, match="missing"):
+        await harness.setup_state(task, State.for_task(task))
+
+
+@pytest.mark.asyncio
+async def test_tool_bindings_do_not_leak_to_same_named_handlers() -> None:
+    harness = Harness(
+        updates=[colliding_update],
+        toolsets=[
+            Toolset(
+                tools=[colliding_tool],
+                objects={"token": load_object_box},
+                bindings={"colliding_tool.token": "objects.token"},
+            )
+        ],
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert await state.tools()["colliding_tool"](value="x") == "{'values': []}:x"
+    with pytest.raises(TypeError, match="token"):
+        await harness.runtime.update_rollout(task, state)
 
 
 def test_harness_max_turns_arg_overrides_config() -> None:
@@ -512,21 +764,6 @@ async def test_task_max_turns_overrides_harness_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_top_level_controls_override_task_runtime() -> None:
-    harness = Harness(max_turns=9)
-    task = Task(
-        {
-            "prompt": [{"role": "user", "content": "hi"}],
-            "max_turns": 3,
-            "runtime": {"max_turns": 4},
-        }
-    ).freeze()
-    state = await harness.setup_state(task, State.for_task(task))
-
-    assert harness.max_turns(state) == 3
-
-
-@pytest.mark.asyncio
 async def test_explicit_state_runtime_max_turns_overrides_task_controls() -> None:
     harness = Harness(max_turns=9)
     task = Task(
@@ -542,19 +779,24 @@ async def test_explicit_state_runtime_max_turns_overrides_task_controls() -> Non
     assert harness.max_turns(state) == 2
 
 
-def test_task_runtime_rejects_unknown_keys() -> None:
-    with pytest.raises(ValidationError):
+def test_task_runtime_is_not_public_task_schema() -> None:
+    with pytest.raises(TypeError, match="task.runtime"):
         Task({"runtime": {"unknown": True}}).freeze()
 
 
-def test_task_runtime_rejects_non_integer_max_turns() -> None:
-    with pytest.raises(ValidationError):
+def test_task_runtime_rejects_legacy_max_turns() -> None:
+    with pytest.raises(TypeError, match="task.runtime"):
         Task({"runtime": {"max_turns": "3"}}).freeze()
 
 
 def test_task_rejects_non_integer_max_turns() -> None:
     with pytest.raises(TypeError):
         Task({"max_turns": "3"}).freeze()
+
+
+def test_task_sandbox_must_be_mapping() -> None:
+    with pytest.raises(TypeError, match="task.sandbox"):
+        Task({"prompt": [], "sandbox": "rollout"}).freeze()
 
 
 def test_option_only_program_requires_sandbox_placement() -> None:
@@ -604,6 +846,20 @@ async def test_user_config_supports_scope_bindings_and_objects() -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_user_callable_receives_default_transcript_binding() -> None:
+    harness = Harness(user=direct_user_with_transcript)
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    messages = await harness.runtime.user_messages(
+        task, state, transcript=[{"role": "assistant", "content": "hello"}]
+    )
+
+    assert state["direct_transcript_len"] == 1
+    assert messages == [{"role": "user", "content": "continue"}]
+
+
+@pytest.mark.asyncio
 async def test_user_config_can_request_scoped_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -640,7 +896,7 @@ async def test_configured_program_scores_and_cleans_rollout() -> None:
         config={
             "program": ref("config_program"),
             "rewards": [ref("config_reward")],
-            "cleanup": [ref("config_cleanup")],
+            "cleanups": [ref("config_cleanup")],
         }
     )
     task = next(iter(taskset))
@@ -655,7 +911,7 @@ async def test_configured_program_scores_and_cleans_rollout() -> None:
 
 @pytest.mark.asyncio
 async def test_harness_run_releases_group_scope_when_no_group_boundary() -> None:
-    harness = Harness(program=config_program, cleanup=[config_group_cleanup])
+    harness = Harness(program=config_program, cleanups=[config_group_cleanup])
     task = Task(
         {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
     ).freeze()
@@ -667,7 +923,7 @@ async def test_harness_run_releases_group_scope_when_no_group_boundary() -> None
 
 @pytest.mark.asyncio
 async def test_harness_run_defers_group_cleanup_when_group_boundary_exists() -> None:
-    harness = Harness(program=config_program, cleanup=[config_group_cleanup])
+    harness = Harness(program=config_program, cleanups=[config_group_cleanup])
     task = Task(
         {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
     ).freeze()
@@ -770,7 +1026,7 @@ def test_toolset_config_is_load_bearing() -> None:
             "objects": {"source": ref("source_loader")},
             "write": True,
             "scope": "group",
-            "cleanup": [ref("config_cleanup")],
+            "cleanups": [ref("config_cleanup")],
         },
     )
 
@@ -779,13 +1035,18 @@ def test_toolset_config_is_load_bearing() -> None:
     assert toolset.objects == {"source": source_loader}
     assert toolset.write is True
     assert toolset.scope == "group"
-    assert toolset.cleanup == (config_cleanup,)
+    assert toolset.cleanups == (config_cleanup,)
 
 
 def test_toolset_write_arg_overrides_config() -> None:
     toolset = Toolset(write=False, config={"write": True})
 
     assert toolset.write is False
+
+
+def test_toolset_sandbox_prefer_requires_program() -> None:
+    with pytest.raises(ValueError, match="sandbox.prefer must be 'program'"):
+        Toolset(sandbox={"prefer": "other"})
 
 
 def test_toolset_config_accepts_mcp_tool_specs() -> None:

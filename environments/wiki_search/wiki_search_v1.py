@@ -242,18 +242,19 @@ def load_toolset(
     embed_api_key_var: str = "OPENAI_API_KEY",
     config=None,
 ):
+    def load_wiki_index() -> dict[str, object]:
+        return load_wiki(
+            corpus_dataset=corpus_dataset,
+            corpus_split=corpus_split,
+            chroma_db_dir=chroma_db_dir,
+            embed_model=embed_model,
+            embed_base_url=embed_base_url,
+            embed_api_key_var=embed_api_key_var,
+        )
+
     return vf.Toolset(
         tools=[search_pages, view_sections, read_section],
-        objects={
-            "wiki": lambda: load_wiki(
-                corpus_dataset=corpus_dataset,
-                corpus_split=corpus_split,
-                chroma_db_dir=chroma_db_dir,
-                embed_model=embed_model,
-                embed_base_url=embed_base_url,
-                embed_api_key_var=embed_api_key_var,
-            )
-        },
+        objects={"wiki": load_wiki_index},
         bindings={
             "search_pages.wiki": "objects.wiki",
             "view_sections.wiki": "objects.wiki",

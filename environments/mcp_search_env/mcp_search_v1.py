@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, cast
 
 from datasets import Dataset
@@ -34,17 +35,10 @@ Respond either "yes" or "no" only.
 def default_mcp_servers() -> list[dict[str, Any]]:
     return [
         {
-            "name": "exa",
-            "command": "npx",
-            "args": ["-y", "--loglevel=silent", "exa-mcp-server"],
-            "env": {"EXA_API_KEY": os.getenv("EXA_API_KEY", "")},
-            "description": "Exa MCP server",
-        },
-        {
-            "name": "fetch",
-            "command": "uvx",
-            "args": ["mcp-server-fetch"],
-            "description": "Fetch MCP server",
+            "name": "local_docs",
+            "command": "python",
+            "args": [str(Path(__file__).with_name("mcp_server.py"))],
+            "description": "Local documentation MCP server",
         },
     ]
 
@@ -53,9 +47,9 @@ def default_dataset() -> Dataset:
     return Dataset.from_dict(
         {
             "question": [
-                "Use the fetch tool to inspect https://example.com. What is the page title? Answer with exactly two words.",
+                "Use the MCP tools to find the document about runtime handles. What is the document title? Answer with exactly two words.",
             ],
-            "answer": ["Example Domain"],
+            "answer": ["Runtime Boundary"],
         }
     )
 
@@ -128,8 +122,11 @@ def load_taskset(
     judge_api_key_var: str = "OPENAI_API_KEY",
     config=None,
 ):
+    def load_rows():
+        return source(dataset, max_turns=max_turns)
+
     return vf.Taskset(
-        source=lambda: source(dataset, max_turns=max_turns),
+        source=load_rows,
         system_prompt=SYSTEM_PROMPT,
         rewards=[
             judge_reward_factory(

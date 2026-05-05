@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.judge_utils import completion_text
 
 
 async def ask_subagent(name: str, harness, state) -> str:
@@ -33,14 +34,6 @@ async def exact_answer(task, state) -> float:
     return float(completion_text(state.get("completion")).strip() == task["answer"])
 
 
-def completion_text(completion) -> str:
-    if isinstance(completion, list):
-        for message in reversed(completion):
-            if isinstance(message, dict) and message.get("role") == "assistant":
-                return str(message.get("content") or "")
-    return str(completion or "")
-
-
 def source():
     return [
         {
@@ -57,7 +50,7 @@ def source():
 
 
 def load_child_harness(config=None):
-    def factory(state):
+    def child_harness(state):
         runtime = state.runtime()
         return vf.Harness(
             client=runtime.model_client(state),
@@ -66,16 +59,17 @@ def load_child_harness(config=None):
             config=config,
         )
 
-    return factory
+    return child_harness
 
 
 def load_toolset(config=None):
     return vf.Toolset(
         tools=[ask_subagent],
-        objects={
-            "child_harness": load_child_harness(getattr(config, "child_harness", None))
+        bindings={
+            "ask_subagent.harness": load_child_harness(
+                getattr(config, "child_harness", None)
+            )
         },
-        bindings={"ask_subagent.harness": "objects.child_harness"},
         scope="rollout",
         config=config,
     )

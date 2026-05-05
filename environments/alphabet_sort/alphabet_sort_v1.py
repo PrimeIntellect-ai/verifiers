@@ -13,6 +13,24 @@ import verifiers.v1 as vf
 logger = logging.getLogger(__name__)
 
 
+def validate_parameters(
+    min_turns: int,
+    max_turns: int,
+    min_names_per_turn: int,
+    max_names_per_turn: int,
+) -> None:
+    if min_turns < 1:
+        raise ValueError("min_turns must be at least 1")
+    if min_turns > max_turns:
+        raise ValueError("min_turns must be less than or equal to max_turns")
+    if min_names_per_turn < 1:
+        raise ValueError("min_names_per_turn must be at least 1")
+    if min_names_per_turn > max_names_per_turn:
+        raise ValueError(
+            "min_names_per_turn must be less than or equal to max_names_per_turn"
+        )
+
+
 def _extract_first_name(combined_name: str) -> str:
     if not combined_name:
         return ""
@@ -270,6 +288,12 @@ def load_taskset(
     seed: int = 1337420,
     config=None,
 ):
+    validate_parameters(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+    )
     return vf.Taskset(
         source=get_source(
             min_turns=min_turns,

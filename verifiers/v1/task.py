@@ -6,7 +6,6 @@ from typing import Any, SupportsIndex, cast
 
 from verifiers.types import assert_json_serializable
 
-from .config import normalize_runtime_config
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
 
 
@@ -17,7 +16,9 @@ class Task(dict):
 
     def freeze(self) -> Task:
         if "runtime" in self:
-            super().__setitem__("runtime", normalize_runtime_config(self["runtime"]))
+            raise TypeError(
+                "task.runtime is not supported; use top-level task fields or state.runtime."
+            )
         if "prompt" in self:
             super().__setitem__(
                 "prompt", normalize_prompt(self["prompt"], field_name="task.prompt")
@@ -33,6 +34,8 @@ class Task(dict):
             raise TypeError("task.tools must be a mapping with show or hide.")
         if "toolsets" in self and not isinstance(self["toolsets"], Mapping):
             raise TypeError("task.toolsets must be a mapping.")
+        if "sandbox" in self and not isinstance(self["sandbox"], Mapping):
+            raise TypeError("task.sandbox must be a mapping.")
         if "max_turns" in self and (
             not isinstance(self["max_turns"], int)
             or isinstance(self["max_turns"], bool)

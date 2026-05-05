@@ -248,8 +248,8 @@ def load_taskset(
     timeout_minutes: int = 120,
     config=None,
 ):
-    return vf.Taskset(
-        source=lambda: harbor_source(
+    def load_rows():
+        return harbor_source(
             dataset_path=dataset_path,
             tasks=tasks,
             docker_image=docker_image,
@@ -257,7 +257,10 @@ def load_taskset(
             memory_gb=memory_gb,
             disk_size_gb=disk_size_gb,
             timeout_minutes=timeout_minutes,
-        ),
+        )
+
+    return vf.Taskset(
+        source=load_rows,
         rewards=[harbor_reward],
         config=config,
     )

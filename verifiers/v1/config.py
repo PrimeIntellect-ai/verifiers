@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_core import PydanticUndefined
 from typing_extensions import Self
 
@@ -45,22 +45,26 @@ class Config(BaseModel):
 
 
 class TasksetConfig(Config):
+    # Singleton fields describe one logical value owned by the taskset.
     source: object | None = None
     eval_source: object | None = None
     taskset_id: str | None = None
     system_prompt: object | None = None
-    toolsets: object = Field(default_factory=list)
     user: object | None = None
-    stop: list[object] = Field(default_factory=list)
-    render: list[object] = Field(default_factory=list)
+
+    # Collection fields are merged/extended from code and config.
+    toolsets: object = Field(default_factory=list)
+    stops: list[object] = Field(default_factory=list)
+    updates: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
     advantages: list[object] = Field(default_factory=list)
-    cleanup: list[object] = Field(default_factory=list)
+    cleanups: list[object] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
 
 
 class HarnessConfig(Config):
+    # Singleton fields describe one logical value owned by the harness.
     program: object | None = None
     system_prompt: object | None = None
     system_prompt_merge: str = "reject"
@@ -69,41 +73,18 @@ class HarnessConfig(Config):
     model: str | None = None
     sampling_args: dict[str, object] = Field(default_factory=dict)
     keep_trajectory_step: object | None = None
-    toolsets: object = Field(default_factory=list)
     user: object | None = None
-    stop: list[object] = Field(default_factory=list)
-    render: list[object] = Field(default_factory=list)
+
+    # Collection fields are merged/extended from code and config.
+    toolsets: object = Field(default_factory=list)
+    stops: list[object] = Field(default_factory=list)
+    updates: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
     advantages: list[object] = Field(default_factory=list)
-    cleanup: list[object] = Field(default_factory=list)
+    cleanups: list[object] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
     max_turns: int = 10
-
-
-class RuntimeToolSelection(Config):
-    show: list[str] | None = None
-    hide: list[str] | None = None
-
-    @model_validator(mode="after")
-    def validate_visibility(self) -> Self:
-        if self.show is not None and self.hide is not None:
-            raise ValueError("runtime.tools accepts show or hide, not both.")
-        return self
-
-
-class RuntimeConfig(Config):
-    max_turns: StrictInt | None = None
-    tools: RuntimeToolSelection | None = None
-
-
-def normalize_runtime_config(value: object) -> dict[str, object]:
-    if value is None:
-        return {}
-    if isinstance(value, RuntimeConfig):
-        return value.model_dump(exclude_none=True)
-    config = RuntimeConfig.model_validate(value)
-    return config.model_dump(exclude_none=True)
 
 
 def merge_config_value(value: object, config: object) -> object:
@@ -124,7 +105,7 @@ def merge_config_items(values: Iterable[object], config: object) -> list[object]
 
 
 CallableKind = Literal[
-    "stop", "render", "metric", "reward", "advantage", "cleanup", "teardown"
+    "stop", "update", "metric", "reward", "advantage", "cleanup", "teardown"
 ]
 
 
@@ -177,7 +158,7 @@ def callable_from_mapping(
 
 def callable_config_keys(kind: CallableKind) -> set[str]:
     keys = {"fn", "priority", "skip"}
-    if kind in {"render", "metric", "reward", "cleanup"}:
+    if kind in {"update", "metric", "reward", "cleanup"}:
         keys.add("stage")
     if kind == "reward":
         keys.add("weight")

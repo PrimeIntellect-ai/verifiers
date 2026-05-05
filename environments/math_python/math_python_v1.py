@@ -142,7 +142,7 @@ def load_toolset(
             "command_timeout": sandbox_timeout_per_command_seconds,
             "packages": packages,
         },
-        cleanup=[collect_python_commands],
+        cleanups=[collect_python_commands],
         config=config,
     )
 
@@ -154,12 +154,15 @@ def load_taskset(
     pip_install_packages: str = "numpy sympy scipy",
     config=None,
 ):
-    return vf.Taskset(
-        source=lambda: source(
+    def load_rows():
+        return source(
             dataset_name=dataset_name,
             dataset_split=dataset_split,
             num_train_examples=num_train_examples,
-        ),
+        )
+
+    return vf.Taskset(
+        source=load_rows,
         system_prompt=build_system_prompt(pip_install_packages),
         rewards=[correct_answer],
         config=config,

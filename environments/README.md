@@ -52,6 +52,7 @@ This folder contains installable example environments that showcase common usage
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
 - **Taskset/Harness v1**
+  - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
   - **dspy_flights**: DSPy flight-support entrypoint configured against the v1 interception endpoint.
   - **tau2_bench**: τ²-bench taskset/user/tool pattern on the v1 harness runtime.
 
@@ -62,6 +63,8 @@ This folder contains installable example environments that showcase common usage
 - **Nested harnesses**
   - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
   - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
+  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, trajectory, and sandbox evidence from the answer rollout.
+  - **hello_parallel_sandbox_v1**: v1 example where parallel child harnesses share a sandbox-backed tool across update and reward stages.
 
 - **RubricGroup**
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
@@ -85,7 +88,7 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
-- **Taskset/Harness v1**: `hello_subagent_v1`, `nested_harness_v1`, `hello_rlm_v1`, `dspy_flights`, `tau2_bench`
+- **Taskset/Harness v1**: `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, and `opencode_harbor` via `v1=True`; plus `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_rlm_v1`, `dspy_flights`, and `tau2_bench`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`
