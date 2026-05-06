@@ -54,6 +54,7 @@ This folder contains installable example environments that showcase common usage
 - **Taskset/Harness v1**
   - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
   - **dspy_flights**: DSPy flight-support entrypoint configured against the v1 interception endpoint.
+  - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
   - **tau2_bench**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
 
 ### Composition
@@ -88,7 +89,7 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
-- **Taskset/Harness v1**: `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, and `opencode_harbor` via `v1=True`; plus `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`
+- **Taskset/Harness v1**: `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, and `opencode_harbor` via `v1=True`; plus `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`
   - `opencode_harbor` now uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary for the v1 path. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
