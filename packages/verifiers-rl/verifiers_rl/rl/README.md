@@ -66,7 +66,7 @@ max_tokens = 512
 max_seq_len = 2048
 ```
 
-See more examples under `configs/rl/` (e.g., `reverse-text.toml`, `alphabet-sort.toml`).
+See more examples under `configs/local/vf-rl/`.
 
 ### Running with `vf-rl`
 

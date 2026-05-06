@@ -74,29 +74,31 @@ PRIME_RL_CONFIGS: list[ConfigSpec] = [
 RL_CONFIGS = _mirror_repo_configs(
     VERIFIERS_REPO,
     [
-        "configs/rl/alphabet-sort.toml",
-        "configs/rl/gsm8k.toml",
-        "configs/rl/math-python.toml",
-        "configs/rl/reverse-text.toml",
-        "configs/rl/wiki-search.toml",
-        "configs/rl/wordle.toml",
+        "configs/rl/qwen-3-5.toml",
+        "configs/rl/qwen-3-5-moe.toml",
+        "configs/rl/qwen-3-5-moe-advanced.toml",
+        "configs/rl/nemotron-3.toml",
+        "configs/rl/llama-3.toml",
     ],
 )
 
 GEPA_CONFIGS = _mirror_repo_configs(
     VERIFIERS_REPO,
     [
-        "configs/gepa/base.toml",
-        "configs/gepa/wordle.toml",
+        "configs/gepa/qwen-3-5.toml",
+        "configs/gepa/qwen-3-5-moe.toml",
+        "configs/gepa/nemotron-3.toml",
+        "configs/gepa/llama-3.toml",
     ],
 )
 
 EVAL_CONFIGS = _mirror_repo_configs(
     VERIFIERS_REPO,
     [
-        "configs/eval/minimal.toml",
-        "configs/eval/multi-env.toml",
-        "configs/eval/wordle.toml",
+        "configs/eval/qwen-3-5.toml",
+        "configs/eval/qwen-3-5-moe.toml",
+        "configs/eval/nemotron-3.toml",
+        "configs/eval/llama-3.toml",
     ],
 )
 
@@ -380,7 +382,7 @@ def print_post_setup_call_to_action(prime_rl: bool, primary_agent: str) -> None:
         )
     else:
         command_table.add_row(
-            "[bold green]$[/bold green]", "prime rl run configs/rl/wiki-search.toml"
+            "[bold green]$[/bold green]", "prime rl run configs/rl/qwen-3-5.toml"
         )
     command_table.add_row(
         "[bold green]$[/bold green]", "prime gepa run my-env -m openai/gpt-5-nano"

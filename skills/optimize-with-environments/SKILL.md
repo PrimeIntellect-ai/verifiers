@@ -39,7 +39,7 @@ prime gepa run my-env -m openai/gpt-4.1-mini -M openai/gpt-4.1-mini -B 500 -n 10
 ```
 4. Or run from config:
 ```bash
-prime gepa run configs/gepa/wordle.toml
+prime gepa run configs/gepa/qwen-3-5.toml
 ```
 5. Re-evaluate with optimized prompt and compare against baseline.
 
