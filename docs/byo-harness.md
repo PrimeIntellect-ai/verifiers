@@ -11,6 +11,8 @@ nested sub-harness workflow. For simple one-off environments, the core
 
 ## Core Shape
 
+![Task to Harness to State](assets/v1-task-harness-state.svg)
+
 v1 environments are composed from:
 
 - `Taskset`: task rows, task-owned tools, user behavior, metrics, rewards, and
@@ -45,8 +47,9 @@ def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(taskset_config=None):
-    return vf.Env(taskset=load_taskset(taskset_config))
+def load_environment(config=None):
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
 ```
 
 ## Tasksets
@@ -175,10 +178,11 @@ def load_harness(config=None):
     )
 
 
-def load_environment(taskset_config=None, harness_config=None):
+def load_environment(config=None):
+    config = config or {}
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=load_taskset(config.get("taskset")),
+        harness=load_harness(config.get("harness")),
     )
 ```
 
@@ -242,6 +246,8 @@ test scoring. CLI harnesses own CLI installation/config/run behavior and work
 with any taskset that supplies a prompt.
 
 ## Setup, Updates, Signals, And Cleanup
+
+![v1 composition lifecycle](assets/v1-composition-lifecycle.svg)
 
 Setup functions, update functions, metrics, rewards, and advantages are
 lifecycle functions around program execution and the rollout/group scoring

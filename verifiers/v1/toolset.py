@@ -5,7 +5,16 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
-from .config import config_callables, resolve_config_object, string_mapping
+from .config import (
+    MCPToolConfig,
+    SandboxConfig,
+    ToolsetConfig,
+    config_callables,
+    config_mapping,
+    resolve_config_object,
+    sandbox_config_mapping,
+    string_mapping,
+)
 
 
 @dataclass(frozen=True)
@@ -19,7 +28,7 @@ class Toolset:
     objects: Mapping[str, object] = field(default_factory=dict)
     write: bool = False
     scope: str | None = None
-    sandbox: Mapping[str, object] | str | None = None
+    sandbox: Mapping[str, object] | SandboxConfig | str | None = None
     # Lifecycle collections.
     stops: tuple[object, ...] = ()
     setups: tuple[object, ...] = ()
@@ -40,7 +49,7 @@ class Toolset:
         objects: Mapping[str, object] | None = None,
         write: bool | None = None,
         scope: str | None = None,
-        sandbox: Mapping[str, object] | str | None = None,
+        sandbox: Mapping[str, object] | SandboxConfig | str | None = None,
         # Lifecycle collections.
         stops: Iterable[object] = (),
         setups: Iterable[object] = (),
@@ -80,15 +89,10 @@ class Toolset:
             scope = (
                 scope if scope is not None else optional_string(config_map.get("scope"))
             )
-            config_sandbox = config_map.get("sandbox")
-            if config_sandbox is not None and not isinstance(
-                config_sandbox, Mapping | str
-            ):
-                raise TypeError("Toolset sandbox must be a mapping or 'program'.")
             sandbox = (
                 sandbox
                 if sandbox is not None
-                else cast(Mapping[str, object] | str | None, config_sandbox)
+                else cast(Mapping[str, object] | str | None, config_map.get("sandbox"))
             )
             stops = [*stops, *config_callables(config_map.get("stops"), "stop")]
             setups = [
@@ -120,11 +124,16 @@ class Toolset:
         object.__setattr__(self, "scope", scope)
         if isinstance(sandbox, str) and sandbox != "program":
             raise ValueError("Toolset sandbox string must be 'program'.")
-        if isinstance(sandbox, Mapping):
-            prefer = cast(Mapping[str, object], sandbox).get("prefer")
+        sandbox_value: Mapping[str, object] | str | None
+        if isinstance(sandbox, str):
+            sandbox_value = sandbox
+        else:
+            sandbox_value = sandbox_config_mapping(sandbox)
+        if isinstance(sandbox_value, Mapping):
+            prefer = cast(Mapping[str, object], sandbox_value).get("prefer")
             if prefer is not None and prefer != "program":
                 raise ValueError("Toolset sandbox.prefer must be 'program'.")
-        object.__setattr__(self, "sandbox", sandbox)
+        object.__setattr__(self, "sandbox", sandbox_value)
         object.__setattr__(self, "stops", tuple(config_callables(stops, "stop")))
         object.__setattr__(self, "setups", tuple(config_callables(setups, "setup")))
         object.__setattr__(self, "updates", tuple(config_callables(updates, "update")))
@@ -274,6 +283,8 @@ def tool_items(value: object) -> list[object]:
 
 def tool_item(value: object) -> object:
     value = resolve_config_object(value)
+    if isinstance(value, MCPToolConfig):
+        return MCPTool.from_mapping(value.model_dump(exclude_none=True))
     if isinstance(value, Mapping):
         if "command" in value:
             return MCPTool.from_mapping(cast(Mapping[str, object], value))
@@ -284,28 +295,13 @@ def tool_item(value: object) -> object:
 def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
     if config is None:
         return {}
+    if isinstance(config, ToolsetConfig):
+        return config.model_dump(exclude_none=True)
     if not isinstance(config, Mapping):
         return {}
-    spec = cast(Mapping[str, object], config)
-    unknown_keys = set(spec) - {
-        "tools",
-        "show",
-        "hide",
-        "bindings",
-        "objects",
-        "write",
-        "scope",
-        "sandbox",
-        "stops",
-        "setups",
-        "updates",
-        "cleanups",
-        "teardowns",
-    }
-    if unknown_keys:
-        unknown = ", ".join(sorted(unknown_keys))
-        raise ValueError(f"Toolset config has unknown keys: {unknown}.")
-    return spec
+    return ToolsetConfig.model_validate(config_mapping(config)).model_dump(
+        exclude_none=True
+    )
 
 
 def string_items(value: object) -> list[str] | None:
@@ -354,31 +350,10 @@ class MCPTool:
 
     @classmethod
     def from_mapping(cls, spec: Mapping[str, object]) -> MCPTool:
-        unknown_keys = set(spec) - {"command", "args", "env", "cwd"}
-        if unknown_keys:
-            unknown = ", ".join(sorted(unknown_keys))
-            raise ValueError(f"MCPTool config has unknown keys: {unknown}.")
-        command = spec.get("command")
-        if not isinstance(command, str):
-            raise TypeError("MCPTool command must be a string.")
-        args = spec.get("args") or ()
-        if isinstance(args, str):
-            args = [args]
-        if not isinstance(args, Iterable):
-            raise TypeError("MCPTool args must be a list of strings.")
-        env = spec.get("env")
-        if env is not None and not isinstance(env, Mapping):
-            raise TypeError("MCPTool env must be a mapping.")
-        if isinstance(env, Mapping):
-            for key, value in env.items():
-                if not isinstance(key, str) or not isinstance(value, str):
-                    raise TypeError("MCPTool env keys and values must be strings.")
-        cwd = spec.get("cwd")
-        if cwd is not None and not isinstance(cwd, str):
-            raise TypeError("MCPTool cwd must be a string.")
+        config = MCPToolConfig.model_validate(spec)
         return cls(
-            command=command,
-            args=[str(arg) for arg in args],
-            env=cast(Mapping[str, str] | None, env),
-            cwd=cwd,
+            command=config.command,
+            args=config.args,
+            env=config.env,
+            cwd=config.cwd,
         )

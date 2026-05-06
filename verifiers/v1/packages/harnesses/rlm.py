@@ -13,9 +13,10 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     validate_git_checkout,
 )
 
-from ...config import HarnessConfig
+from ...config import HarnessConfig, SandboxConfig
 from ...state import State
 from ...task import Task
+from ...utils.prompt_utils import task_text
 from .cli import CLIHarness
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
@@ -52,7 +53,7 @@ class RLM(CLIHarness):
         rlm_tools: list[str] | None = None,
         rlm_env: Mapping[str, object] | None = None,
         skills: str | Path | None = None,
-        sandbox: bool | Mapping[str, object] = True,
+        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         config: HarnessConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
@@ -77,7 +78,8 @@ class RLM(CLIHarness):
         }
         if summarize_resolver is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = summarize_resolver
-        sandbox_config: Mapping[str, object] | bool = sandbox
+        sandbox_config: Mapping[str, object] | SandboxConfig | bool
+        sandbox_config = sandbox
         if sandbox is True:
             sandbox_config = {
                 "image": "python:3.11-slim",
@@ -191,22 +193,7 @@ def rlm_checkout_loader(
 
 
 def task_instruction_text(task: Task, state: State) -> str:
-    _ = state
-    for key in ("instruction", "question"):
-        value = task.get(key)
-        if isinstance(value, str) and value:
-            return value
-    prompt = task.get("prompt") or []
-    if isinstance(prompt, list):
-        parts: list[str] = []
-        for message in prompt:
-            if isinstance(message, Mapping):
-                content = message.get("content")
-                if isinstance(content, str):
-                    parts.append(content)
-        if parts:
-            return "\n\n".join(parts)
-    return str(prompt)
+    return task_text(task, state, keys=("instruction", "question"))
 
 
 def keep_only_parent_rlm_steps(

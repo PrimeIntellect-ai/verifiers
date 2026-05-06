@@ -11,7 +11,15 @@ from verifiers.decorators import (
     update,
 )
 
-from .config import Config, HarnessConfig, TasksetConfig
+from .config import (
+    Config,
+    HarnessConfig,
+    MCPToolConfig,
+    SandboxConfig,
+    TasksetConfig,
+    ToolsetConfig,
+    UserConfig,
+)
 from .env import Env
 from .harness import Harness
 from .packages.harnesses import CLIHarness, MiniSWEAgent, OpenCode, Pi, RLM
@@ -43,16 +51,20 @@ __all__ = [
     "HarborTasksetConfig",
     "CLIHarness",
     "MCPTool",
+    "MCPToolConfig",
     "MiniSWEAgent",
     "OpenCode",
     "Pi",
     "RLM",
+    "SandboxConfig",
     "State",
     "Task",
     "Taskset",
     "TasksetConfig",
     "Toolset",
+    "ToolsetConfig",
     "User",
+    "UserConfig",
     "add_metric",
     "add_reward",
     "add_advantage",

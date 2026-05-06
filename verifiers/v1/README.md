@@ -15,6 +15,8 @@ data; everything else is a function, config value, or runtime-managed handle.
 
 ## Mental Model
 
+![Task to Harness to State](../../docs/assets/v1-task-harness-state.svg)
+
 The v1 boundary is data-first:
 
 - `Task` is immutable input data.
@@ -147,8 +149,9 @@ def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(taskset_config=None):
-    return vf.Env(taskset=load_taskset(taskset_config))
+def load_environment(config=None):
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -321,6 +324,8 @@ class MyTaskset(vf.Taskset):
 ```
 
 ## Harness Programs
+
+![v1 composition lifecycle](../../docs/assets/v1-composition-lifecycle.svg)
 
 `Harness.run(task, state=None)` owns the rollout lifecycle:
 
@@ -571,6 +576,8 @@ Available helpers:
 - `state.get_client(...)`: materialize an intercepted SDK client;
 - `state.get_endpoint_config(...)`: materialize a config dict for third-party
   model libraries;
+- `state.get_max_turns(default)`: resolve a rollout turn limit for harness
+  authors;
 - `state.get_tools()`: load callable tool handles for the current task/state.
 
 These helpers may use process-local handles while the rollout is active. Handles

@@ -9,7 +9,7 @@ from typing import Any, Callable, cast
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-from ..config import resolve_config_object
+from ..config import resolve_config_object, string_mapping
 from ..runtime import (
     Runtime,
     _read_path,
@@ -22,6 +22,29 @@ from ..runtime import (
 from ..state import State
 from ..task import Task
 from .mcp_proxy_utils import ProgramToolType, validate_program_tool_types
+
+PROGRAM_KIND_KEYS = {"base", "fn", "command"}
+PROGRAM_OPTION_KEYS = {
+    "sandbox",
+    "files",
+    "dirs",
+    "setup",
+    "bindings",
+    "env",
+    "artifacts",
+    "tools",
+}
+PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
+SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
+TASK_PROGRAM_KEYS = {
+    "files",
+    "dirs",
+    "setup",
+    "bindings",
+    "env",
+    "artifacts",
+    "args",
+}
 
 
 async def run_local_command(
@@ -285,6 +308,149 @@ def endpoint_api_key(runtime: Runtime) -> str:
 
 def program_tool_types(program: Mapping[str, object]) -> tuple[ProgramToolType, ...]:
     return validate_program_tool_types(program.get("tools"))
+
+
+def program_kind(program: Mapping[str, object]) -> str:
+    base = program.get("base", False)
+    if not isinstance(base, bool):
+        raise TypeError("program.base must be a boolean.")
+    kinds = []
+    if base:
+        kinds.append("base")
+    if "fn" in program:
+        kinds.append("fn")
+    if "command" in program:
+        kinds.append("command")
+    if not kinds and any(key in program for key in PROGRAM_OPTION_KEYS):
+        if "sandbox" not in program or program.get("sandbox") is False:
+            raise ValueError("option-only program mappings require sandbox placement.")
+        kinds.append("base")
+    if len(kinds) != 1:
+        raise ValueError(
+            "program mapping must specify exactly one of base=true, fn, or command."
+        )
+    return kinds[0]
+
+
+def validate_program_options(
+    program: Mapping[str, object],
+    kind: str,
+    sandbox_config: Mapping[str, object] | None,
+) -> None:
+    unknown = sorted(set(program) - PROGRAM_KEYS)
+    if unknown:
+        raise ValueError(f"Unknown program keys: {unknown}.")
+    validate_program_bindings(program)
+    if sandbox_config is None:
+        sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
+        if sandbox_only:
+            raise ValueError(f"Program keys {sandbox_only} require sandbox placement.")
+    tool_types = set(program_tool_types(program))
+    if "mcp" in tool_types:
+        if kind != "command":
+            raise ValueError(
+                "program.tools='mcp' is only supported for command programs."
+            )
+        if sandbox_config is None:
+            raise ValueError("program.tools='mcp' requires program.sandbox.")
+    if "callable" in tool_types and kind == "command":
+        raise ValueError(
+            "program.tools='callable' is only supported for base and fn programs."
+        )
+    if kind == "base" and sandbox_config is None:
+        inert = sorted(set(program) & (PROGRAM_OPTION_KEYS - {"sandbox"}))
+        if inert:
+            raise ValueError(f"Base program keys {inert} require sandbox placement.")
+
+
+def validate_program_sandbox_scope(sandbox_config: Mapping[str, object]) -> None:
+    scope = str(sandbox_config.get("scope") or "rollout")
+    if scope not in {"rollout", "group", "global"}:
+        raise ValueError("program sandbox scope must be rollout, group, or global.")
+
+
+def merge_task_program(
+    program: Mapping[str, object], task: Mapping[str, object], *, kind: str
+) -> Mapping[str, object]:
+    task_program = task.get("program")
+    if task_program is None:
+        return program
+    if not isinstance(task_program, Mapping):
+        raise TypeError("task.program must be a mapping.")
+    task_program = cast(Mapping[str, object], task_program)
+    unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
+    if unknown:
+        raise ValueError(
+            "task.program can only define files, dirs, setup, bindings, env, "
+            f"artifacts, and args; got {unknown}."
+        )
+    if kind != "command" and "args" in task_program:
+        raise ValueError("task.program.args is only supported for command programs.")
+    merged = dict(program)
+    for key in ("files", "dirs", "env", "artifacts"):
+        merged[key] = merge_program_mapping_option(
+            program.get(key), task_program.get(key), key
+        )
+    merged["bindings"] = merge_program_mapping_option(
+        program.get("bindings"), task_program.get("bindings"), "bindings"
+    )
+    merged["setup"] = [
+        *program_list_items(program.get("setup"), "program.setup"),
+        *program_list_items(task_program.get("setup"), "task.program.setup"),
+    ]
+    if kind == "command":
+        merged["args"] = [
+            *program_list_items(program.get("args"), "program.args"),
+            *program_list_items(task_program.get("args"), "task.program.args"),
+        ]
+    return merged
+
+
+def merge_task_sandbox(
+    sandbox_config: Mapping[str, object], task: Mapping[str, object]
+) -> Mapping[str, object]:
+    config = dict(sandbox_config)
+    task_sandbox = task.get("sandbox")
+    if isinstance(task_sandbox, Mapping):
+        config.update(string_mapping(cast(Mapping[object, object], task_sandbox)))
+    validate_program_sandbox_scope(config)
+    return config
+
+
+def merge_program_mapping_option(
+    program_value: object, task_value: object, key: str
+) -> dict[str, object]:
+    program_mapping = program_option_mapping(program_value, f"program.{key}")
+    task_mapping = program_option_mapping(task_value, f"task.program.{key}")
+    duplicate = sorted(set(program_mapping) & set(task_mapping))
+    if duplicate:
+        raise ValueError(
+            f"program.{key} and task.program.{key} define the same keys: {duplicate}."
+        )
+    return {**program_mapping, **task_mapping}
+
+
+def program_option_mapping(value: object, field_name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping.")
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{field_name} keys must be strings.")
+        result[key] = item
+    return result
+
+
+def program_list_items(value: object, field_name: str) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list):
+        return [value]
+    return list(value)
 
 
 def program_tools_setup(

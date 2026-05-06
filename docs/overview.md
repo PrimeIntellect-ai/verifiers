@@ -96,8 +96,9 @@ async def contains_answer(task, state) -> float:
 def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(taskset_config=None) -> vf.Env:
-    return vf.Env(taskset=load_taskset(taskset_config))
+def load_environment(config=None) -> vf.Env:
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.

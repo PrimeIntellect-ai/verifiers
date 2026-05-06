@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
-import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, cast
 import uuid
 
 from verifiers.types import State as VFState
+
+from .utils.timing_utils import timing_record
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -179,6 +180,17 @@ class State(VFState):
         except RuntimeError as exc:
             raise RuntimeError("State has no resolved model.") from exc
 
+    def get_max_turns(self, default: int) -> int:
+        runtime = self.get("runtime", {})
+        if isinstance(runtime, Mapping) and "max_turns" in runtime:
+            value = runtime["max_turns"]
+            if value is None:
+                return default
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError("state.runtime.max_turns must be an integer.")
+            return value
+        return default
+
     def get_client(
         self,
         api: EndpointApi | ClientType = "chat_completions",
@@ -318,12 +330,7 @@ def _state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
             "metrics": {},
             "reward": 0.0,
             "completion": None,
-            "timing": {
-                "generation_ms": 0.0,
-                "scoring_ms": 0.0,
-                "total_ms": 0.0,
-                "start_time": time.time(),
-            },
+            "timing": timing_record(),
         }
     )
     state._set_completed(False)

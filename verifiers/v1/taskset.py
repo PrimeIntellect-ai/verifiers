@@ -119,17 +119,20 @@ class Taskset:
     def config_schema(cls) -> str:
         return cls.config_type.schema_text()
 
-    def add_metric(self, fn: Callable[..., object]) -> None:
-        self.metrics.append(fn)
+    def _add_handler(
+        self, handlers: list[Callable[..., object]], fn: Callable[..., object]
+    ) -> None:
+        handlers.append(fn)
         self._refresh_attached_harnesses()
+
+    def add_metric(self, fn: Callable[..., object]) -> None:
+        self._add_handler(self.metrics, fn)
 
     def add_reward(self, fn: Callable[..., object]) -> None:
-        self.rewards.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.rewards, fn)
 
     def add_advantage(self, fn: Callable[..., object]) -> None:
-        self.advantages.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.advantages, fn)
 
     def add_toolset(self, toolset: object) -> None:
         toolsets, named_toolsets = normalize_toolset_collection(toolset)
@@ -141,20 +144,16 @@ class Taskset:
         self._refresh_attached_harnesses()
 
     def add_stop(self, fn: Callable[..., object]) -> None:
-        self.stops.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.stops, fn)
 
     def add_setup(self, fn: Callable[..., object]) -> None:
-        self.setups.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.setups, fn)
 
     def add_update(self, fn: Callable[..., object]) -> None:
-        self.updates.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.updates, fn)
 
     def add_cleanup(self, fn: Callable[..., object]) -> None:
-        self.cleanups.append(fn)
-        self._refresh_attached_harnesses()
+        self._add_handler(self.cleanups, fn)
 
     def attach_harness(self, harness: object) -> None:
         self._attached_harnesses.add(harness)

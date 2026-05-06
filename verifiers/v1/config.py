@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 from typing_extensions import Self
 
@@ -44,6 +44,83 @@ class Config(BaseModel):
         return "\n".join(lines)
 
 
+class SandboxConfig(Config):
+    image: str = "python:3.11-slim"
+    start_command: str = "tail -f /dev/null"
+    cpu_cores: float = 1.0
+    memory_gb: float = 2.0
+    disk_size_gb: float = 5.0
+    gpu_count: int = 0
+    network_access: bool = True
+    timeout_minutes: int = 60
+    workdir: str | None = None
+    command_timeout: int | None = None
+    packages: list[str] = Field(default_factory=list)
+    install_timeout: int = 300
+    setup_commands: list[str] = Field(default_factory=list)
+    setup_timeout: int = 300
+    scope: Literal["rollout", "group", "global"] = "rollout"
+    prefer: Literal["program"] | None = None
+
+    @field_validator("packages", "setup_commands", mode="before")
+    @classmethod
+    def validate_string_list(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
+class MCPToolConfig(Config):
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] | None = None
+    cwd: str | None = None
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def validate_args(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
+class UserConfig(Config):
+    fn: object
+    scope: Literal["rollout", "group", "global"] = "rollout"
+    bindings: dict[str, object] = Field(default_factory=dict)
+    objects: dict[str, object] = Field(default_factory=dict)
+    sandbox: SandboxConfig | None = None
+
+
+class ToolsetConfig(Config):
+    tools: object = Field(default_factory=list)
+    show: list[str] | None = None
+    hide: list[str] | None = None
+    bindings: dict[str, object] = Field(default_factory=dict)
+    objects: dict[str, object] = Field(default_factory=dict)
+    write: bool = False
+    scope: Literal["rollout", "group", "global"] | None = None
+    sandbox: SandboxConfig | Literal["program"] | None = None
+    stops: list[object] = Field(default_factory=list)
+    setups: list[object] = Field(default_factory=list)
+    updates: list[object] = Field(default_factory=list)
+    cleanups: list[object] = Field(default_factory=list)
+    teardowns: list[object] = Field(default_factory=list)
+
+    @field_validator("show", "hide", mode="before")
+    @classmethod
+    def validate_visibility_list(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> ToolsetConfig:
+        if self.show is not None and self.hide is not None:
+            raise ValueError("Toolset accepts show or hide, not both.")
+        return self
+
+
 class TasksetConfig(Config):
     # Singleton fields describe one logical value owned by the taskset.
     source: object | None = None
@@ -69,7 +146,7 @@ class HarnessConfig(Config):
     program: object | None = None
     system_prompt: object | None = None
     system_prompt_merge: str = "reject"
-    sandbox: object | None = None
+    sandbox: SandboxConfig | None = None
     client: object | None = None
     model: str | None = None
     sampling_args: dict[str, object] = Field(default_factory=dict)
@@ -94,12 +171,36 @@ def merge_config_value(value: object, config: object) -> object:
         return value
     if value is None:
         return config
-    if isinstance(value, Mapping) and isinstance(config, Mapping):
+    value_mapping = config_mapping(value)
+    config_mapping_value = config_mapping(config)
+    if value_mapping is not None and config_mapping_value is not None:
         return deep_merge(
-            string_mapping(cast(Mapping[object, object], config)),
-            string_mapping(cast(Mapping[object, object], value)),
+            config_mapping_value,
+            value_mapping,
         )
     return value
+
+
+def config_mapping(value: object) -> dict[str, object] | None:
+    if isinstance(value, Config):
+        return value.model_dump(exclude_none=True)
+    if isinstance(value, Mapping):
+        return string_mapping(cast(Mapping[object, object], value))
+    return None
+
+
+def sandbox_config_mapping(value: object | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if isinstance(value, SandboxConfig):
+        return value.model_dump(exclude_none=True)
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, object], value)
+        prefer = mapping.get("prefer")
+        if prefer is not None and prefer != "program":
+            raise ValueError("sandbox.prefer must be 'program'.")
+        return SandboxConfig.model_validate(mapping).model_dump(exclude_none=True)
+    raise TypeError("Sandbox config must be a mapping.")
 
 
 def merge_config_items(values: Iterable[object], config: object) -> list[object]:

@@ -13,3 +13,7 @@ def load_tools_from_state(
     runtime = state._runtime()
     task = Task(cast(Mapping[str, Any], state["task"])).freeze()
     return runtime.tool_calls(task, state)
+
+
+def tool_error_content(error: Exception) -> str:
+    return str(error)

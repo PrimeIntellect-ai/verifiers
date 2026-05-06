@@ -824,7 +824,7 @@ async def test_task_max_turns_overrides_harness_default() -> None:
     ).freeze()
     state = await harness.setup_state(task, State.for_task(task))
 
-    assert harness.max_turns(state) == 3
+    assert state.get_max_turns(harness.config.max_turns) == 3
 
 
 @pytest.mark.asyncio
@@ -840,7 +840,7 @@ async def test_explicit_state_runtime_max_turns_overrides_task_controls() -> Non
     state["runtime"] = {"max_turns": 2}
     state = await harness.setup_state(task, state)
 
-    assert harness.max_turns(state) == 2
+    assert state.get_max_turns(harness.config.max_turns) == 2
 
 
 def test_task_runtime_is_not_public_task_schema() -> None:
@@ -872,15 +872,14 @@ def test_option_only_program_requires_sandbox_placement() -> None:
 
 def test_constructor_mapping_args_override_config_mapping_values() -> None:
     harness = Harness(
-        sandbox={"image": "constructor", "nested": {"a": 1}},
-        config={"sandbox": {"image": "config", "scope": "group", "nested": {"b": 2}}},
+        sandbox={"image": "constructor", "memory_gb": 8},
+        config={"sandbox": {"image": "config", "scope": "group"}},
     )
 
-    assert harness.sandbox == {
-        "image": "constructor",
-        "scope": "group",
-        "nested": {"a": 1, "b": 2},
-    }
+    assert harness.sandbox is not None
+    assert harness.sandbox["image"] == "constructor"
+    assert harness.sandbox["memory_gb"] == 8
+    assert harness.sandbox["scope"] == "group"
 
 
 @pytest.mark.asyncio
@@ -948,7 +947,9 @@ async def test_user_config_can_request_scoped_sandbox(
     messages = await harness.runtime.user_messages(task, state)
 
     assert harness.user is not None
-    assert harness.user.sandbox == {"image": "python:3.11-slim", "scope": "group"}
+    assert harness.user.sandbox is not None
+    assert harness.user.sandbox["image"] == "python:3.11-slim"
+    assert harness.user.sandbox["scope"] == "group"
     assert state["sandbox_seen"] is sandbox
     assert messages == [{"role": "user", "content": "sandbox ok"}]
 
@@ -1020,6 +1021,47 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "source" in TasksetConfig.schema_text()
     assert "eval_source" in TasksetConfig.schema_text()
     assert "program" in HarnessConfig.schema_text()
+    assert "image" in vf.SandboxConfig.schema_text()
+    assert "bindings" in vf.ToolsetConfig.schema_text()
+
+
+def test_nested_configs_validate_and_feed_runtime_objects() -> None:
+    sandbox = vf.SandboxConfig(
+        image="python:3.12-slim",
+        packages="numpy",
+        setup_commands="echo ready",
+        scope="group",
+    )
+    harness = Harness(program={"sandbox": True}, sandbox=sandbox)
+
+    assert harness.sandbox is not None
+    assert harness.sandbox["image"] == "python:3.12-slim"
+    assert harness.sandbox["packages"] == ["numpy"]
+    assert harness.sandbox["setup_commands"] == ["echo ready"]
+    assert harness.sandbox["scope"] == "group"
+
+    toolset = Toolset(
+        config=vf.ToolsetConfig(
+            tools=[ref("hidden_tool")],
+            show="hidden_tool",
+            sandbox={"prefer": "program"},
+            write=True,
+        )
+    )
+
+    assert toolset.tools == (hidden_tool,)
+    assert toolset.show == ("hidden_tool",)
+    assert toolset.write is True
+    assert isinstance(toolset.sandbox, Mapping)
+    assert toolset.sandbox["prefer"] == "program"
+
+
+def test_nested_configs_reject_unknown_fields() -> None:
+    with pytest.raises(ValueError):
+        vf.SandboxConfig.model_validate({"image": "python:3.11", "unknown": True})
+
+    with pytest.raises(ValueError):
+        vf.ToolsetConfig.model_validate({"tools": [], "show": ["a"], "hide": ["b"]})
 
 
 def test_configs_load_from_toml_sections(tmp_path) -> None:

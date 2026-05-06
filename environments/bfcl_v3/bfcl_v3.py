@@ -478,7 +478,7 @@ async def bfcl_multi_turn_program(
     turn_idx = 0
     steps_per_turn = 0
     runtime = harness.runtime
-    max_model_requests = harness.max_turns(state)
+    max_model_requests = state.get_max_turns(harness.config.max_turns)
     model_requests = 0
 
     execute_multi_turn_func_call(

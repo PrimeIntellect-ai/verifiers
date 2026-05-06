@@ -6,6 +6,7 @@ from typing import Any, SupportsIndex, cast
 
 from verifiers.types import assert_json_serializable
 
+from .config import sandbox_config_mapping
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
 
 
@@ -36,6 +37,8 @@ class Task(dict):
             raise TypeError("task.toolsets must be a mapping.")
         if "sandbox" in self and not isinstance(self["sandbox"], Mapping):
             raise TypeError("task.sandbox must be a mapping.")
+        if "sandbox" in self:
+            super().__setitem__("sandbox", sandbox_config_mapping(self["sandbox"]))
         if "program" in self and not isinstance(self["program"], Mapping):
             raise TypeError("task.program must be a mapping.")
         if "max_turns" in self and (

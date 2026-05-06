@@ -8,6 +8,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.utils.program_utils import merge_task_program
 
 
 def write_harbor_task(root: Path, name: str = "task-a") -> Path:
@@ -135,7 +136,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
         }
     ).freeze()
 
-    program = harness.task_merged_program(
+    program = merge_task_program(
         cast(dict[str, object], harness.program), task, kind="command"
     )
 
@@ -158,7 +159,7 @@ def test_task_program_rejects_harness_owned_keys() -> None:
     task = vf.Task({"prompt": [], "program": {"command": ["other"]}}).freeze()
 
     with pytest.raises(ValueError, match="task.program can only define"):
-        harness.task_merged_program(
+        merge_task_program(
             cast(dict[str, object], harness.program), task, kind="command"
         )
 
@@ -172,6 +173,6 @@ def test_task_program_rejects_colliding_upload_paths() -> None:
     ).freeze()
 
     with pytest.raises(ValueError, match="define the same keys"):
-        harness.task_merged_program(
+        merge_task_program(
             cast(dict[str, object], harness.program), task, kind="command"
         )

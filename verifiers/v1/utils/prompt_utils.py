@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, cast
 
-from verifiers.types import Messages, SystemMessage
+from verifiers.types import MessageContent, Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
 
 
@@ -76,3 +76,61 @@ def resolve_system_prompt(
 
 def dump_messages(messages: Messages) -> list[dict[str, object]]:
     return [message.model_dump(exclude_none=True) for message in messages]
+
+
+def task_text(
+    task: Mapping[str, object],
+    state: Mapping[str, object],
+    *,
+    keys: tuple[str, ...] = ("instruction",),
+) -> str:
+    _ = state
+    for key in keys:
+        value = task.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return messages_text(task.get("prompt", []))
+
+
+def state_system_prompt_text(
+    task: Mapping[str, object], state: Mapping[str, object]
+) -> str:
+    _ = task
+    return messages_text(state.get("system_prompt", []))
+
+
+def messages_text(messages: object) -> str:
+    if isinstance(messages, str):
+        return messages
+    if not isinstance(messages, list):
+        return str(messages or "")
+    parts: list[str] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if content is not None:
+            parts.append(content_text(content))
+        elif isinstance(message, Mapping):
+            item = cast(Mapping[str, object], message)
+            parts.append(content_text(item.get("content")))
+        else:
+            parts.append(str(message))
+    return "\n\n".join(part for part in parts if part)
+
+
+def content_text(content: MessageContent | object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, Mapping):
+                item = cast(Mapping[str, object], part)
+                text = item.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts)
+    return str(content)

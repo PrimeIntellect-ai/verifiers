@@ -1369,14 +1369,15 @@ class Runtime:
             return SandboxHandle(cast(Any, lease), state)
         if not isinstance(sandbox, Mapping):
             raise TypeError("Toolset sandbox must be a mapping.")
-        prefer = sandbox.get("prefer")
+        sandbox_config = cast(Mapping[str, object], sandbox)
+        prefer = sandbox_config.get("prefer")
         if prefer is not None:
             if prefer != "program":
                 raise ValueError("Toolset sandbox.prefer must be 'program'.")
             lease = self._active_program_sandbox_lease(state)
             if lease is not None:
                 return SandboxHandle(cast(Any, lease), state)
-        scope = sandbox_scope(sandbox)
+        scope = sandbox_scope(sandbox_config)
         key = (self.scope_key(scope, state), tool_sandbox_key(toolset))
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)

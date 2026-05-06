@@ -4,12 +4,16 @@ import json
 import shlex
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any
 
 from .cli import CLIHarness
+from ...config import SandboxConfig
 from ...state import State
-from ...task import Task
 from ...utils.mcp_proxy_utils import proxy_command
+from ...utils.prompt_utils import (
+    state_system_prompt_text,
+    task_text as task_instruction_text,
+)
 
 DEFAULT_PI_PACKAGE = "@mariozechner/pi-coding-agent"
 DEFAULT_PI_WORKDIR = "/app"
@@ -30,7 +34,7 @@ class Pi(CLIHarness):
         system_prompt: object | None = DEFAULT_SYSTEM_PROMPT,
         package: str = DEFAULT_PI_PACKAGE,
         install_mcp_adapter: bool = True,
-        sandbox: bool | Mapping[str, object] = True,
+        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         max_turns: int | None = 4,
         **kwargs: Any,
@@ -206,32 +210,3 @@ def pi_mcp_json() -> str:
         }
     }
     return json.dumps(config, indent=2)
-
-
-def task_instruction_text(task: Task, state: State) -> str:
-    _ = state
-    instruction = task.get("instruction")
-    if isinstance(instruction, str):
-        return instruction
-    return messages_text(task.get("prompt", []))
-
-
-def state_system_prompt_text(task: Task, state: State) -> str:
-    _ = task
-    return messages_text(state.get("system_prompt", []))
-
-
-def messages_text(messages: object) -> str:
-    if isinstance(messages, str):
-        return messages
-    if not isinstance(messages, list):
-        return str(messages or "")
-    parts: list[str] = []
-    for message in messages:
-        if isinstance(message, Mapping):
-            item = cast(Mapping[str, object], message)
-            parts.append(str(item.get("content") or ""))
-        else:
-            content = getattr(message, "content", None)
-            parts.append(str(content or message))
-    return "\n\n".join(part for part in parts if part)

@@ -15,6 +15,8 @@ from typing import Any, Literal, cast
 
 from verifiers.utils.async_utils import maybe_await
 
+from .timing_utils import record_scoring_timing
+
 SignalKind = Literal["metric", "reward", "advantage"]
 SignalStage = Literal["rollout", "group"]
 SignalRecord = dict[str, object]
@@ -136,21 +138,6 @@ async def score_group(
             apply_advantage_to_trajectory(state, advantages[index])
         record_scoring_timing(state, start_time)
     return states
-
-
-def record_scoring_timing(state: dict[str, Any], start_time: float) -> None:
-    timing = state.setdefault(
-        "timing",
-        {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": start_time,
-        },
-    )
-    scoring_ms = (time.time() - start_time) * 1000
-    timing["scoring_ms"] = float(timing.get("scoring_ms", 0.0)) + scoring_ms
-    timing["total_ms"] = float(timing.get("total_ms", 0.0)) + scoring_ms
 
 
 def add_signal(signals: MutableSequence[SignalRecord], signal: SignalRecord) -> None:

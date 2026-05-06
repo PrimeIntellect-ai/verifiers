@@ -6,8 +6,9 @@ from typing import cast
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, SamplingArgs
 
-from ...config import HarnessConfig
+from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
 from ...harness import Harness
+from ...utils.program_utils import program_list_items
 
 
 DEFAULT_CLI_SANDBOX = {
@@ -25,7 +26,7 @@ class CLIHarness(Harness):
         self,
         command: str | list[object],
         *,
-        sandbox: bool | Mapping[str, object] = True,
+        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         files: Mapping[str, object] | None = None,
         dirs: Mapping[str, object] | None = None,
         setup: object | list[object] | None = None,
@@ -71,8 +72,11 @@ class CLIHarness(Harness):
         if program is not None:
             program_config = merge_program_defaults(program_config, program)
         sandbox_config = DEFAULT_CLI_SANDBOX if sandbox is True else None
-        if isinstance(sandbox, Mapping):
-            sandbox_config = {**DEFAULT_CLI_SANDBOX, **dict(sandbox)}
+        if sandbox is not True and sandbox is not False:
+            sandbox_config = {
+                **DEFAULT_CLI_SANDBOX,
+                **(sandbox_config_mapping(sandbox) or {}),
+            }
         super().__init__(
             program=program_config,
             system_prompt=system_prompt,
@@ -108,17 +112,10 @@ def merge_program_defaults(
             patch = cast(Mapping[str, object], value)
             merged[key] = {**dict(base), **dict(patch)}
         elif key in {"setup", "args"}:
-            merged[key] = [*list_items(merged.get(key)), *list_items(value)]
+            merged[key] = [
+                *program_list_items(merged.get(key), f"program.{key}"),
+                *program_list_items(value, f"program.{key}"),
+            ]
         else:
             merged[key] = value
     return merged
-
-
-def list_items(value: object) -> list[object]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return list(value)
-    return [value]

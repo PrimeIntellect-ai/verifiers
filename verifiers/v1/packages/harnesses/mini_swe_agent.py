@@ -3,13 +3,14 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any, cast
-
-from verifiers.types import MessageContent
+from typing import Any
 
 from .cli import CLIHarness
-from ...state import State
-from ...task import Task
+from ...config import SandboxConfig
+from ...utils.prompt_utils import (
+    state_system_prompt_text,
+    task_text as task_instruction_text,
+)
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
@@ -53,7 +54,7 @@ class MiniSWEAgent(CLIHarness):
         extra_config_specs: list[str] | None = None,
         install_python: bool = True,
         system_prompt: object | None = None,
-        sandbox: bool | Mapping[str, object] = True,
+        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         max_turns: int | None = 4,
         **kwargs: Any,
@@ -244,53 +245,3 @@ timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(mini_bi
   "${{CONFIG_ARGS[@]}}" 2>&1 | tee -a {shlex.quote(log_path)}
 """
     return f"bash -lc {shlex.quote(script)}"
-
-
-def task_instruction_text(task: Task, state: State) -> str:
-    _ = state
-    instruction = task.get("instruction")
-    if isinstance(instruction, str):
-        return instruction
-    return messages_text(task.get("prompt", []))
-
-
-def state_system_prompt_text(task: Task, state: State) -> str:
-    _ = task
-    return messages_text(state.get("system_prompt", []))
-
-
-def messages_text(messages: object) -> str:
-    if isinstance(messages, str):
-        return messages
-    if not isinstance(messages, list):
-        return str(messages or "")
-    parts: list[str] = []
-    for message in messages:
-        content = getattr(message, "content", None)
-        if content is not None:
-            parts.append(content_text(content))
-        elif isinstance(message, Mapping):
-            item = cast(Mapping[str, object], message)
-            parts.append(content_text(item.get("content")))
-        else:
-            parts.append(str(message))
-    return "\n\n".join(part for part in parts if part)
-
-
-def content_text(content: MessageContent | object) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for part in content:
-            if isinstance(part, Mapping):
-                item = cast(Mapping[str, object], part)
-                text = item.get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
-            elif isinstance(part, str):
-                text_parts.append(part)
-        return "\n".join(text_parts)
-    return str(content)
