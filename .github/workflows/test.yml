@@ -45,6 +45,7 @@ jobs:
           uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
