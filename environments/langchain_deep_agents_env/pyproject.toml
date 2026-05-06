@@ -1,0 +1,19 @@
+[project]
+name = "langchain-deep-agents-env"
+description = "V1 Taskset/Harness environment using the LangChain Deep Agents SDK"
+tags = ["v1", "taskset", "harness", "tool-use", "langchain", "deep-agents"]
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "verifiers>=0.1.13.dev8",
+    "datasets",
+    "deepagents>=0.5.4",
+    "langchain-openai>=1.2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["langchain_deep_agents_env.py", "pyproject.toml"]

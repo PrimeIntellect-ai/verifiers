@@ -36,8 +36,8 @@ prime env pull owner/name -t ./tmp-env
 
 ## Compare Candidates
 For each candidate, collect:
-1. Task type and horizon: single-turn, multi-turn, tool, sandbox.
-2. Implementation style: classic `MultiTurnEnv`/`ToolEnv` or v1 Taskset + Harness.
+1. Task type and horizon: single-turn, multi-turn, tool, sandbox, agent.
+2. Implementation style: classic `MultiTurnEnv`/`ToolEnv`, V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for framework programs, or `CliAgentEnv` for sandboxed agent binaries with LLM-API interception.
 3. Reward type: binary, continuous, judge-based, mixed.
 4. Dependencies and secrets requirements.
 5. Latest action status and version signal.
