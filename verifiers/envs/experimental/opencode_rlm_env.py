@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 import verifiers as vf
-from verifiers.envs.experimental.api_env import ApiEnv
+from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.opencode_env import OpenCodeEnv
 from verifiers.types import (
     Messages,
@@ -260,7 +260,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Extends parent to route sub-LLM requests concurrently.
 
-        Uses _poll_next_request from ApiEnv for the polling loop.
+        Uses _poll_next_request from CliAgentEnv for the polling loop.
         Sub-LLM requests (identified by X-RLM-Role header) are dispatched
         to concurrent handlers. Main-agent requests are returned normally.
         """
@@ -317,7 +317,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
             error: BaseException | None = None
             try:
                 # Call the model directly via Environment.get_model_response,
-                # bypassing ApiEnv's intercept-delivery logic (we handle
+                # bypassing CliAgentEnv's intercept-delivery logic (we handle
                 # delivery ourselves below).
                 response = await vf.Environment.get_model_response(
                     self,
@@ -395,9 +395,9 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         )
         if not has_main_step:
             state["prompt"] = prompt_messages
-        # Skip ApiEnv.add_model_response (which has its own simpler
+        # Skip CliAgentEnv.add_model_response (which has its own simpler
         # first-turn check) and call MultiTurnEnv directly.
-        await super(ApiEnv, self).add_model_response(
+        await super(CliAgentEnv, self).add_model_response(
             state, prompt_messages, await self.normalize_response(response)
         )
 

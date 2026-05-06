@@ -14,13 +14,9 @@ Universal runner for Gym-compatible environments. Wraps any environment that imp
 
 Environment for integrating MCP (Model Context Protocol) servers as tools. Connects to one or more MCP servers via stdio transport and exposes their tools to the model. Useful for giving models access to external services like web search, file fetching, or any MCP-compatible tool server.
 
-## ApiEnv
-
-Low-level interception base for agent code that makes OpenAI-compatible API calls through a proxy. Provides lifecycle hooks (`launch_agent`, `cleanup_agent`, `compute_base_url`) used by sandboxed agent environments. For new framework examples that separate task data from execution, use V1 `vf.Env` with `vf.Taskset` and `vf.Harness`.
-
 ## CliAgentEnv
 
-`ApiEnv` subclass for running agent code inside remote sandboxes. Overrides the agent lifecycle to create a sandbox and start the agent as a CLI background job, with API requests intercepted via a tunnel to the interception proxy.
+Environment for running custom agent code inside sandboxes. Intercepts the agent's OpenAI API requests via an HTTP proxy server, with each request triggering one `MultiTurnEnv` rollout step.
 
 ## HarborEnv
 
