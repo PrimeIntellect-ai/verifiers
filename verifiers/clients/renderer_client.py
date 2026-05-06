@@ -430,12 +430,10 @@ class RendererClient(
             self._config.reasoning_parser if self._config is not None else None
         )
         preserve_all_thinking = (
-            getattr(self._config, "preserve_all_thinking", False)
-            if self._config is not None
-            else False
+            self._config.preserve_all_thinking if self._config is not None else False
         )
         preserve_thinking_between_tool_calls = (
-            getattr(self._config, "preserve_thinking_between_tool_calls", False)
+            self._config.preserve_thinking_between_tool_calls
             if self._config is not None
             else False
         )
