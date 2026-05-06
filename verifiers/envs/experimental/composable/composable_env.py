@@ -256,6 +256,7 @@ class ComposableEnv(CliAgentEnv):
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
         await self._run_post_install(sandbox_id)
+        await self._run_state_collectors("post_sandbox_setup", state)
 
     async def post_rollout(self, state: State) -> None:
         """Collect agent logs and harness metrics after the agent finishes.
@@ -265,6 +266,9 @@ class ComposableEnv(CliAgentEnv):
         stays alive for the rubric to run tests / read files.
         """
         sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            await self._run_state_collectors("post_rollout", state)
+
         if sandbox_id and self.harness.log_path and "agent_logs" not in state:
             try:
                 log_path = shlex.quote(self.harness.log_path)
@@ -281,6 +285,15 @@ class ComposableEnv(CliAgentEnv):
             await self._collect_harness_metrics(sandbox_id, state)
 
         await super().post_rollout(state)
+
+    async def _run_state_collectors(self, hook: str, state: State) -> None:
+        collectors = self.harness.state_collectors or []
+        for collector in collectors:
+            try:
+                await getattr(collector, hook)(self, state)
+            except Exception as e:
+                name = type(collector).__name__
+                self.logger.warning(f"{name}.{hook} failed: {e}")
 
     async def _populate_sandbox_context(self, state: State) -> None:
         """Populate sandbox-specific context used by setup/evaluate hooks."""

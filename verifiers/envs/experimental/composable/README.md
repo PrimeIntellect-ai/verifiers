@@ -14,7 +14,7 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **Harness** — agent-side configuration. Declares how to install and run an agent binary, and where it expects to find task-provided content (instruction, system prompt).
 
-**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), and harness-declared metrics collection (via `Harness.metrics_path`).
+**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), harness-declared metrics collection (via `Harness.metrics_path`), and harness-owned state collectors for rollout artifacts.
 
 **Skills** are first-class: any taskset with a sibling `skills/` directory gets automatic upload for free. `TaskSet.get_skills_dir()` auto-discovers it, and `get_upload_dirs()` includes it under the `"skills"` key by default. The harness's `upload_dir_mapping` decides where skills land in the sandbox (e.g. RLM puts them at `/task/rlm-skills`).
 
@@ -167,7 +167,7 @@ ComposableEnv subclasses `CliAgentEnv` without modifying it. It overrides these 
 - **`get_sandbox_resources(state)`** — reads CPU, memory, GPU from `SandboxSpec`
 - **`build_env_vars(state)`** — merges task env vars and exports `AGENT_WORKDIR`
 - **`post_sandbox_setup(state)`** — runs task setup, uploads instruction + system prompt, installs agent
-- **`post_rollout(state)`** — collects agent logs (scoring is done by the rubric)
+- **`post_rollout(state)`** — runs harness state collectors and collects agent logs (scoring is done by the rubric)
 
 Everything else — tunnel, HTTP interception, background job polling, and streaming — is inherited from `CliAgentEnv` unchanged.
 
