@@ -52,7 +52,7 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     harness = vf.RLM(local_checkout="/tmp/checkout", skills=skills)
     program = cast(dict[str, Any], harness.program)
 
-    assert cast(dict[str, object], program["dirs"])["/task/rlm-skills"] == skills
+    assert cast(dict[str, object], program["dirs"])["/rlm/skills"] == skills
 
 
 def test_rlm_swe_environment_uses_harbor_taskset(tmp_path: Path):

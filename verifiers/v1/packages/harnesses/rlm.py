@@ -23,9 +23,10 @@ DEFAULT_RLM_REF = "main"
 DEFAULT_RLM_MAX_TURNS = 100
 DEFAULT_RLM_EXEC_TIMEOUT = 300
 DEFAULT_RLM_MAX_DEPTH = 0
-DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
+DEFAULT_RLM_INSTRUCTION_PATH = "/rlm/instruction.txt"
+DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
-DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
+DEFAULT_RLM_SKILLS_PATH = "/rlm/skills"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
@@ -37,7 +38,7 @@ class RLM(CLIHarness):
         self,
         *,
         workdir: str = "/workspace",
-        instruction_path: str = "/task/instruction.md",
+        instruction_path: str = DEFAULT_RLM_INSTRUCTION_PATH,
         rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
         rlm_ref: str = DEFAULT_RLM_REF,
         rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,

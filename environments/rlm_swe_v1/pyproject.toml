@@ -2,6 +2,8 @@
 name = "rlm-swe-v1"
 version = "0.1.0"
 description = "v1 RLM harness on Harbor coding tasks"
+license = "Apache-2.0"
+tags = ["v1", "rlm", "swe", "harbor", "cli-agent"]
 requires-python = ">=3.11"
 dependencies = [
     "verifiers",
@@ -13,10 +15,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["rlm_swe_v1.py", "skills/**", "README.md", "pyproject.toml"]
+include = ["rlm_swe_v1.py", "skills/**", "tasks/**", "README.md", "pyproject.toml"]
 
 [project.entry-points."verifiers.environments"]
 rlm-swe-v1 = "rlm_swe_v1:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
 
 [tool.uv.sources]
 verifiers = { path = "../..", editable = true }

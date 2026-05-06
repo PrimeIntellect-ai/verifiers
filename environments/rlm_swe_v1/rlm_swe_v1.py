@@ -7,6 +7,7 @@ from typing import Any
 import verifiers.v1 as vf
 
 _SKILLS_DIR = Path(__file__).parent / "skills"
+_TASKS_DIR = Path(__file__).parent / "tasks"
 
 
 def load_taskset(
@@ -27,6 +28,8 @@ def load_taskset(
     scope: str | None = None,
     env: dict[str, object] | None = None,
 ) -> vf.HarborTaskset:
+    if tasks is None and _TASKS_DIR.is_dir():
+        tasks = _TASKS_DIR
     return vf.HarborTaskset(
         tasks=tasks,
         task_names=task_names,

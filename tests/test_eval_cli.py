@@ -16,6 +16,10 @@ from verifiers.utils.eval_utils import load_toml_config
 from verifiers.utils.save_utils import states_to_outputs
 
 
+def fail_load_endpoints(*_: object) -> dict:
+    raise AssertionError("load_endpoints should not be called")
+
+
 @pytest.fixture
 def run_cli(make_metadata, make_state, make_input):
     def _run_cli(
@@ -23,6 +27,7 @@ def run_cli(make_metadata, make_state, make_input):
         overrides,
         capture_all_configs: bool = False,
         endpoints: dict | None = None,
+        fail_on_load_endpoints: bool = False,
     ):
         """Run CLI with mocked arguments and capture config(s).
 
@@ -76,7 +81,10 @@ def run_cli(make_metadata, make_state, make_input):
             lambda self: args_namespace,
         )
         monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-        monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
+        if fail_on_load_endpoints:
+            monkeypatch.setattr(vf_eval, "load_endpoints", fail_load_endpoints)
+        else:
+            monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
 
         async def fake_run_evaluation(config, **kwargs):
             captured["sampling_args"] = dict(config.sampling_args)
@@ -440,7 +448,7 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
             "api_key_var": "CUSTOM_API_KEY",
             "api_base_url": "https://custom.example/v1",
         },
-        endpoints={},
+        fail_on_load_endpoints=True,
     )
 
     config = captured["configs"][0]
