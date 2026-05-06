@@ -46,12 +46,12 @@ This folder contains installable example environments that showcase common usage
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
   - **hello_rlm_v1**: v1 sandboxed RLM-style CLI program with endpoint interception and metrics collection.
 
-- **ApiEnv (local agent callable + LLM interception proxy)**
-  - **dspy_rlm**: DSPy RLM on GSM8K; the agent uses the proxy `base_url` and any OpenAI-compatible client (requires Deno for RLM’s WASM sandbox).
-  - **openai_agents_env**: OpenAI Agents SDK with a calculator tool on GSM8K; `AsyncOpenAI` targets the interception proxy.
-  - **langchain_deep_agents_env**: LangChain Deep Agents SDK (`create_deep_agent`) with a calculator tool on GSM8K; `langchain_openai.ChatOpenAI` targets the interception proxy.
+- **V1 Taskset/Harness**
+  - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
+  - **openai_agents_env**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
+  - **langchain_deep_agents_env**: LangChain Deep Agents SDK harness (`create_deep_agent`) with a calculator tool on GSM8K through `vf.Env`.
 
-- **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
+- **HarborEnv / CliAgentEnv (agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).

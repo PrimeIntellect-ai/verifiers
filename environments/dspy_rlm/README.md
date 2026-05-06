@@ -7,8 +7,8 @@
 ### Overview
 
 - **Environment ID**: `dspy-rlm`
-- **Short description**: ApiEnv example using DSPy's RLM (Recursive Language Model) module on GSM8K math problems.
-- **Tags**: api-env, dspy, rlm, math, gsm8k
+- **Short description**: V1 Taskset/Harness example using DSPy's RLM (Recursive Language Model) module on GSM8K math problems.
+- **Tags**: v1, taskset, harness, dspy, rlm, math, gsm8k
 
 ### Datasets
 
@@ -18,18 +18,14 @@
 
 ### Task
 
-- **Type**: multi-turn (ApiEnv with interception proxy)
+- **Type**: `vf.Env` with a GSM8K `vf.Taskset` and DSPy RLM `vf.Harness`
 - **Rubric overview**: Exact numeric match on answer extracted from DSPy structured output
 
-### Prerequisites
+### How it works
 
-RLM requires [Deno](https://deno.land/) for its WASM sandbox:
+The taskset owns GSM8K source/eval rows and reward logic. The harness runs an in-process DSPy RLM program, builds its LM from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
 
-```bash
-curl -fsSL https://deno.land/install.sh | sh
-```
-
-[Additional installation options can be found here.](https://docs.deno.com/runtime/getting_started/installation/)
+DSPy RLM requires Deno to be available in the runtime environment.
 
 ### Quickstart
 
@@ -54,7 +50,6 @@ prime eval run dspy-rlm \
 | -------------------- | ----- | ------- | ------------------------------ |
 | `num_train_examples` | int   | `50`    | Number of training examples    |
 | `num_eval_examples`  | int   | `20`    | Number of evaluation examples  |
-| `timeout_seconds`    | float | `180.0` | Per-rollout timeout in seconds |
 
 ### Metrics
 

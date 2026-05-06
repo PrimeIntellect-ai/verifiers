@@ -16,7 +16,7 @@ Environment for integrating MCP (Model Context Protocol) servers as tools. Conne
 
 ## ApiEnv
 
-Base environment for running agent code that makes API calls through an interception proxy. Executes a user-provided Python callable (`agent_fn`) as a background task while the rollout loop intercepts, forwards, and records all LLM calls. The agent receives a `base_url` and can use any HTTP client or agent framework (OpenAI SDK, DSPy, LangChain, etc). Provides lifecycle hooks (`launch_agent`, `cleanup_agent`, `compute_base_url`) for subclasses.
+Low-level interception base for agent code that makes OpenAI-compatible API calls through a proxy. Provides lifecycle hooks (`launch_agent`, `cleanup_agent`, `compute_base_url`) used by sandboxed agent environments. For new framework examples that separate task data from execution, use V1 `vf.Env` with `vf.Taskset` and `vf.Harness`.
 
 ## CliAgentEnv
 

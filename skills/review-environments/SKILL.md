@@ -16,7 +16,7 @@ Find correctness risks and regressions first, then assess maintainability and ec
 ## Review Workflow
 1. Identify environment contract:
 - `load_environment(...)`
-- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, `ApiEnv` for local Python `agent_fn` with LLM-API interception, `CliAgentEnv`/`ComposableEnv` for sandboxed agents — note that `CliAgentEnv` inherits from `ApiEnv` and shares its interception/proxy lifecycle)
+- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for framework programs, `CliAgentEnv` for sandboxed agents)
 - rubric and metrics
 2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
 ```bash

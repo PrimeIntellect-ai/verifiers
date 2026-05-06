@@ -1,7 +1,7 @@
 [project]
 name = "dspy-rlm"
-description = "ApiEnv environment using DSPy's RLM module"
-tags = ["api-env", "multi-turn", "dspy", "rlm"]
+description = "V1 Taskset/Harness environment using DSPy's RLM module"
+tags = ["v1", "taskset", "harness", "dspy", "rlm"]
 version = "0.1.0"
 requires-python = ">=3.11,<3.13"
 dependencies = [

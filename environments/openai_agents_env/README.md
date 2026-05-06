@@ -6,8 +6,8 @@
 
 ### Overview
 - **Environment ID**: `openai-agents-env`
-- **Short description**: ApiEnv example using the OpenAI Agents SDK with a calculator tool on GSM8K math problems.
-- **Tags**: api-env, agents, tool-use, math, gsm8k
+- **Short description**: V1 Taskset/Harness example using the OpenAI Agents SDK with a calculator tool on GSM8K math problems.
+- **Tags**: v1, taskset, harness, agents, tool-use, math, gsm8k
 
 ### Datasets
 - **Primary dataset(s)**: `gsm8k` train (train) and test (eval) via `load_example_dataset`
@@ -15,8 +15,11 @@
 - **Split sizes**: Configurable via args; defaults to 50 train / 20 eval
 
 ### Task
-- **Type**: multi-turn (ApiEnv with interception proxy)
+- **Type**: `vf.Env` with a GSM8K `vf.Taskset` and OpenAI Agents SDK `vf.Harness`
 - **Rubric overview**: Exact match on numeric answer extracted from `ANSWER: <value>` pattern
+
+### How it works
+The taskset owns GSM8K source/eval rows and reward logic. The harness runs an in-process OpenAI Agents SDK program, builds its client from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
 
 ### Quickstart
 Run an evaluation with default settings:
@@ -39,7 +42,6 @@ prime eval run openai-agents-env \
 | --- | ---- | ------- | ----------- |
 | `num_train_examples` | int | `50` | Number of training examples |
 | `num_eval_examples` | int | `20` | Number of evaluation examples |
-| `timeout_seconds` | float | `120.0` | Per-rollout timeout in seconds |
 
 ### Metrics
 | Metric | Meaning |

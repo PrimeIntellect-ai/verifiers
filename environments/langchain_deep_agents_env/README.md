@@ -7,8 +7,8 @@
 ### Overview
 
 - **Environment ID**: `langchain-deep-agents-env`
-- **Short description**: ApiEnv example using the [LangChain Deep Agents SDK](https://docs.langchain.com/oss/python/deepagents/overview) (`deepagents.create_deep_agent`) with a calculator tool on GSM8K math problems.
-- **Tags**: api-env, multi-turn, tool-use, langchain, deep-agents
+- **Short description**: V1 Taskset/Harness example using the [LangChain Deep Agents SDK](https://docs.langchain.com/oss/python/deepagents/overview) (`deepagents.create_deep_agent`) with a calculator tool on GSM8K math problems.
+- **Tags**: v1, taskset, harness, tool-use, langchain, deep-agents
 
 ### Datasets
 
@@ -18,12 +18,14 @@
 
 ### Task
 
-- **Type**: multi-turn (ApiEnv with interception proxy)
+- **Type**: `vf.Env` with a GSM8K `vf.Taskset` and LangChain Deep Agents `vf.Harness`
 - **Rubric overview**: Exact numeric match on the value extracted from `ANSWER: <value>` in the agent's final message
 
 ### How it works
 
-`deepagents.create_deep_agent` returns a compiled LangGraph agent equipped with planning (`write_todos`), filesystem tools, summarization middleware, and a built-in `general-purpose` subagent. The agent is constructed with a `langchain_openai.ChatOpenAI` instance pointed at the verifiers interception `base_url`, so every model call -- main agent, summarization, and subagent -- is forwarded through the proxy and recorded as part of the rollout. A small `calculate` tool is provided for arithmetic.
+The taskset owns GSM8K source/eval rows and reward logic. The harness runs an in-process LangChain Deep Agents program, builds its chat model from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
+
+`deepagents.create_deep_agent` returns a compiled LangGraph agent equipped with planning (`write_todos`), filesystem tools, summarization middleware, and a built-in `general-purpose` subagent. A small `calculate` tool is provided for arithmetic.
 
 ### Quickstart
 
@@ -48,7 +50,6 @@ prime eval run langchain-deep-agents-env \
 | -------------------- | ----- | ------- | ------------------------------ |
 | `num_train_examples` | int   | `50`    | Number of training examples    |
 | `num_eval_examples`  | int   | `20`    | Number of evaluation examples  |
-| `timeout_seconds`    | float | `300.0` | Per-rollout timeout in seconds |
 
 ### Metrics
 
