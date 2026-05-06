@@ -89,10 +89,23 @@ class BFCLSchemaTool:
 
 
 def load_bfcl_toolset(task: Mapping[str, object]) -> vf.Toolset:
-    functions = task.get("function_with_hints") or task["function"]
     return vf.Toolset(
-        tools=[BFCLSchemaTool(tool_def) for tool_def in bfcl_tool_defs(functions)]
+        tools=[
+            BFCLSchemaTool(tool_def)
+            for tool_def in bfcl_tool_defs(bfcl_functions(task))
+        ]
     )
+
+
+def bfcl_functions(task: Mapping[str, object]) -> object:
+    return task.get("function_with_hints") or task["function"]
+
+
+def bfcl_missed_function(task: Mapping[str, object]) -> Mapping[str, object]:
+    value = task.get("missed_function_with_hints") or task.get("missed_function") or {}
+    if not isinstance(value, Mapping):
+        raise TypeError("BFCL missed_function must be a mapping.")
+    return cast(Mapping[str, object], value)
 
 
 def build_source(test_category: str, examples_per_category: int = -1):
@@ -170,10 +183,13 @@ def bfcl_row(
     for key in (
         "initial_config",
         "involved_classes",
-        "missed_function",
     ):
         if key in entry:
             row[key] = entry[key]
+    if "missed_function" in entry:
+        row["missed_function"] = entry["missed_function"]
+    if "missed_function" in hinted_entry:
+        row["missed_function_with_hints"] = hinted_entry["missed_function"]
     if ground_truth is not None:
         for key, value in ground_truth.items():
             row[key] = value
@@ -423,7 +439,9 @@ def multi_turn_reward(task: Mapping[str, object], state: Mapping[str, object]) -
     return float(bool(result["valid"]))
 
 
-async def bfcl_multi_turn_program(task: vf.Task, state: vf.State) -> vf.State:
+async def bfcl_multi_turn_program(
+    task: vf.Task, state: vf.State, harness: vf.Harness
+) -> vf.State:
     patch_bfcl_eval()
     from bfcl_eval.constants.default_prompts import (
         DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC,
@@ -433,7 +451,6 @@ async def bfcl_multi_turn_program(task: vf.Task, state: vf.State) -> vf.State:
     )
     from bfcl_eval.model_handler.base_handler import is_empty_execute_response
 
-    runtime = state.runtime()
     messages = [
         *normalize_messages(
             state.get("system_prompt", []), field_name="state.system_prompt"
@@ -452,18 +469,16 @@ async def bfcl_multi_turn_program(task: vf.Task, state: vf.State) -> vf.State:
         return rendered_messages
 
     category = str(task["category"])
-    tool_defs = bfcl_tool_defs(task["function"])
+    tool_defs = bfcl_tool_defs(bfcl_functions(task))
     next_prompts = list(cast(Sequence[object], task["question"]))[1:]
-    holdout_function = cast(Mapping[str, object], task.get("missed_function") or {})
+    holdout_function = bfcl_missed_function(task)
     initial_config = cast(dict[Any, Any], json_clone(task.get("initial_config") or {}))
     involved_classes = cast(list[Any], json_clone(task["involved_classes"]))
     max_steps_per_turn = int(task.get("max_steps_per_turn") or maximum_step_limit())
     turn_idx = 0
     steps_per_turn = 0
-    harness = runtime.harness
-    max_model_requests = (
-        harness.max_turns(state) if isinstance(harness, vf.Harness) else 0
-    )
+    runtime = harness.runtime
+    max_model_requests = harness.max_turns(state)
     model_requests = 0
 
     execute_multi_turn_func_call(
@@ -542,6 +557,14 @@ async def bfcl_multi_turn_program(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
+class BFCLMultiTurnHarness(vf.Harness):
+    def __init__(self, config=None):
+        super().__init__(program=self.run_bfcl_multi_turn, config=config)
+
+    async def run_bfcl_multi_turn(self, task: vf.Task, state: vf.State) -> vf.State:
+        return await bfcl_multi_turn_program(task, state, self)
+
+
 def load_taskset(
     test_category: str = "simple_python",
     examples_per_category: int = -1,
@@ -559,7 +582,7 @@ def load_harness(test_category: str = "simple_python", config=None) -> vf.Harnes
     from bfcl_eval.utils import is_multi_turn
 
     if is_multi_turn(test_category):
-        return vf.Harness(program=bfcl_multi_turn_program, config=config)
+        return BFCLMultiTurnHarness(config=config)
     return vf.Harness(config=config)
 
 

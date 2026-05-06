@@ -12,10 +12,37 @@ Use these references in this repository while porting:
 - `environments/bfcl_v3/bfcl_v3.py`: task-local dynamic tool schemas.
 - `environments/alphabet_sort/alphabet_sort_v1.py`: user function.
 - `environments/mcp_search_env/mcp_search_v1.py`: MCP tools.
-- `environments/tau2_bench/tau2_bench.py`: task-owned user simulator.
+- `tau2-bench-v1` (`environments/tau2_bench/tau2_bench.py`): task-owned user simulator.
 - `environments/hello_subagent_v1/hello_subagent_v1.py`: nested harness calls.
-- `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared sandbox-backed tools across child harnesses.
+- `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared
+  sandbox-backed tools across child harnesses.
 - `environments/opencode_harbor/opencode_harbor_v1.py`: sandbox CLI harness.
+
+## Quick Pattern Map
+
+Use this table first. Pick the row that matches the research-environments
+package, copy the v1 reference shape, then fill in the package-specific dataset
+and scoring logic.
+
+| research-environments package | v1 reference to copy | pattern |
+| --- | --- | --- |
+| `aime2024`, `aime2025`, `aime2026`, `gpqa`, `math500`, `mmlu_pro`, `simpleqa`, `simpleqa_verified` | `environments/reverse_text/reverse_text_v1.py` | serializable rows, base `Harness`, taskset reward |
+| `clbench`, `color_codeword`, `graphwalks`, `ifbench`, `ifeval`, `if_summarize_judge`, `patterned_needle_in_haystack`, `science_env`, `unscramble`, `verbatim_copy` | `environments/reverse_text/reverse_text_v1.py` | single-turn prompt taskset with parser or judge closed over by reward |
+| `math_env` with Python execution | `environments/math_python/math_python_v1.py` | sandbox-backed callable Python tool |
+| `browsecomp`, `ddbc`, `deepdive`, `hle` with tools, `wikispeedia` | `environments/wiki_search/wiki_search_v1.py` | callable `Toolset` with private dependencies and hidden bindings |
+| `bfcl_v3` | `environments/bfcl_v3/bfcl_v3.py` | task-local dynamic tool schemas |
+| `alphabet_sort` | `environments/alphabet_sort/alphabet_sort_v1.py` | taskset user simulator |
+| `tau2-bench-v1` | `environments/tau2_bench/tau2_bench.py` | task-owned user simulator with task/state-dependent sessions |
+| MCP-backed search/tool evals | `environments/mcp_search_env/mcp_search_v1.py` | stdio MCP toolset |
+| `mcp_atlas` | `Sandbox Service Toolsets` below | task-local service sandbox plus callable schema tools |
+| helper-agent or self-judge envs | `environments/hello_subagent_v1/hello_subagent_v1.py` | direct `child_harness.run(child_task)` from a tool/update/reward |
+| shared sandbox helper-agent envs | `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py` | borrowed sandbox/model state across child harnesses |
+| Harbor/OpenCode task directories | `environments/opencode_harbor/opencode_harbor_v1.py` | `HarborTaskset` plus `OpenCode` harness |
+| Pi Coding Agent task directories | `Sandbox CLI Harnesses` below | `HarborTaskset` or custom taskset plus `Pi` harness |
+| `terminal_bench_2`, `general_agent`, `nl2repobench`, RLM task-directory packages | `Task-Directory Command Harnesses` below | sandbox command program with task-owned uploads and artifacts |
+| `scicode`, `livecodebench`, `code_env` | `Code Verification And Post-Rollout Checks` below | update runs verification, reward reads serializable result |
+| mixed benchmark suites | `Mixed Environment Suites` below | one v1 `Env` per taskset/harness pair, grouped with `EnvGroup` |
+| third-party agent libraries such as DSPy | `environments/dspy_flights/dspy_flights.py` | Python program using `state.get_endpoint_config(...)` or `state.get_client(...)` |
 
 ## General Migration Shape
 
@@ -64,6 +91,11 @@ Rows should be plain serializable task data:
     "max_turns": 8,
 }
 ```
+
+Environment-specific dependencies belong in the environment package's own
+`pyproject.toml`. This is expected: v1 environments are packages precisely so
+BFCL, DSPy, browser/search, CLI-agent, and benchmark-specific dependencies can
+live with the environment instead of the root `verifiers` package.
 
 Put system instructions in `system_prompt`, not in `prompt`:
 
@@ -334,7 +366,7 @@ Gotchas:
 
 Use this for:
 
-- `tau2_bench`
+- `tau2-bench-v1`
 - tasksets where the environment returns a user message when the model does not
   call a tool
 
@@ -429,8 +461,8 @@ Gotchas:
 - MCP server auth and secrets should be handled by the server command or env.
 - Use task fields and bindings when the server needs task-specific arguments.
 - Callable tools and MCP tools can coexist in toolsets. Python programs receive
-  callable handles; sandbox command programs can request an MCP server with
-  `program.tools = "mcp"`.
+  callable handles; sandbox command programs can request an MCP server through
+  `program.tools`.
 - `program.tools` names the program-facing interface, not a concrete tool. Use
   `"callable"` or `"mcp"`; tools such as `bash` are regular Toolset entries.
 
@@ -486,13 +518,15 @@ Use this for:
 
 - OpenCode-style task directories
 - Harbor-shaped tasksets
+- mini-swe-agent task directories
 - RLM-style command harnesses
 - CLI programs that call an intercepted OpenAI-compatible endpoint
 
 Migration:
 
 1. Use `vf.HarborTaskset` for Harbor-format task directories.
-2. Use `vf.OpenCode()` for the OpenCode command harness.
+2. Use `vf.OpenCode()`, `vf.Pi()`, `vf.MiniSWEAgent()`, or `vf.RLM()` for the
+   command harness.
 3. Put task-owned uploads and sandbox overrides on the taskset.
 4. Keep scoring as reward/metric functions on the taskset.
 
@@ -516,7 +550,15 @@ Gotchas:
   uploads, and test scoring.
 - `OpenCode` owns OpenCode installation, config generation, MCP tool proxy
   wiring, and log artifacts.
+- `Pi` owns Pi installation, intercepted model config generation, optional MCP
+  adapter setup, and log artifacts.
+- `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint
+  env, and log/trajectory artifacts.
+- `RLM` owns RLM installation, optional `/task/rlm-skills` upload, endpoint
+  wiring, and trajectory filtering.
 - `task.program` is the merge point for task-owned program files/env/setup.
+- Harness-owned CLI tool registration belongs in `program.tools.mcp`; it runs
+  after ordinary setup and before the command.
 - Use group-scoped sandbox lifetime when scoring needs to inspect the sandbox.
 
 ## Task-Directory Command Harnesses
@@ -652,7 +694,7 @@ async def bash(command: str, sandbox) -> str:
 
 @vf.update
 async def run_tests(task, state):
-    tools = state.tools()
+    tools = state.get_tools()
     state["tests"] = json.loads(await tools["bash"](command="pytest -q"))
 
 
@@ -673,7 +715,7 @@ Gotchas:
 
 - Updates run before rewards and metrics. Use them for parsing, verification,
   and serializable state materialization.
-- Updates should call resolved tools through `state.tools()` when they need live
+- Updates should call resolved tools through `state.get_tools()` when they need live
   sandbox or service access.
 - Cleanup runs after scoring. Use it for user-visible final mutation or
   resource cleanup that is not handled by sandbox scope.

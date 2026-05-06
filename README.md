@@ -149,8 +149,9 @@ async def contains_answer(task, state) -> float:
 def load_taskset(config=None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(taskset_config=None) -> vf.Env:
-    return vf.Env(taskset=load_taskset(taskset_config))
+def load_environment(config=None) -> vf.Env:
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
@@ -164,6 +165,35 @@ env = vf.Env(
     taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
     harness=vf.OpenCode(),
 )
+```
+
+The same environment package is the unit used by evals and `prime-rl`. The
+trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
+and harness options stay under `env.args.config`:
+
+```toml
+# configs/rl/my-v1-env.toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "my-env"
+
+[env.args.config.harness]
+max_turns = 1
+
+[env.args.config.taskset.scoring.contains_answer]
+weight = 1.0
+```
+
+```bash
+prime env install my-env
+uv run prime-rl configs/rl/my-v1-env.toml
 ```
 
 To install the environment module into your project, do:

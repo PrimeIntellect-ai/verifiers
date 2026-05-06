@@ -41,6 +41,7 @@ class Taskset:
         # Collection fields.
         toolsets: Iterable[object] = (),
         stops: Iterable[Callable[..., object]] = (),
+        setups: Iterable[Callable[..., object]] = (),
         updates: Iterable[Callable[..., object]] = (),
         metrics: Iterable[Callable[..., object]] = (),
         rewards: Iterable[Callable[..., object]] = (),
@@ -83,6 +84,10 @@ class Taskset:
         self.stops = cast(
             list[Callable[..., object]],
             merge_config_callables(stops, self.config.stops, "stop"),
+        )
+        self.setups = cast(
+            list[Callable[..., object]],
+            merge_config_callables(setups, self.config.setups, "setup"),
         )
         self.updates = cast(
             list[Callable[..., object]],
@@ -137,6 +142,10 @@ class Taskset:
 
     def add_stop(self, fn: Callable[..., object]) -> None:
         self.stops.append(fn)
+        self._refresh_attached_harnesses()
+
+    def add_setup(self, fn: Callable[..., object]) -> None:
+        self.setups.append(fn)
         self._refresh_attached_harnesses()
 
     def add_update(self, fn: Callable[..., object]) -> None:

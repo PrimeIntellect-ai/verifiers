@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
+  <title id="title">v1 composition lifecycle</title>
+  <desc id="desc">Tasksets and harnesses contribute lifecycle functions that are merged into rollout and group stages. Env is an adapter beside the old MultiTurnEnv stack.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#101828" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1120" height="620" fill="#ffffff"/>
+  <text x="56" y="56" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="29" font-weight="700" fill="#0f172a">Composition is a lifecycle around harness.run</text>
+  <text x="56" y="86" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#475569">Taskset and Harness contribute functions to the same stages. Env only batches and adapts this to workers.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="62" y="132" width="240" height="318" rx="12" fill="#fffbeb" stroke="#fbbf24" stroke-width="2"/>
+    <text x="86" y="168" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="700" fill="#92400e">Taskset owns</text>
+    <text x="86" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">source / eval_source</text>
+    <text x="86" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">system_prompt</text>
+    <text x="86" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">task-owned toolsets</text>
+    <text x="86" y="283" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">user simulator</text>
+    <text x="86" y="309" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">@vf.setup</text>
+    <text x="86" y="335" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">@vf.update</text>
+    <text x="86" y="361" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">@vf.metric / reward</text>
+    <text x="86" y="387" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">@vf.advantage</text>
+    <text x="86" y="413" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">@vf.cleanup</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="818" y="132" width="240" height="318" rx="12" fill="#ecfeff" stroke="#67e8f9" stroke-width="2"/>
+    <text x="842" y="168" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="700" fill="#155e75">Harness owns</text>
+    <text x="842" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">program / base loop</text>
+    <text x="842" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">model/client defaults</text>
+    <text x="842" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">harness-owned toolsets</text>
+    <text x="842" y="283" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">sandbox placement</text>
+    <text x="842" y="309" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">interception endpoint</text>
+    <text x="842" y="335" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">@vf.setup</text>
+    <text x="842" y="361" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">@vf.update</text>
+    <text x="842" y="387" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">@vf.metric</text>
+    <text x="842" y="413" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#164e63">@vf.cleanup</text>
+  </g>
+
+  <g>
+    <rect x="382" y="124" width="360" height="58" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="2"/>
+    <text x="406" y="159" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#3730a3">rollout setup</text>
+    <text x="568" y="159" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">resolve prompt, tools, model, sandbox</text>
+
+    <rect x="382" y="214" width="360" height="58" rx="12" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+    <text x="406" y="249" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#1d4ed8">program</text>
+    <text x="568" y="249" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">base loop, Python, or CLI</text>
+
+    <rect x="382" y="304" width="360" height="58" rx="12" fill="#f0fdfa" stroke="#2dd4bf" stroke-width="2"/>
+    <text x="406" y="339" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#0f766e">updates</text>
+    <text x="568" y="339" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">sync trajectory, enrich state</text>
+
+    <rect x="382" y="394" width="360" height="58" rx="12" fill="#fdf2f8" stroke="#f472b6" stroke-width="2"/>
+    <text x="406" y="429" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#be185d">score + cleanup</text>
+    <text x="568" y="429" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">metrics, rewards, resources</text>
+  </g>
+
+  <path d="M562 182 V208" stroke="#334155" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M562 272 V298" stroke="#334155" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M562 362 V388" stroke="#334155" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M302 291 H365" stroke="#334155" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+  <path d="M818 291 H755" stroke="#334155" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="144" y="506" width="306" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+    <text x="168" y="533" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f172a">Standalone</text>
+    <text x="168" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">await harness.run(task)</text>
+  </g>
+  <g>
+    <rect x="490" y="506" width="306" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+    <text x="514" y="533" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f172a">Eval / RL workers</text>
+    <text x="514" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">Env(taskset, harness)</text>
+  </g>
+  <g>
+    <rect x="836" y="506" width="180" height="62" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>
+    <text x="860" y="533" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f172a">Separate stack</text>
+    <text x="860" y="556" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#475569">MultiTurnEnv stays intact</text>
+  </g>
+</svg>

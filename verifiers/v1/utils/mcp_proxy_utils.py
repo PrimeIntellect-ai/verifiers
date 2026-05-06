@@ -12,14 +12,45 @@ REQUESTS_PACKAGE = "requests"
 
 
 ProgramToolType = Literal["callable", "mcp"]
+PROGRAM_TOOL_TYPES = {"callable", "mcp"}
+PROGRAM_TOOL_METADATA = {"priority"}
 
 
-def validate_program_tool_type(value: object) -> ProgramToolType | None:
+def validate_program_tool_types(value: object) -> tuple[ProgramToolType, ...]:
     if value is None:
-        return None
-    if value not in {"callable", "mcp"}:
-        raise ValueError("program.tools must be 'callable' or 'mcp'.")
-    return cast(ProgramToolType, value)
+        return ()
+    if isinstance(value, str):
+        if value not in PROGRAM_TOOL_TYPES:
+            raise ValueError("program.tools must be 'callable' or 'mcp'.")
+        return (cast(ProgramToolType, value),)
+    if isinstance(value, list):
+        result: list[ProgramToolType] = []
+        for item in value:
+            for tool_type in validate_program_tool_types(item):
+                if tool_type in result:
+                    raise ValueError(
+                        f"program.tools defines {tool_type!r} more than once."
+                    )
+                result.append(tool_type)
+        return tuple(result)
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("program.tools mapping keys must be strings.")
+        spec = cast(Mapping[str, object], value)
+        unknown = sorted(set(spec) - PROGRAM_TOOL_TYPES - PROGRAM_TOOL_METADATA)
+        if unknown:
+            raise ValueError(f"program.tools has unknown tool interface: {unknown}.")
+        if "priority" in spec:
+            priority = spec["priority"]
+            if not isinstance(priority, int) or isinstance(priority, bool):
+                raise TypeError("program.tools priority must be an integer.")
+        result = [
+            cast(ProgramToolType, key) for key in spec if key in PROGRAM_TOOL_TYPES
+        ]
+        if not result:
+            raise ValueError("program.tools mapping must define a tool interface.")
+        return tuple(result)
+    raise TypeError("program.tools must be a string, mapping, or list.")
 
 
 def proxy_program(

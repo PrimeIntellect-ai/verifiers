@@ -55,6 +55,7 @@ class TasksetConfig(Config):
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
     stops: list[object] = Field(default_factory=list)
+    setups: list[object] = Field(default_factory=list)
     updates: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
@@ -78,6 +79,7 @@ class HarnessConfig(Config):
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
     stops: list[object] = Field(default_factory=list)
+    setups: list[object] = Field(default_factory=list)
     updates: list[object] = Field(default_factory=list)
     metrics: list[object] = Field(default_factory=list)
     rewards: list[object] = Field(default_factory=list)
@@ -105,7 +107,7 @@ def merge_config_items(values: Iterable[object], config: object) -> list[object]
 
 
 CallableKind = Literal[
-    "stop", "update", "metric", "reward", "advantage", "cleanup", "teardown"
+    "stop", "setup", "update", "metric", "reward", "advantage", "cleanup", "teardown"
 ]
 
 

@@ -98,14 +98,8 @@ class OpenCode(CLIHarness):
                 build_opencode_run_script(
                     agent_workdir=agent_workdir,
                     instruction_path=instruction_path,
-                    system_prompt_path=system_prompt_path
-                    if system_prompt is not None
-                    else None,
                     log_path=log_path,
-                    disabled_tools=disabled,
                     allow_git=allow_git,
-                    disable_compaction=disable_compaction,
-                    provider_timeout_ms=provider_timeout_ms,
                 ),
             ],
             sandbox=sandbox,
@@ -116,8 +110,19 @@ class OpenCode(CLIHarness):
                 release_sha256=release_sha256,
                 install_ripgrep=install_ripgrep,
             ),
+            tools={
+                "mcp": build_opencode_mcp_setup_script(
+                    agent_workdir=agent_workdir,
+                    system_prompt_path=system_prompt_path
+                    if system_prompt is not None
+                    else None,
+                    log_path=log_path,
+                    disabled_tools=disabled,
+                    disable_compaction=disable_compaction,
+                    provider_timeout_ms=provider_timeout_ms,
+                )
+            },
             artifacts=artifacts,
-            tools="mcp",
             program=program,
             system_prompt=system_prompt,
             max_turns=max_turns,
@@ -214,20 +219,9 @@ def build_opencode_run_script(
     *,
     agent_workdir: str,
     instruction_path: str,
-    system_prompt_path: str | None,
     log_path: str,
-    disabled_tools: list[str],
     allow_git: bool,
-    disable_compaction: bool,
-    provider_timeout_ms: int,
 ) -> str:
-    config_json = build_opencode_config(
-        disabled_tools=disabled_tools,
-        system_prompt_path=system_prompt_path,
-        disable_compaction=disable_compaction,
-        provider_timeout_ms=provider_timeout_ms,
-    )
-    log_dir = str(PurePosixPath(log_path).parent)
     script = f"""\
 set -eo pipefail
 export PATH="$HOME/.opencode/bin:$PATH"
@@ -239,16 +233,43 @@ if [[ -z "$OPENCODE_WORKDIR" ]]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
+cd "$OPENCODE_WORKDIR"
+cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
+"""
+    return script
+
+
+def build_opencode_mcp_setup_script(
+    *,
+    agent_workdir: str,
+    system_prompt_path: str | None,
+    log_path: str,
+    disabled_tools: list[str],
+    disable_compaction: bool,
+    provider_timeout_ms: int,
+) -> str:
+    config_json = build_opencode_config(
+        disabled_tools=disabled_tools,
+        system_prompt_path=system_prompt_path,
+        disable_compaction=disable_compaction,
+        provider_timeout_ms=provider_timeout_ms,
+    )
+    log_dir = str(PurePosixPath(log_path).parent)
+    return f"""\
+set -e
+export PATH="$HOME/.opencode/bin:$PATH"
+
+OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
+if [[ -z "$OPENCODE_WORKDIR" ]]; then
+    OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
+fi
+
 mkdir -p ~/.config/opencode {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
 SCHEMA_DOLLAR='$'
 cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
-
-cd "$OPENCODE_WORKDIR"
-cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
-    return script
 
 
 def task_instruction_text(task: Task, state: State) -> str:

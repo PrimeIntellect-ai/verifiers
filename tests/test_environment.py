@@ -1,5 +1,7 @@
 """Tests for the base Environment class."""
 
+import json
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -305,6 +307,55 @@ class TestEnvironmentBase:
         first_tool = state["tool_defs"][0]
         assert isinstance(first_tool, Tool)
         assert first_tool.name == "echo"
+
+    @pytest.mark.asyncio
+    async def test_init_state_rejects_plain_string_task(
+        self, mock_client, sample_dataset, make_input
+    ):
+        """Plain string task routes are not part of the rollout input schema."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        input_data = dict(make_input(prompt=[{"role": "user", "content": "Hello"}]))
+        input_data["task"] = "legacy-route"
+
+        with pytest.raises(ValueError, match="Plain string task routes"):
+            await env.init_state(
+                input=cast(RolloutInput, input_data),
+                client=mock_client,
+                model="test-model",
+            )
+
+    @pytest.mark.asyncio
+    async def test_init_state_accepts_json_task_payload(
+        self, mock_client, sample_dataset, make_input
+    ):
+        """Serialized task payloads remain accepted for worker compatibility."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        task_payload = {
+            "prompt": [{"role": "user", "content": "Hello"}],
+            "answer": "Hello",
+            "example_id": 3,
+            "custom": "field",
+        }
+        input_data = dict(make_input(prompt=[{"role": "user", "content": "ignored"}]))
+        input_data["task"] = json.dumps(task_payload)
+
+        state = await env.init_state(
+            input=cast(RolloutInput, input_data),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert state["task"] == task_payload
+        assert state["input"]["custom"] == "field"
+        assert state["prompt"][0]["content"] == "Hello"
 
     @pytest.mark.asyncio
     async def test_init_state_rejects_info_oai_tools(

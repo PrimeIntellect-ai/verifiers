@@ -30,7 +30,6 @@ from .utils.lifecycle_utils import (
 from .utils.scoring_utils import SignalRecord, build_signals, collect_signals
 from .utils.scoring_utils import score_group as score_group_signals
 from .utils.scoring_utils import score_rollout as score_rollout_signals
-from .utils.trajectory_utils import render_completion
 from .utils.artifact_utils import artifact_format, artifact_key, artifact_optional
 from .utils.artifact_utils import artifact_path
 from .state import State
@@ -95,10 +94,16 @@ class Runtime:
         validate_handler_args(
             self.stop_conditions, {"task", "state"}, "stop", "rollout"
         )
+        self.rollout_setup = collect_handlers(
+            self._handler_owners(),
+            "setup",
+            self._extra_handlers("setup"),
+        )
+        validate_handler_args(self.rollout_setup, {"task", "state"}, "setup", "rollout")
         self.rollout_update = collect_handlers(
             self._handler_owners(),
             "update",
-            self._extra_handlers("update", builtins=[render_completion]),
+            self._extra_handlers("update"),
             stage="rollout",
         )
         self.group_update = collect_handlers(
@@ -628,6 +633,27 @@ class Runtime:
         state["trajectory"].append(step)
         return response
 
+    async def setup_rollout(
+        self,
+        task: Task,
+        state: State,
+        setup_handlers: Iterable[Callable[..., object]] = (),
+        **kwargs: object,
+    ) -> State:
+        handlers = sort_handlers(
+            unique_handlers(
+                [
+                    *setup_handlers,
+                    *self.rollout_setup,
+                    *self._rollout_handlers("setup", state),
+                ]
+            ),
+            "setup",
+        )
+        validate_handler_args(handlers, {"task", "state"}, "setup", "rollout")
+        await self.run_rollout_handlers(handlers, task=task, state=state, **kwargs)
+        return state
+
     async def update_rollout(self, task: Task, state: State) -> State:
         handlers = sort_handlers(
             unique_handlers(
@@ -738,11 +764,18 @@ class Runtime:
         handlers: Iterable[Callable[..., object]],
         task: Task,
         state: State,
+        **kwargs: object,
     ) -> None:
         for handler in handlers:
             extra_kwargs = await self.binding_kwargs(handler, task, state)
+            duplicate = set(kwargs) & set(extra_kwargs)
+            if duplicate:
+                raise ValueError(
+                    f"Handler {function_name(handler)!r} received duplicate "
+                    f"bound args: {sorted(duplicate)}."
+                )
             await maybe_call_with_named_args(
-                handler, task=task, state=state, **extra_kwargs
+                handler, task=task, state=state, **kwargs, **extra_kwargs
             )
 
     async def binding_kwargs(
@@ -773,6 +806,17 @@ class Runtime:
                     "callable."
                 )
             return await self._resolve_path(source, task, state)
+        if isinstance(source, Mapping) and "fn" in source:
+            spec = cast(Mapping[str, object], source)
+            unknown = set(spec) - {"fn"}
+            if unknown:
+                raise ValueError(
+                    f"Callable binding source has unknown keys: {sorted(unknown)}."
+                )
+            fn = resolve_config_object(spec["fn"])
+            if not callable(fn):
+                raise TypeError("Callable binding source requires callable fn.")
+            return await maybe_call_with_named_args(fn, task=task, state=state)
         if callable(source):
             return await maybe_call_with_named_args(source, task=task, state=state)
         return source
@@ -909,7 +953,7 @@ class Runtime:
                 continue
             if callable(item):
                 add_target(tool_name(item), "tool", cast(Callable[..., object], item))
-        for attr in ("stops", "updates", "cleanups"):
+        for attr in ("stops", "setups", "updates", "cleanups"):
             for fn in getattr(toolset, attr):
                 if callable(fn):
                     add_target(
@@ -919,7 +963,8 @@ class Runtime:
                     )
         for _, method in inspect.getmembers(toolset, predicate=callable):
             if any(
-                getattr(method, attr, False) for attr in ("stop", "update", "cleanup")
+                getattr(method, attr, False)
+                for attr in ("stop", "setup", "update", "cleanup")
             ):
                 add_target(
                     function_name(method),
@@ -1709,6 +1754,7 @@ async def state_done(task: Task, state: State) -> bool:
 def handler_collection_attr(attr: str) -> str:
     return {
         "stop": "stops",
+        "setup": "setups",
         "update": "updates",
         "cleanup": "cleanups",
         "teardown": "teardowns",

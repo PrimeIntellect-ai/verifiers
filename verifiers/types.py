@@ -453,9 +453,15 @@ TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id"}
 def normalize_task_payload(value: object) -> dict[str, Any]:
     """Normalize a serialized task payload attached to rollout info."""
     if isinstance(value, str):
-        value = json.loads(value)
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "Serialized task payloads must be JSON objects. Plain string task "
+                "routes are no longer supported; use info['env_id'] for routing."
+            ) from e
     if not isinstance(value, Mapping):
-        raise TypeError("info.task must be a mapping.")
+        raise TypeError("Serialized task payloads must decode to a mapping.")
     return dict(cast(Mapping[str, Any], value))
 
 
@@ -476,6 +482,9 @@ def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
     task_payload = task_payload_from_info(input_data.get("info"))
     if task_payload is not None:
         return task_payload
+    direct_task_payload = input_data.get("task")
+    if direct_task_payload is not None:
+        return normalize_task_payload(direct_task_payload)
     return dict(input_data)
 
 

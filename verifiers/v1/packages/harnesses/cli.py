@@ -6,6 +6,7 @@ from typing import cast
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, SamplingArgs
 
+from ...config import HarnessConfig
 from ...harness import Harness
 
 
@@ -27,10 +28,11 @@ class CLIHarness(Harness):
         sandbox: bool | Mapping[str, object] = True,
         files: Mapping[str, object] | None = None,
         dirs: Mapping[str, object] | None = None,
-        setup: str | list[object] | None = None,
+        setup: object | list[object] | None = None,
+        bindings: Mapping[str, object] | None = None,
         env: Mapping[str, object] | None = None,
         artifacts: Mapping[str, object] | None = None,
-        tools: str | None = None,
+        tools: object | None = None,
         program: Mapping[str, object] | None = None,
         system_prompt: object | None = None,
         user: object | None = None,
@@ -40,12 +42,13 @@ class CLIHarness(Harness):
         max_turns: int | None = None,
         toolsets: object | None = None,
         stops: list[Callable[..., object]] | None = None,
+        setups: list[Callable[..., object]] | None = None,
         updates: list[Callable[..., object]] | None = None,
         metrics: list[Callable[..., object]] | None = None,
         rewards: list[Callable[..., object]] | None = None,
         advantages: list[Callable[..., object]] | None = None,
         cleanups: list[Callable[..., object]] | None = None,
-        config: Mapping[str, object] | None = None,
+        config: HarnessConfig | Mapping[str, object] | None = None,
     ):
         program_config: dict[str, object] = {
             "command": command,
@@ -57,6 +60,8 @@ class CLIHarness(Harness):
             program_config["dirs"] = dict(dirs)
         if setup is not None:
             program_config["setup"] = setup
+        if bindings is not None:
+            program_config["bindings"] = dict(bindings)
         if env is not None:
             program_config["env"] = dict(env)
         if artifacts is not None:
@@ -79,6 +84,7 @@ class CLIHarness(Harness):
             max_turns=max_turns,
             toolsets=toolsets,
             stops=stops,
+            setups=setups,
             updates=updates,
             metrics=metrics,
             rewards=rewards,
@@ -94,7 +100,7 @@ def merge_program_defaults(
     merged = dict(defaults)
     for key, value in overrides.items():
         if (
-            key in {"files", "dirs", "env", "artifacts"}
+            key in {"files", "dirs", "bindings", "env", "artifacts"}
             and isinstance(merged.get(key), Mapping)
             and isinstance(value, Mapping)
         ):
@@ -115,4 +121,4 @@ def list_items(value: object) -> list[object]:
         return [value]
     if isinstance(value, list):
         return list(value)
-    raise TypeError("program setup/args values must be strings or lists.")
+    return [value]

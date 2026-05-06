@@ -4,12 +4,9 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, cast
 
-from verifiers.errors import Error, OverlongPromptError
-from verifiers.utils.error_utils import error_info
-from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.response_utils import parse_response_message
-from verifiers.utils.tool_utils import is_valid_tool_content_parts
 from verifiers.clients import Client
+from verifiers.decorators import update
+from verifiers.errors import Error, OverlongPromptError
 from verifiers.types import (
     ClientConfig,
     MessageContent,
@@ -17,6 +14,11 @@ from verifiers.types import (
     SamplingArgs,
     ToolMessage,
 )
+from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.error_utils import error_info
+from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.response_utils import parse_response_message
+from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 from .config import (
     HarnessConfig,
@@ -36,7 +38,8 @@ from .utils.mcp_proxy_utils import (
     proxy_program,
     proxy_sandbox,
 )
-from .utils.program_utils import endpoint_api_key, program_tool_type, run_local_command
+from .utils.program_utils import endpoint_api_key, program_tool_types, run_local_command
+from .utils.program_utils import validate_program_bindings
 from .runtime import Runtime
 from .utils.sandbox_utils import run_sandbox_command
 from .utils.sandbox_program_utils import (
@@ -48,6 +51,7 @@ from .utils.prompt_utils import (
     normalize_system_prompt,
     resolve_system_prompt,
 )
+from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
 from .toolset import merge_toolsets, normalize_toolset_collection
@@ -55,10 +59,27 @@ from .user import normalize_user
 
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
-PROGRAM_OPTION_KEYS = {"sandbox", "files", "dirs", "setup", "env", "artifacts", "tools"}
+PROGRAM_OPTION_KEYS = {
+    "sandbox",
+    "files",
+    "dirs",
+    "setup",
+    "bindings",
+    "env",
+    "artifacts",
+    "tools",
+}
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
 SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
-TASK_PROGRAM_KEYS = {"files", "dirs", "setup", "env", "artifacts", "args"}
+TASK_PROGRAM_KEYS = {
+    "files",
+    "dirs",
+    "setup",
+    "bindings",
+    "env",
+    "artifacts",
+    "args",
+}
 
 
 class Harness:
@@ -78,6 +99,7 @@ class Harness:
         # Collection fields.
         toolsets: object | None = None,
         stops: list[Callable[..., object]] | None = None,
+        setups: list[Callable[..., object]] | None = None,
         updates: list[Callable[..., object]] | None = None,
         metrics: list[Callable[..., object]] | None = None,
         rewards: list[Callable[..., object]] | None = None,
@@ -117,6 +139,10 @@ class Harness:
         self.stops = cast(
             list[Callable[..., object]],
             merge_config_callables(stops or (), self.config.stops, "stop"),
+        )
+        self.setups = cast(
+            list[Callable[..., object]],
+            merge_config_callables(setups or (), self.config.setups, "setup"),
         )
         self.updates = cast(
             list[Callable[..., object]],
@@ -176,6 +202,10 @@ class Harness:
 
     def add_stop(self, fn: Callable[..., object]) -> None:
         self.stops.append(fn)
+        self.runtime = self.resolve_runtime()
+
+    def add_setup(self, fn: Callable[..., object]) -> None:
+        self.setups.append(fn)
         self.runtime = self.resolve_runtime()
 
     def add_update(self, fn: Callable[..., object]) -> None:
@@ -258,6 +288,13 @@ class Harness:
 
     async def init_state(self, task: Task) -> State:
         return State.for_task(task)
+
+    @update(priority=-100)
+    async def render_completion(self, task: Task, state: State) -> None:
+        _ = task
+        if has_borrowed_trajectory(state):
+            return
+        sync_trajectory(state)
 
     async def setup_state(self, task: Task, state: State) -> State:
         explicit_runtime = dict(cast(Mapping[str, object], state.get("runtime") or {}))
@@ -354,7 +391,7 @@ class Harness:
         if program is None:
             return self.base_program
         if callable(program):
-            return program
+            return self.local_callable_program(program)
         if not isinstance(program, Mapping):
             raise TypeError("program must be None, callable, or a mapping.")
         kind = self.program_kind(program)
@@ -375,11 +412,20 @@ class Harness:
             fn = import_config_ref(fn_ref)
             if not callable(fn):
                 raise TypeError("program.fn did not resolve to a callable.")
-            return fn
+            return self.local_callable_program(cast(Callable[..., object], fn))
         if kind == "command":
             self.validate_program_options(program, kind)
             return self.command_program(cast(Mapping[str, object], program))
         raise AssertionError(f"Unhandled program kind: {kind}")
+
+    def local_callable_program(
+        self, fn: Callable[..., object]
+    ) -> Callable[..., object]:
+        async def run(task: Task, state: State) -> object:
+            await self.runtime.setup_rollout(task, state)
+            return await maybe_call_with_named_args(fn, task=task, state=state)
+
+        return run
 
     def program_kind(self, program: Mapping[str, object]) -> str:
         base = program.get("base", False)
@@ -410,6 +456,7 @@ class Harness:
         unknown = sorted(set(program) - PROGRAM_KEYS)
         if unknown:
             raise ValueError(f"Unknown program keys: {unknown}.")
+        validate_program_bindings(program)
         sandbox_config = self.program_sandbox_config(program)
         if sandbox_config is None:
             sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
@@ -417,15 +464,15 @@ class Harness:
                 raise ValueError(
                     f"Program keys {sandbox_only} require sandbox placement."
                 )
-        tool_type = program_tool_type(program)
-        if tool_type == "mcp":
+        tool_types = set(program_tool_types(program))
+        if "mcp" in tool_types:
             if kind != "command":
                 raise ValueError(
                     "program.tools='mcp' is only supported for command programs."
                 )
             if sandbox_config is None:
                 raise ValueError("program.tools='mcp' requires program.sandbox.")
-        if tool_type == "callable" and kind == "command":
+        if "callable" in tool_types and kind == "command":
             raise ValueError(
                 "program.tools='callable' is only supported for base and fn programs."
             )
@@ -437,6 +484,7 @@ class Harness:
                 )
 
     async def base_program(self, task: Task, state: State) -> State:
+        await self.runtime.setup_rollout(task, state)
         prompt = normalize_messages(
             cast(
                 Messages,
@@ -491,7 +539,7 @@ class Harness:
                     continue
                 state._set_stop_condition("no_tools")
                 return state
-            callable_tools = state.tools()
+            callable_tools = state.get_tools()
             for tool_call in tool_calls:
                 content: MessageContent
                 try:
@@ -544,6 +592,7 @@ class Harness:
                     state,
                     runtime,
                 )
+            await runtime.setup_rollout(task, state)
             return await run_local_command(merged_program, task, state, runtime)
 
         return run
@@ -629,7 +678,7 @@ class Harness:
     def prepare_sandbox_program(
         self, program: Mapping[str, object], state: State
     ) -> Mapping[str, object]:
-        if program_tool_type(program) == "mcp":
+        if "mcp" in program_tool_types(program):
             endpoint_root_url = state.get("endpoint_root_url")
             if not isinstance(endpoint_root_url, str):
                 raise RuntimeError("MCP program tools require an active endpoint.")
@@ -644,7 +693,7 @@ class Harness:
         self, sandbox_config: Mapping[str, object], program: Mapping[str, object]
     ) -> Mapping[str, object]:
         config = dict(sandbox_config)
-        if program_tool_type(program) == "mcp":
+        if "mcp" in program_tool_types(program):
             config = proxy_sandbox(config)
         if self.program_kind(program) in {"base", "fn"}:
             config = python_program_sandbox(config)
@@ -668,7 +717,7 @@ class Harness:
         unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
         if unknown:
             raise ValueError(
-                "task.program can only define files, dirs, setup, env, "
+                "task.program can only define files, dirs, setup, bindings, env, "
                 f"artifacts, and args; got {unknown}."
             )
         if kind != "command" and "args" in task_program:
@@ -680,6 +729,9 @@ class Harness:
             merged[key] = merge_program_mapping_option(
                 program.get(key), task_program.get(key), key
             )
+        merged["bindings"] = merge_program_mapping_option(
+            program.get("bindings"), task_program.get("bindings"), "bindings"
+        )
         merged["setup"] = [
             *program_setup_items(program.get("setup"), "program.setup"),
             *program_setup_items(task_program.get("setup"), "task.program.setup"),
@@ -734,5 +786,5 @@ def program_setup_items(value: object, field_name: str) -> list[object]:
     if isinstance(value, str):
         return [value]
     if not isinstance(value, list):
-        raise TypeError(f"{field_name} must be a string or list.")
+        return [value]
     return list(value)

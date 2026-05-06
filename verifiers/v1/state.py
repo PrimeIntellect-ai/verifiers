@@ -10,6 +10,8 @@ from verifiers.types import State as VFState
 
 if TYPE_CHECKING:
     from .runtime import Runtime
+    from .utils.endpoint_utils import EndpointApi
+    from verifiers.types import ClientType
 
 
 _MISSING = object()
@@ -67,7 +69,7 @@ class State(VFState):
     INTERNAL_KEYS = {"is_completed", "stop_condition", "is_truncated", "error"}
     RUNTIME_HANDLE_KEYS = {"runtime_id", "client_key"}
     ENDPOINT_HANDLE_KEYS = {
-        "endpoint_request_key",
+        "endpoint_rollout_key",
         "endpoint_root_url",
         "endpoint_base_url",
     }
@@ -154,12 +156,48 @@ class State(VFState):
             raise TypeError("state.runtime must be a mapping.")
         return raw_runtime
 
-    def runtime(self) -> Runtime:
+    def _runtime(self) -> Runtime:
         from .runtime import load_runtime_from_state
 
         return load_runtime_from_state(self)
 
-    def tools(self) -> dict[str, Callable[..., Awaitable[object]]]:
+    def get_model(self) -> str:
+        runtime = self.get("runtime", {})
+        if isinstance(runtime, Mapping):
+            model = runtime.get("model")
+            if isinstance(model, str) and model:
+                return model
+            resolved = runtime.get("resolved")
+            if isinstance(resolved, Mapping):
+                handle = resolved.get("model")
+                if isinstance(handle, Mapping):
+                    model = handle.get("model")
+                    if isinstance(model, str) and model:
+                        return model
+        try:
+            return self._runtime().model(self)
+        except RuntimeError as exc:
+            raise RuntimeError("State has no resolved model.") from exc
+
+    def get_client(
+        self,
+        api: EndpointApi | ClientType = "chat_completions",
+        *,
+        sync: bool = False,
+    ) -> object:
+        from .utils.endpoint_utils import client_from_state
+
+        return client_from_state(self, api, sync=sync)
+
+    def get_endpoint_config(
+        self,
+        api: EndpointApi | ClientType = "chat_completions",
+    ) -> dict[str, str]:
+        from .utils.endpoint_utils import endpoint_config_from_state
+
+        return endpoint_config_from_state(self, api)
+
+    def get_tools(self) -> dict[str, Callable[..., Awaitable[object]]]:
         from .utils.tool_utils import load_tools_from_state
 
         return load_tools_from_state(self)
@@ -201,7 +239,7 @@ class State(VFState):
         if name == "endpoint":
             return {"runtime_id": runtime_id}
         if name == "trajectory":
-            runtime_obj = self.runtime()
+            runtime_obj = self._runtime()
             runtime_obj.register_trajectory(self)
             trajectory = self.get("trajectory") or []
             if not isinstance(trajectory, list):
@@ -224,7 +262,7 @@ class State(VFState):
         tool_names = tuple(_tool_names(names))
         if not tool_names:
             return None
-        runtime = self.runtime()
+        runtime = self._runtime()
         handle_id = runtime.register_tool_handle(self, tool_names)
         return {
             "runtime_id": runtime.runtime_id,

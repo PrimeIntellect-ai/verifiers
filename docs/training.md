@@ -74,6 +74,36 @@ project = "alphabet-sort"
 name = "qwen3-30b-i-alphabet-sort"
 ```
 
+For v1 BYO Harness environments, put taskset/harness config under
+`args.config`:
+
+```toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "primeintellect/my-v1-env"
+
+[env.args.config.harness]
+max_turns = 8
+
+[env.args.config.taskset.toolsets.search]
+tools = ["my_env.tools:search"]
+bindings = { "search.index" = "objects.index" }
+
+[[env.args.config.taskset.rewards]]
+fn = "my_env.signals:exact_answer"
+weight = 1.0
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching eval config
+shape and v1 callable/toolset patterns.
+
 We currently support the following models for Hosted Training:
 - `Qwen/Qwen3-4B-Instruct-2507` 
 - `Qwen/Qwen3-4B-Thinking-2507`

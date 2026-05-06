@@ -18,7 +18,8 @@ async def ask_subagent(name: str, harness, state) -> str:
             ],
         }
     ).freeze()
-    child_state = await harness.run(task)
+    child_state = state.for_task(task, borrow="model")
+    child_state = await harness.run(task, child_state)
     answer = completion_text(child_state.get("completion")).strip()
     state.setdefault("subagent_calls", []).append({"name": name, "answer": answer})
     return answer
@@ -50,16 +51,7 @@ def source():
 
 
 def load_child_harness(config=None):
-    def child_harness(state):
-        runtime = state.runtime()
-        return vf.Harness(
-            client=runtime.model_client(state),
-            model=runtime.model(state),
-            sampling_args=runtime.sampling_args(state),
-            config=config,
-        )
-
-    return child_harness
+    return vf.Harness(config=config)
 
 
 def load_toolset(config=None):

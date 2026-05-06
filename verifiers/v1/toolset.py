@@ -22,6 +22,7 @@ class Toolset:
     sandbox: Mapping[str, object] | str | None = None
     # Lifecycle collections.
     stops: tuple[object, ...] = ()
+    setups: tuple[object, ...] = ()
     updates: tuple[object, ...] = ()
     cleanups: tuple[object, ...] = ()
     teardowns: tuple[object, ...] = ()
@@ -42,6 +43,7 @@ class Toolset:
         sandbox: Mapping[str, object] | str | None = None,
         # Lifecycle collections.
         stops: Iterable[object] = (),
+        setups: Iterable[object] = (),
         updates: Iterable[object] = (),
         cleanups: Iterable[object] = (),
         teardowns: Iterable[object] = (),
@@ -89,6 +91,10 @@ class Toolset:
                 else cast(Mapping[str, object] | str | None, config_sandbox)
             )
             stops = [*stops, *config_callables(config_map.get("stops"), "stop")]
+            setups = [
+                *setups,
+                *config_callables(config_map.get("setups"), "setup"),
+            ]
             updates = [
                 *updates,
                 *config_callables(config_map.get("updates"), "update"),
@@ -120,6 +126,7 @@ class Toolset:
                 raise ValueError("Toolset sandbox.prefer must be 'program'.")
         object.__setattr__(self, "sandbox", sandbox)
         object.__setattr__(self, "stops", tuple(config_callables(stops, "stop")))
+        object.__setattr__(self, "setups", tuple(config_callables(setups, "setup")))
         object.__setattr__(self, "updates", tuple(config_callables(updates, "update")))
         object.__setattr__(
             self, "cleanups", tuple(config_callables(cleanups, "cleanup"))
@@ -290,6 +297,7 @@ def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
         "scope",
         "sandbox",
         "stops",
+        "setups",
         "updates",
         "cleanups",
         "teardowns",

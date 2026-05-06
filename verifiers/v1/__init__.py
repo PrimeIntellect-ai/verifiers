@@ -5,6 +5,7 @@ from verifiers.decorators import (
     cleanup,
     metric,
     reward,
+    setup,
     stop,
     teardown,
     update,
@@ -13,8 +14,7 @@ from verifiers.decorators import (
 from .config import Config, HarnessConfig, TasksetConfig
 from .env import Env
 from .harness import Harness
-from .packages.harnesses import CLIHarness, OpenCode
-from .runtime import load_runtime_from_state
+from .packages.harnesses import CLIHarness, MiniSWEAgent, OpenCode, Pi, RLM
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -27,7 +27,10 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset
-from .packages.tasksets import HarborTaskset, HarborTasksetConfig
+from .packages.tasksets import (
+    HarborTaskset,
+    HarborTasksetConfig,
+)
 from .toolset import MCPTool, Toolset
 from .user import User
 
@@ -40,7 +43,10 @@ __all__ = [
     "HarborTasksetConfig",
     "CLIHarness",
     "MCPTool",
+    "MiniSWEAgent",
     "OpenCode",
+    "Pi",
+    "RLM",
     "State",
     "Task",
     "Taskset",
@@ -55,10 +61,10 @@ __all__ = [
     "cleanup",
     "collect_signals",
     "metric",
-    "load_runtime_from_state",
     "reward",
     "score_group",
     "score_rollout",
+    "setup",
     "stop",
     "teardown",
     "update",

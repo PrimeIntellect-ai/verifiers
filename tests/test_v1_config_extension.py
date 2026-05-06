@@ -92,6 +92,13 @@ async def config_group_cleanup(
         state["group_cleaned"] = True
 
 
+@vf.setup(priority=5)
+async def config_setup(task: Mapping[str, object], state: dict[str, object]) -> None:
+    _ = task
+    state["configured_setup"] = True
+    cast(list[str], state.setdefault("setup_order", [])).append("config_setup")
+
+
 @vf.update(priority=5)
 async def config_update(task: Mapping[str, object], state: dict[str, object]) -> None:
     _ = task
@@ -244,6 +251,15 @@ async def config_program(
     return {"program": "ran"}
 
 
+async def setup_aware_program(
+    task: Mapping[str, object], state: dict[str, object]
+) -> dict[str, object]:
+    _ = task
+    if state.get("configured_setup") is not True:
+        raise AssertionError("setup did not run before program")
+    return {"program_saw_setup": True}
+
+
 def config_toolset(prefix: str = "cfg") -> Toolset:
     return Toolset(
         tools=[config_tool],
@@ -259,6 +275,7 @@ setattr(ref_module, "config_reward", config_reward)
 setattr(ref_module, "config_advantage", config_advantage)
 setattr(ref_module, "config_cleanup", config_cleanup)
 setattr(ref_module, "config_group_cleanup", config_group_cleanup)
+setattr(ref_module, "config_setup", config_setup)
 setattr(ref_module, "config_update", config_update)
 setattr(ref_module, "updated_reward", updated_reward)
 setattr(ref_module, "config_group_update", config_group_update)
@@ -273,6 +290,7 @@ setattr(ref_module, "token_factory", token_factory)
 setattr(ref_module, "config_user_with_bindings", config_user_with_bindings)
 setattr(ref_module, "sandbox_user", sandbox_user)
 setattr(ref_module, "config_program", config_program)
+setattr(ref_module, "setup_aware_program", setup_aware_program)
 sys.modules[REF_MODULE] = ref_module
 
 
@@ -289,6 +307,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
             "metrics": [ref("config_metric")],
             "rewards": [ref("config_reward")],
             "advantages": [ref("config_advantage")],
+            "setups": [ref("config_setup")],
             "cleanups": [ref("config_cleanup")],
             "toolsets": [
                 {
@@ -310,6 +329,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
     assert taskset.metrics == [config_metric]
     assert taskset.rewards == [config_reward]
     assert taskset.advantages == [config_advantage]
+    assert taskset.setups == [config_setup]
     assert taskset.cleanups == [config_cleanup]
     assert taskset.user is not None
     assert len(taskset.toolsets) == 1
@@ -425,6 +445,7 @@ def test_harness_config_extends_constructor_surface() -> None:
             "metrics": [],
             "rewards": [ref("config_reward")],
             "advantages": [ref("config_advantage")],
+            "setups": [ref("config_setup")],
             "cleanups": [ref("config_cleanup")],
             "toolsets": [
                 {
@@ -442,11 +463,22 @@ def test_harness_config_extends_constructor_surface() -> None:
     assert harness.metrics == [config_metric]
     assert harness.rewards == [config_reward]
     assert harness.advantages == [config_advantage]
+    assert harness.setups == [config_setup]
     assert harness.cleanups == [config_cleanup]
     assert harness.user is not None
     assert len(harness.toolsets) == 2
     assert harness.toolsets[0] is direct_toolset
     assert harness.toolsets[1].hide == ("config_tool",)
+
+
+def test_harness_owns_default_render_completion_update() -> None:
+    harness = Harness(program=config_program)
+
+    assert any(
+        getattr(handler, "__self__", None) is harness
+        and getattr(handler, "__name__", "") == "render_completion"
+        for handler in harness.runtime.rollout_update
+    )
 
 
 @pytest.mark.asyncio
@@ -467,6 +499,38 @@ async def test_update_config_runs_before_rollout_scoring() -> None:
     assert state["updated"] is True
     assert state["reward"] == 0.75
     assert getattr(harness.updates[0], "__name__") == "config_update"
+
+
+@pytest.mark.asyncio
+async def test_setup_config_runs_before_program() -> None:
+    harness = Harness(
+        config={
+            "program": ref("setup_aware_program"),
+            "setups": [{"fn": ref("config_setup"), "priority": 20}],
+        },
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+
+    state = await harness.run(task)
+
+    assert state["program_saw_setup"] is True
+    assert state["setup_order"] == ["config_setup"]
+    assert getattr(harness.setups[0], "__name__") == "config_setup"
+
+
+@pytest.mark.asyncio
+async def test_taskset_setup_runs_before_program() -> None:
+    taskset = Taskset(source=source_loader, setups=[config_setup])
+    harness = Harness(program=setup_aware_program)
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+
+    state = await harness.run(task)
+
+    assert state["program_saw_setup"] is True
+    assert state["setup_order"] == ["config_setup"]
 
 
 @pytest.mark.asyncio
@@ -579,7 +643,7 @@ async def test_task_toolsets_can_add_rollout_local_toolsets() -> None:
     state = await harness.setup_state(task, State.for_task(task))
 
     assert state["tools"] == ["config_tool"]
-    assert await state.tools()["config_tool"](query="q") == "ok:q"
+    assert await state.get_tools()["config_tool"](query="q") == "ok:q"
 
 
 @pytest.mark.asyncio
@@ -607,7 +671,7 @@ async def test_task_toolsets_can_add_dynamic_schema_backed_tools() -> None:
     assert state["tools"] == ["lookup_city"]
     assert tool_defs[0].name == "lookup_city"
     assert tool_defs[0].parameters["properties"] == {"city": {"type": "string"}}
-    assert await state.tools()["lookup_city"](city="Paris") == "recorded"
+    assert await state.get_tools()["lookup_city"](city="Paris") == "recorded"
     assert state["dynamic_tool_calls"] == [{"lookup_city": {"city": "Paris"}}]
 
 
@@ -626,7 +690,7 @@ async def test_tool_bindings_inject_owner_private_objects() -> None:
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = await harness.setup_state(task, State.for_task(task))
 
-    assert await state.tools()["object_tool"](value="alpha") == "alpha"
+    assert await state.get_tools()["object_tool"](value="alpha") == "alpha"
 
 
 @pytest.mark.asyncio
@@ -698,7 +762,7 @@ async def test_tool_bindings_do_not_leak_to_same_named_handlers() -> None:
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = await harness.setup_state(task, State.for_task(task))
 
-    assert await state.tools()["colliding_tool"](value="x") == "{'values': []}:x"
+    assert await state.get_tools()["colliding_tool"](value="x") == "{'values': []}:x"
     with pytest.raises(TypeError, match="token"):
         await harness.runtime.update_rollout(task, state)
 
@@ -995,7 +1059,8 @@ def test_configs_load_from_toml_sections(tmp_path) -> None:
     assert taskset.named_toolsets["configured"].bindings == {
         "config_tool.prefix": "toml"
     }
-    assert harness._program is config_program
+    assert harness.program == {"fn": ref("config_program")}
+    assert callable(harness._program)
     assert harness.config.max_turns == 7
 
 

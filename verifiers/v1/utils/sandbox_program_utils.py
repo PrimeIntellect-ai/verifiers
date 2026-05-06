@@ -11,6 +11,7 @@ from ..runtime import Runtime, serializable
 from ..state import State
 from ..task import Task
 from .sandbox_utils import (
+    VF_STATE_INPUT_PATH_KEY,
     python_runtime_command,
     python_runtime_setup_command,
     run_sandbox_command,
@@ -127,7 +128,6 @@ def sandbox_runner_program(
 ) -> dict[str, object]:
     files = dict(cast(Mapping[str, object], program.get("files") or {}))
     files[TASK_PATH] = json.dumps(task)
-    files[STATE_INPUT_PATH] = json.dumps(state)
     files[TOOL_DEFS_PATH] = json.dumps(
         serializable(serialize_tool_defs(tool_defs or [], "openai_chat_completions"))
     )
@@ -153,7 +153,7 @@ def sandbox_runner_program(
     if isinstance(setup, str):
         setup = [setup]
     if not isinstance(setup, list):
-        raise TypeError("program.setup must be a string or list.")
+        setup = [setup]
     return {
         **dict(program),
         "files": files,
@@ -161,6 +161,7 @@ def sandbox_runner_program(
         "env": dict(cast(Mapping[str, object], program.get("env") or {})),
         "setup": [python_runtime_setup_command(), *setup],
         "artifacts": artifacts,
+        VF_STATE_INPUT_PATH_KEY: STATE_INPUT_PATH,
     }
 
 

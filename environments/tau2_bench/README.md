@@ -1,7 +1,7 @@
-# tau2-bench
+# tau2-bench-v1
 
 ### Overview
-- **Environment ID**: `tau2-bench`
+- **Environment ID**: `tau2-bench-v1`
 - **Short description**: v1 taskset-owned user/tool simulator pattern for tau2-style multi-turn benchmark tasks.
 - **Tags**: v1, user, tools, multi-turn
 
@@ -11,7 +11,7 @@
 
 ### Quickstart
 ```bash
-prime eval run tau2-bench
+prime eval run tau2-bench-v1
 ```
 
 ### Notes

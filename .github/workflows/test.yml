@@ -42,7 +42,14 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest tests/ -v --ignore=tests/test_envs.py -m "not prime_sandbox" --cov=verifiers --cov-report=xml --cov-report=term
+
+      - name: Run Prime sandbox tests
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+        run: |
+          uv run pytest tests/test_v1_runtime_lifecycle.py -v -m prime_sandbox
   test-envs:
     name: Environments
     runs-on: ubuntu-latest

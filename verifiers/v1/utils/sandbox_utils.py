@@ -8,7 +8,7 @@ import shlex
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any, cast
@@ -19,9 +19,13 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
+from .program_utils import program_tools_setup, resolve_program_value
+from .program_utils import validate_program_bindings
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
+
+VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
 
 
 class SandboxLease:
@@ -166,6 +170,7 @@ async def run_sandbox_command(
     state: State,
     runtime: Runtime,
 ) -> State:
+    validate_program_bindings(program)
     lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
     async with lease.lock:
         state["sandbox_id"] = lease.id
@@ -179,11 +184,13 @@ async def run_sandbox_command(
             "key": lease.key,
             "lease_key": [lease_scope_key, lease.key],
         }
-        await upload_program_files(
-            lease.client, lease.id, program, task, state, runtime
+        handle = SandboxHandle(lease, state)
+        await runtime.setup_rollout(
+            task,
+            state,
+            setup_handlers=program_setup_handlers(lease, program, runtime),
+            sandbox=handle,
         )
-        await upload_program_dirs(lease.client, lease.id, program, task, state, runtime)
-        await run_program_setup(lease.client, lease.id, program, task, state, runtime)
         workdir = cast(str | None, sandbox_config.get("workdir"))
         if workdir:
             await lease.client.execute_command(
@@ -214,6 +221,100 @@ async def run_sandbox_command(
         state._set_stop_condition("command_completed")
         await collect_sandbox_artifacts(lease.client, lease.id, program, state)
         return state
+
+
+def program_setup_handlers(
+    lease: SandboxLease, program: Mapping[str, object], runtime: Runtime
+) -> list[Callable[..., object]]:
+    handlers: list[Callable[..., object]] = [
+        _program_setup_handler(
+            lease,
+            program,
+            runtime,
+            upload_program_files,
+            "program_upload_files",
+            200,
+        ),
+        _program_setup_handler(
+            lease,
+            program,
+            runtime,
+            upload_program_dirs,
+            "program_upload_dirs",
+            190,
+        ),
+        _program_setup_handler(
+            lease,
+            program,
+            runtime,
+            run_program_setup,
+            "program_setup",
+            100,
+        ),
+        _program_setup_handler(
+            lease,
+            program,
+            runtime,
+            upload_state_input,
+            "program_state_input",
+            -50,
+        ),
+    ]
+    for tool_type, setup_item, priority in program_tools_setup(program):
+        handlers.append(
+            _program_tools_setup_handler(
+                lease,
+                program,
+                runtime,
+                str(tool_type),
+                setup_item,
+                priority,
+            )
+        )
+    return handlers
+
+
+def _program_setup_handler(
+    lease: SandboxLease,
+    program: Mapping[str, object],
+    runtime: Runtime,
+    fn: Callable[..., Awaitable[None]],
+    name: str,
+    priority: int,
+) -> Callable[..., object]:
+    async def handler(task: Task, state: State) -> None:
+        await fn(lease.client, lease.id, program, task, state, runtime)
+
+    handler.__name__ = name
+    setattr(handler, "setup", True)
+    setattr(handler, "setup_priority", priority)
+    return handler
+
+
+def _program_tools_setup_handler(
+    lease: SandboxLease,
+    program: Mapping[str, object],
+    runtime: Runtime,
+    tool_type: str,
+    setup_item: object,
+    priority: int,
+) -> Callable[..., object]:
+    async def handler(task: Task, state: State) -> None:
+        await run_program_items(
+            lease.client,
+            lease.id,
+            program,
+            task,
+            state,
+            runtime,
+            items=[setup_item],
+            error_prefix=f"Program {tool_type} tools setup failed",
+        )
+
+    handler.__name__ = f"program_{tool_type}_tools_setup"
+    setattr(handler, "setup", True)
+    setattr(handler, "setup_priority", priority)
+    return handler
 
 
 async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -> str:
@@ -398,9 +499,7 @@ async def upload_program_files(
     for path, source in files.items():
         if not isinstance(path, str):
             raise TypeError("program.files keys must be strings.")
-        from .program_utils import resolve_program_value
-
-        content = await resolve_program_value(source, task, state, runtime)
+        content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
         await maybe_call_with_named_args(
@@ -426,9 +525,9 @@ async def upload_program_dirs(
     for path, source in dirs.items():
         if not isinstance(path, str):
             raise TypeError("program.dirs keys must be strings.")
-        from .program_utils import resolve_program_value
-
-        local_source = await resolve_program_value(source, task, state, runtime)
+        local_source = await resolve_program_value(
+            source, task, state, runtime, program
+        )
         await upload_program_dir(client, sandbox_id, path, local_source)
 
 
@@ -496,13 +595,85 @@ async def run_program_setup(
     state: State,
     runtime: Runtime,
 ) -> None:
-    setup = program.get("setup") or []
-    if isinstance(setup, str):
-        setup = [setup]
-    if not isinstance(setup, list):
-        raise TypeError("program.setup must be a string or list.")
+    await run_program_commands(
+        client,
+        sandbox_id,
+        program,
+        task,
+        state,
+        runtime,
+        key="setup",
+        error_prefix="Program setup failed",
+    )
+
+
+async def upload_state_input(
+    client: object,
+    sandbox_id: str,
+    program: Mapping[str, object],
+    task: Task,
+    state: State,
+    runtime: Runtime,
+) -> None:
+    _ = task, runtime
+    path = program.get(VF_STATE_INPUT_PATH_KEY)
+    if path is None:
+        return
+    if not isinstance(path, str):
+        raise TypeError(f"{VF_STATE_INPUT_PATH_KEY} must be a string.")
+    await maybe_call_with_named_args(
+        getattr(client, "upload_bytes"),
+        sandbox_id=sandbox_id,
+        file_path=path,
+        file_bytes=json.dumps(state).encode(),
+        filename=path.rsplit("/", 1)[-1] or "file",
+    )
+
+
+async def run_program_commands(
+    client: object,
+    sandbox_id: str,
+    program: Mapping[str, object],
+    task: Task,
+    state: State,
+    runtime: Runtime,
+    *,
+    key: str,
+    error_prefix: str,
+) -> None:
+    raw_setup = program.get(key) or []
+    if isinstance(raw_setup, str):
+        setup: list[object] = [raw_setup]
+    elif isinstance(raw_setup, list):
+        setup = list(raw_setup)
+    else:
+        setup = [raw_setup]
+    await run_program_items(
+        client,
+        sandbox_id,
+        program,
+        task,
+        state,
+        runtime,
+        items=setup,
+        error_prefix=error_prefix,
+    )
+
+
+async def run_program_items(
+    client: object,
+    sandbox_id: str,
+    program: Mapping[str, object],
+    task: Task,
+    state: State,
+    runtime: Runtime,
+    *,
+    items: list[object],
+    error_prefix: str,
+) -> None:
     env = await command_env(program, task, state, runtime, include_base=False)
-    for command in setup:
+    for command in items:
+        command = await resolve_program_value(command, task, state, runtime, program)
         result = await maybe_call_with_named_args(
             getattr(client, "execute_command"),
             sandbox_id=sandbox_id,
@@ -510,7 +681,7 @@ async def run_program_setup(
             env=env,
         )
         if result.exit_code:
-            raise SandboxError(f"Program setup failed: {result.stderr}")
+            raise SandboxError(f"{error_prefix}: {result.stderr}")
 
 
 async def collect_sandbox_artifacts(

@@ -293,6 +293,11 @@ For compatibility with the current `vf.Environment` worker schema,
 a JSON string in `info["task"]`. `Taskset.to_task(...)` accepts a `Task`,
 mapping, or that JSON payload.
 
+Plain string task routes are not part of the v1 rollout schema. If a worker row
+contains a top-level `task` field, it must be a JSON object string or mapping;
+non-JSON strings fail during state initialization. Use `info["env_id"]` for
+environment routing.
+
 ### Group Setup
 
 `Taskset.init_group(task, num_rollouts)` customizes group-consistent task/state
@@ -322,16 +327,17 @@ class MyTaskset(vf.Taskset):
 1. initialize state if needed;
 2. resolve task controls into hidden runtime metadata;
 3. start endpoint/tool/MCP/sandbox resources needed by the run;
-4. run the configured program;
-5. collect artifacts;
-6. run rollout update functions, including the framework-owned late
+4. run rollout setup functions, including framework-owned program preparation;
+5. run the configured program;
+6. collect artifacts;
+7. run rollout update functions, including the framework-owned late
    `render_completion` update;
-7. record timing;
-8. run rollout metrics and rewards;
-9. run rollout cleanup and release rollout-scoped resources;
-10. if no group boundary exists, run group cleanup and release group-scoped
+8. record timing;
+9. run rollout metrics and rewards;
+10. run rollout cleanup and release rollout-scoped resources;
+11. if no group boundary exists, run group cleanup and release group-scoped
     resources;
-11. strip runtime handles and validate JSON serializability.
+12. strip runtime handles and validate JSON serializability.
 
 Handled `vf.Error` instances are serialized into `state["error"]` and still
 flow through scoring and cleanup. Other exceptions raise after cleanup.
@@ -361,16 +367,20 @@ async def program(task, state):
     return state
 ```
 
-If a third-party library needs an OpenAI/Anthropic-compatible client, add a
-`client` parameter:
+If a third-party library needs an OpenAI/Anthropic-compatible client,
+materialize one from state:
 
 ```python
-async def program(task, state, client):
-    ...
+async def program(task, state):
+    client = state.get_client(api="chat")
 ```
 
 The client points at the v1 interception endpoint, not directly at the upstream
-model provider.
+model provider. `state.get_client(...)` defaults to async OpenAI chat completions;
+pass `sync=True` for sync libraries, or choose another API with
+`api="openai_responses"`, `api="openai_completions"`, or
+`api="anthropic_messages"`. Short aliases `chat`, `responses`, `completions`,
+and `messages` are also accepted.
 
 ### LLM-Free Replay And Solvers
 
@@ -453,8 +463,12 @@ Sandboxed programs support:
 - `files`: remote path -> literal string, `task.*` / `state.*` path, or
   callable value;
 - `dirs`: remote path -> local path or importlib resource directory;
-- `setup`: commands run after uploads and before the program;
+- `setup`: commands contributed to the rollout setup queue;
+- `tools`: program-facing tool interfaces, optionally with late setup commands;
 - `artifacts`: text/JSON files read back into `state["artifacts"]`.
+
+Program does not own lifecycle scoring. `updates`, `metrics`, `rewards`,
+`advantages`, and `cleanups` stay on the taskset, harness, or toolset.
 
 Artifact specs use `{"path": "...", "format": "text" | "json"}`. Set
 `optional=True` for logs or outputs that may not be produced on every rollout;
@@ -510,8 +524,8 @@ signature.
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
 implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
 and are re-exported from `verifiers.v1` for normal use. `CLIHarness` is the thin
-generic wrapper for command programs; `OpenCode` is the bundled OpenCode CLI
-harness.
+generic wrapper for command programs; `OpenCode`, `Pi`, `MiniSWEAgent`, and
+`RLM` are bundled leaf harnesses for common coding-agent CLIs.
 
 ```python
 import verifiers.v1 as vf
@@ -528,17 +542,24 @@ the Harbor CLI download path when available; local paths do not require Harbor
 to be installed. Harbor task rows contribute sandbox settings and
 `task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
 `OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
-proxy wiring, and log artifact collection. Neither side needs to know the
-other's private fields.
+proxy wiring, and log artifact collection. `Pi` follows the same pattern for
+Pi Coding Agent: the harness writes a Pi model config for the intercepted v1
+endpoint and, when tools are enabled, installs the Pi MCP adapter and writes a
+project `.mcp.json`. Neither side needs to know the other's private fields.
+`MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint env,
+and log/trajectory artifacts.
+`RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
+the task directory and tests, while `RLM` owns RLM installation, optional skill
+upload to `/task/rlm-skills`, endpoint wiring, and trajectory filtering.
 
-## Runtime State Helpers
+## State Helpers
 
 User code should not accept a `runtime` argument. Runtime access is mediated
 through `State` while the rollout is active:
 
 ```python
 async def program(task, state):
-    tools = state.tools()
+    tools = state.get_tools()
     result = await tools["search"](query=task["question"])
     state["answer"] = result
     return state
@@ -546,14 +567,15 @@ async def program(task, state):
 
 Available helpers:
 
-- `state.runtime()`: load the active process-local runtime;
-- `state.tools()`: load callable tool handles for the current task/state.
+- `state.get_model()`: read the resolved model name;
+- `state.get_client(...)`: materialize an intercepted SDK client;
+- `state.get_endpoint_config(...)`: materialize a config dict for third-party
+  model libraries;
+- `state.get_tools()`: load callable tool handles for the current task/state.
 
-These helpers use a process-local runtime registry keyed by
-`state["runtime"]["runtime_id"]`. The registry is not a persistence mechanism:
-runtime IDs are valid only inside the process and only while the runtime is
-alive. Runtime IDs, client keys, endpoint URLs, and sandbox lease keys are
-stripped before returned state crosses the rollout/group boundary.
+These helpers may use process-local handles while the rollout is active. Handles
+are not persistence mechanisms and are stripped before returned state crosses
+the rollout/group boundary.
 
 ## Singletons And Collections
 
@@ -569,10 +591,10 @@ child_state = state.for_task(child_task, borrow="model")
 child_state = state.for_task(child_task, borrow=["model", "sandbox"])
 ```
 
-Collections are merged and extended: `toolsets`, `stops`, `updates`, `metrics`,
-`rewards`, `advantages`, and `cleanups`. Decorators stay singular because each
-decorator marks one function, while constructor/config fields are plural because
-they hold many functions.
+Collections are merged and extended: `toolsets`, `stops`, `setups`, `updates`,
+`metrics`, `rewards`, `advantages`, and `cleanups`. Decorators stay singular
+because each decorator marks one function, while constructor/config fields are
+plural because they hold many functions.
 
 Named tools can also be passed into a child state. The child sees the selected
 tool surface, while calls still execute against the source runtime and its
@@ -673,7 +695,7 @@ toolset.
 loaders for private dependencies owned by the same `Toolset` or `User`. If a
 hidden argument needs task or state data, bind it with a callable source instead
 of an object factory. Updates, cleanup, metrics, and rewards should read
-serializable task/state data or call resolved tools through `state.tools()`
+serializable task/state data or call resolved tools through `state.get_tools()`
 instead of reaching into toolset dependencies directly.
 
 Tasks can select toolsets and tools for one rollout:
@@ -836,8 +858,9 @@ index = "simplewiki"
 
 The runtime normalizes MCP tools into callable handles for Python programs and
 can also present the resolved toolsets as an MCP server for sandbox command
-programs when `program.tools = "mcp"`. `program.tools` selects the program tool
-interface, not a concrete tool name: it accepts `"callable"` or `"mcp"`.
+programs. `program.tools` selects the program tool interface, not a concrete
+tool name: it accepts `"callable"` or `"mcp"`, or a mapping whose keys are those
+interfaces.
 Concrete tools such as `bash` belong to a `Toolset` and are then exposed through
 one of those interfaces.
 
@@ -849,10 +872,11 @@ Programs can discover and call resolved tools through the interception endpoint:
 - `GET ...?protocol=anthropic_messages`;
 - `POST {state["endpoint_root_url"]}/vf/tools/{name}`.
 
-Python entrypoint programs can ask for `tools` and `tool_defs` directly:
+Python entrypoint programs should call resolved tools through state:
 
 ```python
-async def program(task, state, client, tools, tool_defs):
+async def program(task, state):
+    tools = state.get_tools()
     result = await tools["search"](query=task["question"])
     state["answer"] = result
     return state
@@ -863,9 +887,56 @@ default. Set `program={"sandbox": True, "tools": "callable"}` when the config
 should make that interface explicit.
 
 Command programs do not have a universal Python call surface. If
-`program.tools = "mcp"`, v1 materializes an MCP proxy for the resolved
-toolsets; the concrete command or wrapper is responsible for adding that MCP
-server to its own config.
+`program.tools` requests `mcp`, v1 materializes an MCP proxy for the resolved
+toolsets. Generic CLI programs usually need a setup command to add that MCP
+server to their own config, so the golden path is to put that setup under the
+`mcp` key.
+
+The interface setup entry is a late rollout setup contribution that runs inside
+the program sandbox before the command. It may be a shell string or callable;
+callables can request non-`task` / `state` args only through `program.bindings`.
+
+```python
+import json
+
+
+def endpoint_config(state):
+    return state.get_endpoint_config(api="chat")
+
+
+def write_cli_config(endpoint_config):
+    return f"""\
+mkdir -p ~/.my-cli
+cat > ~/.my-cli/model.json <<'EOF'
+{json.dumps(endpoint_config)}
+EOF
+"""
+
+
+harness = vf.CLIHarness(
+    command=["my-cli", "run", "/task/instruction.md"],
+    sandbox=True,
+    bindings={"write_cli_config.endpoint_config": endpoint_config},
+    tools={"mcp": write_cli_config},
+)
+```
+
+`program.setup` is for installing or preparing the process. `program.tools.mcp`
+is for registering resolved runtime surfaces such as MCP tools or intercepted
+model endpoints. Both participate in the same priority-ordered setup stage as
+`@vf.setup` handlers; built-in program uploads run early, `program.setup` runs
+before ordinary priority-0 setup handlers, and tool-interface setup runs late.
+`program.setup` callables should only request `task` and `state`; use
+`program.tools.<interface>` when setup needs bound runtime values such as an
+endpoint config.
+
+## Package Dependencies
+
+Environment directories are Python packages. Put environment-specific
+dependencies in that environment package's own `pyproject.toml`; do not add
+benchmark-only or tool-only dependencies to the root package. This is expected
+for packages such as BFCL, DSPy, Harbor/OpenCode, and browser/search
+environments.
 
 ## Users
 
@@ -1009,6 +1080,90 @@ destroyed. Use teardown for global services and `atexit`-style cleanup.
 
 ## Config And TOML
 
+v1 has two config layers:
+
+1. Runner config: eval and RL TOML decide which environment to load, which model
+   to use, how many rollouts to run, and what sampling args to pass.
+2. v1 object config: `TasksetConfig` and `HarnessConfig` configure the taskset
+   and harness inside that environment package.
+
+Environment packages choose how to route runner config into v1 objects. The
+recommended loader shape is:
+
+```python
+import verifiers.v1 as vf
+
+
+def load_taskset(config=None):
+    return vf.Taskset(source=source, rewards=[exact], config=config)
+
+
+def load_harness(config=None):
+    return vf.Harness(config=config)
+
+
+def load_environment(config=None):
+    config = config or {}
+    return vf.Env(
+        taskset=load_taskset(config.get("taskset")),
+        harness=load_harness(config.get("harness")),
+    )
+```
+
+If the base harness is enough, omit `load_harness`:
+
+```python
+def load_environment(config=None):
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
+```
+
+With that loader, eval TOML routes v1 config through `env_args.config`:
+
+```toml
+# configs/eval/my-v1-env.toml
+model = "openai/gpt-5.4-mini"
+num_examples = 5
+rollouts_per_example = 3
+
+[[eval]]
+env_id = "my-v1-env"
+sampling_args = { max_tokens = 4096, reasoning_effort = "medium" }
+
+[eval.env_args.config.harness]
+max_turns = 4
+
+[eval.env_args.config.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+RL and Hosted Training TOML routes the same v1 config through `args.config`:
+
+```toml
+# configs/rl/my-v1-env.toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "primeintellect/my-v1-env"
+
+[env.args.config.harness]
+max_turns = 8
+
+[env.args.config.taskset.scoring.exact_answer]
+weight = 1.0
+```
+
+The outer runner owns model, endpoint, client, sampling, rollout count, and
+training/eval controls. v1 config owns taskset/harness behavior. Only put
+`harness.model` or `harness.client` in v1 config for standalone harnesses,
+nested harnesses, or explicit auxiliary-model workflows.
+
 `TasksetConfig` and `HarnessConfig` are Pydantic models. Constructors accept
 dicts, config objects, and direct Python objects. TOML/config strings resolve as
 `"module:object"` refs.
@@ -1032,43 +1187,91 @@ List-like fields are additive: constructor items and config items both
 contribute. Scalar constructor arguments such as `source`, `program`,
 `sandbox`, `user`, and `max_turns` override config values.
 
-Callable config fields use one grammar:
+### Callable Config
+
+Callable config fields use one grammar. Function identity is always the Python
+function name; TOML does not define custom metric/reward/update names.
 
 ```toml
-[[env.taskset.updates]]
+[[env.args.config.taskset.setups]]
+fn = "my_env.setup:prepare_state"
+priority = 20
+
+[[env.args.config.taskset.updates]]
 fn = "my_env.signals:parse_answer"
 priority = 10
 
-[[env.taskset.rewards]]
+[[env.args.config.taskset.rewards]]
 fn = "my_env.signals:exact_answer"
 weight = 1.0
 priority = 0
 
-[[env.harness.cleanups]]
+[[env.args.config.harness.cleanups]]
 fn = "my_env.signals:close_trace"
 stage = "group"
 ```
 
-Function names are always the callable's Python `__name__`; TOML does not
-define custom metric/reward/update names. A bare string is shorthand when no
-metadata is needed:
+A bare string is shorthand when no metadata is needed:
 
 ```toml
-[env.taskset]
+[env.args.config.taskset]
 rewards = ["my_env.signals:exact_answer"]
 ```
+
+Group-stage signals and cleanup must opt in with `stage = "group"` and use
+plural args (`tasks, states`). Rollout-stage callables are the default and use
+`task, state`.
+
+`scoring` tunes existing signal names:
+
+```toml
+[env.args.config.taskset.scoring.exact_answer]
+weight = 0.5
+
+[env.args.config.harness.scoring.turns]
+skip = true
+```
+
+Config does not create a signal by name inside `scoring`; the function must
+already be present through a constructor arg, config list, or decorated method.
+`skip = true` belongs in `scoring`, not in a callable list entry.
+
+### Sources
+
+Use zero-argument source loaders in config so environment construction stays
+cheap and import-safe:
+
+```toml
+[env.args.config.taskset]
+source = "my_env.data:train_rows"
+eval_source = "my_env.data:eval_rows"
+```
+
+```python
+def train_rows():
+    for row in load_dataset("my-org/my-dataset", split="train"):
+        yield {
+            "prompt": [{"role": "user", "content": row["question"]}],
+            "answer": row["answer"],
+        }
+```
+
+`source` and `eval_source` are singleton fields. Passing them directly to
+`Taskset(...)` overrides config.
+
+### Toolsets
 
 Toolsets are addressable resource packages, so TOML keys are toolset ids:
 
 ```toml
-[env.taskset.toolsets]
+[env.args.config.taskset.toolsets]
 wiki = "my_env.tools:load_wiki_toolset"
 
-[env.taskset.toolsets.python]
+[env.args.config.taskset.toolsets.python]
 fn = "my_env.tools:load_python_toolset"
 packages = ["numpy", "pandas"]
 
-[env.taskset.toolsets.search]
+[env.args.config.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 ```
@@ -1076,30 +1279,125 @@ bindings = { "search.index" = "objects.index" }
 A string value under `toolsets` or a `fn` table must produce exactly one
 `Toolset`. A table without `fn` is an inline `Toolset` config.
 
-`scoring` tunes existing signal names:
-
-```toml
-[env.taskset.scoring.exact_answer]
-weight = 0.5
-
-[env.harness.scoring.turns]
-skip = true
-```
-
-Config does not create a signal by name inside `scoring`; the function must
-already be present through a constructor arg, config list, or decorated method.
-
-Environment packages decide how to route their top-level config into
-`load_taskset` and `load_harness`. A simple pattern is:
+Named toolsets can be selected per task:
 
 ```python
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(
-        taskset=load_taskset(config.get("taskset")),
-        harness=load_harness(config.get("harness")),
-    )
+yield {
+    "prompt": [{"role": "user", "content": question}],
+    "toolsets": {"show": ["wiki"]},
+}
 ```
+
+Use `show` when a task should opt into a subset and `hide` when a task should
+remove a subset. Do not set both.
+
+### Program Config
+
+Python programs can be configured directly:
+
+```toml
+[env.args.config.harness.program]
+fn = "my_env.programs:run_agent"
+sandbox = true
+tools = "callable"
+```
+
+Command programs use `command` and can receive the resolved tools as an MCP
+server when they run in a sandbox:
+
+```toml
+[env.args.config.harness.program]
+command = ["bash", "-lc", "my-cli run /task/instruction.md"]
+sandbox = true
+
+[env.args.config.harness.program.tools]
+mcp = true
+
+[env.args.config.harness.program.files]
+"/task/instruction.md" = "task.instruction"
+```
+
+`program.setup` prepares the process. `program.tools.mcp` registers resolved
+tool or endpoint config after the interception endpoint is live and before the
+command runs:
+
+```toml
+[env.args.config.harness.program]
+command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
+sandbox = true
+
+[env.args.config.harness.program.tools]
+mcp = { fn = "my_env.cli:write_cli_config" }
+
+[env.args.config.harness.program.bindings]
+"write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
+```
+
+```python
+import json
+import shlex
+
+
+def endpoint_config(state):
+    return state.get_endpoint_config(api="chat")
+
+
+def write_cli_config(endpoint_config) -> str:
+    payload = json.dumps(endpoint_config)
+    script = (
+        "from pathlib import Path; "
+        f"Path('/tmp/my-cli.json').write_text({payload!r})"
+    )
+    return "python -c " + shlex.quote(script)
+```
+
+Program bindings can point at `task.*`, `state.*`, `runtime.*`, `tools.*`, or a
+callable `{ fn = "module:object" }` source. They cannot access Toolset
+`objects.*`; toolset objects are private to their owning tools.
+
+Command programs usually receive API keys through `program.env`. Values can be
+plain strings, `task.*` / `state.*` paths, or callables:
+
+```python
+def openai_key(state):
+    return state.get_endpoint_config(api="chat")["api_key"]
+
+
+vf.CLIHarness(
+    command=["my-cli", "run"],
+    env={"OPENAI_API_KEY": openai_key},
+)
+```
+
+Tasksets can contribute task-specific program data without changing the harness
+command:
+
+```python
+yield {
+    "prompt": [{"role": "user", "content": instruction}],
+    "program": {
+        "files": {"/task/instruction.md": "task.instruction"},
+        "env": {"TASK_ID": "task.example_id"},
+    },
+}
+```
+
+### Loading Config In Code
+
+Config objects can be loaded directly from a TOML section:
+
+```python
+taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
+harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
+
+env = vf.Env(
+    taskset=load_taskset(taskset_config),
+    harness=load_harness(harness_config),
+)
+```
+
+TOML can only express serializable values plus import refs. Direct Python
+objects, live clients, and closures belong in code.
 
 ### Custom Config Surfaces
 
@@ -1188,11 +1486,22 @@ endpoint inside the program call, not through global module state.
 For OpenAI-compatible libraries:
 
 ```python
-from verifiers.v1.utils.endpoint_utils import openai_endpoint_config
+async def program(task, state):
+    cfg = state.get_endpoint_config(api="chat")
+    model = state.get_model()
+    ...
+```
 
+`api` accepts the same endpoint type names used in `endpoints.toml`
+(`openai_chat_completions`, `openai_completions`, `openai_responses`,
+`anthropic_messages`) plus the short aliases `chat`, `completions`,
+`responses`, and `messages`.
 
-async def program(task, state, client):
-    cfg = openai_endpoint_config(state, client)
+For libraries that want a client object, use `state.get_client(...)`:
+
+```python
+async def program(task, state):
+    client = state.get_client(api="responses")
     ...
 ```
 

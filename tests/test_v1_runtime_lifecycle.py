@@ -7,7 +7,7 @@ import tempfile
 import urllib.request
 from contextlib import AsyncExitStack
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -30,7 +30,13 @@ from verifiers.v1.utils.sandbox_program_utils import (
     runner_source,
     sandbox_runner_program,
 )
-from verifiers.v1.utils.sandbox_utils import collect_sandbox_artifacts
+from verifiers.v1.utils.sandbox_utils import (
+    VF_STATE_INPUT_PATH_KEY,
+    collect_sandbox_artifacts,
+    run_sandbox_command,
+)
+
+PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
 
 
 class FakeMCPHandle:
@@ -98,12 +104,14 @@ class FakeSandboxClient:
     created: list[str] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
+    uploads: list[tuple[str, str, bytes]] = []
 
     @classmethod
     def reset(cls) -> None:
         cls.created = []
         cls.deleted = []
         cls.commands = []
+        cls.uploads = []
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
         _ = request
@@ -123,7 +131,10 @@ class FakeSandboxClient:
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
-        _ = args, kwargs
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        path = str(kwargs.get("file_path") or kwargs.get("path") or args[1])
+        data = cast(bytes, kwargs.get("file_bytes") or args[2])
+        type(self).uploads.append((sandbox_id, path, data))
 
     async def upload_file(self, *args: object, **kwargs: object) -> None:
         _ = args, kwargs
@@ -189,9 +200,53 @@ async def program_sandbox_id(sandbox) -> str:
     return sandbox.id
 
 
+async def sandbox_lifecycle_setup(task, state, sandbox) -> None:
+    _ = task
+    state["setup_sandbox_id"] = sandbox.id
+    await sandbox.execute("echo lifecycle-setup")
+
+
+async def state_input_setup(task, state) -> None:
+    _ = task
+    state["state_input_setup"] = True
+
+
+@vf.setup(priority=150)
+async def early_sandbox_lifecycle_setup(task, state, sandbox) -> None:
+    _ = task
+    state["early_setup_sandbox_id"] = sandbox.id
+    await sandbox.execute("echo early-lifecycle-setup")
+
+
+def endpoint_config_binding(state):
+    return state.get_endpoint_config(api="chat")
+
+
+def endpoint_config_binding_ref(state):
+    return state.get_endpoint_config(api="chat")
+
+
+def configure_cli_endpoint(endpoint_config) -> str:
+    return f"echo model={endpoint_config['model']} > /tmp/endpoint.txt"
+
+
+def configure_cli_endpoint_ref(endpoint_config) -> str:
+    return f"echo ref-model={endpoint_config['model']} > /tmp/ref_endpoint.txt"
+
+
+ref_module = ModuleType(PROGRAM_REF_MODULE)
+setattr(ref_module, "endpoint_config_binding_ref", endpoint_config_binding_ref)
+setattr(ref_module, "configure_cli_endpoint_ref", configure_cli_endpoint_ref)
+sys.modules[PROGRAM_REF_MODULE] = ref_module
+
+
+def program_ref(name: str) -> str:
+    return f"{PROGRAM_REF_MODULE}:{name}"
+
+
 async def child_reads_program_sandbox(task, state) -> dict[str, object]:
     _ = task
-    tools = state.tools()
+    tools = state.get_tools()
     state["borrowed_sandbox_id"] = await tools["program_sandbox_id"]()
     return state
 
@@ -224,9 +279,11 @@ async def endpoint_user(
     return [{"role": "user", "content": "continue"}]
 
 
-async def endpoint_program(task, state, client):
-    _ = task, client
+async def endpoint_program(task, state):
+    _ = task
     root = state["endpoint_root_url"].rstrip("/")
+    client = state.get_client(api="chat")
+    config = state.get_endpoint_config(api="responses")
 
     def get_json(url: str) -> dict[str, object]:
         with urllib.request.urlopen(url) as response:
@@ -267,11 +324,13 @@ async def endpoint_program(task, state, client):
         "endpoint_tool_result": tool_result["result"],
         "endpoint_user_messages": user_result["messages"],
         "endpoint_stop": stop_result,
+        "endpoint_client_class": type(client).__name__,
+        "endpoint_config": config,
     }
 
 
-async def mcp_proxy_program(task, state, client):
-    _ = task, client
+async def mcp_proxy_program(task, state):
+    _ = task
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -315,15 +374,10 @@ async def child_program(task, state):
 
 
 async def parent_program(task, state):
-    runtime = state.runtime()
-    child = vf.Harness(
-        program=child_program,
-        client=runtime.model_client(state),
-        model=runtime.model(state),
-        sampling_args=runtime.sampling_args(state),
-    )
+    child = vf.Harness(program=child_program)
     child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
-    child_state = await child.run(child_task)
+    child_state = state.for_task(child_task, borrow="model")
+    child_state = await child.run(child_task, child_state)
     return {"child_state": child_state}
 
 
@@ -417,18 +471,18 @@ async def submitted(task, state) -> bool:
 
 async def state_tools_program(task, state):
     _ = task
-    tools = state.tools()
+    tools = state.get_tools()
     state["tool_result"] = await tools["echo_tool"](query="state")
     state["tool_name"] = tools["echo_tool"].__name__
     return state
 
 
-async def injected_tools_program(task, state, tools, tool_defs):
+async def state_tool_program(task, state):
     _ = task
+    tools = state.get_tools()
     state["tool_result"] = await tools["echo_tool"](query="injected")
     state["tool_name"] = tools["echo_tool"].__name__
     state["tool_docs"] = tools["echo_tool"].__doc__
-    state["tool_defs"] = [tool.name for tool in tool_defs]
     return state
 
 
@@ -467,6 +521,7 @@ def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
 async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     harness = vf.Harness(
         program=endpoint_program,
+        model="test-model",
         toolsets=[vf.Toolset(tools=[echo_tool])],
         user=endpoint_user,
     )
@@ -484,6 +539,9 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     assert state["endpoint_user_messages"] == [{"role": "user", "content": "continue"}]
     assert state["endpoint_stop"]["done"] is True
     assert state["endpoint_stop"]["stop_condition"] == "state_done"
+    assert state["endpoint_client_class"] == "AsyncOpenAI"
+    assert state["endpoint_config"]["api_client_type"] == "openai_responses"
+    assert state["endpoint_config"]["api_base"].endswith("/v1")
     assert "runtime_id" not in state["runtime"]
     assert "endpoint_root_url" not in state
 
@@ -504,9 +562,9 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
 
 
 @pytest.mark.asyncio
-async def test_entrypoint_program_receives_callable_tools() -> None:
+async def test_entrypoint_program_uses_state_tools_helper() -> None:
     harness = vf.Harness(
-        program=injected_tools_program,
+        program=state_tool_program,
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -515,7 +573,6 @@ async def test_entrypoint_program_receives_callable_tools() -> None:
 
     assert state["tool_result"] == "echo:injected"
     assert state["tool_name"] == "echo_tool"
-    assert state["tool_defs"] == ["echo_tool"]
 
 
 @pytest.mark.asyncio
@@ -849,6 +906,137 @@ def test_program_tools_callable_rejects_command_programs() -> None:
         vf.Harness(program={"command": ["true"], "tools": "callable"})
 
 
+@pytest.mark.asyncio
+async def test_program_tools_mcp_setup_uses_bindings_after_setup_before_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = vf.CLIHarness(
+        command=["python", "-c", "print('ok')"],
+        sandbox=True,
+        setup="echo setup",
+        tools={"mcp": configure_cli_endpoint},
+        bindings={"configure_cli_endpoint.endpoint_config": endpoint_config_binding},
+        model="bound-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    commands = [command for _, command in FakeSandboxClient.commands]
+    setup_index = commands.index("echo setup")
+    mcp_setup_index = commands.index("echo model=bound-model > /tmp/endpoint.txt")
+    command_index = commands.index("python -c 'print('\"'\"'ok'\"'\"')'")
+    assert setup_index < mcp_setup_index < command_index
+
+
+@pytest.mark.asyncio
+async def test_rollout_setup_receives_program_sandbox_before_program_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = vf.CLIHarness(
+        command=["true"],
+        sandbox=True,
+        setup="echo program-setup",
+        setups=[early_sandbox_lifecycle_setup, sandbox_lifecycle_setup],
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    commands = [command for _, command in FakeSandboxClient.commands]
+    early_setup_index = commands.index("echo early-lifecycle-setup")
+    lifecycle_setup_index = commands.index("echo lifecycle-setup")
+    program_setup_index = commands.index("echo program-setup")
+    command_index = commands.index("true")
+    assert state["setup_sandbox_id"] == "sbx-1"
+    assert state["early_setup_sandbox_id"] == "sbx-1"
+    assert early_setup_index < program_setup_index
+    assert program_setup_index < lifecycle_setup_index < command_index
+
+
+@pytest.mark.asyncio
+async def test_sandbox_state_input_upload_runs_after_rollout_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = vf.Harness(setups=[state_input_setup])
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    program = {
+        "command": ["true"],
+        VF_STATE_INPUT_PATH_KEY: "/tmp/vf_state_in.json",
+    }
+
+    await run_sandbox_command(
+        program,
+        {"image": "python:3.11-slim"},
+        task,
+        state,
+        harness.runtime,
+    )
+
+    uploads = {
+        path: json.loads(data.decode())
+        for _, path, data in FakeSandboxClient.uploads
+        if path == "/tmp/vf_state_in.json"
+    }
+    assert uploads["/tmp/vf_state_in.json"]["state_input_setup"] is True
+
+
+@pytest.mark.asyncio
+async def test_program_tools_mcp_setup_accepts_config_ref_mappings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = vf.CLIHarness(
+        command=["true"],
+        sandbox=True,
+        tools={"mcp": [{"fn": program_ref("configure_cli_endpoint_ref")}]},
+        bindings={
+            "configure_cli_endpoint_ref.endpoint_config": {
+                "fn": program_ref("endpoint_config_binding_ref")
+            }
+        },
+        model="toml-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    commands = [command for _, command in FakeSandboxClient.commands]
+    assert "echo ref-model=toml-model > /tmp/ref_endpoint.txt" in commands
+
+
+def test_program_bindings_must_match_owned_callables() -> None:
+    with pytest.raises(ValueError, match="does not match a callable"):
+        vf.CLIHarness(
+            command=["true"],
+            sandbox=True,
+            bindings={"missing.value": "task.value"},
+        )
+
+
+def test_program_setup_is_not_a_binding_target() -> None:
+    with pytest.raises(ValueError, match="setup callables cannot use"):
+        vf.CLIHarness(
+            command=["true"],
+            sandbox=True,
+            setup=configure_cli_endpoint,
+            bindings={
+                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+            },
+        )
+
+
 async def write_real_sandbox_file(text: str, sandbox, state) -> str:
     command = (
         "python - <<'PY'\n"
@@ -893,6 +1081,7 @@ asyncio.run(main())
 
 
 @pytest.mark.asyncio
+@pytest.mark.prime_sandbox
 async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
     client = FakeModelClient(
         [
@@ -948,6 +1137,7 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.prime_sandbox
 async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
     harness = vf.Harness(
         program={
@@ -1425,7 +1615,7 @@ async def test_toolset_sandbox_prefer_program_falls_back_to_owned_sandbox(
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = await harness.setup_state(task, vf.State.for_task(task))
 
-    result = await state.tools()["program_sandbox_id"]()
+    result = await state.get_tools()["program_sandbox_id"]()
 
     assert result == "sbx-1"
     assert FakeSandboxClient.created == ["sbx-1"]

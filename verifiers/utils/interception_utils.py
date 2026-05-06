@@ -50,6 +50,8 @@ def protocol_from_path(path: str) -> str:
         return "anthropic_messages"
     if path.endswith("/v1/responses"):
         return "openai_responses"
+    if path.endswith("/v1/completions"):
+        return "openai_completions"
     return "openai_chat_completions"
 
 
@@ -82,6 +84,10 @@ class InterceptionServer:
             app = web.Application()
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/completions",
                 self._handle_request,
             )
             app.router.add_post(
@@ -233,6 +239,7 @@ class InterceptionServer:
             "rollout_id": rollout_id,
             "protocol": protocol,
             "messages": request_body.get("messages"),
+            "prompt": request_body.get("prompt"),
             "input": request_body.get("input"),
             "system": request_body.get("system"),
             "model": request_body.get("model"),
@@ -669,6 +676,8 @@ def serialize_intercept_response(
             return serialize_anthropic_message_response(response)
         if protocol == "openai_responses":
             return serialize_openai_responses_response(response)
+        if protocol == "openai_completions":
+            return serialize_openai_completion_response(response)
         message = response.message
         tool_calls = []
         for tc in message.tool_calls or []:
@@ -714,6 +723,26 @@ def serialize_intercept_response(
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return dict(response)
+
+
+def serialize_openai_completion_response(response: Response) -> dict[str, Any]:
+    output = {
+        "id": response.id,
+        "object": "text_completion",
+        "created": response.created,
+        "model": response.model,
+        "choices": [
+            {
+                "text": _response_content_to_text(response.message.content),
+                "index": 0,
+                "logprobs": None,
+                "finish_reason": response.message.finish_reason,
+            }
+        ],
+    }
+    if response.usage is not None:
+        output["usage"] = response.usage.model_dump(exclude_none=True)
+    return output
 
 
 def jsonable(value: Any) -> Any:

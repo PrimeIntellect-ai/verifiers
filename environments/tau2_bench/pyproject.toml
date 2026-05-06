@@ -1,5 +1,5 @@
 [project]
-name = "tau2-bench"
+name = "tau2-bench-v1"
 version = "0.1.0"
 description = "τ²-bench as a verifiers v1 taskset/harness environment."
 tags = ["tau2", "tool-use", "user-sim", "multi-turn", "v1"]

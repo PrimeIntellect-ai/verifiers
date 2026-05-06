@@ -10,7 +10,6 @@ from typing import Any
 from pydantic import BaseModel
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.endpoint_utils import openai_endpoint_config
 
 
 class Date(BaseModel):
@@ -311,7 +310,7 @@ def dump_database(database: Mapping[str, BaseModel]) -> dict[str, dict[str, obje
     return {key: value.model_dump() for key, value in database.items()}
 
 
-async def run_dspy_flight_program(task, state, client):
+async def run_dspy_flight_program(task, state):
     import dspy
 
     class DSPyAirlineCustomerService(dspy.Signature):
@@ -330,7 +329,7 @@ async def run_dspy_flight_program(task, state, client):
         )
 
     tools, databases = build_airline_tools(task)
-    endpoint_config = openai_endpoint_config(state, client)
+    endpoint_config = state.get_endpoint_config(api="chat")
     lm = dspy.LM(
         f"openai/{endpoint_config['model']}",
         api_base=endpoint_config["api_base"],

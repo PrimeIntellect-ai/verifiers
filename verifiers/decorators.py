@@ -68,6 +68,27 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def setup(func: F, priority: int = 0) -> F: ...
+
+
+@overload
+def setup(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+
+
+def setup(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Decorator to mark a rollout setup handler."""
+
+    def decorator(f: F) -> F:
+        setattr(f, "setup", True)
+        setattr(f, "setup_priority", priority)
+        return f
+
+    if func is None:
+        return decorator
+    return decorator(func)
+
+
+@overload
 def cleanup(func: F, priority: int = 0, stage: SignalStage = "rollout") -> F: ...
 
 

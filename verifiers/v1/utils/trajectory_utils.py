@@ -45,18 +45,6 @@ def has_borrowed_trajectory(state: Mapping[str, object]) -> bool:
     return isinstance(cast(Mapping[str, object], resolved).get("trajectory"), Mapping)
 
 
-async def render_completion(task: Mapping[str, Any], state: State) -> None:
-    _ = task
-    if has_borrowed_trajectory(state):
-        return
-    sync_trajectory(state)
-
-
-setattr(render_completion, "update", True)
-setattr(render_completion, "update_priority", -100)
-setattr(render_completion, "update_stage", "rollout")
-
-
 def completion_from_trajectory(steps: Sequence[Mapping[str, object]]) -> list[Any]:
     if not steps:
         return []

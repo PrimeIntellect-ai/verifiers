@@ -57,7 +57,7 @@ def load_toolset(config=None):
 
 
 async def parent_program(task, state):
-    tools = state.tools()
+    tools = state.get_tools()
     answers = []
     for prompt in task["child_prompts"]:
         answer = await tools["call_harness"](prompt=prompt)

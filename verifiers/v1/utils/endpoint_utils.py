@@ -7,14 +7,15 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import Anthropic, AsyncAnthropic
+from openai import AsyncOpenAI, OpenAI
 
 from verifiers.errors import Error, TunnelError
 from verifiers.types import (
     AssistantMessage,
+    ClientType,
     Messages,
     SystemMessage,
     Tool,
@@ -36,16 +37,94 @@ from ..runtime import Runtime
 from ..state import State
 from ..task import Task
 
+EndpointApi = Literal[
+    "chat",
+    "chat_completions",
+    "completions",
+    "responses",
+    "messages",
+    "openai_chat_completions",
+    "openai_completions",
+    "openai_responses",
+    "anthropic_messages",
+]
 
-def openai_endpoint_config(
-    state: State, client: object | None = None
+
+def client_from_state(
+    state: State,
+    api: EndpointApi | ClientType = "chat_completions",
+    *,
+    sync: bool = False,
+) -> object:
+    endpoint = endpoint_from_state(state)
+    return endpoint.client(state, api=api, sync=sync)
+
+
+def endpoint_config_from_state(
+    state: State,
+    api: EndpointApi | ClientType = "chat_completions",
 ) -> dict[str, str]:
-    api_key = getattr(client, "api_key", None) or "intercepted"
-    return {
-        "model": str(state["runtime"]["model"]),
-        "api_base": str(state["endpoint_base_url"]),
-        "api_key": str(api_key),
-    }
+    endpoint = endpoint_from_state(state)
+    return endpoint.config(state, api=api)
+
+
+def endpoint_from_state(state: State) -> Endpoint:
+    runtime = state._runtime()
+    harness = getattr(runtime, "harness", None)
+    endpoint = getattr(harness, "endpoint", None)
+    if not isinstance(endpoint, Endpoint):
+        raise RuntimeError("State does not have an active model endpoint.")
+    return endpoint
+
+
+def endpoint_api_key(state: State) -> str:
+    endpoint = endpoint_from_state(state)
+    return str(endpoint.secret or "intercepted")
+
+
+def endpoint_api_client_type(
+    api: Literal["chat_completions", "completions", "responses", "messages"],
+) -> Literal[
+    "openai_chat_completions",
+    "openai_completions",
+    "openai_responses",
+    "anthropic_messages",
+]:
+    if api == "chat_completions":
+        return "openai_chat_completions"
+    if api == "completions":
+        return "openai_completions"
+    if api == "responses":
+        return "openai_responses"
+    return "anthropic_messages"
+
+
+def normalize_endpoint_api(
+    api: EndpointApi | ClientType,
+) -> Literal["chat_completions", "completions", "responses", "messages"]:
+    if api in {
+        "chat_completions",
+        "openai_chat_completions",
+        "chat",
+    }:
+        return "chat_completions"
+    if api in {"responses", "openai_responses"}:
+        return "responses"
+    if api in {"messages", "anthropic_messages"}:
+        return "messages"
+    if api in {"completions", "openai_completions"}:
+        return "completions"
+    if api == "openai_chat_completions_token":
+        raise ValueError(
+            "state.get_client(...) does not expose token-level chat completions clients."
+        )
+    if api == "renderer":
+        raise ValueError("state.get_client(...) does not expose renderer clients.")
+    if api == "nemorl_chat_completions":
+        raise ValueError(
+            "state.get_client(...) does not expose NeMoRL chat completions clients."
+        )
+    raise ValueError(f"Unknown endpoint API {api!r}.")
 
 
 class Endpoint:
@@ -66,7 +145,7 @@ class Endpoint:
         self._tunnel: object | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked = 0.0
-        self._request_queues: dict[str, asyncio.Queue[str]] = {}
+        self._rollout_queues: dict[str, asyncio.Queue[str]] = {}
 
     async def start(self) -> None:
         await self.server.start()
@@ -80,40 +159,68 @@ class Endpoint:
         stop_handler: object | None = None,
     ) -> str:
         await self.start()
-        request_key = f"rollout_{uuid.uuid4().hex[:8]}"
+        rollout_key = f"rollout_{uuid.uuid4().hex[:8]}"
         request_queue = self.server.register_rollout(
-            request_key,
+            rollout_key,
             state=state,
             tool_handler=tool_handler,
             tool_defs=tool_defs,
             user_handler=user_handler,
             stop_handler=stop_handler,
         )
-        self._request_queues[request_key] = cast(asyncio.Queue[str], request_queue)
-        endpoint_root_url = f"{await self.url_base()}/rollout/{request_key}"
-        state["endpoint_request_key"] = request_key
+        self._rollout_queues[rollout_key] = cast(asyncio.Queue[str], request_queue)
+        endpoint_root_url = f"{await self.url_base()}/rollout/{rollout_key}"
+        state["endpoint_rollout_key"] = rollout_key
         state["endpoint_root_url"] = endpoint_root_url
         state["endpoint_base_url"] = f"{endpoint_root_url}/v1"
         return state["endpoint_base_url"]
 
-    def client(self, state: State) -> AsyncOpenAI | AsyncAnthropic:
-        client_type = state.get("runtime", {}).get("client_type")
-        if client_type == "anthropic_messages":
-            return AsyncAnthropic(
-                api_key=self.secret or "intercepted",
-                base_url=str(state["endpoint_root_url"]),
-            )
-        return AsyncOpenAI(
-            api_key=self.secret or "intercepted",
-            base_url=str(state["endpoint_base_url"]),
+    def client(
+        self,
+        state: State,
+        api: EndpointApi | ClientType = "chat_completions",
+        *,
+        sync: bool = False,
+    ) -> AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic:
+        api = normalize_endpoint_api(api)
+        api_key = self.secret or "intercepted"
+        if api == "messages":
+            base_url = str(state["endpoint_root_url"])
+            if sync:
+                return Anthropic(api_key=api_key, base_url=base_url)
+            return AsyncAnthropic(api_key=api_key, base_url=base_url)
+        base_url = str(state["endpoint_base_url"])
+        if sync:
+            return OpenAI(api_key=api_key, base_url=base_url)
+        return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    def config(
+        self,
+        state: State,
+        api: EndpointApi | ClientType = "chat_completions",
+    ) -> dict[str, str]:
+        api = normalize_endpoint_api(api)
+        base_url = (
+            str(state["endpoint_root_url"])
+            if api == "messages"
+            else str(state["endpoint_base_url"])
         )
+        config = {
+            "model": state.get_model(),
+            "api_key": self.secret or "intercepted",
+            "base_url": base_url,
+            "api_client_type": endpoint_api_client_type(api),
+        }
+        if api != "messages":
+            config["api_base"] = base_url
+        return config
 
-    def unregister_rollout(self, request_key: str) -> None:
-        self._request_queues.pop(request_key, None)
-        self.server.unregister_rollout(request_key)
+    def unregister_rollout(self, rollout_key: str) -> None:
+        self._rollout_queues.pop(rollout_key, None)
+        self.server.unregister_rollout(rollout_key)
 
-    def request_queue(self, request_key: str) -> asyncio.Queue[str]:
-        return self._request_queues[request_key]
+    def rollout_queue(self, rollout_key: str) -> asyncio.Queue[str]:
+        return self._rollout_queues[rollout_key]
 
     def get_request(self, request_id: str) -> dict[str, object]:
         return cast(dict[str, object], self.server.intercepts[request_id])
@@ -193,19 +300,11 @@ async def run_intercepted_program(
         user_handler=call_user,
         stop_handler=check_stop,
     )
-    client = endpoint.client(state)
     execution = asyncio.create_task(
-        maybe_call_with_named_args(
-            program,
-            task=task,
-            state=state,
-            client=client,
-            tools=runtime.tool_calls(task, state),
-            tool_defs=runtime.tool_defs(state),
-        )
+        maybe_call_with_named_args(program, task=task, state=state)
     )
-    request_key = str(state["endpoint_request_key"])
-    queue = endpoint.request_queue(request_key)
+    rollout_key = str(state["endpoint_rollout_key"])
+    queue = endpoint.rollout_queue(rollout_key)
     pending: set[asyncio.Task[None]] = set()
     try:
         while True:
@@ -262,13 +361,8 @@ async def run_intercepted_program(
         if not execution.done():
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
-        for task_ in pending:
-            if not task_.done():
-                task_.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        endpoint.unregister_rollout(request_key)
-        await client.close()
+        await cancel_forwarders(pending)
+        endpoint.unregister_rollout(rollout_key)
 
 
 async def raise_finished_forward_errors(pending: set[asyncio.Task[None]]) -> None:
@@ -276,6 +370,14 @@ async def raise_finished_forward_errors(pending: set[asyncio.Task[None]]) -> Non
     for task in finished:
         pending.remove(task)
         await task
+
+
+async def cancel_forwarders(pending: set[asyncio.Task[None]]) -> None:
+    for task in pending:
+        if not task.done():
+            task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def raise_execution_error(execution: asyncio.Task[object]) -> None:
@@ -334,6 +436,8 @@ def normalize_endpoint_prompt(request: dict[str, object]) -> Messages:
         return normalize_anthropic_messages(request)
     if protocol == "openai_responses":
         return normalize_openai_responses_input(request.get("input"))
+    if protocol == "openai_completions":
+        return normalize_endpoint_messages(request.get("prompt"))
     return normalize_endpoint_messages(request.get("messages"))
 
 

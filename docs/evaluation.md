@@ -383,6 +383,24 @@ difficulty = "hard"
 split = "test"
 ```
 
+For v1 BYO Harness environments, pass taskset/harness config under
+`env_args.config`:
+
+```toml
+[[eval]]
+env_id = "my-v1-env"
+sampling_args = { max_tokens = 4096 }
+
+[eval.env_args.config.harness]
+max_turns = 4
+
+[eval.env_args.config.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
+and v1 callable/toolset patterns.
+
 ### Ablation Sweeps
 
 Use `[[ablation]]` blocks to automatically generate eval configs from a cartesian product of parameter values. This is useful for hyperparameter sweeps and ablation studies without manually writing each combination.
