@@ -46,6 +46,8 @@ def test_renderer_client_honors_configured_renderer_name():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
 
 
@@ -75,7 +77,60 @@ def test_renderer_client_uses_renderer_model_name_override():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
+
+
+def test_renderer_client_forwards_preserve_thinking_flags():
+    """ClientConfig.preserve_*_thinking must reach create_renderer_pool, and
+    distinct flag combinations must be cached separately so a renderer built
+    with the flag off can't satisfy a request that asked for it on."""
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer="glm5",
+        preserve_all_thinking=True,
+        preserve_thinking_between_tool_calls=True,
+    )
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        return_value=sentinel_pool,
+    ) as create_pool_mock:
+        client._get_renderer_or_pool("zai-org/GLM-5")
+
+    create_pool_mock.assert_called_once_with(
+        "zai-org/GLM-5",
+        renderer="glm5",
+        size=1,
+        tool_parser=None,
+        reasoning_parser=None,
+        preserve_all_thinking=True,
+        preserve_thinking_between_tool_calls=True,
+    )
+
+    # A second client with the flags off must miss the cache and rebuild —
+    # otherwise we'd serve thinking-preserving renders to callers that
+    # didn't opt in.
+    client2 = object.__new__(RendererClient)
+    client2._renderer = None
+    client2._pool_size = 1
+    client2._config = vf.ClientConfig(client_type="renderer", renderer="glm5")
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        return_value=sentinel_pool,
+    ) as create_pool_mock2:
+        client2._get_renderer_or_pool("zai-org/GLM-5")
+    create_pool_mock2.assert_called_once()
+    _, kwargs = create_pool_mock2.call_args
+    assert kwargs["preserve_all_thinking"] is False
+    assert kwargs["preserve_thinking_between_tool_calls"] is False
 
 
 # Provenance: Eli's review on PR #1068, comment 3150580768.

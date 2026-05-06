@@ -382,10 +382,15 @@ class RendererClient(
     """
 
     # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size) so that different parser configs or pool
-    # sizes for the same model don't collide.
+    # reasoning_parser, pool_size, preserve_all_thinking,
+    # preserve_thinking_between_tool_calls) so that different parser configs,
+    # pool sizes, or preserve-thinking bindings for the same model don't
+    # collide.
     _shared_pools: ClassVar[
-        dict[tuple[str, str, str | None, str | None, int], RendererPool]
+        dict[
+            tuple[str, str, str | None, str | None, int, bool, bool],
+            RendererPool,
+        ]
     ] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -424,12 +429,24 @@ class RendererClient(
         reasoning_parser = (
             self._config.reasoning_parser if self._config is not None else None
         )
+        preserve_all_thinking = (
+            getattr(self._config, "preserve_all_thinking", False)
+            if self._config is not None
+            else False
+        )
+        preserve_thinking_between_tool_calls = (
+            getattr(self._config, "preserve_thinking_between_tool_calls", False)
+            if self._config is not None
+            else False
+        )
         cache_key = (
             renderer_model,
             renderer_name,
             tool_parser,
             reasoning_parser,
             self._pool_size,
+            preserve_all_thinking,
+            preserve_thinking_between_tool_calls,
         )
 
         with self._shared_pools_lock:
@@ -440,6 +457,8 @@ class RendererClient(
                     size=self._pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
+                    preserve_all_thinking=preserve_all_thinking,
+                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]
