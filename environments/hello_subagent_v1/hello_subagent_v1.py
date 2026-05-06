@@ -50,24 +50,19 @@ def source():
     ]
 
 
-def load_child_harness(config=None):
-    return vf.Harness(config=config)
+def load_child_harness():
+    return vf.Harness()
 
 
-def load_toolset(config=None):
+def load_toolset():
     return vf.Toolset(
         tools=[ask_subagent],
-        bindings={
-            "ask_subagent.harness": load_child_harness(
-                getattr(config, "child_harness", None)
-            )
-        },
+        bindings={"ask_subagent.harness": load_child_harness()},
         scope="rollout",
-        config=config,
     )
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         system_prompt=(
@@ -80,16 +75,17 @@ def load_taskset(config=None):
     )
 
 
-def load_harness(config=None):
+def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(
-        toolsets=[load_toolset(getattr(config, "toolset", None))],
+        toolsets=[load_toolset()],
         metrics=[subagent_calls],
         config=config,
     )
 
 
-def load_environment(config=None):
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

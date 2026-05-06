@@ -50,7 +50,7 @@ class Taskset:
         # Config.
         config: TasksetConfig | Mapping[str, object] | None = None,
     ):
-        self.config = type(self).config_type.model_validate(config or {})
+        self.config = type(self).config_type.from_config(config)
         source_value = resolve_config_object(
             merge_config_value(source, self.config.source)
         )

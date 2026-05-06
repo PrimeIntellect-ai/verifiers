@@ -13,6 +13,14 @@ Return the assigned candidate exactly.
 """
 
 
+class GroupRewardTasksetConfig(vf.TasksetConfig):
+    num_examples: int = -1
+
+
+class GroupRewardHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 1
+
+
 TASKS: list[dict[str, object]] = [
     {
         "task_id": "distributed-systems",
@@ -242,9 +250,14 @@ def source(num_examples: int = -1):
         }
 
 
-def load_taskset(num_examples: int = -1, config=None) -> GroupRewardTaskset:
+def load_taskset(
+    num_examples: int | None = None,
+    config: vf.TasksetConfig | None = None,
+) -> GroupRewardTaskset:
+    config = GroupRewardTasksetConfig(config, num_examples=num_examples)
+
     def load_rows():
-        return source(num_examples=num_examples)
+        return source(num_examples=config.num_examples)
 
     return GroupRewardTaskset(
         source=load_rows,
@@ -258,19 +271,34 @@ def load_taskset(num_examples: int = -1, config=None) -> GroupRewardTaskset:
     )
 
 
-def load_harness(config=None) -> vf.Harness:
-    return vf.Harness(program=candidate_program, max_turns=1, config=config)
-
-
-def load_environment(num_examples: int = -1, config=None) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(
-            num_examples=num_examples,
-            config=getattr(config, "taskset", None),
-        ),
-        harness=load_harness(getattr(config, "harness", None)),
+def load_harness(
+    max_turns: int | None = None,
+    config: vf.HarnessConfig | None = None,
+) -> vf.Harness:
+    config = GroupRewardHarnessConfig(config, max_turns=max_turns)
+    return vf.Harness(
+        program=candidate_program,
+        max_turns=config.max_turns,
+        config=config,
     )
 
 
-def load_v1_environment(num_examples: int = -1, config=None) -> vf.Env:
+def load_environment(
+    num_examples: int = -1,
+    config: vf.EnvConfig | None = None,
+) -> vf.Env:
+    config = vf.EnvConfig(
+        config,
+        taskset=GroupRewardTasksetConfig(num_examples=num_examples),
+    )
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )
+
+
+def load_v1_environment(
+    num_examples: int = -1,
+    config: vf.EnvConfig | None = None,
+) -> vf.Env:
     return load_environment(num_examples=num_examples, config=config)

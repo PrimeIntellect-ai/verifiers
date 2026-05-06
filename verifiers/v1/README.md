@@ -145,13 +145,13 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -195,12 +195,18 @@ loader.
 
 ```python
 from datasets import load_dataset
+import verifiers.v1 as vf
 
 
-def load_taskset(config=None):
-    config = config or {}
-    dataset_name = config.get("dataset_name", "gsm8k")
-    split = config.get("split", "train")
+class GSM8KTasksetConfig(vf.TasksetConfig):
+    dataset_name: str = "gsm8k"
+    split: str = "train"
+
+
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = GSM8KTasksetConfig(config)
+    dataset_name = config.dataset_name
+    split = config.split
 
     def source():
         dataset = load_dataset(dataset_name, "main", split=split)
@@ -211,7 +217,7 @@ def load_taskset(config=None):
                 "answer": row["answer"],
             }
 
-    return vf.Taskset(source=source)
+    return vf.Taskset(source=source, config=config)
 ```
 
 `eval_source` is optional. If it is omitted, `get_eval_dataset()` uses the same
@@ -1101,28 +1107,28 @@ recommended loader shape is:
 import verifiers.v1 as vf
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_harness(config=None):
+def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(config=config)
 
 
-def load_environment(config=None):
-    config = config or {}
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(config.get("taskset")),
-        harness=load_harness(config.get("harness")),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 With that loader, eval TOML routes v1 config through `env_args.config`:
@@ -1142,6 +1148,46 @@ max_turns = 4
 
 [eval.env_args.config.taskset.scoring.exact_answer]
 weight = 0.5
+```
+
+For concise named args, pass typed child config objects as defaults. Explicit
+nested sections win over those defaults.
+
+```python
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+def load_taskset(
+    split: str | None = None,
+    config: vf.TasksetConfig | None = None,
+):
+    config = MyTasksetConfig(config, split=split)
+    ...
+
+
+def load_harness(
+    max_turns: int | None = None,
+    config: vf.HarnessConfig | None = None,
+):
+    config = vf.HarnessConfig(config, max_turns=max_turns)
+    ...
+
+
+def load_environment(
+    config: vf.EnvConfig | None = None,
+    split: str = "train",
+    max_turns: int = 10,
+):
+    config = vf.EnvConfig(
+        config,
+        taskset=MyTasksetConfig(split=split),
+        harness=vf.HarnessConfig(max_turns=max_turns),
+    )
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )
 ```
 
 RL and Hosted Training TOML routes the same v1 config through `args.config`:
@@ -1398,8 +1444,8 @@ taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
 harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
 
 env = vf.Env(
-    taskset=load_taskset(taskset_config),
-    harness=load_harness(harness_config),
+    taskset=load_taskset(config=taskset_config),
+    harness=load_harness(config=harness_config),
 )
 ```
 
@@ -1421,7 +1467,7 @@ class WikiTaskset(vf.Taskset):
     config_type = WikiTasksetConfig
 
     def __init__(self, config):
-        config = self.config_type.model_validate(config)
+        config = self.config_type(config)
 
         def load_db():
             return open_db(config.db_path)

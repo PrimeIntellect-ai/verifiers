@@ -57,7 +57,7 @@ def source():
     ]
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         rewards=[exact_answer],
@@ -66,7 +66,7 @@ def load_taskset(config=None):
 
 
 def load_harness(
-    config=None,
+    config: vf.HarnessConfig | None = None,
     workdir: str = "/workspace",
     instruction_path: str = "/task/instruction.md",
     rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
@@ -82,7 +82,7 @@ def load_harness(
     rlm_tools: list[str] | None = None,
     rlm_env: Mapping[str, str] | None = None,
 ):
-    harness_config = vf.HarnessConfig.model_validate(config or {})
+    harness_config = vf.HarnessConfig(config)
     if not include_sub_rlm_trajectories:
         harness_config.keep_trajectory_step = keep_only_parent_rlm_steps
     tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
@@ -149,10 +149,11 @@ def load_harness(
     )
 
 
-def load_environment(config=None):
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 
 

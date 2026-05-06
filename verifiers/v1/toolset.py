@@ -10,7 +10,6 @@ from .config import (
     SandboxConfig,
     ToolsetConfig,
     config_callables,
-    config_mapping,
     resolve_config_object,
     sandbox_config_mapping,
     string_mapping,
@@ -295,13 +294,7 @@ def tool_item(value: object) -> object:
 def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
     if config is None:
         return {}
-    if isinstance(config, ToolsetConfig):
-        return config.model_dump(exclude_none=True)
-    if not isinstance(config, Mapping):
-        return {}
-    return ToolsetConfig.model_validate(config_mapping(config)).model_dump(
-        exclude_none=True
-    )
+    return ToolsetConfig.from_config(config).model_dump(exclude_none=True)
 
 
 def string_items(value: object) -> list[str] | None:
@@ -350,7 +343,7 @@ class MCPTool:
 
     @classmethod
     def from_mapping(cls, spec: Mapping[str, object]) -> MCPTool:
-        config = MCPToolConfig.model_validate(spec)
+        config = MCPToolConfig.from_config(spec)
         return cls(
             command=config.command,
             args=config.args,

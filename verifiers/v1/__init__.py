@@ -13,6 +13,7 @@ from verifiers.decorators import (
 
 from .config import (
     Config,
+    EnvConfig,
     HarnessConfig,
     MCPToolConfig,
     SandboxConfig,
@@ -45,6 +46,7 @@ from .user import User
 __all__ = [
     "Config",
     "Env",
+    "EnvConfig",
     "Harness",
     "HarnessConfig",
     "HarborTaskset",

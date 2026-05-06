@@ -52,7 +52,7 @@ Every migrated package should expose:
 import verifiers.v1 as vf
 
 
-def load_taskset(config=None) -> vf.Taskset:
+def load_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
     return vf.Taskset(
         source=load_rows,
         system_prompt=SYSTEM_PROMPT,
@@ -63,22 +63,24 @@ def load_taskset(config=None) -> vf.Taskset:
     )
 
 
-def load_harness(config=None) -> vf.Harness:
+def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_v1_environment(config=None) -> vf.Env:
+def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_v1_environment(config=None) -> vf.Env:
-    return vf.Env(taskset=load_taskset(getattr(config, "taskset", None)))
+def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Rows should be plain serializable task data:
@@ -158,12 +160,13 @@ async def exact(task, state) -> float:
     return float(str(task["answer"]).strip() in completion_text(state))
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_v1_environment(config=None):
-    return vf.Env(taskset=load_taskset(getattr(config, "taskset", None)))
+def load_v1_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Gotchas:
@@ -222,7 +225,7 @@ def load_toolset(config=None):
     )
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         toolsets=[load_toolset()],
@@ -643,11 +646,17 @@ Migration:
 Example:
 
 ```python
+class SuiteConfig(vf.Config):
+    math: object | None = None
+    graph: object | None = None
+
+
 def load_environment(config=None):
+    config = SuiteConfig(config)
     return vf.EnvGroup(
         [
-            load_math_environment(getattr(config, "math", None)),
-            load_graph_environment(getattr(config, "graph", None)),
+            load_math_environment(config.math),
+            load_graph_environment(config.graph),
         ]
     )
 ```

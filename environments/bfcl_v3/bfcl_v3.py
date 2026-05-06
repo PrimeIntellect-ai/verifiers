@@ -18,6 +18,15 @@ BFCL_TOOLSET_REF = "bfcl_v3:load_bfcl_toolset"
 _BFCL_PATCHED = False
 
 
+class BFCLTasksetConfig(vf.TasksetConfig):
+    test_category: str = "simple_python"
+    examples_per_category: int = -1
+
+
+class BFCLHarnessConfig(vf.HarnessConfig):
+    test_category: str = "simple_python"
+
+
 def modded_convert_func_name(function_name: str, model_name: str) -> str:
     _ = model_name
     return re.sub(r"\.", "_", function_name)
@@ -558,7 +567,7 @@ async def bfcl_multi_turn_program(
 
 
 class BFCLMultiTurnHarness(vf.Harness):
-    def __init__(self, config=None):
+    def __init__(self, config: vf.HarnessConfig | None = None):
         super().__init__(program=self.run_bfcl_multi_turn, config=config)
 
     async def run_bfcl_multi_turn(self, task: vf.Task, state: vf.State) -> vf.State:
@@ -566,22 +575,31 @@ class BFCLMultiTurnHarness(vf.Harness):
 
 
 def load_taskset(
-    test_category: str = "simple_python",
-    examples_per_category: int = -1,
-    config=None,
+    test_category: str | None = None,
+    examples_per_category: int | None = None,
+    config: vf.TasksetConfig | None = None,
 ) -> vf.Taskset:
+    config = BFCLTasksetConfig(
+        config,
+        test_category=test_category,
+        examples_per_category=examples_per_category,
+    )
     return vf.Taskset(
-        source=build_source(test_category, examples_per_category),
+        source=build_source(config.test_category, config.examples_per_category),
         rewards=[bfcl_reward],
         config=config,
     )
 
 
-def load_harness(test_category: str = "simple_python", config=None) -> vf.Harness:
+def load_harness(
+    test_category: str | None = None,
+    config: vf.HarnessConfig | None = None,
+) -> vf.Harness:
+    config = BFCLHarnessConfig(config, test_category=test_category)
     patch_bfcl_eval()
     from bfcl_eval.utils import is_multi_turn
 
-    if is_multi_turn(test_category):
+    if is_multi_turn(config.test_category):
         return BFCLMultiTurnHarness(config=config)
     return vf.Harness(config=config)
 
@@ -589,18 +607,19 @@ def load_harness(test_category: str = "simple_python", config=None) -> vf.Harnes
 def load_v1_environment(
     test_category: str = "simple_python",
     examples_per_category: int = -1,
-    config=None,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(
+    config = vf.EnvConfig(
+        config,
+        taskset=BFCLTasksetConfig(
             test_category=test_category,
             examples_per_category=examples_per_category,
-            config=getattr(config, "taskset", None) if config is not None else None,
         ),
-        harness=load_harness(
-            test_category=test_category,
-            config=getattr(config, "harness", None) if config is not None else None,
-        ),
+        harness=BFCLHarnessConfig(test_category=test_category),
+    )
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 
 
