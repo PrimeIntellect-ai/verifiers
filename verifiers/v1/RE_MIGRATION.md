@@ -12,7 +12,7 @@ Use these references in this repository while porting:
 - `environments/bfcl_v3/bfcl_v3.py`: task-local dynamic tool schemas.
 - `environments/alphabet_sort/alphabet_sort_v1.py`: user function.
 - `environments/mcp_search_env/mcp_search_v1.py`: MCP tools.
-- `tau2-bench-v1` (`environments/tau2_bench/tau2_bench.py`): task-owned user simulator.
+- `tau2-bench-v1` (`environments/tau2_bench_v1/tau2_bench_v1.py`): task-owned user simulator.
 - `environments/hello_subagent_v1/hello_subagent_v1.py`: nested harness calls.
 - `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared
   sandbox-backed tools across child harnesses.
@@ -32,7 +32,7 @@ and scoring logic.
 | `browsecomp`, `ddbc`, `deepdive`, `hle` with tools, `wikispeedia` | `environments/wiki_search/wiki_search_v1.py` | callable `Toolset` with private dependencies and hidden bindings |
 | `bfcl_v3` | `environments/bfcl_v3/bfcl_v3.py` | task-local dynamic tool schemas |
 | `alphabet_sort` | `environments/alphabet_sort/alphabet_sort_v1.py` | taskset user simulator |
-| `tau2-bench-v1` | `environments/tau2_bench/tau2_bench.py` | task-owned user simulator with task/state-dependent sessions |
+| `tau2-bench-v1` | `environments/tau2_bench_v1/tau2_bench_v1.py` | task-owned user simulator with task/state-dependent sessions |
 | MCP-backed search/tool evals | `environments/mcp_search_env/mcp_search_v1.py` | stdio MCP toolset |
 | `mcp_atlas` | `Sandbox Service Toolsets` below | task-local service sandbox plus callable schema tools |
 | helper-agent or self-judge envs | `environments/hello_subagent_v1/hello_subagent_v1.py` | direct `child_harness.run(child_task)` from a tool/update/reward |
@@ -378,7 +378,7 @@ Migration:
 4. Put static simulator clients behind `User(objects=...)`; use a callable
    binding when the hidden argument depends on task or state.
 
-Reference: `environments/tau2_bench/tau2_bench.py`.
+Reference: `environments/tau2_bench_v1/tau2_bench_v1.py`.
 
 Example:
 

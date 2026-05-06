@@ -42,7 +42,7 @@ def download_tau2_data() -> None:
     if os.path.exists(DATA_DIR) and os.path.exists(DATA_DIR / "tau2" / "domains"):
         return
     os.makedirs(DATA_DIR, exist_ok=True)
-    temp_dir = Path("/tmp/tau2_bench")
+    temp_dir = Path("/tmp/tau2_bench_v1")
     try:
         subprocess.run(
             [
@@ -427,35 +427,26 @@ class Tau2Session:
             state.stop(self.termination_reason.value)
 
 
-class Tau2Harness(vf.Harness):
-    def __init__(
-        self,
-        *args,
-        session_factory: Callable[..., Tau2Session] | None = None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.session_factory = session_factory
-
-    async def setup_state(self, task: vf.Task, state: vf.State) -> vf.State:
-        state = await super().setup_state(task, state)
+def make_tau2_setup(
+    session_factory: Callable[..., Tau2Session],
+) -> Callable[..., object]:
+    @vf.setup(priority=100)
+    async def tau2_setup(task: vf.Task, state: vf.State) -> None:
+        runtime = state.runtime_state()
         sampling_args = dict(DEFAULT_LLM_ARGS_AGENT)
-        sampling_args.update(dict(state.get("runtime", {}).get("sampling_args") or {}))
-        state["runtime"]["sampling_args"] = sampling_args
-        if self.session_factory is None:
-            raise RuntimeError("Tau2Harness requires a session_factory.")
+        sampling_args.update(dict(runtime.get("sampling_args") or {}))
+        runtime["sampling_args"] = sampling_args
         session = cast(
             Tau2Session,
-            await maybe_call_with_named_args(
-                self.session_factory, task=task, state=state
-            ),
+            await maybe_call_with_named_args(session_factory, task=task, state=state),
         )
         await session.initialize(state)
         state.setdefault("prompt", [])
         if not state.get("tau2_prompt_initialized"):
             state["prompt"].extend(session.initial_prompt_messages)
             state["tau2_prompt_initialized"] = True
-        return state
+
+    return tau2_setup
 
 
 def assistant_from_openai_message(message: Mapping[str, object]) -> AssistantMessage:
@@ -499,7 +490,7 @@ def add_timestamps(message_history: list[Message]) -> list[Message]:
     return message_history
 
 
-def source(domain: str):
+def source(domain: str, max_turns: int):
     download_tau2_data()
     environment_constructor = registry.get_env_constructor(domain)
     environment = environment_constructor()
@@ -516,6 +507,7 @@ def source(domain: str):
             "task_id": task.id,
             "domain": domain,
             "system_prompt": system_prompt,
+            "max_turns": max_turns,
             "prompt": [],
             "info": task.model_dump_json(exclude_none=True),
         }
@@ -685,111 +677,74 @@ async def tau2_num_user_tool_calls(task, state) -> float:
     return float(state.get("num_user_tool_calls", 0.0))
 
 
+class Tau2Taskset(vf.Taskset):
+    def __init__(
+        self,
+        domain: str = "telecom",
+        *,
+        user_model: str = DEFAULT_USER_MODEL,
+        user_args: Mapping[str, object] | None = None,
+        user_base_url: str = DEFAULT_USER_BASE_URL,
+        user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
+        max_steps: int = DEFAULT_MAX_STEPS,
+        max_errors: int = DEFAULT_MAX_ERRORS,
+        max_turns: int = DEFAULT_MAX_STEPS,
+        config=None,
+    ):
+        resolved_user_args = DEFAULT_LLM_ARGS_USER if user_args is None else user_args
+        session_factory = load_session_factory(
+            domain=domain,
+            user_model=user_model,
+            user_args=tau2_user_args(
+                resolved_user_args, user_base_url, user_api_key_var
+            ),
+            max_steps=max_steps,
+            max_errors=max_errors,
+        )
+        toolset = load_toolset(
+            domain=domain,
+            user_model=user_model,
+            user_args=resolved_user_args,
+            user_base_url=user_base_url,
+            user_api_key_var=user_api_key_var,
+            max_steps=max_steps,
+            max_errors=max_errors,
+            session_factory=session_factory,
+        )
+
+        def load_rows():
+            return source(domain, max_turns=max_turns)
+
+        super().__init__(
+            source=load_rows,
+            taskset_id=f"tau2_{domain}",
+            setups=[make_tau2_setup(session_factory)],
+            rewards=[tau2_reward],
+            metrics=[
+                tau2_num_errors,
+                tau2_num_steps,
+                tau2_num_assistant_tool_calls,
+                tau2_num_user_tool_calls,
+            ],
+            toolsets=[toolset],
+            user=vf.User(tau2_user, bindings={"session": session_factory}),
+            config=config,
+        )
+
+
 def load_taskset(
     domain: str = "telecom",
+    *,
     user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] = DEFAULT_LLM_ARGS_USER,
-    user_base_url: str = DEFAULT_USER_BASE_URL,
-    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    max_errors: int = DEFAULT_MAX_ERRORS,
-    session_factory: Callable[..., Tau2Session] | None = None,
-    config=None,
-) -> vf.Taskset:
-    if session_factory is None:
-        session_factory = load_session_factory(
-            domain=domain,
-            user_model=user_model,
-            user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
-            max_steps=max_steps,
-            max_errors=max_errors,
-        )
-    toolset = load_toolset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        session_factory=session_factory,
-    )
-
-    def load_rows():
-        return source(domain)
-
-    return vf.Taskset(
-        source=load_rows,
-        taskset_id=f"tau2_{domain}",
-        rewards=[tau2_reward],
-        metrics=[
-            tau2_num_errors,
-            tau2_num_steps,
-            tau2_num_assistant_tool_calls,
-            tau2_num_user_tool_calls,
-        ],
-        toolsets=[toolset],
-        user=vf.User(tau2_user, bindings={"session": session_factory}),
-        config=config,
-    )
-
-
-def load_harness(
-    domain: str = "telecom",
-    user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] = DEFAULT_LLM_ARGS_USER,
+    user_args: Mapping[str, object] | None = None,
     user_base_url: str = DEFAULT_USER_BASE_URL,
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_turns: int = DEFAULT_MAX_STEPS,
-    session_factory: Callable[..., Tau2Session] | None = None,
     config=None,
-) -> Tau2Harness:
-    if session_factory is None:
-        session_factory = load_session_factory(
-            domain=domain,
-            user_model=user_model,
-            user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
-            max_steps=max_steps,
-            max_errors=max_errors,
-        )
-    return Tau2Harness(
-        max_turns=max_turns, session_factory=session_factory, config=config
-    )
-
-
-def load_v1_environment(
-    domain: str = "telecom",
-    user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] = DEFAULT_LLM_ARGS_USER,
-    user_base_url: str = DEFAULT_USER_BASE_URL,
-    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    max_errors: int = DEFAULT_MAX_ERRORS,
-    max_turns: int = DEFAULT_MAX_STEPS,
-    **kwargs,
-) -> vf.Env:
-    if kwargs:
-        raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
-    session_factory = load_session_factory(
-        domain=domain,
-        user_model=user_model,
-        user_args=tau2_user_args(user_args, user_base_url, user_api_key_var),
-        max_steps=max_steps,
-        max_errors=max_errors,
-    )
-    taskset = load_taskset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        session_factory=session_factory,
-    )
-    harness = load_harness(
+) -> Tau2Taskset:
+    return Tau2Taskset(
         domain=domain,
         user_model=user_model,
         user_args=user_args,
@@ -798,10 +753,52 @@ def load_v1_environment(
         max_steps=max_steps,
         max_errors=max_errors,
         max_turns=max_turns,
-        session_factory=session_factory,
+        config=config,
     )
-    return vf.Env(taskset=taskset, harness=harness)
 
 
-def load_environment(**kwargs) -> vf.Env:
-    return load_v1_environment(**kwargs)
+def load_v1_environment(
+    domain: str = "telecom",
+    *,
+    user_model: str = DEFAULT_USER_MODEL,
+    user_args: Mapping[str, object] | None = None,
+    user_base_url: str = DEFAULT_USER_BASE_URL,
+    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_errors: int = DEFAULT_MAX_ERRORS,
+    max_turns: int = DEFAULT_MAX_STEPS,
+) -> vf.Env:
+    taskset = load_taskset(
+        domain=domain,
+        user_model=user_model,
+        user_args=user_args,
+        user_base_url=user_base_url,
+        user_api_key_var=user_api_key_var,
+        max_steps=max_steps,
+        max_errors=max_errors,
+        max_turns=max_turns,
+    )
+    return vf.Env(taskset=taskset)
+
+
+def load_environment(
+    domain: str = "telecom",
+    *,
+    user_model: str = DEFAULT_USER_MODEL,
+    user_args: Mapping[str, object] | None = None,
+    user_base_url: str = DEFAULT_USER_BASE_URL,
+    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_errors: int = DEFAULT_MAX_ERRORS,
+    max_turns: int = DEFAULT_MAX_STEPS,
+) -> vf.Env:
+    return load_v1_environment(
+        domain=domain,
+        user_model=user_model,
+        user_args=user_args,
+        user_base_url=user_base_url,
+        user_api_key_var=user_api_key_var,
+        max_steps=max_steps,
+        max_errors=max_errors,
+        max_turns=max_turns,
+    )

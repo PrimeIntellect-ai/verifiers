@@ -55,7 +55,7 @@ This folder contains installable example environments that showcase common usage
   - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
   - **dspy_flights**: DSPy flight-support entrypoint configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
-  - **tau2_bench**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
+  - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
 
 ### Composition
 - **EnvGroup**

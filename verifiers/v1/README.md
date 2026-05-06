@@ -1525,7 +1525,7 @@ Reference implementations live beside their existing environments:
 - `environments/math_python/math_python_v1.py`
 - `environments/mcp_search_env/mcp_search_v1.py`
 - `environments/opencode_harbor/opencode_harbor_v1.py`
-- `environments/tau2_bench/tau2_bench.py`
+- `environments/tau2_bench_v1/tau2_bench_v1.py`
 - `environments/nested_harness_v1/nested_harness_v1.py`
 - `environments/hello_subagent_v1/hello_subagent_v1.py`
 - `environments/hello_self_judge_v1/hello_self_judge_v1.py`
