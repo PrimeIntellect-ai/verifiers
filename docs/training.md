@@ -175,6 +175,8 @@ Key options:
 - `--perfect-score`: Maximum score for a rollout in your environment (if applicable); minibatches achieving this score are skipped during reflection (useful if your environment has a known max score)
 - `--state-columns`: Additional state columns to copy into the reflection dataset. By default, `query`, `completion`, `expected_answer`, `reward`, and `error` are included. Use this to add environment-specific state fields (e.g., `--state-columns tool_calls reasoning_trace`)
 
+In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`, `minibatch_size`, and `max_concurrent` under `[gepa]`. Put generation parameters such as `max_tokens` and `temperature` under `[sampling]`; the CLI passes that table through as `sampling_args`. Use `[[env]]` for one or more environments; GEPA samples train and validation examples uniformly by environment. A single `[env]` table is still accepted for older configs.
+
 ### Output
 
 After optimization, you'll find:

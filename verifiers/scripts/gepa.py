@@ -5,6 +5,7 @@ Aligned with vf-eval patterns for consistency.
 """
 
 import argparse
+from collections.abc import Mapping
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from gepa.api import optimize
 import verifiers as vf
 from verifiers import setup_logging
 from verifiers.clients import resolve_client
+from verifiers.envs.env_group import ENV_GROUP_INFO_KEY
 from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
 from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
@@ -56,6 +58,83 @@ def _ensure_table(value: object, field_name: str) -> dict[str, Any]:
     return cast(dict[str, Any], value)
 
 
+def _load_env_configs(raw_config: dict[str, Any], path: Path) -> list[dict[str, Any]]:
+    raw_env = raw_config.get("env")
+    if isinstance(raw_env, dict):
+        raw_envs = [raw_env]
+    elif isinstance(raw_env, list):
+        raw_envs = raw_env
+    else:
+        raise ValueError(f"Config file must contain an [env] or [[env]] table: {path}")
+
+    if not raw_envs:
+        raise ValueError(f"Config file must contain at least one env table: {path}")
+
+    env_configs = []
+    for idx, env_table in enumerate(raw_envs):
+        if not isinstance(env_table, dict):
+            raise ValueError(f"Each [[env]] entry must be a TOML table: {path}")
+        env_id = env_table.get("env_id")
+        if not isinstance(env_id, str) or not env_id:
+            raise ValueError(
+                f"env entry {idx} must contain a non-empty env_id string: {path}"
+            )
+        env_configs.append(
+            {
+                "env_id": env_id,
+                "env_args": _ensure_table(
+                    env_table.get("env_args", {}), "env.env_args"
+                ),
+                "extra_env_kwargs": _ensure_table(
+                    env_table.get("extra_env_kwargs", {}),
+                    "env.extra_env_kwargs",
+                ),
+            }
+        )
+    return env_configs
+
+
+def _env_group_label(env_configs: list[dict[str, Any]]) -> str:
+    if len(env_configs) == 1:
+        return cast(str, env_configs[0]["env_id"])
+    names = [str(config["env_id"]).rstrip("/").split("/")[-1] for config in env_configs]
+    return "+".join(names)
+
+
+def _apply_execution_compat(
+    config: dict[str, Any],
+    execution_table: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    if not execution_table:
+        return
+
+    warnings.append(
+        "[execution] in GEPA TOML configs is deprecated and undocumented. "
+        "Move max_concurrent and seed under [gepa], and move sampling_args values "
+        "under [sampling]."
+    )
+
+    for key in ("max_concurrent", "seed"):
+        if key not in execution_table:
+            continue
+        if key in config:
+            raise ValueError(
+                f"GEPA TOML config sets {key!r} in both [gepa] and [execution]."
+            )
+        config[key] = execution_table[key]
+
+    if "sampling_args" in execution_table:
+        if "sampling_args" in config:
+            raise ValueError(
+                "GEPA TOML config sets sampling parameters in both [sampling] "
+                "and [execution].sampling_args."
+            )
+        config["sampling_args"] = _ensure_table(
+            execution_table["sampling_args"], "execution.sampling_args"
+        )
+
+
 def load_gepa_toml_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"TOML config file not found: {path}")
@@ -66,21 +145,16 @@ def load_gepa_toml_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw_config, dict):
         raise ValueError(f"Expected top-level TOML table in {path}")
 
-    env_table = raw_config.get("env")
-    if not isinstance(env_table, dict):
-        raise ValueError(f"Config file must contain an [env] table: {path}")
-
-    env_id = env_table.get("env_id")
-    if not isinstance(env_id, str) or not env_id:
-        raise ValueError(f"[env].env_id must be a non-empty string: {path}")
+    env_configs = _load_env_configs(raw_config, path)
+    warnings: list[str] = []
 
     config: dict[str, Any] = {
-        "env_id": env_id,
-        "env_args": _ensure_table(env_table.get("env_args", {}), "env.env_args"),
-        "extra_env_kwargs": _ensure_table(
-            env_table.get("extra_env_kwargs", {}), "env.extra_env_kwargs"
-        ),
+        "env_id": _env_group_label(env_configs),
+        "envs": env_configs,
     }
+    if len(env_configs) == 1:
+        config["env_args"] = env_configs[0]["env_args"]
+        config["extra_env_kwargs"] = env_configs[0]["extra_env_kwargs"]
 
     for key in (
         "model",
@@ -105,14 +179,20 @@ def load_gepa_toml_config(path: Path) -> dict[str, Any]:
         "state_columns",
         "num_train",
         "num_val",
+        "max_concurrent",
+        "seed",
     ):
         if key in gepa_table:
             config[key] = gepa_table[key]
 
+    sampling_table = _ensure_table(raw_config.get("sampling", {}), "sampling")
+    if sampling_table:
+        config["sampling_args"] = sampling_table
+
     execution_table = _ensure_table(raw_config.get("execution", {}), "execution")
-    for key in ("max_concurrent", "sampling_args", "seed"):
-        if key in execution_table:
-            config[key] = execution_table[key]
+    _apply_execution_compat(config, execution_table, warnings)
+    if warnings:
+        config["_warnings"] = warnings
 
     # Resolve config-relative paths for consistency with vf-eval.
     endpoints_path = config.get("endpoints_path")
@@ -141,6 +221,7 @@ def resolve_gepa_config_args(args: argparse.Namespace) -> argparse.Namespace:
 
     for key in (
         "env_id",
+        "envs",
         "env_args",
         "extra_env_kwargs",
         "model",
@@ -170,6 +251,7 @@ def resolve_gepa_config_args(args: argparse.Namespace) -> argparse.Namespace:
         if not isinstance(save_results, bool):
             raise ValueError("'save_results' must be a boolean.")
         args.no_save = not save_results
+    args.config_warnings = config.get("_warnings", [])
 
     return args
 
@@ -296,6 +378,18 @@ def main():
         raise SystemExit(str(e)) from e
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    for warning in getattr(args, "config_warnings", []):
+        logger.warning(warning)
+
+    env_configs = getattr(args, "envs", None)
+    if env_configs is None:
+        env_configs = [
+            {
+                "env_id": args.env_id,
+                "env_args": args.env_args,
+                "extra_env_kwargs": args.extra_env_kwargs,
+            }
+        ]
 
     # Load endpoints and resolve model config
     endpoints = load_endpoints(args.endpoints_path)
@@ -411,8 +505,7 @@ def main():
 
     run_gepa_optimization(
         env_id=args.env_id,
-        env_args=args.env_args,
-        extra_env_kwargs=args.extra_env_kwargs,
+        env_configs=env_configs,
         model=model,
         reflection_model=reflection_model,
         client_config=client_config,
@@ -432,10 +525,151 @@ def main():
     )
 
 
+def _unique_env_names(env_configs: list[dict[str, Any]]) -> list[str]:
+    seen: dict[str, int] = {}
+    names = []
+    for config in env_configs:
+        base = str(config["env_id"])
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        names.append(base if count == 1 else f"{base}:{count}")
+    return names
+
+
+def _load_gepa_environment(
+    env_configs: list[dict[str, Any]],
+) -> tuple[vf.Environment, list[vf.Environment], list[str]]:
+    envs = []
+    for config in env_configs:
+        env_id = config["env_id"]
+        env_args = config["env_args"]
+        logger.debug(f"Loading environment: {env_id}")
+        env = vf.load_environment(env_id=env_id, **env_args)
+
+        extra_env_kwargs = config["extra_env_kwargs"]
+        if extra_env_kwargs:
+            logger.info(
+                f"Setting extra environment kwargs for {env_id}: {extra_env_kwargs}"
+            )
+            env.set_kwargs(**extra_env_kwargs)
+        envs.append(env)
+
+    env_names = _unique_env_names(env_configs)
+    if len(envs) == 1:
+        return envs[0], envs, env_names
+    return vf.EnvGroup(envs=envs, env_names=env_names), envs, env_names
+
+
+def _shared_initial_prompt(envs: list[vf.Environment]) -> str:
+    prompts = [env.system_prompt or "" for env in envs]
+    initial_prompt = prompts[0] if prompts else ""
+    if len(set(prompts)) > 1:
+        logger.warning(
+            "Multiple environment system prompts detected; GEPA will optimize one "
+            "shared prompt initialized from the first environment."
+        )
+    return initial_prompt
+
+
+def _balanced_counts(n: int, num_envs: int) -> list[int]:
+    if n < 0:
+        return [-1] * num_envs
+    base, remainder = divmod(n, num_envs)
+    return [base + (idx < remainder) for idx in range(num_envs)]
+
+
+def _repeat_to_count(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    if n < 0:
+        return rows
+    if not rows:
+        return []
+    if len(rows) >= n:
+        return rows[:n]
+    return [rows[idx % len(rows)] for idx in range(n)]
+
+
+def _gepa_info_dict(info: object) -> dict[str, Any]:
+    if info is None:
+        return {}
+    if isinstance(info, str):
+        parsed = json.loads(info)
+        if isinstance(parsed, dict):
+            return dict(cast(dict[str, Any], parsed))
+        raise ValueError("GEPA dataset row info must decode to a dict.")
+    if isinstance(info, Mapping):
+        return dict(cast(Mapping[str, Any], info))
+    raise ValueError("GEPA dataset row info must be a dict.")
+
+
+def _gepa_route(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(str(item) for item in value)
+    if value is None:
+        return ()
+    raise ValueError("GEPA dataset row info['env_id'] must be a string or list.")
+
+
+def _gepa_route_value(route: tuple[str, ...]) -> str | list[str] | None:
+    if not route:
+        return None
+    if len(route) == 1:
+        return route[0]
+    return list(route)
+
+
+def _add_env_group_route(row: dict[str, Any], env_name: str) -> dict[str, Any]:
+    routed = dict(row)
+    info = _gepa_info_dict(routed.get("info"))
+    child_route = _gepa_route(info.get(ENV_GROUP_INFO_KEY))
+    info[ENV_GROUP_INFO_KEY] = _gepa_route_value((env_name, *child_route))
+    routed["info"] = info
+    return routed
+
+
+def _load_gepa_dataset(
+    env: vf.Environment,
+    envs: list[vf.Environment],
+    env_names: list[str],
+    split: str,
+    n: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    if len(envs) == 1:
+        dataset = (
+            env.get_dataset(n=n, seed=seed)
+            if split == "train"
+            else env.get_eval_dataset(n=n, seed=seed)
+        )
+        return dataset.to_list()
+
+    rows: list[dict[str, Any]] = []
+    counts = _balanced_counts(n, len(envs))
+    for idx, (sub_env, env_name, count) in enumerate(zip(envs, env_names, counts)):
+        dataset_seed = seed + idx
+        dataset = (
+            sub_env.get_dataset(n=-1, seed=dataset_seed)
+            if split == "train"
+            else sub_env.get_eval_dataset(n=-1, seed=dataset_seed)
+        )
+        selected_rows = _repeat_to_count(dataset.to_list(), count)
+        for selected_row in selected_rows:
+            row = _add_env_group_route(selected_row, env_name)
+            if "example_id" in row:
+                row.setdefault("source_example_id", row["example_id"])
+            row["example_id"] = len(rows)
+            row["task"] = env_name
+            rows.append(row)
+
+    if not rows:
+        raise ValueError(f"No {split} examples available for GEPA.")
+    return rows
+
+
 def run_gepa_optimization(
     env_id: str,
-    env_args: dict,
-    extra_env_kwargs: dict,
+    env_configs: list[dict[str, Any]],
     model: str,
     reflection_model: str,
     client_config: ClientConfig,
@@ -471,22 +705,10 @@ def run_gepa_optimization(
     )
 
     with display:
-        # Load environment (inside display context to suppress logs)
-        logger.debug(f"Loading environment: {env_id}")
-        env = vf.load_environment(env_id=env_id, **env_args)
-
-        if isinstance(env, vf.EnvGroup):
-            raise ValueError(
-                "GEPA is not supported for EnvGroup. Optimize each environment individually."
-            )
-
-        # Set extra env kwargs
-        if extra_env_kwargs:
-            logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
-            env.set_kwargs(**extra_env_kwargs)
+        env, envs, env_names = _load_gepa_environment(env_configs)
 
         # Check system prompt
-        initial_prompt = env.system_prompt or ""
+        initial_prompt = _shared_initial_prompt(envs)
         if not initial_prompt:
             logger.warning("No system prompt attached to environment.")
             logger.warning(
@@ -495,10 +717,24 @@ def run_gepa_optimization(
 
         # Get datasets
         logger.debug(f"Loading trainset ({num_train} examples)")
-        trainset = env.get_dataset(n=num_train, seed=seed).to_list()
+        trainset = _load_gepa_dataset(
+            env=env,
+            envs=envs,
+            env_names=env_names,
+            split="train",
+            n=num_train,
+            seed=seed,
+        )
 
         logger.debug(f"Loading valset ({num_val} examples)")
-        valset = env.get_eval_dataset(n=num_val, seed=seed).to_list()
+        valset = _load_gepa_dataset(
+            env=env,
+            envs=envs,
+            env_names=env_names,
+            split="eval",
+            n=num_val,
+            seed=seed,
+        )
 
         # Update display with actual valset info
         valset_example_ids = [
@@ -568,7 +804,8 @@ def run_gepa_optimization(
         if run_dir and save_results:
             run_config = {
                 "env_id": env_id,
-                "env_args": env_args,
+                "envs": env_configs,
+                "env_args": env_configs[0]["env_args"] if len(env_configs) == 1 else {},
                 "model": model,
                 "reflection_model": reflection_model,
                 "num_train": num_train,
