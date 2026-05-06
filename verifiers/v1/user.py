@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .config import UserConfig, config_mapping, import_config_ref, resolve_config_object
+from .config import UserConfig, import_config_ref, resolve_config_object
 from .utils.trajectory_utils import completion_from_trajectory
 
 UserScope = Literal["rollout", "group", "global"]
@@ -65,7 +65,7 @@ def normalize_user(value: object | None) -> User | None:
 
 
 def user_from_mapping(spec: Mapping[str, object]) -> User:
-    config = UserConfig.model_validate(config_mapping(spec))
+    config = UserConfig.from_config(spec)
     fn = config.fn
     if isinstance(fn, str):
         fn = import_config_ref(fn)

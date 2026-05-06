@@ -958,6 +958,48 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ## Configuration Types
 
+### v1 Config
+
+```python
+class Config(BaseModel):
+    def __init__(self, config: object | None = None, /, **data: object): ...
+
+    @classmethod
+    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
+
+    @classmethod
+    def from_toml(
+        cls, path: str | Path, section: str | Iterable[str] | None = None
+    ) -> Self: ...
+
+class EnvConfig(Config):
+    taskset: object | None = None
+    harness: object | None = None
+
+class TasksetConfig(Config):
+    taskset_id: str | None = None
+    system_prompt: object | None = None
+    source: object | None = None
+    eval_source: object | None = None
+    user: object | None = None
+
+class HarnessConfig(Config):
+    program: object | None = None
+    system_prompt: object | None = None
+    sandbox: SandboxConfig | None = None
+    model: str | None = None
+    sampling_args: dict[str, object] = {}
+    max_turns: int = 10
+```
+
+`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
+`[env.harness]` sections flow to `config.taskset` and `config.harness`;
+environment-specific named args flow through `[env.args]`.
+
+`Config` subclasses accept a positional source config plus direct keyword
+overrides. The source object is positional-only so subclasses can define a real
+field named `config`.
+
 ### ClientConfig
 
 ```python

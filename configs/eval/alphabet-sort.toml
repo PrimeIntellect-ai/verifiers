@@ -6,9 +6,9 @@ rollouts_per_example = 3
 save_results = true
 
 [[eval]]
-env_id = "alphabet-sort"
+id = "alphabet-sort"
 
-[eval.env_args]
+[eval.args]
 min_turns = 3
 max_turns = 5
 power_per_turn = false

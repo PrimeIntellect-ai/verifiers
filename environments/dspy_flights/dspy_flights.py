@@ -363,7 +363,7 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         rewards=[expected_database_change],
@@ -372,15 +372,16 @@ def load_taskset(config=None):
     )
 
 
-def load_harness(config=None):
+def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(
         program={"fn": "dspy_flights:run_dspy_flight_program"},
         config=config,
     )
 
 
-def load_environment(config=None):
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

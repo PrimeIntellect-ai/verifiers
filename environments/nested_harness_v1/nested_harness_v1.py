@@ -3,6 +3,10 @@ from __future__ import annotations
 import verifiers.v1 as vf
 
 
+class NestedHarnessConfig(vf.HarnessConfig):
+    toolset: vf.ToolsetConfig | None = None
+
+
 async def child_program(task, state):
     state["answer"] = str(task["prompt"]).upper()
     state["completion"] = [{"role": "assistant", "content": state["answer"]}]
@@ -45,7 +49,7 @@ def load_child_harness():
     return vf.Harness(program=child_program)
 
 
-def load_toolset(config=None):
+def load_toolset(config: vf.ToolsetConfig | None = None):
     return vf.Toolset(
         tools=[call_harness],
         objects={"child_harness": load_child_harness},
@@ -68,7 +72,7 @@ async def parent_program(task, state):
     return state
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         rewards=[exact_answer],
@@ -76,17 +80,19 @@ def load_taskset(config=None):
     )
 
 
-def load_harness(config=None):
+def load_harness(config: NestedHarnessConfig | None = None):
+    config = NestedHarnessConfig(config)
     return vf.Harness(
         program=parent_program,
-        toolsets=[load_toolset(getattr(config, "toolset", None))],
+        toolsets=[load_toolset(config.toolset)],
         metrics=[child_calls],
         config=config,
     )
 
 
-def load_environment(config=None):
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

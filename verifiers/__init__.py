@@ -61,6 +61,7 @@ __all__ = [
     "BrowserEnv",
     "OpenEnvEnv",
     "Env",
+    "EnvConfig",
     "Task",
     "Taskset",
     "TasksetConfig",
@@ -165,6 +166,7 @@ _LAZY_IMPORTS = {
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
     "Env": "verifiers.v1:Env",
+    "EnvConfig": "verifiers.v1:EnvConfig",
     "Task": "verifiers.v1:Task",
     "Taskset": "verifiers.v1:Taskset",
     "TasksetConfig": "verifiers.v1:TasksetConfig",
@@ -249,6 +251,7 @@ if TYPE_CHECKING:
     from .utils.env_utils import load_environment  # noqa: F401
     from .v1 import (  # noqa: F401
         Env,
+        EnvConfig,
         Harness,
         HarnessConfig,
         MCPTool,

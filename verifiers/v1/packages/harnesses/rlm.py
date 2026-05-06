@@ -58,7 +58,7 @@ class RLM(CLIHarness):
         config: HarnessConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
-        harness_config = HarnessConfig.model_validate(config or {})
+        harness_config = HarnessConfig.from_config(config)
         if (
             not include_sub_rlm_trajectories
             and harness_config.keep_trajectory_step is None

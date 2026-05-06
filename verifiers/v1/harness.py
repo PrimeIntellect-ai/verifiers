@@ -92,7 +92,7 @@ class Harness:
         # Config.
         config: HarnessConfig | Mapping[str, object] | None = None,
     ):
-        self.config = type(self).config_type.model_validate(config or {})
+        self.config = type(self).config_type.from_config(config)
         if max_turns is not None:
             self.config.max_turns = max_turns
         program_value = resolve_config_object(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ import pytest
 import verifiers as vf
 from verifiers.v1 import (
     Env,
+    EnvConfig,
     Harness,
     HarnessConfig,
     State,
@@ -1023,6 +1025,281 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "program" in HarnessConfig.schema_text()
     assert "image" in vf.SandboxConfig.schema_text()
     assert "bindings" in vf.ToolsetConfig.schema_text()
+
+
+def test_env_config_normalizes_mapping_config_to_attributes() -> None:
+    config = EnvConfig(
+        {
+            "taskset": {"taskset_id": "dict"},
+            "harness": {"model": "configured-model"},
+        }
+    )
+
+    assert config.taskset == {"taskset_id": "dict"}
+    assert config.harness == {"model": "configured-model"}
+
+
+def test_env_config_rejects_unknown_top_level_sections() -> None:
+    with pytest.raises(ValueError):
+        EnvConfig({"taskset": {}, "math": {"taskset": {}}})
+
+
+def test_env_config_requires_child_sections_to_be_configs() -> None:
+    with pytest.raises(ValueError):
+        EnvConfig({"taskset": 1})
+
+
+def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    child_config = LocalTasksetConfig({"split": "nested"}, split=None)
+    config = EnvConfig(
+        {
+            "taskset": {"split": "nested"},
+            "harness": {"max_turns": 3},
+        },
+        taskset=LocalTasksetConfig(split="default"),
+        harness=HarnessConfig(max_turns=10),
+    )
+    default_config = EnvConfig(
+        {"taskset": {}},
+        taskset=LocalTasksetConfig(split="kwarg"),
+    )
+
+    assert child_config.split == "nested"
+    assert isinstance(config.taskset, LocalTasksetConfig)
+    assert config.taskset.split == "nested"
+    assert isinstance(config.harness, HarnessConfig)
+    assert config.harness.max_turns == 3
+    assert isinstance(default_config.taskset, LocalTasksetConfig)
+    assert default_config.taskset.split == "kwarg"
+
+
+def test_load_environment_coerces_typed_env_config_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(split: str = "train", config: EnvConfig | None = None) -> Env:
+        seen["split"] = split
+        seen["config"] = config
+        config = config or EnvConfig()
+        return Env(
+            taskset=Taskset(source=source_loader, config=config.taskset),
+            harness=Harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "typed-env-config",
+        split="test",
+        config={
+            "taskset": {"taskset_id": "typed"},
+            "harness": {"model": "typed-model"},
+        },
+    )
+
+    assert seen["split"] == "test"
+    assert isinstance(seen["config"], EnvConfig)
+    assert env.taskset.config.taskset_id == "typed"
+    assert env.harness.config.model == "typed-model"
+    assert env.env_args == {
+        "split": "test",
+        "config": {
+            "taskset": {"taskset_id": "typed"},
+            "harness": {"model": "typed-model"},
+        },
+    }
+
+
+def test_load_environment_leaves_untyped_config_arg_as_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "untyped_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(split: str = "train", config=None) -> Env:
+        seen["split"] = split
+        seen["config"] = config
+        return Env(taskset=Taskset(source=source_loader))
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    vf.load_environment(
+        "untyped-env-config",
+        split="test",
+        config={"taskset": {"taskset_id": "raw"}},
+    )
+
+    assert seen["split"] == "test"
+    assert seen["config"] == {"taskset": {"taskset_id": "raw"}}
+
+
+def test_config_objects_project_to_base_config_fields() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        toolset: object | None = None
+
+    config = LocalHarnessConfig({"model": "parent", "toolset": {"show": ["search"]}})
+    harness_config = HarnessConfig(config)
+
+    assert config.toolset == {"show": ["search"]}
+    assert harness_config.model == "parent"
+    assert not hasattr(harness_config, "toolset")
+
+
+def test_unset_base_config_defaults_do_not_override_child_defaults() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        max_turns: int = 4
+
+    default_config = LocalHarnessConfig(HarnessConfig())
+    explicit_config = LocalHarnessConfig(HarnessConfig(max_turns=10))
+
+    assert default_config.max_turns == 4
+    assert explicit_config.max_turns == 10
+
+
+def test_config_field_name_is_allowed_in_typed_configs() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        config: dict[str, object] | None = None
+
+    loaded_config = LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
+    direct_config = LocalTasksetConfig(config={"mode": "direct"})
+    merged_config = LocalTasksetConfig(
+        {"taskset_id": "local"},
+        config={"mode": "merged"},
+    )
+
+    assert loaded_config.config == {"mode": "loaded"}
+    assert direct_config.config == {"mode": "direct"}
+    assert merged_config.taskset_id == "local"
+    assert merged_config.config == {"mode": "merged"}
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "environments.dspy_flights.dspy_flights",
+        "environments.hello_group_reward_v1.hello_group_reward_v1",
+        "environments.hello_parallel_sandbox_v1.hello_parallel_sandbox_v1",
+        "environments.hello_rlm_v1.hello_rlm_v1",
+        "environments.hello_self_judge_v1.hello_self_judge_v1",
+        "environments.hello_subagent_v1.hello_subagent_v1",
+        "environments.nested_harness_v1.nested_harness_v1",
+    ],
+)
+def test_reference_v1_loaders_preserve_mapping_config_sections(
+    module_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module(module_name)
+    env_id = module_name.rsplit(".", 1)[-1]
+    monkeypatch.setitem(sys.modules, env_id, module)
+
+    env = vf.load_environment(
+        env_id,
+        config={
+            "taskset": {"taskset_id": "from-env-args"},
+            "harness": {"model": "configured-model"},
+        },
+    )
+
+    assert env.taskset.config.taskset_id == "from-env-args"
+    assert env.harness.config.model == "configured-model"
+
+
+def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
+    group_reward = importlib.import_module(
+        "environments.hello_group_reward_v1.hello_group_reward_v1"
+    )
+    parallel_sandbox = importlib.import_module(
+        "environments.hello_parallel_sandbox_v1.hello_parallel_sandbox_v1"
+    )
+    self_judge = importlib.import_module(
+        "environments.hello_self_judge_v1.hello_self_judge_v1"
+    )
+
+    assert group_reward.load_harness().config.max_turns == 1
+    assert parallel_sandbox.load_harness().config.max_turns == 4
+    assert self_judge.load_harness().config.max_turns == 8
+
+
+def test_bfcl_v1_loader_preserves_mapping_config_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("environments.bfcl_v3.bfcl_v3")
+    seen: dict[str, object] = {}
+
+    def fake_taskset(config: object = None, **kwargs: object) -> Taskset:
+        _ = kwargs
+        seen["taskset_config"] = config
+        return Taskset(source=source_loader, config=config)
+
+    def fake_harness(config: object = None, **kwargs: object) -> Harness:
+        _ = kwargs
+        seen["harness_config"] = config
+        return Harness(config=config)
+
+    monkeypatch.setattr(module, "load_taskset", fake_taskset)
+    monkeypatch.setattr(module, "load_harness", fake_harness)
+
+    env = module.load_v1_environment(
+        config=EnvConfig(
+            taskset={"taskset_id": "bfcl-env-args"},
+            harness={"model": "bfcl-model"},
+        )
+    )
+
+    assert env.taskset.config.taskset_id == "bfcl-env-args"
+    assert env.harness.config.model == "bfcl-model"
+    assert isinstance(seen["taskset_config"], module.BFCLTasksetConfig)
+    assert isinstance(seen["harness_config"], module.BFCLHarnessConfig)
+
+
+def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
+    module = importlib.import_module(
+        "environments.hello_self_judge_v1.hello_self_judge_v1"
+    )
+
+    taskset = module.load_taskset(num_examples=2)
+    harness = module.load_harness(max_turns=3)
+    shortcut_env = module.load_environment(num_examples=2, max_turns=3)
+    override_env = module.load_environment(
+        num_examples=2,
+        max_turns=3,
+        config=EnvConfig(
+            taskset={"num_examples": 1},
+            harness={"max_turns": 5},
+        ),
+    )
+
+    assert len(taskset.rows()) == 2
+    assert harness.config.max_turns == 3
+    assert len(shortcut_env.taskset.rows()) == 2
+    assert shortcut_env.harness.config.max_turns == 3
+    assert len(override_env.taskset.rows()) == 1
+    assert override_env.harness.config.max_turns == 5
+
+
+def test_subagent_loader_keeps_child_harness_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("environments.hello_subagent_v1.hello_subagent_v1")
+    monkeypatch.setitem(sys.modules, "hello_subagent_v1", module)
+
+    env = vf.load_environment(
+        "hello-subagent-v1", config={"harness": {"model": "parent"}}
+    )
+
+    assert env.harness.config.model == "parent"
+    child_harness = env.harness.toolsets[0].bindings["ask_subagent.harness"]
+    assert child_harness.config.model is None
 
 
 def test_nested_configs_validate_and_feed_runtime_objects() -> None:

@@ -139,7 +139,7 @@ env_id = "my-env"
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.env_args]
+[ablation.sweep.args]
 difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.

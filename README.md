@@ -146,12 +146,12 @@ def source():
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(config=None) -> vf.Env:
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
@@ -169,7 +169,7 @@ env = vf.Env(
 
 The same environment package is the unit used by evals and `prime-rl`. The
 trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
-and harness options stay under `env.args.config`:
+and harness options stay under `env.taskset` and `env.harness`:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -184,10 +184,13 @@ max_tokens = 4096
 [[env]]
 id = "my-env"
 
-[env.args.config.harness]
+[env.args]
+arg1 = "non-th-arg"
+
+[env.harness]
 max_turns = 1
 
-[env.args.config.taskset.scoring.contains_answer]
+[env.taskset.scoring.contains_answer]
 weight = 1.0
 ```
 
