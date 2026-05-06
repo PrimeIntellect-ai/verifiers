@@ -309,7 +309,8 @@ def load_environment(config: vf.EnvConfig | None = None):
     )
 ```
 
-Eval config passes that object through `env_args.config`:
+Eval config passes named environment args through `args` and v1 config through
+the `taskset`/`harness` sections:
 
 ```toml
 model = "openai/gpt-5.4-mini"
@@ -320,10 +321,10 @@ rollouts_per_example = 3
 env_id = "my-v1-env"
 sampling_args = { max_tokens = 4096 }
 
-[eval.env_args.config.harness]
+[eval.harness]
 max_turns = 4
 
-[eval.env_args.config.taskset.scoring.exact_answer]
+[eval.taskset.scoring.exact_answer]
 weight = 0.5
 ```
 
@@ -368,7 +369,7 @@ def load_environment(
     )
 ```
 
-RL and Hosted Training config uses the same inner shape under `args.config`:
+RL and Hosted Training config uses the same shape under `env`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -382,10 +383,13 @@ max_tokens = 4096
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args.config.harness]
+[env.args]
+arg1 = "non-th-arg"
+
+[env.harness]
 max_turns = 8
 
-[env.args.config.taskset.toolsets.search]
+[env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 ```
@@ -393,7 +397,7 @@ bindings = { "search.index" = "objects.index" }
 Callable config uses `fn = "module:callable"` when metadata is needed:
 
 ```toml
-[[env.args.config.taskset.rewards]]
+[[env.taskset.rewards]]
 fn = "my_env.signals:exact_answer"
 weight = 1.0
 priority = 0
@@ -407,14 +411,14 @@ For command harnesses, keep endpoint and tool registration under the requested
 `program.tools` interface:
 
 ```toml
-[env.args.config.harness.program]
+[env.harness.program]
 command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
 sandbox = true
 
-[env.args.config.harness.program.tools]
+[env.harness.program.tools]
 mcp = { fn = "my_env.cli:write_cli_config" }
 
-[env.args.config.harness.program.bindings]
+[env.harness.program.bindings]
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
 

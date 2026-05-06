@@ -36,6 +36,7 @@ from verifiers.types import (
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
     log_level,
@@ -45,6 +46,7 @@ from verifiers.utils.logging_utils import (
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
+FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -247,17 +249,17 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     """Expand an [[ablation]] block into eval configs via cartesian product.
 
     Sweep keys are lists of values under [ablation.sweep]. Environment args
-    can be swept via [ablation.sweep.env_args]. All sweep dimensions are
+    can be swept via [ablation.sweep.args]. All sweep dimensions are
     crossed to produce one eval config per combination.
 
     Example TOML:
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
 
     This produces 4 eval configs (2 temperatures × 2 difficulties).
@@ -265,6 +267,7 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     ablation = dict(ablation)  # don't mutate caller's dict
     sweep = ablation.pop("sweep", {})
     sweep = dict(sweep)  # copy before mutating
+    args_sweep = sweep.pop("args", {})
     env_args_sweep = sweep.pop("env_args", {})
 
     # Collect all sweep dimensions: [(key, [values]), ...]
@@ -283,20 +286,31 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"{type(values).__name__} for '{key}'"
             )
         dimensions.append((f"env_args.{key}", values))
+    for key, values in args_sweep.items():
+        if not isinstance(values, list):
+            raise ValueError(
+                f"Ablation sweep.args values must be lists, got "
+                f"{type(values).__name__} for '{key}'"
+            )
+        dimensions.append((f"args.{key}", values))
 
     if not dimensions:
         raise ValueError(
             "[[ablation]] block must have a non-empty [ablation.sweep] section"
         )
 
-    # Guard against same key in both fixed env_args and sweep.env_args
-    fixed_env_args = ablation.get("env_args", {})
-    if fixed_env_args and env_args_sweep:
-        overlap = set(fixed_env_args.keys()) & set(env_args_sweep.keys())
+    # Guard against same key in both fixed env args and swept env args.
+    fixed_env_args = {
+        **config_table(ablation.get("env_args", {}), "ablation.env_args"),
+        **config_table(ablation.get("args", {}), "ablation.args"),
+    }
+    swept_env_arg_keys = set(env_args_sweep) | set(args_sweep)
+    if fixed_env_args and swept_env_arg_keys:
+        overlap = set(fixed_env_args) & swept_env_arg_keys
         if overlap:
             raise ValueError(
-                f"env_args key(s) {overlap} appear in both fixed env_args and "
-                f"sweep.env_args — use one or the other"
+                f"environment arg key(s) {overlap} appear in both fixed args and "
+                f"sweep args — use one or the other"
             )
 
     explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
@@ -319,11 +333,29 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
             if key.startswith("env_args."):
                 env_key = key[len("env_args.") :]
                 config["env_args"] = {**config.get("env_args", {}), env_key: value}
+            elif key.startswith("args."):
+                env_key = key[len("args.") :]
+                config["args"] = {**config.get("args", {}), env_key: value}
             else:
                 config[key] = value
         expanded.append(config)
 
     return expanded
+
+
+def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str, Any]:
+    normalized = dict(config)
+    if "id" in normalized and "env_id" in normalized:
+        raise ValueError(f"{section} cannot contain both id and env_id.")
+    if "id" in normalized:
+        normalized["env_id"] = normalized.pop("id")
+    return normalized
+
+
+def invalid_ablation_sweep_fields(
+    sweep: Mapping[str, Any], valid_fields: set[str]
+) -> set[str]:
+    return set(sweep) - valid_fields - FREEFORM_ABLATION_SWEEP_FIELDS
 
 
 def load_toml_config(
@@ -339,20 +371,20 @@ def load_toml_config(
         num_examples = 10
 
         [[eval]]
-        env_id = "gsm8k"
+        id = "gsm8k"
 
         [[eval]]
-        env_id = "math-python"
+        id = "math-python"
         num_examples = 5  # overrides global default
 
         # Ablation: cartesian product of sweep values
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5, 1.0]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
         # → 6 eval configs
     """
@@ -381,8 +413,15 @@ def load_toml_config(
             f"Config file must contain at least one [[eval]] or [[ablation]] section: {path}"
         )
 
+    eval_list = [
+        normalize_env_id_alias(eval_config, "[[eval]]") for eval_config in eval_list
+    ]
+    ablation_list = [
+        normalize_env_id_alias(ablation, "[[ablation]]") for ablation in ablation_list
+    ]
+
     if not all("env_id" in e for e in eval_list):
-        raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
+        raise ValueError(f"All [[eval]] sections must contain an id field: {path}")
 
     # extract global defaults (everything except 'eval' and 'ablation' keys)
     global_defaults = {
@@ -394,7 +433,10 @@ def load_toml_config(
     valid_fields = {
         # environment
         "env_id",
+        "args",
         "env_args",
+        "taskset",
+        "harness",
         "env_dir_path",
         "endpoints_path",
         "extra_env_kwargs",
@@ -460,10 +502,18 @@ def load_toml_config(
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(merged)
+        merged_eval_list.append(normalize_env_config_sections(merged))
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
+        if isinstance(ablation.get("sweep"), Mapping):
+            ablation = {
+                **ablation,
+                "sweep": normalize_env_id_alias(
+                    cast(Mapping[str, Any], ablation["sweep"]),
+                    "[ablation.sweep]",
+                ),
+            }
         # Validate fixed fields (everything except 'sweep')
         ablation_fixed_keys = set(ablation.keys()) - {"sweep"}
         invalid_fields = ablation_fixed_keys - valid_fields
@@ -472,22 +522,25 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        # Validate sweep keys (except env_args which has freeform sub-keys)
+        # Validate sweep keys (except arg tables, which have freeform sub-keys)
         sweep = ablation.get("sweep", {})
-        invalid_sweep = set(sweep.keys()) - valid_fields - {"env_args"}
+        invalid_sweep = invalid_ablation_sweep_fields(sweep, valid_fields)
         if invalid_sweep:
             raise ValueError(
                 f"Invalid sweep field(s) {invalid_sweep} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        expanded = _expand_ablation(ablation, global_defaults)
+        expanded = [
+            normalize_env_config_sections(config)
+            for config in _expand_ablation(ablation, global_defaults)
+        ]
         merged_eval_list.extend(expanded)
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
         if "env_id" not in config:
             raise ValueError(
-                "All eval configs (including expanded ablations) must have an env_id"
+                "All eval configs (including expanded ablations) must have an id"
             )
 
     # Resolve endpoints_path relative to the config file location
